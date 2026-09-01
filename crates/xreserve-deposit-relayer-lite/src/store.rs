@@ -3,8 +3,9 @@
 //! There is deliberately no per-deposit ledger. The cursor only advances after a page's mint
 //! transaction is on chain, so a crash replays at most one page — and the faucet's on-chain
 //! `usedNonces` assert refuses the replayed mints. Losing the file entirely is likewise safe,
-//! just slow: the next run re-scans the feed from the beginning and the chain absorbs every
-//! duplicate.
+//! just slow: the cursor is a Circle pagination token that never appears on chain, so it cannot
+//! be rebuilt from chain state — the next run re-scans the feed from the beginning and the chain
+//! absorbs every duplicate.
 
 use std::fs;
 use std::io::Write;
@@ -12,24 +13,40 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-/// The persisted `pageAfter` cursor.
+/// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CircleCursor(String);
+
+impl CircleCursor {
+    /// Wraps a token taken verbatim from a Circle feed response.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// The token, ready to be sent back as the `pageAfter` query parameter.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The store holding the persisted [`CircleCursor`].
 #[derive(Debug)]
-pub struct CursorStore {
+pub struct Store {
     path: PathBuf,
 }
 
-impl CursorStore {
+impl Store {
     /// A store over the file at `path`. The file need not exist yet.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
     /// Where the last completed scan got to, or `None` on a first run.
-    pub fn cursor(&self) -> Result<Option<String>> {
+    pub fn cursor(&self) -> Result<Option<CircleCursor>> {
         match fs::read_to_string(&self.path) {
             Ok(text) => {
                 let cursor = text.trim();
-                Ok((!cursor.is_empty()).then(|| cursor.to_string()))
+                Ok((!cursor.is_empty()).then(|| CircleCursor::new(cursor)))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error)
@@ -37,14 +54,16 @@ impl CursorStore {
         }
     }
 
-    /// Durably replaces the cursor: write a sibling temp file, fsync, rename. `rename(2)` is
-    /// atomic on POSIX, so a crash leaves either the old cursor or the new one, never a torn one.
-    pub fn set_cursor(&self, page_after: &str) -> Result<()> {
+    /// Durably replaces the cursor: after this returns, a crash leaves either the old cursor or
+    /// the new one on disk, never a torn one.
+    pub fn set_cursor(&self, cursor: &CircleCursor) -> Result<()> {
+        // Write a sibling temp file, fsync it, then rename over the real file — `rename(2)` is
+        // atomic on POSIX, which is what rules out the torn state.
         let tmp = self.path.with_extension("tmp");
 
         let mut file = fs::File::create(&tmp)
             .with_context(|| format!("creating the temporary cursor at `{}`", tmp.display()))?;
-        file.write_all(page_after.as_bytes())
+        file.write_all(cursor.as_str().as_bytes())
             .with_context(|| format!("writing the temporary cursor at `{}`", tmp.display()))?;
         file.sync_all()
             .with_context(|| format!("syncing the temporary cursor at `{}`", tmp.display()))?;

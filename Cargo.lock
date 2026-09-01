@@ -6100,6 +6100,7 @@ dependencies = [
  "anyhow",
  "clap",
  "miden-protocol",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "url",

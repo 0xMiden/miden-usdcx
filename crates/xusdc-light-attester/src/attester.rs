@@ -11,7 +11,19 @@ use crate::signer::Signer;
 use crate::store::Store;
 
 #[derive(Debug)]
-pub struct StartError;
+#[non_exhaustive]
+pub enum StartError {
+    InvalidStore,
+    StoreLocked,
+    InvalidSignerSet,
+    SignerUnavailable,
+    MidenNodeUnavailable,
+    FaucetMissing,
+    CircleUnavailable,
+}
+
+#[derive(Debug)]
+pub struct RunError;
 
 #[derive(Debug)]
 pub struct DiscoverError;
@@ -48,6 +60,16 @@ impl Attester {
         circle_transport: Box<dyn HttpTransport>,
         signers: Vec<Box<dyn Signer>>,
     ) -> Result<Self, StartError> {
+        todo!()
+    }
+
+    /// Drives cycles until shutdown. Checks `shutdown` BETWEEN cycles and sleeps the full
+    /// poll interval — no race, so no `select!` needed. Finishes the current cycle before
+    /// returning; the process exits only between cycles.
+    pub async fn run(
+        &mut self,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), RunError> {
         todo!()
     }
 

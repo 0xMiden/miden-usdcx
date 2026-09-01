@@ -12,3 +12,7 @@ miden-standards = { workspace = true }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
+
+[dev-dependencies]
+hex = { workspace = true }
+tempfile = { workspace = true }

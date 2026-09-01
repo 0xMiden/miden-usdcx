@@ -31,23 +31,25 @@ impl PageSize {
 }
 
 impl TryFrom<u16> for PageSize {
-    type Error = PageSizeError;
+    type Error = anyhow::Error;
 
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if (Self::MIN..=Self::MAX).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(PageSizeError(value))
-        }
+    fn try_from(value: u16) -> Result<Self> {
+        ensure!(
+            (Self::MIN..=Self::MAX).contains(&value),
+            "page size must be between {} and {}, got {value}",
+            Self::MIN,
+            Self::MAX
+        );
+        Ok(Self(value))
     }
 }
 
 impl FromStr for PageSize {
-    type Err = Box<dyn std::error::Error + Send + Sync>;
+    type Err = anyhow::Error;
 
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value: u16 = value.parse()?;
-        Ok(Self::try_from(value)?)
+    fn from_str(value: &str) -> Result<Self> {
+        let value: u16 = value.parse().context("the page size is not a number")?;
+        Self::try_from(value)
     }
 }
 
@@ -56,24 +58,6 @@ impl fmt::Display for PageSize {
         self.0.fmt(f)
     }
 }
-
-/// A page size outside Circle's documented range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PageSizeError(u16);
-
-impl fmt::Display for PageSizeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "page size must be between {} and {}, got {}",
-            PageSize::MIN,
-            PageSize::MAX,
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for PageSizeError {}
 
 /// One entry of Circle's attestation feed: the encoded DepositIntent and the attester's signature
 /// over it. Circle publishes each field as `0x`-hex; the hex is decoded here.

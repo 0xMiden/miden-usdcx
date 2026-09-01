@@ -25,6 +25,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::circle::{CircleCursor, MessageHash};
 
@@ -77,6 +78,7 @@ impl Store {
     /// - The file cannot be read.
     /// - The file is not the state this relayer writes. It is not treated as a first run, because
     ///   that would silently re-mint the whole feed.
+    #[instrument(level = "trace", name = "store.state", skip_all)]
     pub fn state(&self) -> Result<State> {
         match fs::read_to_string(&self.path) {
             Ok(text) if text.trim().is_empty() => Ok(State::default()),
@@ -94,6 +96,15 @@ impl Store {
     /// # Errors
     ///
     /// - The file cannot be written, synced or renamed into place.
+    #[instrument(
+        level = "debug",
+        name = "store.set_state",
+        skip_all,
+        fields(
+            watermark = state.watermark.as_ref().map(|watermark| watermark.to_string()),
+            resume = state.scan.as_ref().map(|scan| scan.resume.as_str()),
+        ),
+    )]
     pub fn set_state(&self, state: &State) -> Result<()> {
         // Write a sibling temp file, fsync it, then rename over the real file. The rename is atomic
         // on the POSIX hosts this binary targets, which is what rules out the torn state.

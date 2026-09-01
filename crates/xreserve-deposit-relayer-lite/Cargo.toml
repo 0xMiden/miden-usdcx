@@ -15,6 +15,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-forest = { workspace = true }
 url = "2"
 humantime = "2"
 parse_link_header = { version = "0.4", default-features = false, features = ["url"] }

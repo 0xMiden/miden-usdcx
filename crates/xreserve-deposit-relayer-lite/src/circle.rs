@@ -20,6 +20,8 @@ use anyhow::{ensure, Context, Result};
 use reqwest::Url;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
+use tracing::field::Empty;
+use tracing::{instrument, Span};
 
 use xusdc_encoding::xreserve::encoding::Signature;
 
@@ -256,16 +258,23 @@ impl CircleClient {
     /// - Circle answers with a non-success status.
     /// - The response exceeds the size ceiling.
     /// - The response does not decode as a page (see [`Page::decode`]).
+    #[instrument(
+        name = "circle.fetch_page",
+        skip_all,
+        fields(remote_domain = %remote_domain, status = Empty, attestations = Empty, next = Empty),
+    )]
     pub fn fetch_page(
         &self,
         remote_domain: RemoteDomain,
         cursor: Option<&CircleCursor>,
     ) -> Result<Page> {
+        let span = Span::current();
         let response = self
             .client
             .get(self.page_url(remote_domain, cursor))
             .send()
             .context("the circle request failed")?;
+        span.record("status", response.status().as_u16());
         ensure!(
             response.status().is_success(),
             "circle answered {} for the attestation page",
@@ -293,7 +302,12 @@ impl CircleClient {
             Page::MAX_RESPONSE_BYTES
         );
 
-        Page::decode(&body, link.as_deref())
+        let page = Page::decode(&body, link.as_deref())?;
+        span.record("attestations", page.attestations.len());
+        if let Some(next) = page.next_cursor() {
+            span.record("next", next.as_str());
+        }
+        Ok(page)
     }
 
     /// The URL of one attestation page.

@@ -13,7 +13,8 @@
 
 use anyhow::Result;
 use miden_protocol::note::Note;
-use tracing::{info, warn};
+use tracing::field::Empty;
+use tracing::{info, instrument, warn, Span};
 
 pub mod circle;
 pub mod config;
@@ -143,12 +144,37 @@ impl Relayer {
     ///
     /// - Fetching the page fails.
     /// - Submitting the mint notes fails.
+    ///
+    /// # Tracing
+    ///
+    /// **`parent = None` is load-bearing.** The forest renderer buffers a span into its parent and
+    /// only prints once a root span closes; [`Relayer::run`] never returns, so an inherited parent
+    /// would mean nothing was ever printed. Detached, each page is its own root and its tree —
+    /// every skip and submit nested under it — is emitted the moment the page ends.
+    #[instrument(
+        parent = None,
+        name = "page",
+        skip_all,
+        fields(
+            remote_domain = %self.config.remote_domain,
+            cursor = Empty,
+            attestations = Empty,
+            notes = Empty,
+            tx = Empty,
+        ),
+    )]
     fn process_page(
         &mut self,
         resume: Option<&CircleCursor>,
         watermark: Option<&MessageHash>,
     ) -> Result<PageOutcome> {
+        let span = Span::current();
+        if let Some(resume) = resume {
+            span.record("cursor", resume.as_str());
+        }
+
         let page = self.circle.fetch_page(self.config.remote_domain, resume)?;
+        span.record("attestations", page.attestations.len());
 
         // The page runs newest to oldest, so the watermark — if it is on this page at all — ends
         // the scan, and everything above it arrived since the last scan.
@@ -169,20 +195,16 @@ impl Relayer {
             .into_iter()
             .map(Note::from)
             .collect();
+        span.record("notes", notes.len());
 
         if notes.is_empty() && !fresh.is_empty() {
-            warn!(fetched = fresh.len(), "page produced no mint notes");
+            warn!(attestations = fresh.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
-            let submitted = notes.len();
             let tx = self
                 .miden_client
                 .submit_notes(self.minter.mint_account(), notes)?;
-            info!(
-                tx = %tx,
-                fetched = fresh.len(),
-                submitted,
-                "page minted and on chain"
-            );
+            span.record("tx", tx.to_string().as_str());
+            info!("page minted and on chain");
         }
 
         Ok(PageOutcome {

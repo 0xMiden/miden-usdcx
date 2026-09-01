@@ -4,6 +4,8 @@
 
 use anyhow::Result;
 use clap::Parser;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use xreserve_deposit_relayer_lite::config::Config;
@@ -11,11 +13,11 @@ use xreserve_deposit_relayer_lite::miden::production_miden_client;
 use xreserve_deposit_relayer_lite::Relayer;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
+    // One indented tree per page (process_next_page is a detached root — see its doc comment),
+    // not a flat line stream. Always on; RUST_LOG filters as usual.
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(tracing_forest::ForestLayer::default())
         .init();
 
     let config = Config::parse();

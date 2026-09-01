@@ -12,7 +12,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
-use tracing::error;
+use tracing::{error, instrument};
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::DepositIntent;
@@ -112,6 +112,7 @@ impl Minter {
     ///
     /// An attestation that cannot be decoded or built is logged and skipped. Each successful note
     /// receives a fresh serial number, so rebuilding the same deposit produces a distinct note.
+    #[instrument(name = "build_notes", skip_all, fields(attestations = attestations.len()))]
     pub fn build_notes(&mut self, attestations: &[&Attestation]) -> Vec<XUsdcMintNote> {
         attestations
             .iter()

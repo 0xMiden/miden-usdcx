@@ -5,6 +5,8 @@ use clap::Parser;
 use miden_protocol::account::AccountId;
 use url::Url;
 
+use crate::circle::PageSize;
+
 #[derive(Debug, Clone, Parser)]
 #[command(name = "xreserve-deposit-relayer-lite")]
 #[command(about = "Relays Circle xReserve deposit attestations to the xUSDC faucet")]
@@ -13,9 +15,9 @@ pub struct Config {
     #[arg(long)]
     pub circle_url: Url,
 
-    /// The number of attestations in one Circle response.
-    #[arg(long, value_parser = parse_page_size)]
-    pub page_size: u16,
+    /// The number of attestations in one Circle response, between 1 and 1000.
+    #[arg(long)]
+    pub page_size: PageSize,
 
     /// The maximum duration of one Circle request.
     #[arg(long, value_parser = humantime::parse_duration)]
@@ -47,13 +49,4 @@ fn parse_account_id(value: &str) -> Result<AccountId, String> {
     AccountId::parse(value)
         .map(|(account_id, _network_id)| account_id)
         .map_err(|error| error.to_string())
-}
-
-fn parse_page_size(value: &str) -> Result<u16, String> {
-    let page_size = value.parse::<u16>().map_err(|error| error.to_string())?;
-    if (1..=1000).contains(&page_size) {
-        Ok(page_size)
-    } else {
-        Err("page size must be between 1 and 1000".to_string())
-    }
 }

@@ -42,10 +42,10 @@ fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-// GOLDEN-VECTOR FIXTURES
+// Golden-vector fixtures.
+//
 // Payloads come from the canonical artifact and are re-addressed through the encoding crate's
 // header builder.
-// ================================================================================================
 
 use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
 use miden_protocol::crypto::utils::Serializable;
@@ -54,7 +54,8 @@ use xreserve_deposit_relayer_lite::config::Config;
 use xusdc_encoding::vectors::load;
 use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
 
-/// The Miden destination domain these tests address payloads to. PLACEHOLDER — Circle-owned, OPEN.
+/// The Miden destination domain these tests address payloads to — a placeholder value, since the
+/// real identifier is a Circle-owned decision that is still open.
 pub const TEST_REMOTE_DOMAIN: u32 = 10001;
 
 /// A valid 33-byte compressed SEC1 attester key (the pinned partner-fixture key). These tests
@@ -62,7 +63,7 @@ pub const TEST_REMOTE_DOMAIN: u32 = 10001;
 pub const ATTESTER_PUBKEY_HEX: &str =
     "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
 
-/// The xUSDC faucet the notes are routed at — PUBLIC, because the routing attachment can bind
+/// The xUSDC faucet the notes are routed at — public, because the routing attachment can bind
 /// nothing else.
 pub fn faucet_id() -> AccountId {
     AccountId::dummy(
@@ -73,7 +74,7 @@ pub fn faucet_id() -> AccountId {
     )
 }
 
-/// A DIFFERENT public faucet — for proving a note addressed elsewhere will not build.
+/// A second public faucet, for proving a note addressed elsewhere will not build.
 pub fn other_faucet_id() -> AccountId {
     AccountId::dummy(
         [0x33; 15],

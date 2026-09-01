@@ -4,7 +4,7 @@
 //! attester key required by the note and skips individual attestations that cannot be decoded or
 //! built, allowing the remaining attestations in the page to proceed.
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::FeltRng;
@@ -61,9 +61,7 @@ fn attester_pubkey(value: &str) -> Result<PublicKey> {
         bytes.len()
     );
 
-    PublicKey::read_from_bytes(&bytes)
-        .map_err(|error| anyhow!("{error}"))
-        .context("the attester public key is not a curve point")
+    PublicKey::read_from_bytes(&bytes).context("the attester public key is not a curve point")
 }
 
 /// Builds the mint notes for one page.
@@ -110,7 +108,6 @@ fn build_note<R: FeltRng>(
         .map_err(|_| anyhow!("the attestation is not {ATTESTATION_LEN} bytes"))?;
 
     let intent = DepositIntent::try_from(payload.as_slice())
-        .map_err(|error| anyhow!("{error}"))
         .context("the payload is not a deposit intent")?;
 
     XUsdcMintNote::builder()
@@ -125,14 +122,10 @@ fn build_note<R: FeltRng>(
         .generate_serial_number(rng)
         .build()
         .map(Note::from)
-        .map_err(|error| anyhow!("{error}"))
         .context("building the mint note")
 }
 
 /// Circle wire hex, tolerating the optional `0x` prefix the API emits.
 fn decode_hex(value: &str) -> Result<Vec<u8>> {
-    match hex::decode(value.strip_prefix("0x").unwrap_or(value)) {
-        Ok(bytes) => Ok(bytes),
-        Err(error) => bail!("{error}"),
-    }
+    Ok(hex::decode(value.strip_prefix("0x").unwrap_or(value))?)
 }

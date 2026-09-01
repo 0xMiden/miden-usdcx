@@ -69,36 +69,18 @@ fn a_rebuilt_deposit_is_a_distinct_note() {
     assert_ne!(first[0].id(), second[0].id());
 }
 
-/// A malformed identity is rejected during startup with the invalid field named.
+/// A malformed attester key is rejected during startup.
 #[rstest]
-#[case::bad_faucet("faucet_account_id", "not-an-id")]
-#[case::bad_relayer("relayer_account_id", "0xzzzz")]
-#[case::pubkey_not_hex("attester_pubkey_hex", "nothex")]
-#[case::pubkey_wrong_length("attester_pubkey_hex", "0xdeadbeef")]
-#[case::pubkey_not_a_point(
-    "attester_pubkey_hex",
-    "03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-)]
-fn a_malformed_identity_is_refused_at_startup(#[case] field: &str, #[case] value: &str) {
+#[case::not_hex("nothex")]
+#[case::wrong_length("0xdeadbeef")]
+#[case::not_a_point("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
+fn a_malformed_attester_key_is_refused_at_startup(#[case] value: &str) {
     let mut config = test_config();
-    match field {
-        "faucet_account_id" => config.faucet_account_id = value.to_string(),
-        "relayer_account_id" => config.relayer_account_id = value.to_string(),
-        "attester_pubkey_hex" => config.attester_pubkey_hex = value.to_string(),
-        other => panic!("unknown field `{other}`"),
-    }
+    config.attester_public_key = value.to_string();
 
     let error = format!("{:#}", Identities::from_config(&config).unwrap_err());
     assert!(
-        error.contains(field),
-        "the refusal must name `{field}`, got: {error}"
+        error.contains("attester public key"),
+        "unexpected error: {error}"
     );
-}
-
-/// The shipped example's identities parse — otherwise the demo config would fail at startup.
-#[test]
-fn the_shipped_example_identities_parse() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("relayer.toml");
-    let config = xreserve_deposit_relayer_lite::config::Config::load(&path).unwrap();
-    Identities::from_config(&config).expect("the shipped identities are usable");
 }

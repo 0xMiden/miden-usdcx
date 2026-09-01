@@ -7,7 +7,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use xreserve_deposit_relayer_lite::config::Config;
-use xreserve_deposit_relayer_lite::mint::Identities;
+use xreserve_deposit_relayer_lite::mint::Minter;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -18,7 +18,7 @@ fn main() -> Result<()> {
         .init();
 
     let config = Config::parse();
-    let _identities = Identities::from_config(&config)?;
+    let _minter = Minter::from_config(&config)?;
     tracing::info!(remote_domain = config.remote_domain, "arguments validated");
 
     bail!(

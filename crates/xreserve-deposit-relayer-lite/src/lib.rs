@@ -4,3 +4,6 @@ pub mod circle;
 pub mod config;
 pub mod mint;
 pub mod store;
+
+#[cfg(test)]
+pub(crate) mod testing;

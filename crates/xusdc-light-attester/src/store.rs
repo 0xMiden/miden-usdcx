@@ -14,7 +14,10 @@ pub(crate) struct ScanCursor {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct StoreError;
+pub(crate) enum StoreError {
+    Invalid,
+    Locked,
+}
 
 #[allow(dead_code)]
 pub(crate) struct Store {

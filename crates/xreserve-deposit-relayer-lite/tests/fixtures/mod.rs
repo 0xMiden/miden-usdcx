@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 
 use xreserve_deposit_relayer_lite::circle::{Attestation, CircleFeed, Page};
+use xreserve_deposit_relayer_lite::store::CircleCursor;
 
 /// One answer from the domain-level Circle feed fake.
 #[derive(Debug)]
@@ -44,12 +45,12 @@ impl CircleFeed for MockCircle {
     fn fetch_page<'a>(
         &'a self,
         remote_domain: u32,
-        page_after: Option<&'a str>,
+        page_after: Option<&'a CircleCursor>,
     ) -> Pin<Box<dyn Future<Output = Result<Page>> + Send + 'a>> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push((remote_domain, page_after.map(str::to_owned)));
+        self.requests.lock().unwrap().push((
+            remote_domain,
+            page_after.map(|cursor| cursor.as_str().to_owned()),
+        ));
         let answer = self.answers.lock().unwrap().pop_front();
         Box::pin(async move {
             match answer {
@@ -65,7 +66,7 @@ impl CircleFeed for MockCircle {
 pub fn page(attestations: &[Attestation], next: Option<&str>) -> FeedAnswer {
     FeedAnswer::Page(Page {
         attestations: attestations.to_vec(),
-        next: next.map(str::to_owned),
+        next: next.map(CircleCursor::new),
     })
 }
 
@@ -170,6 +171,7 @@ pub fn test_config() -> Config {
         circle_url: "https://circle.test".parse().unwrap(),
         page_size: 100,
         request_timeout: std::time::Duration::from_secs(30),
+        poll_interval: std::time::Duration::from_secs(5),
         remote_domain: TEST_REMOTE_DOMAIN,
         faucet_account_id: faucet_id(),
         relayer_account_id: relayer_id(),
@@ -237,6 +239,7 @@ pub fn undecodable_attestation() -> Attestation {
 
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::Note;
+use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 
 use xreserve_deposit_relayer_lite::miden::MidenClient;
@@ -281,7 +284,7 @@ impl MidenClient for ScriptedMiden {
         &'a self,
         _sender: miden_protocol::account::AccountId,
         notes: Vec<Note>,
-    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<TransactionId>> + Send + 'a>> {
         let answer = self
             .answers
             .lock()
@@ -293,11 +296,17 @@ impl MidenClient for ScriptedMiden {
         }
         Box::pin(async move {
             match answer {
-                Answer::Accept => Ok("0xdeadbeef".to_string()),
+                Answer::Accept => Ok(scripted_transaction_id()),
                 Answer::Fail => Err(anyhow!("the node is unreachable")),
             }
         })
     }
+}
+
+/// A stable transaction ID for scripted accepts; nothing asserts on its value.
+fn scripted_transaction_id() -> TransactionId {
+    let word = Word::from([Felt::from(7u32); 4]);
+    TransactionId::new(word, word, word, word)
 }
 
 /// Owns a relayer and the temporary directory containing its cursor store.

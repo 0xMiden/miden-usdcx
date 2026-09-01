@@ -24,6 +24,11 @@ pub struct Config {
     #[arg(long, value_parser = humantime::parse_duration)]
     pub request_timeout: Duration,
 
+    /// How long to wait once the scan has caught up with the feed. A deposit intent has no
+    /// expiry, so polling harder buys nothing but rate-limit pressure.
+    #[arg(long, value_parser = humantime::parse_duration, default_value = "5s")]
+    pub poll_interval: Duration,
+
     /// The Circle domain identifier for Miden.
     #[arg(long)]
     pub remote_domain: RemoteDomain,

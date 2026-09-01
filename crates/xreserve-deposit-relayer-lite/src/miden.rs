@@ -11,6 +11,7 @@ use std::pin::Pin;
 use anyhow::{bail, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::note::Note;
+use miden_protocol::transaction::TransactionId;
 
 /// Submits a page of mint notes to Miden and waits for inclusion on-chain.
 pub trait MidenClient: fmt::Debug + Send + Sync {
@@ -23,7 +24,7 @@ pub trait MidenClient: fmt::Debug + Send + Sync {
         &'a self,
         sender: AccountId,
         notes: Vec<Note>,
-    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<TransactionId>> + Send + 'a>>;
 }
 
 /// Returns the production Miden client.

@@ -1,7 +1,6 @@
 //! Relays Circle xReserve deposit attestations to the xUSDC faucet.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use miden_protocol::crypto::rand::FeltRng;
@@ -17,11 +16,7 @@ use circle::CircleFeed;
 use config::Config;
 use miden::MidenClient;
 use mint::{build_notes, Identities};
-use store::{CircleCursor, Store};
-
-/// How long to wait once the scan has caught up with the feed. A deposit intent has no expiry, so
-/// polling harder buys nothing but rate-limit pressure.
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+use store::Store;
 
 /// Dependencies and mutable state required to process feed pages.
 pub struct Relayer<R: FeltRng> {
@@ -59,10 +54,7 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutc
     let cursor = relayer.store.cursor()?;
     let page = relayer
         .circle
-        .fetch_page(
-            relayer.config.remote_domain,
-            cursor.as_ref().map(CircleCursor::as_str),
-        )
+        .fetch_page(relayer.config.remote_domain, cursor.as_ref())
         .await?;
 
     let notes = build_notes(
@@ -84,7 +76,7 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutc
             .submit_notes(relayer.identities.sender(), notes)
             .await?;
         info!(
-            tx,
+            tx = %tx,
             fetched = page.attestations.len(),
             submitted,
             "page minted and on chain"
@@ -93,7 +85,7 @@ pub async fn run_cycle<R: FeltRng>(relayer: &mut Relayer<R>) -> Result<CycleOutc
 
     match page.next_cursor() {
         Some(next) => {
-            relayer.store.set_cursor(&CircleCursor::new(next))?;
+            relayer.store.set_cursor(next)?;
             Ok(CycleOutcome::MorePages)
         }
         None => Ok(CycleOutcome::CaughtUp),
@@ -115,6 +107,6 @@ pub async fn run<R: FeltRng>(mut relayer: Relayer<R>) -> ! {
                 "the cycle failed; the cursor did not move"
             ),
         }
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(relayer.config.poll_interval).await;
     }
 }

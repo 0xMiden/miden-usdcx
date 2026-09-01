@@ -16,11 +16,11 @@ pub struct Config {
     #[arg(long)]
     pub remote_domain: u32,
 
-    /// The public xUSDC faucet account.
+    /// The public xUSDC faucet account, as `0x`-prefixed hex or bech32.
     #[arg(long, value_parser = parse_account_id)]
     pub faucet_account_id: AccountId,
 
-    /// The account that creates the mint notes.
+    /// The account that creates the mint notes, as `0x`-prefixed hex or bech32.
     #[arg(long, value_parser = parse_account_id)]
     pub relayer_account_id: AccountId,
 
@@ -33,6 +33,7 @@ pub struct Config {
     pub state_file: PathBuf,
 }
 
+/// Accepts either account ID form; the network prefix of a bech32 ID is parsed and then discarded.
 fn parse_account_id(value: &str) -> Result<AccountId, String> {
     AccountId::parse(value)
         .map(|(account_id, _network_id)| account_id)

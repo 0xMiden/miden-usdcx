@@ -522,11 +522,7 @@ pub enum ValidationMismatch {
     /// prepare response is not a match of any withdrawal. Refused rather than signed vacuously.
     NoBatches,
 
-    /// A batch carried an EMPTY `burnIntents` array — no `spec` or terms to compare, so its
-    /// `messageHashToSign` would be bound to no amount/domain/recipient/salt/fee/hook terms.
-    /// Circle's schema requires `burnIntents` be non-empty (`minItems: 1`); an empty list is
-    /// refused here rather than allowed to mint a signing token vacuously (the `check_spec` loop
-    /// must not be skippable into `Ok`).
+    /// A batch carried an EMPTY `burnIntents` array — no intent to compare before signing.
     EmptyBurnIntents { batch: usize },
 
     /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not
@@ -558,8 +554,7 @@ pub enum ValidationMismatch {
         returned: String,
     },
 
-    /// A returned `burnIntents[].maxFee` exceeds the configured withdrawal fee ceiling or the burn
-    /// amount itself.
+    /// A returned `burnIntents[].maxFee` exceeds the configured ceiling or the burn amount.
     MaxFee {
         batch: usize,
         ceiling: u64,
@@ -574,7 +569,7 @@ pub enum ValidationMismatch {
         returned: String,
     },
 
-    /// A field inside returned `hookData` diverges from the neutral, non-forwarding request terms.
+    /// A returned `hookData` field diverges from the expected request terms.
     HookData {
         batch: usize,
         field: &'static str,

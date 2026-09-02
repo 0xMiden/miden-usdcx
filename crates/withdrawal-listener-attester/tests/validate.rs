@@ -1,22 +1,4 @@
-//! The discovery checklist, the `validate_returned` field-by-field gate, and the **DO-NOT-SIGN**
-//! abort.
-//!
-//! **Validation gates signing.** This service releases real USDC, and this
-//! is the last check before an attester signature is produced. The gate is proven two ways here:
-//!
-//! * **Field-by-field.** Circle's returned `burnIntents[]` is compared against the burn-note
-//!   payload and the canonical non-forwarding request terms for EVERY batch — a mismatch in ANY
-//!   batch (not just `batches[0]`) rejects; a missing `messageHashToSign` rejects.
-//! * **Control-flow (the non-vacuity oracle).** The mismatch is driven through the REAL
-//!   gate: on `Err`, NO signature is produced and NO withdraw call is reachable. The proof is
-//!   structural — the flow-level signer takes a [`ValidatedWithdrawal`], which ONLY a full-match
-//!   [`validate_returned`] can mint, so "signed anyway" is untypeable, not merely unreached.
-//!
-//! These are PURE tests (no node, no Circle): the mock `PrepareWithdrawalResponse` is parsed from
-//! the schema-frozen fixtures, the discovered burn is constructed through the real discovery gate,
-//! and the abort is exercised through `validate_returned` + `sign_validated`. The
-//! `messageHashToSign` digest derivation and the Circle-assigned `sourceDepositor` stay OPEN —
-//! parameterized, never resolved.
+//! Tests for discovery, returned-withdrawal validation, and the do-not-sign gate.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -56,8 +38,7 @@ fn hex32(s: &str) -> [u8; 32] {
     bytes.try_into().expect("exactly 32 bytes")
 }
 
-/// The burn payload that MATCHES `prepare_withdrawal_200.json`: `value = 10000000`,
-/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`, and the returned `salt`.
+/// The burn payload that matches `prepare_withdrawal_200.json`.
 fn matching_payload() -> BurnPayload {
     let body = base_200_json();
     let spec = &body["batches"][0]["burnIntents"][0]["spec"];
@@ -71,8 +52,7 @@ fn matching_payload() -> BurnPayload {
     }
 }
 
-/// The fixture's `hookData.remoteDepositor`, decoded through the same standards helper production
-/// uses. It is the `metadata.sender` the matching discovered burn must carry.
+/// The fixture's `hookData.remoteDepositor`, decoded as the discovered burn sender.
 fn matching_depositor() -> AccountId {
     let body = base_200_json();
     let remote_depositor = hex32(
@@ -223,9 +203,7 @@ fn validate_returned_rejects_destination_recipient_mismatch() {
     );
 }
 
-/// The returned signed intent must also match the request-owned redemption terms not carried by the
-/// original four-field burn attachment. Each field below is schema-valid, so only the B5 semantic
-/// gate can refuse it.
+/// Schema-valid edits to redemption terms must reject before signing.
 #[rstest]
 #[case::max_fee(&["maxFee"], Value::from("1001"), "maxFee")]
 #[case::salt(
@@ -330,8 +308,7 @@ fn validate_returned_rejects_unbound_redemption_terms(
     }
 }
 
-/// The configured fee ceiling is not enough if it exceeds the burn itself: a returned fee cap above
-/// the burned amount would authorize a release that the burn did not fund.
+/// A returned fee cap above the burned amount rejects even if config allows it.
 #[test]
 fn validate_returned_rejects_max_fee_above_the_burn_amount() {
     let mut v = base_200_json();
@@ -380,10 +357,7 @@ fn validate_returned_rejects_no_batches() {
     );
 }
 
-/// A batch whose `burnIntents` array is EMPTY is refused — with no intent to compare, its digest is
-/// bound to no amount/domain/recipient/salt/fee/hook terms, so allowing it would mint a signing
-/// token vacuously. This is the fund-safety hole the audit surfaced: the `check_spec` loop must not
-/// be skippable into `Ok`.
+/// A batch whose `burnIntents` array is empty is refused.
 #[test]
 fn validate_returned_rejects_an_empty_burn_intents_batch() {
     let mut v = base_200_json();

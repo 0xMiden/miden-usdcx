@@ -17,8 +17,7 @@
 //! * **B4 — prepare request.** The validated burn is turned into Circle's prepare-withdrawal
 //!   request, payload and depositor taken from that one note.
 //! * **B5 — prepare and validate the response.** Circle returns a burn spec; it is compared to the
-//!   burn note and the request-owned redemption terms field by field. This is THE gate: a mismatch
-//!   ends the run with nothing signed.
+//!   burn note field by field. This is THE gate: a mismatch ends the run with nothing signed.
 //! * **B6 — sign.** The attesters sign the validated batch and a two-signature quorum is assembled.
 //! * **B7 — evidence and submit.** The burn evidence is assembled, the withdrawal batch built, the
 //!   submission authorized against the fund-safety rules, and the request sent.
@@ -162,10 +161,10 @@
 //!
 //! Pure, no I/O: [`validate`] holds the discovery checklist ([`validate::validate_discovery`]) and
 //! the field-by-field gate ([`validate::validate_returned`]), which compares Circle's returned
-//! `burnIntents[]` against the discovered burn and the request-owned redemption terms for EVERY
-//! batch and, on a full match, mints the [`validate::ValidatedWithdrawal`] token. The signer,
-//! [`validate::sign_validated`], consumes that token — so a mismatch cannot reach signing, and
-//! "sign a response that failed validation" is untypeable rather than merely unreached.
+//! `burnIntents[].spec` against the burn payload for EVERY batch and, on a full match, mints the
+//! [`validate::ValidatedWithdrawal`] token. The signer, [`validate::sign_validated`], consumes that
+//! token — so a mismatch cannot reach signing, and "sign a response that failed validation" is
+//! untypeable rather than merely unreached.
 //!
 //! # The signing core
 //!

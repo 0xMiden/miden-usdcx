@@ -136,7 +136,7 @@ fn withdraw_failed_status_round_trips_with_its_failure_reason_and_no_transaction
 #[test]
 fn a_validation_mismatch_is_a_well_formed_200_that_only_semantics_can_catch() {
     // The point of this fixture: it is SCHEMA-VALID. It decodes cleanly, which is exactly why the
-    // field-by-field compare against the burn note and request-owned terms must exist — serde
+    // field-by-field compare against the burn-note payload must exist — serde
     // cannot see that the value/domain/recipient are the wrong ones.
     let response: PrepareWithdrawalResponse = round_trip("prepare_withdrawal_validation_mismatch");
 

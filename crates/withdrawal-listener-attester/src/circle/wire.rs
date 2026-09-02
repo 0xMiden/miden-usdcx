@@ -21,9 +21,9 @@
 //! one is `^0x[a-fA-F0-9]+$`. That asymmetry is the OpenAPI's; this module reproduces it rather
 //! than tidying it up.
 //!
-//! Nor is *semantic* validation here. Whether a returned burn intent matches the burn note and the
-//! request-owned redemption terms is the pre-signing compare — a schema-valid response can still be
-//! a lie, and catching that is a different job from catching a malformed one.
+//! Nor is *semantic* validation here. Whether a returned burn intent matches the burn note's
+//! amount/domain/recipient is the pre-signing compare — a schema-valid
+//! response can still be a lie, and catching that is a different job from catching a malformed one.
 
 use core::fmt;
 

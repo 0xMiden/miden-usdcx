@@ -112,7 +112,6 @@ pub fn payload() -> BurnPayload {
     }
 }
 
-/// The Miden sender whose DC-6 encoding equals the fixture's returned `hookData.remoteDepositor`.
 pub fn depositor() -> AccountId {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let remote_depositor = decode_hex32(
@@ -338,14 +337,13 @@ pub fn prepare_200_with_batches(n: usize) -> Value {
 /// The prepare body whose SOLE prepared batch carries the matching `burnIntents[0]` repeated `n`
 /// times — the **single-batch fan-in**.
 ///
-/// This is the shape that makes the batch count a liar. Every repeat matches the burn and
-/// request-owned terms, so the gate compares each one and passes each one; the batch's
-/// `messageHashToSign` covers the whole intent SET, so one signature authorizes all of them; and
-/// there is still exactly ONE batch, so a gate that counts batches sees nothing wrong. One burn
-/// would fund `n` releases.
+/// This is the shape that makes the batch count a liar. Every repeat matches the burn payload, so
+/// the gate compares each one and passes each one; the batch's `messageHashToSign` covers the whole
+/// intent SET, so one signature authorizes all of them; and there is still exactly ONE batch, so a
+/// gate that counts batches sees nothing wrong. One burn would fund `n` releases.
 ///
 /// `n = 0` is the other direction — a batch with no intent at all, whose digest would be bound to
-/// no amount, no domain, no recipient, and no redemption terms.
+/// no amount, no domain and no recipient.
 pub fn prepare_200_with_intents(n: usize) -> Value {
     let mut body = prepare_200();
     let intent = body["batches"][0]["burnIntents"][0].clone();
@@ -361,8 +359,6 @@ pub fn prepare_200_with_spec_field(field: &str, value: Value) -> Value {
     body
 }
 
-/// The prepare body with one returned intent field replaced. `path` is relative to
-/// `burnIntents[0]`, so it can address `maxFee`, `spec.salt`, or nested `spec.hookData.*` fields.
 pub fn prepare_200_with_intent_field(path: &[&str], value: Value) -> Value {
     let mut body = prepare_200();
     let mut cursor = &mut body["batches"][0]["burnIntents"][0];

@@ -145,8 +145,6 @@ pub fn payload_matching_fixture() -> BurnPayload {
     }
 }
 
-/// The 200 fixture's remote depositor decoded back to the Miden account id that discovery would
-/// have read from `metadata.sender`.
 pub fn depositor_matching_fixture() -> AccountId {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let remote_depositor = decode_hex32(

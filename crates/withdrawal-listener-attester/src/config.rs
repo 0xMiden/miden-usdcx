@@ -143,10 +143,7 @@ pub struct ListenerConfig {
     #[builder(default = 0)]
     miden_domain: u32,
 
-    /// The largest `burnIntents[].maxFee` this deployment will sign for a withdrawal, in the same
-    /// smallest-unit scale as the burn payload amount. The default is zero: unless an operator
-    /// configures an explicit fee ceiling, a response that would let Circle take a withdrawal fee is
-    /// refused before signing.
+    /// Maximum returned `burnIntents[].maxFee` this deployment will sign for, in smallest units.
     #[builder(default = AssetAmount::ZERO)]
     #[serde(default = "default_max_withdrawal_fee", with = "asset_amount_u64")]
     max_withdrawal_fee: AssetAmount,
@@ -358,8 +355,7 @@ impl ListenerConfig {
         self.miden_domain
     }
 
-    /// The configured withdrawal fee ceiling, in smallest units. The default is zero, so fee-bearing
-    /// responses are refused unless a deployment explicitly opts into a non-zero ceiling.
+    /// Maximum returned `burnIntents[].maxFee` this deployment will sign for, in smallest units.
     pub fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
     }
@@ -417,8 +413,6 @@ mod account_id_hex {
     }
 }
 
-/// Serde for [`AssetAmount`] as a config-file `u64`. The type owns the upper bound, so an operator
-/// cannot load a fee ceiling that the burn payload amount type itself cannot represent.
 mod asset_amount_u64 {
     use super::*;
 

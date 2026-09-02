@@ -257,9 +257,9 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 // THE DO-NOT-SIGN ABORT — validation gates signing
 // ================================================================================================
 
-/// **The mandatory negative.** Circle returns a spec that does not match the burn or request-owned
-/// terms → the run aborts with the exact `ValidationMismatch`, **the signer is invoked zero
-/// times**, and **no `POST /v1/withdraw` is issued**.
+/// **The mandatory negative.** Circle returns a spec that does not match the burn payload → the run
+/// aborts with the exact `ValidationMismatch`, **the signer is invoked zero times**, and **no
+/// `POST /v1/withdraw` is issued**.
 ///
 /// Each mismatch class is its own case (Circle's documentation lists them separately), and the
 /// missing/empty digest is here too: a non-signable hash must be refused BEFORE signing, not handed
@@ -315,9 +315,7 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
     assert_eq!(withdraw_posts(&mock), 0, "and nothing was submitted");
 }
 
-/// The fields not carried directly by the four-field burn attachment are still bound before
-/// signing: the listener derives the expected neutral terms from the discovered burn plus config,
-/// and any divergence aborts at B5.
+/// Schema-valid edits to redemption terms must reject before signing.
 #[rstest]
 #[case::max_fee(&["maxFee"], json!("1001"), "maxFee")]
 #[case::salt(
@@ -546,13 +544,8 @@ async fn an_empty_prepare_response_is_refused_before_the_signer() {
 /// **Fan-in — the one the batch count cannot see.** Circle answers a one-burn prepare with ONE
 /// batch carrying the matching burn intent `n` times.
 ///
-/// Every check upstream of this passes, and that is exactly why it needs its own gate. Each
-/// repeated intent matches the burn and request-owned terms, so the field-by-field compare clears
-/// every one of them; the batch's `messageHashToSign` covers the whole intent SET, so a single
-/// attester signature authorizes all `n`; the quorum is a perfectly well-formed exactly-2; every
-/// signer is a registered attester; and `batches.len()` is still 1, so a gate that counts BATCHES
-/// sees nothing wrong at all. The result would be one discovered burn funding `n` releases — the
-/// fan-in the evidence package's single `burnTxId` cannot even describe.
+/// Every check upstream of this passes, so the explicit intent-count gate must reject before
+/// signing.
 ///
 /// So the cardinality rule is one burn ↔ one payload ↔ one batch ↔ **one intent**, and it is
 /// enforced before the signer: a signature over a set this burn never asked for is the artifact

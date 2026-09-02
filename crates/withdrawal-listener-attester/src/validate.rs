@@ -9,9 +9,8 @@
 //! `burnIntents[]`/`encoded`/`messageHashToSign`; the partner VALIDATES, then signs. [Local binary
 //! reconstruction of the `BurnIntent` is optional validation only, and it is deliberately absent
 //! here — building it as the required path is the trap this module exists to avoid.]
-//! [`validate_returned`] compares Circle's returned `burnIntents[]` against the discovered burn
-//! and the canonical request terms field by field, for EVERY batch, and only a full match may
-//! proceed to signing.
+//! [`validate_returned`] compares Circle's returned `burnIntents[]` against the discovered burn and
+//! request terms before signing.
 //!
 //! # The signer is reachable ONLY behind validation (structural, not by convention)
 //!
@@ -30,9 +29,7 @@
 //!   bytes; whether it equals the Gateway pipeline's final digest is Circle's to confirm.
 //!   Parameterized, never resolved here.
 //! * **`sourceDepositor`** — Circle-assigned and appears on the RETURNED `TransferSpec` only; the
-//!   partner never supplies it and the gate never compares it against the discovered burn. The
-//!   request-owned depositor in `hookData.remoteDepositor` is different: it is checked against the
-//!   discovered note's `metadata.sender`.
+//!   partner never supplies it and the gate never compares it against the discovered burn.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteMetadata;
@@ -203,27 +200,8 @@ impl ValidatedWithdrawal {
     }
 }
 
-/// The gate: validate Circle's returned data against the discovered burn and the request-owned
-/// redemption terms, field by field, for EVERY batch — and, on a full match, mint the
-/// [`ValidatedWithdrawal`] that clears signing. A mismatch in ANY batch (not just `batches[0]`) is
-/// a hard `Err` that MUST abort before signing.
-///
-/// For each batch, every returned `burnIntents[]` member must match:
-/// * `value` (the amount, in the smallest token unit) == `payload.amount`;
-/// * `destinationDomain` == `payload.dest_domain`;
-/// * `destinationRecipient` == `payload.dest_recipient`.
-/// * `salt` == `payload.salt`;
-/// * `destinationCaller` == zero, because the request omitted `finalDestinationCaller`;
-/// * `maxFee` <= the configured withdrawal-fee ceiling and <= the burn amount;
-/// * `hookData` matches the non-forwarding request terms: Miden remote domain, the discovered
-///   depositor, the configured xUSDC faucet token, zero forwarding contract, and empty forwarding
-///   calldata.
-///
-/// and the batch's `messageHashToSign` must be present and a signable 32-byte digest. A batch with
-/// an EMPTY `burnIntents` array is refused (`EmptyBurnIntents`) — with no `spec` to compare,
-/// clearing it would bind the digest to nothing. The `encoded` binary blob is treated as OPAQUE and
-/// never decoded — the optional local reconstruction is off the critical path (anti-`the
-/// do-not-sign trap`).
+/// The gate: validate every returned intent against the discovered burn and request terms before
+/// minting the [`ValidatedWithdrawal`] that clears signing.
 ///
 /// # Errors
 /// A [`ValidationMismatch`] naming the batch and the field that diverged. On any `Err`, no
@@ -240,16 +218,12 @@ pub fn validate_returned(
 
     let mut digests = Vec::with_capacity(batches.len());
     for (batch, prepared) in batches.iter().enumerate() {
-        // A batch with no burn intents has no spec or terms to compare — clearing it would bind
-        // its digest to no amount/domain/recipient/salt/fee/hook terms and mint a signing token
-        // vacuously.
-        // Refuse it BEFORE the per-intent loop, which would otherwise be skippable straight into Ok.
+        // Refuse empty batches before the per-intent loop, which would otherwise clear vacuously.
         let intents = prepared.burn_intents();
         if intents.is_empty() {
             return Err(ValidationMismatch::EmptyBurnIntents { batch });
         }
-        // Every burn intent in the batch must match the burn and request-owned terms — not merely
-        // the first.
+        // Every burn intent in the batch must match, not merely the first.
         for intent in intents {
             check_intent(batch, intent, burn, cfg)?;
         }
@@ -260,8 +234,6 @@ pub fn validate_returned(
     Ok(ValidatedWithdrawal { digests })
 }
 
-/// Compares one returned `BurnIntent` against the discovered burn and the request-owned redemption
-/// terms, in order.
 fn check_intent(
     batch: usize,
     intent: &BurnIntent,
@@ -273,8 +245,6 @@ fn check_intent(
     check_spec(batch, intent.spec(), burn, cfg)
 }
 
-/// Compares one returned `TransferSpec` against the discovered burn and the neutral request-owned
-/// redemption terms, in order.
 fn check_spec(
     batch: usize,
     spec: &TransferSpec,
@@ -316,8 +286,6 @@ fn check_spec(
         });
     }
 
-    // salt — the prepare request carries the burn payload salt, so the returned signed intent must
-    // carry the same 32 bytes rather than a Circle-generated replacement.
     let salt_matches = decode_hex32(spec.salt()).is_some_and(|bytes| bytes == payload.salt);
     if !salt_matches {
         return Err(ValidationMismatch::Salt {
@@ -327,8 +295,6 @@ fn check_spec(
         });
     }
 
-    // finalDestinationCaller was omitted in the request, which means no caller restriction. Circle
-    // represents that neutral term as bytes32 zero on the returned spec.
     if !hex32_eq(spec.destination_caller(), &ZERO_BYTES32) {
         return Err(ValidationMismatch::DestinationCaller {
             batch,
@@ -342,8 +308,6 @@ fn check_spec(
     Ok(())
 }
 
-/// The request omits `forwardingOptions` and sets `useCircleForwarding = false`, so the returned
-/// hook must stay on the neutral, non-forwarding path.
 fn check_hook_data(
     batch: usize,
     hook: &StructuredHookData,
@@ -403,8 +367,6 @@ fn check_hook_data(
     Ok(())
 }
 
-/// Checks the returned operator-fee cap against the deployment's configured ceiling and against the
-/// amount this burn actually locked on Miden.
 fn check_max_fee(
     batch: usize,
     max_fee: &str,

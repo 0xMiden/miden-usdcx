@@ -1,4 +1,4 @@
-//! Signing-key boundary used during startup.
+//! Signing-key boundary reserved for the later signing stage.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -39,10 +39,10 @@ pub enum RunError {
     /// softened: a `500`, an unreadable body, or an exhausted poll is not a withdrawal.
     Circle(ListenerError),
 
-    /// **THE gate** — Circle's returned data does not match the burn payload field-by-field. This
-    /// is the DO-NOT-SIGN abort: no [`ValidatedWithdrawal`](crate::validate::ValidatedWithdrawal)
-    /// was minted, so no signature over the mismatching data can exist and no submission can
-    /// follow.
+    /// **THE gate** — Circle's returned data does not match the discovered burn and request-owned
+    /// redemption terms field-by-field. This is the DO-NOT-SIGN abort: no
+    /// [`ValidatedWithdrawal`](crate::validate::ValidatedWithdrawal) was minted, so no signature
+    /// over the mismatching data can exist and no submission can follow.
     Validation(ValidationMismatch),
 
     /// **The gate** — Circle returned a number of prepared batches other than
@@ -56,10 +56,10 @@ pub enum RunError {
     /// of [`Self::BatchCardinality`] because it is the case a batch count cannot see.
     ///
     /// `burnIntents` is `1..=10` on the wire, and the gate clears every intent that matches the
-    /// burn payload — so repeats of the burn's own intent all pass. One digest covers the whole
-    /// set, so one signature would authorize every member: one burn, N releases. An operator
-    /// reading this variant is being told Circle prepared a SET for a single-burn request, which is
-    /// a different conversation from "Circle prepared several batches".
+    /// burn and request-owned terms — so repeats of the burn's own intent all pass. One digest
+    /// covers the whole set, so one signature would authorize every member: one burn, N releases.
+    /// An operator reading this variant is being told Circle prepared a SET for a single-burn
+    /// request, which is a different conversation from "Circle prepared several batches".
     IntentCardinality { returned: usize },
 
     /// **Signing** — the signer refused a cleared digest.

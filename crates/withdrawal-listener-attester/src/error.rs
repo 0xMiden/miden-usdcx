@@ -522,11 +522,11 @@ pub enum ValidationMismatch {
     /// prepare response is not a match of any withdrawal. Refused rather than signed vacuously.
     NoBatches,
 
-    /// A batch carried an EMPTY `burnIntents` array — no `spec` to compare against the payload, so
-    /// its `messageHashToSign` would be bound to no amount/domain/recipient. Circle's schema
-    /// requires `burnIntents` be non-empty (`minItems: 1`); an empty list is refused here rather
-    /// than allowed to mint a signing token vacuously (the `check_spec` loop must not be skippable
-    /// into `Ok`).
+    /// A batch carried an EMPTY `burnIntents` array — no `spec` or terms to compare, so its
+    /// `messageHashToSign` would be bound to no amount/domain/recipient/salt/fee/hook terms.
+    /// Circle's schema requires `burnIntents` be non-empty (`minItems: 1`); an empty list is
+    /// refused here rather than allowed to mint a signing token vacuously (the `check_spec` loop
+    /// must not be skippable into `Ok`).
     EmptyBurnIntents { batch: usize },
 
     /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not
@@ -547,6 +547,37 @@ pub enum ValidationMismatch {
     /// A returned `destinationRecipient` does not equal the burn-note payload's `destRecipient`.
     DestinationRecipient {
         batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// A returned `salt` does not equal the burn-note payload's `salt`.
+    Salt {
+        batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// A returned `burnIntents[].maxFee` exceeds the configured withdrawal fee ceiling or the burn
+    /// amount itself.
+    MaxFee {
+        batch: usize,
+        ceiling: u64,
+        amount: u64,
+        returned: String,
+    },
+
+    /// A returned `destinationCaller` is not the zero caller the neutral request implies.
+    DestinationCaller {
+        batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// A field inside returned `hookData` diverges from the neutral, non-forwarding request terms.
+    HookData {
+        batch: usize,
+        field: &'static str,
         expected: String,
         returned: String,
     },
@@ -592,6 +623,40 @@ impl fmt::Display for ValidationMismatch {
             } => write!(
                 f,
                 "batch {batch}: returned destination recipient `{returned}` does not match the burn payload recipient `{expected}`"
+            ),
+            Self::Salt {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned salt `{returned}` does not match the burn payload salt `{expected}`"
+            ),
+            Self::MaxFee {
+                batch,
+                ceiling,
+                amount,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned max fee `{returned}` exceeds the configured withdrawal fee ceiling {ceiling} or burn amount {amount}"
+            ),
+            Self::DestinationCaller {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned destination caller `{returned}` does not match the neutral caller `{expected}`"
+            ),
+            Self::HookData {
+                batch,
+                field,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned hookData.{field} `{returned}` does not match `{expected}`"
             ),
             Self::MissingMessageHash { batch } => {
                 write!(f, "batch {batch}: response is missing a message hash to sign")

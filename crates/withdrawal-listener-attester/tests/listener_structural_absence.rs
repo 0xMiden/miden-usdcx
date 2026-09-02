@@ -101,9 +101,9 @@ fn the_orchestration_never_constructs_a_batch_beside_the_quorum() {
 /// **The batch builder takes ONE burn intent, not a vector.**
 ///
 /// The wire's `burnIntents` is `1..=10`, and the fan-in it permits is invisible to every check
-/// upstream: a batch carrying the burn's own intent twice passes the field-by-field compare on both
-/// copies, and the batch's single digest covers both, so one signature authorizes two releases of
-/// one burn.
+/// upstream: a batch carrying the burn's own intent twice passes the payload-and-terms compare on
+/// both copies, and the batch's single digest covers both, so one signature authorizes two releases
+/// of one burn.
 ///
 /// `listener_orchestration.rs` proves the runtime gate refuses that response. This pins the other
 /// half — that even with the gate removed, a set could not be *expressed* on the wire, because the
@@ -256,6 +256,10 @@ fn the_orchestration_passes_the_discovered_burn_whole() {
     assert!(
         source.contains("build_prepare_request(&burn,"),
         "B4 is built from the one DiscoveredBurn B3 minted"
+    );
+    assert!(
+        source.contains("validate_returned(&response, &burn,"),
+        "B5 validates the same DiscoveredBurn B4 used to build the request"
     );
     assert!(
         !source.contains("burn.depositor()"),

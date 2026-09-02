@@ -110,10 +110,11 @@ pub const ONE_BATCH_PER_BURN: usize = 1;
 /// **This is the half of the cardinality rule the batch count cannot see, and it is the dangerous
 /// half.** `WithdrawBatch.burnIntents` is `1..=10` on the wire — Circle's schema calls it "either a
 /// single burn intent or a burn intent set" — so one batch can carry a SET. Nothing upstream
-/// refuses one: B5's field-by-field compare clears every intent that matches the burn payload, and
-/// repeats of the burn's own intent all match it. The batch's `messageHashToSign` then covers the
-/// whole set, so a single attester signature authorizes every member; the quorum is a well-formed
-/// exactly-2; every signer is a registered attester; and `batches.len` is still 1.
+/// refuses one: B5's field-by-field compare clears every intent that matches the burn and the
+/// request-owned terms, and repeats of the burn's own intent all match. The batch's
+/// `messageHashToSign` then covers the whole set, so a single attester signature authorizes every
+/// member; the quorum is a well-formed exactly-2; every signer is a registered attester; and
+/// `batches.len` is still 1.
 ///
 /// The result would be one discovered burn funding N releases — a fan-in the burn evidence cannot
 /// even describe, since it resolves ONE `burnTxId` from ONE note. So the rule is one burn ↔ one
@@ -471,7 +472,7 @@ pub async fn run_once(
 
     // ---- B5 — ask Circle, then VALIDATE. This is the gate. -------------------------------------
     let response = prepare(ctx.circle, &request).await?;
-    let validated = validate_returned(&response, burn.payload(), ctx.config).inspect_err(|_| {
+    let validated = validate_returned(&response, &burn, ctx.config).inspect_err(|_| {
         // The DO-NOT-SIGN abort. No ValidatedWithdrawal exists past this point on this
         // branch, so the signer below is not reachable — this event RECORDS the refusal, it does not
         // cause it.
@@ -493,8 +494,8 @@ pub async fn run_once(
 
     // …↔ one INTENT — the half of the same rule a batch count is blind to, and the dangerous half.
     // That one batch may carry a burn intent SET (`burnIntents` is 1..=10 on the wire), and B5 has
-    // ALREADY cleared every member of it: each repeat of the burn's own intent matches the burn's own
-    // payload, so the field-by-field compare passes on all of them. The batch's single
+    // ALREADY cleared every member of it: each repeat of the burn's own intent matches the burn and
+    // request-owned terms, so the field-by-field compare passes on all of them. The batch's single
     // `messageHashToSign` then covers the whole set, so one attester signature authorizes every
     // member — one burn funding N releases, which the burn evidence cannot even describe (it
     // resolves ONE burnTxId from ONE note).

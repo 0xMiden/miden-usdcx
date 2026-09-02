@@ -206,7 +206,7 @@ pub fn build_prepare_request(
 ///
 /// The wire's `burnIntents` is `1..=10` — "either a single burn intent or a burn intent set". This
 /// builder deliberately cannot express the set, and the reason is the fan-in the batch count is
-/// blind to: a batch carrying the same burn's intent twice passes the field-by-field compare on
+/// blind to: a batch carrying the same burn's intent twice passes the payload-and-terms compare on
 /// both copies, and the batch's single `messageHashToSign` covers both, so one attester signature
 /// would authorize two releases of one burn. The burn evidence cannot even describe that — it
 /// resolves ONE `burnTxId` from ONE note.

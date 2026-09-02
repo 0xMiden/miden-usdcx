@@ -35,8 +35,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteId;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::attester::{
     address_of, sign, Address, AttesterAllowlist, SecretKey, Signature65,
 };
@@ -106,8 +108,34 @@ pub fn payload() -> BurnPayload {
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
-        salt: [0x5a; 32],
+        salt: decode_hex32(spec["salt"].as_str().unwrap()),
     }
+}
+
+/// The Miden sender whose DC-6 encoding equals the fixture's returned `hookData.remoteDepositor`.
+pub fn depositor() -> AccountId {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let remote_depositor = decode_hex32(
+        fixture["batches"][0]["burnIntents"][0]["spec"]["hookData"]["remoteDepositor"]
+            .as_str()
+            .unwrap(),
+    );
+    let eth_address = remote_depositor[12..]
+        .try_into()
+        .expect("bytes32-embedded Ethereum address is 20 bytes");
+    EthEmbeddedAccountId::new(eth_address)
+        .expect("fixture remoteDepositor is an embedded account id")
+        .into_account_id()
+}
+
+pub fn fixture_max_fee() -> AssetAmount {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let max_fee: u64 = fixture["batches"][0]["burnIntents"][0]["maxFee"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    AssetAmount::new(max_fee).expect("fixture maxFee is an asset amount")
 }
 
 /// The evidence `burnTxId` the unit evidence port resolves for this burn — the value the batch is
@@ -131,7 +159,7 @@ pub fn discovered() -> DiscoveredNote {
 /// None`) — the two discovery rejects that must stop the flow before Circle is touched.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
-        let id = evidence_support::other_account_id();
+        let id = depositor();
         let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
         DiscoveredDetails::from_raw_sender(p.encode(), prefix, suffix)
     });
@@ -178,6 +206,7 @@ pub fn config_allowing(attesters: &[u8]) -> ListenerConfig {
     ListenerConfig::builder()
         .burn_tag(BURN_TAG)
         .miden_domain(MIDEN_DOMAIN)
+        .max_withdrawal_fee(fixture_max_fee())
         .attester_allowlist(AttesterAllowlist::new(
             attesters.iter().copied().map(address),
         ))
@@ -309,13 +338,14 @@ pub fn prepare_200_with_batches(n: usize) -> Value {
 /// The prepare body whose SOLE prepared batch carries the matching `burnIntents[0]` repeated `n`
 /// times — the **single-batch fan-in**.
 ///
-/// This is the shape that makes the batch count a liar. Every repeat matches the burn payload, so
-/// the gate compares each one and passes each one; the batch's `messageHashToSign` covers the whole
-/// intent SET, so one signature authorizes all of them; and there is still exactly ONE batch, so a
-/// gate that counts batches sees nothing wrong. One burn would fund `n` releases.
+/// This is the shape that makes the batch count a liar. Every repeat matches the burn and
+/// request-owned terms, so the gate compares each one and passes each one; the batch's
+/// `messageHashToSign` covers the whole intent SET, so one signature authorizes all of them; and
+/// there is still exactly ONE batch, so a gate that counts batches sees nothing wrong. One burn
+/// would fund `n` releases.
 ///
 /// `n = 0` is the other direction — a batch with no intent at all, whose digest would be bound to
-/// no amount, no domain and no recipient.
+/// no amount, no domain, no recipient, and no redemption terms.
 pub fn prepare_200_with_intents(n: usize) -> Value {
     let mut body = prepare_200();
     let intent = body["batches"][0]["burnIntents"][0].clone();
@@ -328,6 +358,21 @@ pub fn prepare_200_with_intents(n: usize) -> Value {
 pub fn prepare_200_with_spec_field(field: &str, value: Value) -> Value {
     let mut body = prepare_200();
     body["batches"][0]["burnIntents"][0]["spec"][field] = value;
+    body
+}
+
+/// The prepare body with one returned intent field replaced. `path` is relative to
+/// `burnIntents[0]`, so it can address `maxFee`, `spec.salt`, or nested `spec.hookData.*` fields.
+pub fn prepare_200_with_intent_field(path: &[&str], value: Value) -> Value {
+    let mut body = prepare_200();
+    let mut cursor = &mut body["batches"][0]["burnIntents"][0];
+    for key in &path[..path.len() - 1] {
+        cursor = cursor
+            .get_mut(*key)
+            .unwrap_or_else(|| panic!("fixture intent contains `{key}`"));
+    }
+    let leaf = path.last().expect("a non-empty path");
+    cursor[*leaf] = value;
     body
 }
 

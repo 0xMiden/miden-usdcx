@@ -152,8 +152,7 @@ impl TransferSpec {
         self.source_depositor.as_str()
     }
 
-    /// Compared against the burn note's `destRecipient` by the pre-signing compare against the burn
-    /// note.
+    /// Compared against the burn note's `destRecipient` by the pre-signing compare.
     pub fn destination_recipient(&self) -> &str {
         self.destination_recipient.as_str()
     }
@@ -166,7 +165,7 @@ impl TransferSpec {
         self.destination_caller.as_str()
     }
 
-    /// Compared against the burn note's `amount` by the pre-signing compare against the burn note.
+    /// Compared against the burn note's `amount` by the pre-signing compare.
     pub fn value(&self) -> &str {
         self.value.as_str()
     }

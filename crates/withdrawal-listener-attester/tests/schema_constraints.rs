@@ -13,7 +13,7 @@
 //! *request-side* `burnTxId` are typed `string` with no pattern, so they stay `String`.
 //!
 //! What is emphatically NOT here is *semantic* validation — "does this burn intent match the burn
-//! note's amount/domain/recipient". That is the pre-signing gate's job, and
+//! note and request-owned redemption terms". That is the pre-signing gate's job, and
 //! `prepare_withdrawal_validation_mismatch.json` is schema-valid precisely so that the mismatch
 //! must be caught there rather than here.
 //!

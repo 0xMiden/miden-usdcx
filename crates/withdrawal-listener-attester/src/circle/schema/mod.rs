@@ -55,10 +55,10 @@
 //! Inventing a regex is the same defect as inventing a field.
 //!
 //! **Decoded ≠ validated.** These types carry what Circle *said*, in a well-formed shape. The
-//! field-by-field compare against the burn-note payload — `amount`, `destinationDomain`,
-//! `destinationRecipient` — is the pre-signing compare (Circle's returned spec must match the burn
-//! note field-by-field before anything is signed, Circle's documentation) and lands with
-//! `validate.rs`; nothing here authorizes a signature. A schema-valid response can still be a lie.
+//! field-by-field compare against the burn note and the request-owned redemption terms is the
+//! pre-signing compare (Circle's returned spec must match the burn before anything is signed,
+//! Circle's documentation) and lands with `validate.rs`; nothing here authorizes a signature. A
+//! schema-valid response can still be a lie.
 
 pub mod intents;
 pub mod prepare;

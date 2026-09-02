@@ -4,19 +4,63 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CircleError {
+    #[error("Circle API is unavailable")]
+    Unavailable,
+    #[error("Circle request failed")]
+    Transport(#[source] reqwest::Error),
+    #[error("Circle returned HTTP {0}")]
+    UnexpectedStatus(StatusCode),
+}
 
 #[derive(Debug)]
-pub struct CircleError;
+pub struct RawResponse {
+    status: StatusCode,
+}
 
-#[derive(Debug)]
-pub struct RawResponse;
+impl RawResponse {
+    pub fn new(status: StatusCode) -> Self {
+        Self { status }
+    }
+}
 
 pub trait HttpTransport: Send + Sync {
     fn execute(
         &self,
         request: reqwest::Request,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + '_>>;
+}
+
+pub struct ReqwestTransport {
+    client: reqwest::Client,
+}
+
+impl ReqwestTransport {
+    pub fn new() -> Result<Self, CircleError> {
+        reqwest::Client::builder()
+            .build()
+            .map(|client| Self { client })
+            .map_err(CircleError::Transport)
+    }
+}
+
+impl HttpTransport for ReqwestTransport {
+    fn execute(
+        &self,
+        request: reqwest::Request,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + '_>> {
+        Box::pin(async move {
+            self.client
+                .execute(request)
+                .await
+                .map(|response| RawResponse::new(response.status()))
+                .map_err(CircleError::Transport)
+        })
+    }
 }
 
 #[allow(dead_code)]
@@ -26,17 +70,32 @@ pub(crate) struct CircleClient {
     transport: Box<dyn HttpTransport>,
 }
 
-#[allow(dead_code, unused_variables)]
 impl CircleClient {
     pub(crate) fn new(
         base_url: Url,
         request_timeout: Duration,
         transport: Box<dyn HttpTransport>,
     ) -> Self {
-        todo!()
+        Self {
+            base_url,
+            request_timeout,
+            transport,
+        }
     }
 
     pub(crate) async fn check_connection(&self) -> Result<(), CircleError> {
-        todo!()
+        let url = self
+            .base_url
+            .join("/v1/info")
+            .map_err(|_| CircleError::Unavailable)?;
+        let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        let response = self.transport.execute(request).await?;
+
+        if response.status == StatusCode::OK {
+            Ok(())
+        } else {
+            Err(CircleError::UnexpectedStatus(response.status))
+        }
     }
 }

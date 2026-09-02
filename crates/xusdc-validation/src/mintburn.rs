@@ -404,7 +404,9 @@ pub fn mint_note_with_fee<R: FeltRng>(
         intent_felts.push(Felt::from(0u32));
     }
     let intent_words: Vec<Word> = intent_felts
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| Word::new([c[0], c[1], c[2], c[3]]))
         .collect();
     let intent_attachment = NoteAttachment::with_words(
@@ -425,7 +427,9 @@ pub fn mint_note_with_fee<R: FeltRng>(
     felts.extend(attestation.signature().to_felts());
     felts.extend([Felt::from(0u32); 3]);
     let words: Vec<Word> = felts
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| Word::new([c[0], c[1], c[2], c[3]]))
         .collect();
     debug_assert_eq!(words.len(), XUSDC_MINT_ATTESTATION_NUM_WORDS);

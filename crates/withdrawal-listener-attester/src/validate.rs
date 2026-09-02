@@ -218,7 +218,7 @@ pub fn validate_returned(
 
     let mut digests = Vec::with_capacity(batches.len());
     for (batch, prepared) in batches.iter().enumerate() {
-        // Refuse empty batches before the per-intent loop, which would otherwise clear vacuously.
+        // Empty batches are invalid.
         let intents = prepared.burn_intents();
         if intents.is_empty() {
             return Err(ValidationMismatch::EmptyBurnIntents { batch });

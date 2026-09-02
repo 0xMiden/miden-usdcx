@@ -13,8 +13,6 @@ use xreserve_deposit_relayer_lite::miden::production_miden_client;
 use xreserve_deposit_relayer_lite::Relayer;
 
 fn main() -> Result<()> {
-    // One indented tree per page (process_next_page is a detached root — see its doc comment),
-    // not a flat line stream. Always on; RUST_LOG filters as usual.
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_forest::ForestLayer::default())

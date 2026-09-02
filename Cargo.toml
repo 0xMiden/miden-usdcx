@@ -71,10 +71,10 @@ rand = "0.10"
 # `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
 # built and percent-encoded — sits behind its own `query` feature. `default-features = false`
 # keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
-# body codec. The pinned
-# cargo cache carries reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate
-# resolves).
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+# body codec, and `blocking` the synchronous client the relayer-lite's sequential loop calls (it
+# runs its own runtime thread, so no async surfaces in that crate). The pinned cargo cache carries
+# reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate resolves.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "blocking"] }
 # The relayer's idempotency seam (`idempotency::IdempotencyStore`) — the submitted-nonce log + the
 # per-remote-domain `Link` cursor that must survive a restart. SQLite is the persistence choice; it
 # is pinned here, not in the crate, because the withdrawal listener needs the same durable-cursor

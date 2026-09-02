@@ -9,6 +9,7 @@
 //! No authentication is sent because Circle has not documented an authentication scheme yet.
 
 use std::fmt;
+use std::io::Read;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -17,8 +18,7 @@ use reqwest::Url;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 
-/// Response-size ceiling, so a runaway body cannot exhaust memory.
-const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+use crate::store::CircleCursor;
 
 /// The number of attestations requested per page, within Circle's documented `pageSize` range of
 /// 1 through 1000.
@@ -86,8 +86,39 @@ struct ListResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub attestations: Vec<Attestation>,
-    /// The `pageAfter` token for the next page, or `None` at the end of the feed.
-    pub next: Option<String>,
+    /// The cursor for the next page, or `None` at the end of the feed.
+    pub next: Option<CircleCursor>,
+}
+
+impl Page {
+    /// Response-size ceiling, so a runaway body cannot exhaust memory.
+    const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+    /// Decodes one successful Circle response into a page.
+    ///
+    /// # Errors
+    ///
+    /// - The body does not match Circle's attestation schema.
+    /// - A present `Link` header is malformed.
+    pub fn decode(body: &[u8], link: Option<&str>) -> Result<Self> {
+        let list: ListResponse =
+            serde_json::from_slice(body).context("decoding the circle attestation page")?;
+        let next = match link {
+            // An absent `Link` header is the documented final page.
+            None => None,
+            Some(header) => parse_next_link(header)?,
+        };
+
+        Ok(Self {
+            attestations: list.attestations,
+            next: next.map(CircleCursor::new),
+        })
+    }
+
+    /// Returns the cursor for the next page, or `None` when the feed is caught up.
+    pub fn next_cursor(&self) -> Option<&CircleCursor> {
+        self.next.as_ref()
+    }
 }
 
 /// The Circle-facing HTTP client.
@@ -95,7 +126,7 @@ pub struct Page {
 pub struct CircleClient {
     base_url: Url,
     page_size: PageSize,
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
 }
 
 impl CircleClient {
@@ -110,7 +141,7 @@ impl CircleClient {
             !request_timeout.is_zero(),
             "request timeout must be greater than zero"
         );
-        let client = reqwest::Client::builder()
+        let client = reqwest::blocking::Client::builder()
             .timeout(request_timeout)
             .build()
             .context("building the circle http client")?;
@@ -122,22 +153,26 @@ impl CircleClient {
         })
     }
 
-    /// Fetches the page after `page_after`, or the first page when it is `None`.
+    /// Fetches the page after `cursor`, or the first page when it is `None`.
     ///
     /// # Errors
     ///
     /// - The request fails or times out.
+    /// - Circle answers with a non-success status.
     /// - The response exceeds the size ceiling.
-    /// - The response does not decode as a page (see [`decode_page`]).
-    pub async fn fetch_page(&self, remote_domain: u32, page_after: Option<&str>) -> Result<Page> {
-        let url = build_page_url(&self.base_url, remote_domain, self.page_size, page_after);
-        let mut response = self
+    /// - The response does not decode as a page (see [`Page::decode`]).
+    pub fn fetch_page(&self, remote_domain: u32, cursor: Option<&CircleCursor>) -> Result<Page> {
+        let response = self
             .client
-            .get(url)
+            .get(self.page_url(remote_domain, cursor))
             .send()
-            .await
             .context("the circle request failed")?;
-        let status = response.status().as_u16();
+        ensure!(
+            response.status().is_success(),
+            "circle answered {} for the attestation page",
+            response.status()
+        );
+
         let link = response
             .headers()
             .get(reqwest::header::LINK)
@@ -146,76 +181,44 @@ impl CircleClient {
             .context("decoding the circle Link header")?
             .map(str::to_owned);
 
-        // Accumulate with a ceiling rather than `bytes()`: a runaway body must not be buffered in
-        // full before it is rejected.
+        // Read one byte past the ceiling rather than `bytes()`: a runaway body must not be
+        // buffered in full before it is rejected.
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .context("reading the circle response")?
-        {
-            ensure!(
-                body.len() + chunk.len() <= MAX_RESPONSE_BYTES,
-                "the circle response exceeded the {MAX_RESPONSE_BYTES}-byte ceiling"
-            );
-            body.extend_from_slice(&chunk);
+        response
+            .take(Page::MAX_RESPONSE_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .context("reading the circle response")?;
+        ensure!(
+            body.len() <= Page::MAX_RESPONSE_BYTES,
+            "the circle response exceeded the {}-byte ceiling",
+            Page::MAX_RESPONSE_BYTES
+        );
+
+        Page::decode(&body, link.as_deref())
+    }
+
+    /// The URL of one attestation page.
+    fn page_url(&self, remote_domain: u32, cursor: Option<&CircleCursor>) -> Url {
+        let mut url = self.base_url.clone();
+        let path = format!(
+            "{}/v1/remote-domains/{remote_domain}/attestations",
+            self.base_url.path().trim_end_matches('/')
+        );
+        url.set_path(&path);
+        url.set_query(None);
+        url.set_fragment(None);
+
+        url.query_pairs_mut()
+            .append_pair("pageSize", &self.page_size.to_string());
+        // `append_pair` percent-encodes the opaque cursor, which may carry base64's `+`, `/`, and
+        // `=`.
+        if let Some(cursor) = cursor {
+            url.query_pairs_mut()
+                .append_pair("pageAfter", cursor.as_str());
         }
 
-        decode_page(status, &body, link.as_deref())
+        url
     }
-}
-
-/// Builds the URL for one Circle attestation page.
-pub fn build_page_url(
-    base_url: &Url,
-    remote_domain: u32,
-    page_size: PageSize,
-    page_after: Option<&str>,
-) -> Url {
-    let mut url = base_url.clone();
-    let path = format!(
-        "{}/v1/remote-domains/{remote_domain}/attestations",
-        base_url.path().trim_end_matches('/')
-    );
-    url.set_path(&path);
-    url.set_query(None);
-    url.set_fragment(None);
-
-    url.query_pairs_mut()
-        .append_pair("pageSize", &page_size.to_string());
-    // `append_pair` percent-encodes the opaque cursor, which may carry base64's `+`, `/`, and `=`.
-    if let Some(cursor) = page_after {
-        url.query_pairs_mut().append_pair("pageAfter", cursor);
-    }
-
-    url
-}
-
-/// Decodes one Circle response into a feed page.
-///
-/// # Errors
-///
-/// - Circle returns a status other than 200.
-/// - The response body does not match Circle's attestation schema.
-/// - A present `Link` header is malformed.
-pub fn decode_page(status: u16, body: &[u8], link: Option<&str>) -> Result<Page> {
-    ensure!(
-        status == 200,
-        "circle answered {status} for the attestation page"
-    );
-
-    let list: ListResponse =
-        serde_json::from_slice(body).context("decoding the circle attestation page")?;
-    let next = match link {
-        // An absent `Link` header is the documented final page.
-        None => None,
-        Some(header) => parse_next_link(header)?,
-    };
-
-    Ok(Page {
-        attestations: list.attestations,
-        next,
-    })
 }
 
 /// Extracts the `pageAfter` token of the `rel="next"` relation from a `Link` header.
@@ -254,11 +257,24 @@ fn hex_array<'de, D: Deserializer<'de>, const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_page_url, decode_page, Attestation, PageSize};
+    use std::time::Duration;
+
+    use super::{Attestation, CircleClient, Page, PageSize};
+    use crate::store::CircleCursor;
 
     /// A page size within the documented range.
     fn page_size(value: u16) -> PageSize {
         PageSize::try_from(value).unwrap()
+    }
+
+    /// A client over a placeholder base URL; nothing here sends a request.
+    fn client(page_size: u16) -> CircleClient {
+        CircleClient::new(
+            "https://circle.test".parse().unwrap(),
+            self::page_size(page_size),
+            Duration::from_secs(1),
+        )
+        .unwrap()
     }
 
     /// A syntactically valid wire attestation whose fields are arbitrary bytes.
@@ -309,8 +325,8 @@ mod tests {
     /// The request is the documented endpoint carrying only `pageSize` and `pageAfter`.
     #[test]
     fn the_request_names_the_endpoint_and_its_two_parameters() {
-        let base_url = "https://circle.test".parse().unwrap();
-        let url = build_page_url(&base_url, 7, page_size(250), Some("the-cursor"));
+        let cursor = CircleCursor::new("the-cursor");
+        let url = client(250).page_url(7, Some(&cursor));
 
         assert_eq!(
             url.as_str(),
@@ -321,8 +337,8 @@ mod tests {
     /// An opaque cursor with URL-hostile bytes survives request construction percent-encoded.
     #[test]
     fn the_cursor_is_percent_encoded() {
-        let base_url = "https://circle.test".parse().unwrap();
-        let url = build_page_url(&base_url, 7, page_size(100), Some("a+b/c="));
+        let cursor = CircleCursor::new("a+b/c=");
+        let url = client(100).page_url(7, Some(&cursor));
 
         assert!(url.as_str().contains("pageAfter=a%2Bb%2Fc%3D"), "{url}");
     }
@@ -331,7 +347,7 @@ mod tests {
     #[test]
     fn the_attestation_fields_are_decoded_from_hex() {
         let body = page_body(&[attestation(1)]);
-        let page = decode_page(200, &body, None).unwrap();
+        let page = Page::decode(&body, None).unwrap();
 
         assert_eq!(page.attestations, vec![attestation(1)]);
     }
@@ -341,7 +357,7 @@ mod tests {
     fn a_wrong_length_field_is_a_decode_error() {
         let body =
             br#"{"attestations":[{"payload":"0x00","messageHash":"0x00","attestation":"0x00"}]}"#;
-        let error = decode_page(200, body, None).unwrap_err().to_string();
+        let error = Page::decode(body, None).unwrap_err().to_string();
 
         assert!(error.contains("decoding"), "unexpected error: {error}");
     }
@@ -351,9 +367,9 @@ mod tests {
     fn the_next_cursor_comes_from_the_link_header() {
         let body = page_body(&[attestation(1)]);
         let link = next_link("page-2");
-        let page = decode_page(200, &body, Some(&link)).unwrap();
+        let page = Page::decode(&body, Some(&link)).unwrap();
 
-        assert_eq!(page.next.as_deref(), Some("page-2"));
+        assert_eq!(page.next, Some(CircleCursor::new("page-2")));
         assert_eq!(page.attestations.len(), 1);
     }
 
@@ -361,7 +377,7 @@ mod tests {
     #[test]
     fn an_absent_link_header_is_the_final_page() {
         let body = page_body(&[attestation(1)]);
-        let page = decode_page(200, &body, None).unwrap();
+        let page = Page::decode(&body, None).unwrap();
 
         assert_eq!(page.next, None);
     }
@@ -370,27 +386,17 @@ mod tests {
     #[test]
     fn an_unparseable_link_header_is_an_error() {
         let body = page_body(&[attestation(1)]);
-        let error = decode_page(200, &body, Some("this is not a link header"))
+        let error = Page::decode(&body, Some("this is not a link header"))
             .unwrap_err()
             .to_string();
 
         assert!(error.contains("Link header"), "unexpected error: {error}");
     }
 
-    /// A non-200 response fails rather than being decoded as a page.
-    #[test]
-    fn a_non_200_fails_the_fetch() {
-        let error = decode_page(500, br#"{"message":"upstream failure"}"#, None)
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("500"), "unexpected error: {error}");
-    }
-
     /// A body that is not the documented shape is a clear decode error.
     #[test]
     fn schema_drift_is_a_decode_error() {
-        let error = decode_page(200, br#"{"items":[]}"#, None)
+        let error = Page::decode(br#"{"items":[]}"#, None)
             .unwrap_err()
             .to_string();
 

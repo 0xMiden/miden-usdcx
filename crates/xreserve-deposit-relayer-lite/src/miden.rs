@@ -5,8 +5,6 @@
 //! returns an error and the service refuses to poll Circle without submitting transactions.
 
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 
 use anyhow::{bail, Result};
 use miden_protocol::account::AccountId;
@@ -16,18 +14,15 @@ use miden_protocol::transaction::TransactionId;
 /// Submits a page of mint notes to Miden and waits for inclusion on-chain.
 ///
 /// This is the surface the relay loop needs from a Miden client. It is a trait rather than a
-/// concrete type only because the client it will wrap does not exist yet for protocol v0.16.
+/// concrete type only because the client it will wrap does not exist yet for protocol v0.16. The
+/// relay loop is sequential, so the implementation blocks until the transaction is included.
 pub trait MidenClient: fmt::Debug + Send + Sync {
     /// Submits `notes` in one transaction from `sender` and returns its ID after inclusion
     /// on-chain.
     ///
     /// The caller advances the Circle cursor after this method succeeds. Returning before
     /// inclusion could advance the cursor past deposits whose transaction is later dropped.
-    fn submit_notes<'a>(
-        &'a self,
-        sender: AccountId,
-        notes: Vec<Note>,
-    ) -> Pin<Box<dyn Future<Output = Result<TransactionId>> + Send + 'a>>;
+    fn submit_notes(&self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId>;
 }
 
 /// Returns the production Miden client.

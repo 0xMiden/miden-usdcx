@@ -69,12 +69,11 @@ impl Relayer {
     /// - Fetching the Circle page fails.
     /// - Submitting the mint notes fails.
     /// - Persisting the next cursor fails.
-    pub async fn process_next_page(&mut self) -> Result<PageOutcome> {
+    pub fn process_next_page(&mut self) -> Result<PageOutcome> {
         let cursor = self.store.cursor()?;
         let page = self
             .circle
-            .fetch_page(self.config.remote_domain, cursor.as_ref())
-            .await?;
+            .fetch_page(self.config.remote_domain, cursor.as_ref())?;
 
         let notes = self.minter.build_notes(&page.attestations);
 
@@ -85,7 +84,7 @@ impl Relayer {
             );
         } else if !notes.is_empty() {
             let submitted = notes.len();
-            let tx = self.miden.submit_notes(self.minter.sender(), notes).await?;
+            let tx = self.miden.submit_notes(self.minter.sender(), notes)?;
             info!(
                 tx = %tx,
                 fetched = page.attestations.len(),
@@ -108,9 +107,9 @@ impl Relayer {
     /// Additional pages are processed immediately. When the feed is caught up or a page fails,
     /// the loop waits for the polling interval. A failed page leaves the cursor unchanged, so the
     /// next attempt retries the same page.
-    pub async fn run(mut self) -> ! {
+    pub fn run(mut self) -> ! {
         loop {
-            match self.process_next_page().await {
+            match self.process_next_page() {
                 Ok(PageOutcome::MorePages) => continue,
                 Ok(PageOutcome::CaughtUp) => {}
                 Err(error) => warn!(
@@ -118,7 +117,7 @@ impl Relayer {
                     "the page failed; the cursor did not move"
                 ),
             }
-            tokio::time::sleep(self.config.poll_interval).await;
+            std::thread::sleep(self.config.poll_interval);
         }
     }
 }

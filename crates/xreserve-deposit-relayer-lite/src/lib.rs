@@ -40,7 +40,6 @@ impl Relayer {
     /// # Errors
     ///
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
-    /// - The configured identities are invalid (see [`Minter::from_config`]).
     pub fn new(config: Config, miden: Box<dyn MidenClient>) -> Result<Self> {
         Ok(Self {
             circle: CircleClient::new(
@@ -49,7 +48,7 @@ impl Relayer {
                 config.request_timeout,
             )?,
             store: Store::new(config.state_file.clone()),
-            minter: Minter::from_config(&config)?,
+            minter: Minter::from_config(&config),
             miden,
             config,
         })
@@ -84,7 +83,7 @@ impl Relayer {
             );
         } else if !notes.is_empty() {
             let submitted = notes.len();
-            let tx = self.miden.submit_notes(self.minter.sender(), notes)?;
+            let tx = self.miden.submit_notes(self.minter.mint_account(), notes)?;
             info!(
                 tx = %tx,
                 fetched = page.attestations.len(),

@@ -1,5 +1,7 @@
 //! Relays Circle xReserve deposit attestations to the xUSDC faucet.
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use tracing::{info, warn};
 
@@ -9,7 +11,7 @@ pub mod miden;
 pub mod mint;
 pub mod store;
 
-use circle::CircleClient;
+use circle::{Attestation, CircleClient};
 use config::Config;
 use miden::MidenClient;
 use mint::Minter;
@@ -23,6 +25,14 @@ pub struct Relayer {
     store: Store,
     miden: Box<dyn MidenClient>,
     minter: Minter,
+    /// The message hashes of the attestations handled since the cursor last advanced.
+    ///
+    /// The final page of the feed carries attestations but no next cursor, so the cursor stays
+    /// where it is and every poll while the feed is caught up fetches that same page again. This
+    /// set is what stops each of those polls from rebuilding and resubmitting the same deposits.
+    /// It is cleared when the cursor advances, so it never holds more than one page, and it is not
+    /// persisted, so a restart handles the final page once more.
+    handled: HashSet<[u8; 32]>,
 }
 
 /// How a page ended, and therefore whether the loop should pause.
@@ -51,16 +61,19 @@ impl Relayer {
             minter: Minter::from_config(&config),
             miden,
             config,
+            handled: HashSet::new(),
         })
     }
 
     /// Fetches the page after the stored cursor, builds and submits its notes, and advances the
     /// cursor.
     ///
-    /// Malformed attestations are skipped inside [`Minter::build_notes`]. Buildable notes are
-    /// submitted in one transaction, and the cursor advances only after
-    /// [`MidenClient::submit_notes`] confirms that the transaction is included on chain. If any
-    /// step fails, the cursor remains unchanged and the next call fetches the same page.
+    /// Attestations already handled since the cursor last advanced are left out, so re-polling
+    /// the final page while the feed is caught up submits nothing. Malformed attestations are
+    /// skipped inside [`Minter::build_notes`]. Buildable notes are submitted in one transaction,
+    /// and the cursor advances only after [`MidenClient::submit_notes`] confirms that the
+    /// transaction is included on chain. If any step fails, the cursor remains unchanged and the
+    /// next call fetches the same page.
     ///
     /// # Errors
     ///
@@ -74,27 +87,36 @@ impl Relayer {
             .circle
             .fetch_page(self.config.remote_domain, cursor.as_ref())?;
 
-        let notes = self.minter.build_notes(&page.attestations);
+        let unhandled: Vec<Attestation> = page
+            .attestations
+            .iter()
+            .filter(|attestation| !self.handled.contains(&attestation.message_hash))
+            .cloned()
+            .collect();
+        let notes = self.minter.build_notes(&unhandled);
 
-        if notes.is_empty() && !page.attestations.is_empty() {
-            warn!(
-                fetched = page.attestations.len(),
-                "page produced no mint notes"
-            );
+        if notes.is_empty() && !unhandled.is_empty() {
+            warn!(fetched = unhandled.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
             let submitted = notes.len();
             let tx = self.miden.submit_notes(self.minter.mint_account(), notes)?;
             info!(
                 tx = %tx,
-                fetched = page.attestations.len(),
+                fetched = unhandled.len(),
                 submitted,
                 "page minted and on chain"
             );
         }
 
+        // Recorded only once the submission is on chain: a failed submission returns above and
+        // the next poll retries these attestations.
+        self.handled
+            .extend(unhandled.iter().map(|attestation| attestation.message_hash));
+
         match page.next_cursor() {
             Some(next) => {
                 self.store.set_cursor(next)?;
+                self.handled.clear();
                 Ok(PageOutcome::MorePages)
             }
             None => Ok(PageOutcome::CaughtUp),

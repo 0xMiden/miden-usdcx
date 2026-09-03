@@ -4,56 +4,82 @@
 //! attester key required by the note and skips individual attestations that cannot be decoded or
 //! built, allowing the remaining attestations in the page to proceed.
 
+use std::str::FromStr;
+
 use anyhow::{ensure, Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::{random_word, RandomCoin};
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::note::Note;
-use tracing::warn;
+use tracing::error;
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{DepositIntent, Signature};
 
-use crate::circle::Attestation;
+use crate::circle::{Attestation, RemoteDomain};
 use crate::config::Config;
 
-/// The only attester-key form handled: 33-byte compressed SEC1.
-const COMPRESSED_PUBKEY_LEN: usize = 33;
+/// The public key of the Circle attester whose signatures the mint notes carry. Parsed from the
+/// 33-byte compressed SEC1 form, so a value that is not a curve point never becomes a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttesterPublicKey(PublicKey);
+
+impl AttesterPublicKey {
+    /// The only key form handled: 33-byte compressed SEC1.
+    const COMPRESSED_LEN: usize = 33;
+}
+
+impl FromStr for AttesterPublicKey {
+    type Err = anyhow::Error;
+
+    /// Decodes a compressed SEC1 key from hex with an optional `0x` prefix.
+    fn from_str(value: &str) -> Result<Self> {
+        let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(value))
+            .context("the attester public key is not hex")?;
+
+        ensure!(
+            bytes.len() == Self::COMPRESSED_LEN,
+            "the attester public key is {} bytes, not {}",
+            bytes.len(),
+            Self::COMPRESSED_LEN
+        );
+
+        PublicKey::read_from_bytes(&bytes)
+            .map(Self)
+            .context("the attester public key is not a curve point")
+    }
+}
 
 /// Builds mint notes for one faucet from the attestations of one remote domain.
 ///
-/// The identities are parsed from the configuration before the relay loop starts, so an invalid
-/// configuration terminates the process before any deposits are handled.
+/// Every identity is validated when the command line is parsed, so an invalid configuration
+/// terminates the process before any deposits are handled.
 #[derive(Debug)]
 pub struct Minter {
-    sender: AccountId,
-    faucet: AccountId,
-    attester: PublicKey,
-    remote_domain: u32,
+    mint_account: AccountId,
+    usdcx_faucet: AccountId,
+    attester: AttesterPublicKey,
+    remote_domain: RemoteDomain,
     rng: RandomCoin,
 }
 
 impl Minter {
     /// Builds a minter from the operator configuration. Note serial numbers are drawn from a
     /// generator seeded by the operating system.
-    ///
-    /// # Errors
-    ///
-    /// - The attester public key is not a 33-byte compressed SEC1 curve point in hex.
-    pub fn from_config(config: &Config) -> Result<Self> {
-        Ok(Self {
-            sender: config.relayer_account_id,
-            faucet: config.faucet_account_id,
-            attester: Self::attester_pubkey(&config.attester_public_key)?,
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            mint_account: config.relayer_account_id,
+            usdcx_faucet: config.faucet_account_id,
+            attester: config.attester_public_key.clone(),
             remote_domain: config.remote_domain,
             rng: RandomCoin::new(random_word()),
-        })
+        }
     }
 
     /// The relayer's own account — the notes' producer.
-    pub fn sender(&self) -> AccountId {
-        self.sender
+    pub fn mint_account(&self) -> AccountId {
+        self.mint_account
     }
 
     /// Builds the mint notes for one page.
@@ -66,7 +92,7 @@ impl Minter {
             .filter_map(|attestation| {
                 self.build_note(attestation)
                     .map_err(|error| {
-                        warn!(
+                        error!(
                             message_hash = format!("0x{}", hex::encode(attestation.message_hash)),
                             error = format!("{error:#}"),
                             "skipping an attestation that will not build"
@@ -86,32 +112,18 @@ impl Minter {
             .context("the payload is not a deposit intent")?;
 
         XUsdcMintNote::builder()
-            .sender(self.sender)
-            .target(self.faucet)
-            .remote_domain(self.remote_domain)
+            .sender(self.mint_account)
+            .target(self.usdcx_faucet)
+            .remote_domain(self.remote_domain.into())
             .deposit_intent(intent)
             .attestation(DepositAttestation::new(
                 Signature::new(attestation.signature),
-                self.attester.clone(),
+                self.attester.0.clone(),
             ))
             .generate_serial_number(&mut self.rng)
             .build()
             .map(Note::from)
             .context("building the mint note")
-    }
-
-    /// Decodes a compressed SEC1 attester key from hex with an optional `0x` prefix.
-    fn attester_pubkey(value: &str) -> Result<PublicKey> {
-        let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(value))
-            .context("the attester public key is not hex")?;
-
-        ensure!(
-            bytes.len() == COMPRESSED_PUBKEY_LEN,
-            "the attester public key is {} bytes, not {COMPRESSED_PUBKEY_LEN}",
-            bytes.len()
-        );
-
-        PublicKey::read_from_bytes(&bytes).context("the attester public key is not a curve point")
     }
 }
 
@@ -124,13 +136,13 @@ mod tests {
     use xusdc_encoding::vectors::load;
     use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
 
-    use super::Minter;
-    use crate::circle::{Attestation, PageSize};
+    use super::{AttesterPublicKey, Minter};
+    use crate::circle::{Attestation, PageSize, RemoteDomain};
     use crate::config::Config;
 
     /// The Miden destination domain these tests address payloads to — a placeholder value, since
     /// the real identifier is a Circle-owned decision that is still open.
-    const REMOTE_DOMAIN: u32 = 10001;
+    const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(10001);
 
     /// A valid 33-byte compressed SEC1 attester key (the pinned partner-fixture key). These tests
     /// never verify a signature, so it only has to be a real curve point.
@@ -158,24 +170,6 @@ mod tests {
         dummy_account_id(0x33)
     }
 
-    /// A valid config over the dummy identities.
-    fn config() -> Config {
-        Config {
-            circle_url: "https://circle.test".parse().unwrap(),
-            page_size: PageSize::try_from(100).unwrap(),
-            request_timeout: std::time::Duration::from_secs(30),
-            remote_domain: REMOTE_DOMAIN,
-            faucet_account_id: xusdc_dummy_faucet_id(),
-            relayer_account_id: dummy_account_id(0x11),
-            attester_public_key: ATTESTER_PUBKEY_HEX.to_string(),
-            state_file: "unused".into(),
-        }
-    }
-
-    fn minter() -> Minter {
-        Minter::from_config(&config()).expect("the test config is valid")
-    }
-
     /// A DepositIntent carrying the canonical golden vector's amounts and hook data, with
     /// `faucet` as the remote token and `nonce` as the deposit nonce. It is assembled through the
     /// encoding crate's header builder, never by editing the vector's bytes.
@@ -193,7 +187,7 @@ mod tests {
 
         let rebuilt = DepositIntentHeader::builder()
             .amount(header.amount())
-            .remote_domain(REMOTE_DOMAIN)
+            .remote_domain(REMOTE_DOMAIN.into())
             .remote_token(faucet)
             .remote_recipient(header.remote_recipient())
             .local_token(header.local_token())
@@ -205,51 +199,80 @@ mod tests {
         DepositIntent::new(rebuilt, base.hook_data().clone())
     }
 
-    /// The feed form of an arbitrary intent. The signature bytes are shape-only: nothing
-    /// off-chain verifies them.
-    fn attestation_for(intent: &DepositIntent) -> Attestation {
-        Attestation {
-            payload: intent.to_bytes(),
-            message_hash: [0u8; 32],
-            signature: [0xAB; 65],
+    impl Config {
+        /// A valid config over the dummy identities.
+        fn test() -> Self {
+            Self {
+                circle_url: "https://circle.test".parse().unwrap(),
+                page_size: PageSize::try_from(100).unwrap(),
+                request_timeout: std::time::Duration::from_secs(30),
+                remote_domain: REMOTE_DOMAIN,
+                faucet_account_id: xusdc_dummy_faucet_id(),
+                relayer_account_id: dummy_account_id(0x11),
+                attester_public_key: ATTESTER_PUBKEY_HEX.parse().unwrap(),
+                state_file: "unused".into(),
+            }
         }
     }
 
-    /// A buildable attestation for a deposit with this nonce seed, addressed to the dummy xUSDC
-    /// faucet.
-    fn attestation(seed: u8) -> Attestation {
-        attestation_for(&deposit_intent([seed; 32], xusdc_dummy_faucet_id()))
+    impl Minter {
+        /// A minter over the test config.
+        fn test() -> Self {
+            Self::from_config(&Config::test())
+        }
     }
 
-    /// An attestation whose payload is not a DepositIntent at all.
-    fn undecodable_attestation() -> Attestation {
-        Attestation {
-            payload: vec![0xFF; 16],
-            message_hash: [0u8; 32],
-            signature: [0xAB; 65],
+    impl Attestation {
+        /// The feed form of an arbitrary intent. The signature bytes are shape-only: nothing
+        /// off-chain verifies them.
+        fn for_intent(intent: &DepositIntent) -> Self {
+            Self {
+                payload: intent.to_bytes(),
+                message_hash: [0u8; 32],
+                signature: [0xAB; 65],
+            }
+        }
+
+        /// A buildable attestation for a deposit with this nonce seed, addressed to the dummy
+        /// xUSDC faucet.
+        fn buildable(seed: u8) -> Self {
+            Self::for_intent(&deposit_intent([seed; 32], xusdc_dummy_faucet_id()))
+        }
+
+        /// An attestation whose payload is not a DepositIntent at all.
+        fn undecodable() -> Self {
+            Self {
+                payload: vec![0xFF; 16],
+                message_hash: [0u8; 32],
+                signature: [0xAB; 65],
+            }
         }
     }
 
     /// Every valid attestation on a page becomes a note.
     #[test]
     fn valid_attestations_build_notes() {
-        let notes = minter().build_notes(&[attestation(1), attestation(2)]);
+        let notes =
+            Minter::test().build_notes(&[Attestation::buildable(1), Attestation::buildable(2)]);
         assert_eq!(notes.len(), 2);
     }
 
     /// A malformed attestation is skipped while the valid attestations in the page still build.
     #[test]
     fn a_malformed_attestation_is_skipped_not_fatal() {
-        let notes =
-            minter().build_notes(&[attestation(1), undecodable_attestation(), attestation(3)]);
+        let notes = Minter::test().build_notes(&[
+            Attestation::buildable(1),
+            Attestation::undecodable(),
+            Attestation::buildable(3),
+        ]);
         assert_eq!(notes.len(), 2, "the two good deposits still build");
     }
 
     /// A deposit addressed to another faucet is skipped while the rest of the page still builds.
     #[test]
     fn a_deposit_for_another_faucet_is_skipped() {
-        let elsewhere = attestation_for(&deposit_intent([9; 32], other_dummy_faucet_id()));
-        let notes = minter().build_notes(&[elsewhere, attestation(2)]);
+        let elsewhere = Attestation::for_intent(&deposit_intent([9; 32], other_dummy_faucet_id()));
+        let notes = Minter::test().build_notes(&[elsewhere, Attestation::buildable(2)]);
         assert_eq!(notes.len(), 1);
     }
 
@@ -257,22 +280,27 @@ mod tests {
     /// number.
     #[test]
     fn a_rebuilt_deposit_is_a_distinct_note() {
-        let mut minter = minter();
-        let first = minter.build_notes(&[attestation(1)]);
-        let second = minter.build_notes(&[attestation(1)]);
+        let mut minter = Minter::test();
+        let first = minter.build_notes(&[Attestation::buildable(1)]);
+        let second = minter.build_notes(&[Attestation::buildable(1)]);
         assert_ne!(first[0].id(), second[0].id());
     }
 
-    /// A malformed attester key is rejected during startup.
+    /// The `0x` prefix is optional and does not change the key.
+    #[test]
+    fn the_attester_key_accepts_an_optional_prefix() {
+        let bare: AttesterPublicKey = ATTESTER_PUBKEY_HEX.parse().unwrap();
+        let prefixed: AttesterPublicKey = format!("0x{ATTESTER_PUBKEY_HEX}").parse().unwrap();
+        assert_eq!(bare, prefixed);
+    }
+
+    /// A malformed attester key is refused when it is parsed.
     #[rstest]
     #[case::not_hex("nothex")]
     #[case::wrong_length("0xdeadbeef")]
     #[case::not_a_point("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
-    fn a_malformed_attester_key_is_refused_at_startup(#[case] value: &str) {
-        let mut config = config();
-        config.attester_public_key = value.to_string();
-
-        let error = format!("{:#}", Minter::from_config(&config).unwrap_err());
+    fn a_malformed_attester_key_is_refused(#[case] value: &str) {
+        let error = format!("{:#}", value.parse::<AttesterPublicKey>().unwrap_err());
         assert!(
             error.contains("attester public key"),
             "unexpected error: {error}"

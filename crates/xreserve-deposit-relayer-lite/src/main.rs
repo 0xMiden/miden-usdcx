@@ -18,8 +18,8 @@ fn main() -> Result<()> {
         .init();
 
     let config = Config::parse();
-    let _minter = Minter::from_config(&config)?;
-    tracing::info!(remote_domain = config.remote_domain, "arguments validated");
+    let _minter = Minter::from_config(&config);
+    tracing::info!(remote_domain = %config.remote_domain, "arguments validated");
 
     bail!(
         "Miden integration requires a miden-client release for protocol v0.16. No compatible \

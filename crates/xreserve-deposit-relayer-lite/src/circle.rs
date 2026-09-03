@@ -61,6 +61,41 @@ impl fmt::Display for PageSize {
     }
 }
 
+/// The Circle domain identifier of the chain whose attestations are read — Miden. It names the
+/// feed in the request path and is the domain every mint note is built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteDomain(u32);
+
+impl RemoteDomain {
+    /// Wraps a Circle domain identifier. Every `u32` is a well-formed identifier.
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RemoteDomain> for u32 {
+    fn from(domain: RemoteDomain) -> Self {
+        domain.0
+    }
+}
+
+impl FromStr for RemoteDomain {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let value: u32 = value
+            .parse()
+            .context("the remote domain is not a 32-bit number")?;
+        Ok(Self::new(value))
+    }
+}
+
+impl fmt::Display for RemoteDomain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// One entry of Circle's attestation feed: the encoded DepositIntent and the attester's signature
 /// over it. Circle publishes each field as `0x`-hex; the hex is decoded here.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -163,7 +198,11 @@ impl CircleClient {
     /// - Circle answers with a non-success status.
     /// - The response exceeds the size ceiling.
     /// - The response does not decode as a page (see [`Page::decode`]).
-    pub fn fetch_page(&self, remote_domain: u32, cursor: Option<&CircleCursor>) -> Result<Page> {
+    pub fn fetch_page(
+        &self,
+        remote_domain: RemoteDomain,
+        cursor: Option<&CircleCursor>,
+    ) -> Result<Page> {
         let response = self
             .client
             .get(self.page_url(remote_domain, cursor))
@@ -200,7 +239,7 @@ impl CircleClient {
     }
 
     /// The URL of one attestation page.
-    fn page_url(&self, remote_domain: u32, cursor: Option<&CircleCursor>) -> Url {
+    fn page_url(&self, remote_domain: RemoteDomain, cursor: Option<&CircleCursor>) -> Url {
         let mut url = self.base_url.clone();
         let path = format!(
             "{}/v1/remote-domains/{remote_domain}/attestations",
@@ -266,8 +305,11 @@ fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature
 mod tests {
     use std::time::Duration;
 
-    use super::{Attestation, CircleClient, Page, PageSize, Signature};
+    use super::{Attestation, CircleClient, Page, PageSize, RemoteDomain, Signature};
     use crate::store::CircleCursor;
+
+    /// The domain the request tests address.
+    const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(7);
 
     /// A page size within the documented range.
     fn page_size(value: u16) -> PageSize {
@@ -329,11 +371,21 @@ mod tests {
         assert_eq!("250".parse::<PageSize>().unwrap(), page_size(250));
     }
 
+    /// A remote domain is any 32-bit number and nothing else.
+    #[test]
+    fn the_remote_domain_is_a_32_bit_number() {
+        assert_eq!("7".parse::<RemoteDomain>().unwrap(), REMOTE_DOMAIN);
+        assert_eq!(u32::from(REMOTE_DOMAIN), 7);
+        assert!("abc".parse::<RemoteDomain>().is_err());
+        assert!("-1".parse::<RemoteDomain>().is_err());
+        assert!("4294967296".parse::<RemoteDomain>().is_err());
+    }
+
     /// The request is the documented endpoint carrying only `pageSize` and `pageAfter`.
     #[test]
     fn the_request_names_the_endpoint_and_its_two_parameters() {
         let cursor = CircleCursor::new("the-cursor");
-        let url = client(250).page_url(7, Some(&cursor));
+        let url = client(250).page_url(REMOTE_DOMAIN, Some(&cursor));
 
         assert_eq!(
             url.as_str(),
@@ -345,7 +397,7 @@ mod tests {
     #[test]
     fn the_cursor_is_percent_encoded() {
         let cursor = CircleCursor::new("a+b/c=");
-        let url = client(100).page_url(7, Some(&cursor));
+        let url = client(100).page_url(REMOTE_DOMAIN, Some(&cursor));
 
         assert!(url.as_str().contains("pageAfter=a%2Bb%2Fc%3D"), "{url}");
     }

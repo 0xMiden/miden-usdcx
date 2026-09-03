@@ -5,7 +5,8 @@ use clap::Parser;
 use miden_protocol::account::AccountId;
 use url::Url;
 
-use crate::circle::PageSize;
+use crate::circle::{PageSize, RemoteDomain};
+use crate::mint::AttesterPublicKey;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "xreserve-deposit-relayer-lite")]
@@ -25,7 +26,7 @@ pub struct Config {
 
     /// The Circle domain identifier for Miden.
     #[arg(long)]
-    pub remote_domain: u32,
+    pub remote_domain: RemoteDomain,
 
     /// The public xUSDC faucet account, as `0x`-prefixed hex or bech32.
     #[arg(long, value_parser = parse_account_id)]
@@ -35,9 +36,10 @@ pub struct Config {
     #[arg(long, value_parser = parse_account_id)]
     pub relayer_account_id: AccountId,
 
-    /// The compressed SEC1 public key for the attestation signature.
+    /// The compressed SEC1 public key for the attestation signature, as hex with an optional `0x`
+    /// prefix.
     #[arg(long)]
-    pub attester_public_key: String,
+    pub attester_public_key: AttesterPublicKey,
 
     /// The file that stores relay progress.
     #[arg(long)]

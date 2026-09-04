@@ -40,7 +40,7 @@ deposit and burns it on withdrawal.
   attestation policy is the only allowed mint policy, which makes it the gate **every** supply
   increase passes.
 - **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
-  destRecipient, salt)`; creating the note moves the assets out of the holder's vault (so the balance
+  destRecipient)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
   pause is checked, then the STOCK `MinBurnAmount` policy requires `amount ≥ minBurnSize` (the floor
   is always ≥ 1 — builder-rejected below one and note-guarded at the setter — so zero burns are

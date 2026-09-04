@@ -116,7 +116,7 @@ pub struct DiscoveredBurn {
 }
 
 impl DiscoveredBurn {
-    /// The decoded `(amount, destDomain, destRecipient, salt)` payload.
+    /// The decoded `(amount, destDomain, destRecipient)` payload.
     pub fn payload(&self) -> &BurnPayload {
         &self.payload
     }
@@ -134,7 +134,7 @@ impl DiscoveredBurn {
 ///    (`SyncNotes` does not prefix-scan — an exact match, never a prefix).
 /// 2. **Observability** — `details = Some(..)`; a `details = None` (private/erased) note is refused
 ///    as unobservable for Circle.
-/// 3. **Payload** — the `(amount, destDomain, destRecipient, salt)` felts are decoded by the shared
+/// 3. **Payload** — the `(amount, destDomain, destRecipient)` felts are decoded by the shared
 ///    encoding crate's codec (consumed by reference — no re-parse here).
 /// 4. **Sender** — `metadata.sender` is read as the Miden burner; an absent/zero/malformed sender
 ///    is refused, never defaulted.

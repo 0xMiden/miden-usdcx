@@ -21,7 +21,7 @@
 //! * `sourceDepositor` is structurally AND textually absent;
 //! * exactly one of `valueExcludingFees`/`valueIncludingFees` is set (the value XOR);
 //! * `remoteDomain >= 1` and `remoteDomain != finalDestinationDomain` — else an exact `Err`;
-//! * a supplied `salt` is STABLE across rebuilds of the same burn (idempotency);
+//! * `salt` is omitted so Circle generates it on the source-domain side;
 //! * no binary/response-only artifact (`encoded`, `messageHashToSign`, `spec`, …) is ever emitted.
 
 use assert_matches::assert_matches;
@@ -49,12 +49,11 @@ fn a_sender() -> AccountId {
     AccountId::from_hex("0xbb405fd9fe431bd1135a292de098cb").expect("a valid account id")
 }
 
-/// A distinct 32-byte value, so a swapped field (recipient ↔ salt, sender ↔ recipient) is caught.
+/// A distinct 32-byte value, so a swapped field (sender ↔ recipient) is caught.
 const DEST_RECIPIENT: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x2d, 0x35, 0xcc,
     0x66, 0x34, 0xc0, 0x53, 0x29, 0x25, 0xa3, 0xb8, 0x44, 0xbc, 0x45, 0x4e, 0x44, 0x38, 0xf4, 0x4e,
 ];
-const SALT: [u8; 32] = [0x11; 32];
 
 const AMOUNT: u64 = 10_000_000;
 /// The user's `finalDestinationDomain`, from the burn note payload. Distinct from `MIDEN_DOMAIN`.
@@ -62,14 +61,13 @@ const DEST_DOMAIN: u32 = 0;
 /// Miden's remote domain (from config). `>= 1` and `!= DEST_DOMAIN`, so the happy path validates.
 const MIDEN_DOMAIN: u32 = 99_999;
 
-/// The burn payload the burn note wrote, in the shape Circle's documentation describes —
-/// `(amount, destDomain, destRecipient, salt)`.
+/// The burn payload the burn note wrote, in the shape the xReserve burn evidence prescribes —
+/// `(amount, destDomain, destRecipient)`.
 fn a_payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(AMOUNT).unwrap(),
         dest_domain: DEST_DOMAIN,
         dest_recipient: ForeignChainAddress::new(DEST_RECIPIENT),
-        salt: SALT,
     }
 }
 
@@ -191,16 +189,15 @@ fn remote_depositor_is_dc6_of_sender() {
     Hex32::new(d).expect("remoteDepositor satisfies the Hex32 regex");
 }
 
-/// A supplied `salt` comes from the burn payload, so it renders 0x-hex 32B and is NOT a fresh
-/// random.
+/// `salt` is intentionally absent from the request; Circle generates it for the xReserve source
+/// side.
 #[test]
-fn salt_is_the_burn_payload_salt() {
-    let payload = a_payload();
-    let input = only_input(&payload, a_sender(), &cfg());
+fn salt_is_omitted_for_circle_generation() {
+    let input = only_input(&a_payload(), a_sender(), &cfg());
     assert_eq!(
         input.salt(),
-        Some(hex32_str(&SALT).as_str()),
-        "the request salt is the burn note's salt, rendered 0x-hex"
+        None,
+        "the request salt is omitted so Circle can generate it"
     );
 }
 
@@ -322,13 +319,13 @@ fn serialized_request_has_no_binary_or_response_artifacts() {
 }
 
 // ================================================================================================
-// SALT STABILITY / IDEMPOTENCY — same burn ⇒ identical request
+// IDEMPOTENCY — same burn ⇒ identical request
 // ================================================================================================
 
-/// Rebuilding from the same payload + sender + config is DETERMINISTIC, salt included (the salt is
-/// derived from the burn, not freshly randomized). Both the struct and its serialization are equal.
+/// Rebuilding from the same payload + sender + config is deterministic. Both the struct and its
+/// serialization are equal, with Circle-side salt generation represented by the absent `salt` key.
 #[test]
-fn rebuild_is_stable_including_salt() {
+fn rebuild_is_stable_with_salt_omitted() {
     let payload = a_payload();
     let sender = a_sender();
     let cfg = cfg();
@@ -338,7 +335,7 @@ fn rebuild_is_stable_including_salt() {
 
     assert_eq!(
         first, second,
-        "the same burn rebuilds to an identical request (salt is stable, not re-randomized)"
+        "the same burn rebuilds to an identical request"
     );
     assert_eq!(
         serde_json::to_string(&first).unwrap(),

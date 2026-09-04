@@ -130,7 +130,7 @@ const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 /// # The payload and the sender arrive together, and that is the signature's job
 ///
 /// The two values this request is built out of are the burn's `(amount, destDomain,
-/// destRecipient, salt)` and the burner that `remoteDepositor` names. They came off ONE note, and
+/// destRecipient)` and the burner that `remoteDepositor` names. They came off ONE note, and
 /// they have to stay off one note: shipping burn A's amount under burn B's depositor asks Circle to
 /// release A's money and debit B for it. Nothing downstream can catch that — Circle returns the
 /// spec it was asked for, so the gate compares A's amount against A's amount and passes, and the
@@ -149,8 +149,7 @@ const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 /// * `remoteDepositor` = the `sender`'s [`EthEmbeddedAccountId::to_bytes32`] form as `0x`-hex 32B;
 /// * `finalDestinationDomain` / `finalDestinationRecipient` = the burn payload's `destDomain` /
 ///   `destRecipient`;
-/// * `salt` = the burn payload's `salt` (so a rebuild of the SAME burn is byte-identical, rather
-///   than drawing a fresh Circle-random salt);
+/// * `salt` omitted, so Circle generates the xReserve salt per the source-domain API;
 /// * `useCircleForwarding` = `false`, `forwardingOptions`/`finalDestinationCaller` omitted (the
 ///   forwarding scope is still OPEN with Circle, so none is invented).
 ///
@@ -177,7 +176,6 @@ pub fn build_prepare_request(
         ))
         .final_destination_domain(payload.dest_domain)
         .final_destination_recipient(hex32_of(payload.dest_recipient.as_bytes()))
-        .salt(hex32_of(&payload.salt))
         .use_circle_forwarding(false)
         .build()?;
 

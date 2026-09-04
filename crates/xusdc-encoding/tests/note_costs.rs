@@ -177,7 +177,6 @@ async fn burn_cycles() -> Result<u32> {
             amount: AssetAmount::new(BURN_AMOUNT)?,
             dest_domain: 9,
             dest_recipient: ForeignChainAddress::new([0xAB; 32]),
-            salt: [0xCD; 32],
         },
         builder.rng_mut(),
     )?;

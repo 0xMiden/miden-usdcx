@@ -191,7 +191,7 @@ pub struct AttVector {
 }
 
 /// Burn-note item (BN) vectors. `kind`: accept | reject. Accept entries carry
-/// the four semantic inputs plus the 18-felt golden `items` layout; reject entries carry the
+/// the three semantic inputs plus the 10-felt golden `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
 pub struct BnVector {
@@ -204,9 +204,7 @@ pub struct BnVector {
     pub dest_domain: Option<u32>,
     #[serde(default)]
     pub dest_recipient: Option<String>,
-    #[serde(default)]
-    pub salt: Option<String>,
-    /// Accept: the 18-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:
+    /// Accept: the 10-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:
     /// the malformed felts.
     pub items: Vec<String>,
     #[serde(default)]
@@ -440,11 +438,7 @@ impl BnVector {
         ))
     }
 
-    pub fn salt(&self) -> [u8; 32] {
-        parse_hex32(self.salt.as_deref().expect("accept vector carries salt"))
-    }
-
-    /// The felt slice under test (accept: 18-felt golden layout; reject: malformed felts).
+    /// The felt slice under test (accept: 10-felt golden layout; reject: malformed felts).
     pub fn items_values(&self) -> Vec<Felt> {
         self.items.iter().map(|s| felt_from_hex(s)).collect()
     }
@@ -455,7 +449,6 @@ impl BnVector {
             amount: self.amount(),
             dest_domain: self.dest_domain.expect("accept vector carries dest_domain"),
             dest_recipient: self.dest_recipient(),
-            salt: self.salt(),
         }
     }
 }

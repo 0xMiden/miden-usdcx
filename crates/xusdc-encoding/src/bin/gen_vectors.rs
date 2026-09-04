@@ -768,31 +768,23 @@ fn main() {
     }
 
     // ---- bn family (burn-note items) -------------------------------------------
-    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) + salt(8 u32-LE) = 18 felts.
-    // amount and destDomain are the canonical felt of the integer, and the two bytes32 fields use
-    // the same `packed` primitive as the b32 family.
-    let bn_items =
-        |amount: u64, domain: u32, recipient: &[u8; 32], salt: &[u8; 32]| -> Vec<String> {
-            let mut out = Vec::with_capacity(18);
-            out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
-            out.push(felt_hex(Felt::from(domain)));
-            out.extend(felts_hex(&packed(recipient)));
-            out.extend(felts_hex(&packed(salt)));
-            out
-        };
-    let bn_accept = |id: &str,
-                     amount: u64,
-                     domain: u32,
-                     recipient: [u8; 32],
-                     salt: [u8; 32],
-                     derivation: &str| {
+    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) = 10 felts.
+    // amount and destDomain are the canonical felt of the integer, and the bytes32 field uses the
+    // same `packed` primitive as the b32 family.
+    let bn_items = |amount: u64, domain: u32, recipient: &[u8; 32]| -> Vec<String> {
+        let mut out = Vec::with_capacity(10);
+        out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
+        out.push(felt_hex(Felt::from(domain)));
+        out.extend(felts_hex(&packed(recipient)));
+        out
+    };
+    let bn_accept = |id: &str, amount: u64, domain: u32, recipient: [u8; 32], derivation: &str| {
         json!({
             "id": id, "tv": ["TV-BN-1", "TV-BN-2", "TV-BN-3"], "kind": "accept",
             "amount": amount.to_string(),
             "dest_domain": domain,
             "dest_recipient": hex_bytes(&recipient),
-            "salt": hex_bytes(&salt),
-            "items": bn_items(amount, domain, &recipient, &salt),
+            "items": bn_items(amount, domain, &recipient),
             "cite": "DC-7",
             "derivation": derivation,
         })
@@ -804,15 +796,13 @@ fn main() {
             0,
             0,
             [0u8; 32],
-            [0u8; 32],
-            "lower boundary: amount=0, destDomain=0, destRecipient/salt all-zero",
+            "lower boundary: amount=0, destDomain=0, destRecipient all-zero",
         ),
         bn_accept(
             "bn-pos-typical",
             1_000_000,
             6,
             pattern32(0x11),
-            pattern32(0x22),
             "typical: amount=10^6 (1 USDC @ 6dp), destDomain=6 (Arbitrum CCTP), patterned bytes32",
         ),
         bn_accept(
@@ -820,12 +810,11 @@ fn main() {
             bn_max,
             u32::MAX,
             [0xffu8; 32],
-            pattern32(0x44),
             "upper boundary: amount=AssetAmount::MAX=2^63-2^31, destDomain=u32::MAX, recipient all-0xff",
         ),
     ];
-    // reject entries: one perturbation each off a valid 18-felt base → BurnItemsMalformed.
-    let bn_base = bn_items(1_000_000, 6, &pattern32(0x55), &pattern32(0x66));
+    // reject entries: one perturbation each off a valid 10-felt base → BurnItemsMalformed.
+    let bn_base = bn_items(1_000_000, 6, &pattern32(0x55));
     let over_u32 = felt_hex(Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p"));
     let over_cap = felt_hex(Felt::try_from(bn_max + 1).expect("MAX+1 < p"));
     let bn_reject = |id: &str, items: Vec<String>, derivation: &str| {
@@ -838,26 +827,24 @@ fn main() {
         })
     };
     let mut short = bn_base.clone();
-    short.pop(); // 17 felts
+    short.pop(); // 9 felts
     let mut long = bn_base.clone();
-    long.push(felt_hex(Felt::from(0u32))); // 19 felts
+    long.push(felt_hex(Felt::from(0u32))); // 11 felts
     let mut amount_over = bn_base.clone();
     amount_over[0] = over_cap;
     let mut domain_over = bn_base.clone();
     domain_over[1] = over_u32.clone();
     let mut recip_limb = bn_base.clone();
-    recip_limb[5] = over_u32.clone(); // within destRecipient [2..10]
-    let mut salt_limb = bn_base.clone();
-    salt_limb[12] = over_u32; // within salt [10..18]
+    recip_limb[5] = over_u32; // within destRecipient [2..10]
     bn.push(bn_reject(
         "bn-rej-len-short",
         short,
-        "17 felts (< 18) → wrong length",
+        "9 felts (< 10) → wrong length",
     ));
     bn.push(bn_reject(
         "bn-rej-len-long",
         long,
-        "19 felts (> 18) → wrong length",
+        "11 felts (> 10) → wrong length",
     ));
     bn.push(bn_reject(
         "bn-rej-amount-over-cap",
@@ -873,11 +860,6 @@ fn main() {
         "bn-rej-recipient-limb-not-u32",
         recip_limb,
         "items[5] = 2^32 → destRecipient limb not a u32",
-    ));
-    bn.push(bn_reject(
-        "bn-rej-salt-limb-not-u32",
-        salt_limb,
-        "items[12] = 2^32 → salt limb not a u32",
     ));
 
     let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn, "mi": mi } });

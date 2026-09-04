@@ -5,7 +5,7 @@
 //! it is consumed by the faucet's stock `receive_and_burn` script rather than by a wallet. It is
 //! always `NoteType::Public`, always carries the fixed xUSDC burn tag, keeps the stock 8-felt asset
 //! layout in `NoteStorage` (so the stock script's stored-vs-carried asset check passes), and carries
-//! its `(amount, destDomain, destRecipient, salt)` withdrawal payload in a scheme-tagged note
+//! its `(amount, destDomain, destRecipient)` withdrawal payload in a scheme-tagged note
 //! ATTACHMENT encoded with the shared codec, so on-chain bytes and off-chain decode never drift.
 //!
 //! Public and tagged is the whole point: the off-chain listener finds these notes by tag, and
@@ -54,14 +54,13 @@ fn note_rng(seed: u64) -> RandomCoin {
 }
 
 /// A representative withdrawal payload: the given amount plus an arbitrary destination domain,
-/// destination recipient, and salt. The non-amount fields are only there to be carried and read
-/// back unchanged, so their values are arbitrary as long as they round-trip.
+/// destination recipient. The non-amount fields are only there to be carried and read back
+/// unchanged, so their values are arbitrary as long as they round-trip.
 fn sample_items(amount: u64) -> XReserveBurnItems {
     XReserveBurnItems {
         amount: AssetAmount::new(amount).expect("amount within AssetAmount bounds"),
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0xCDu8; 32],
     }
 }
 
@@ -75,12 +74,12 @@ fn burn_withdrawal_carrier_is_frozen() {
         "the withdrawal-payload attachment scheme is frozen at 6",
     );
     assert_eq!(
-        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS, 5,
-        "the withdrawal-payload attachment is frozen at 5 words",
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS, 3,
+        "the withdrawal-payload attachment is frozen at 3 words",
     );
 }
 
-/// Reads a burn note's 18-felt withdrawal payload straight out of its scheme-tagged attachment:
+/// Reads a burn note's 10-felt withdrawal payload straight out of its scheme-tagged attachment:
 /// the scheme-6 attachment's words with the word-boundary padding dropped. The felts feed the
 /// shared codec's `XReserveBurnItems::decode`, which stays the single owner of the field layout —
 /// this helper reads no offset and unpacks no field.
@@ -94,14 +93,14 @@ fn withdrawal_payload(attachments: &NoteAttachments) -> Vec<Felt> {
     assert_eq!(
         usize::from(attachment.num_words()),
         XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
-        "the withdrawal-payload attachment carries exactly 5 words",
+        "the withdrawal-payload attachment carries exactly 3 words",
     );
     let mut felts = attachment.content().to_elements();
     felts.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
     felts
 }
 
-/// Emits a real `XReserveBurnNote` on a MockChain and returns the 18-felt withdrawal payload of the
+/// Emits a real `XReserveBurnNote` on a MockChain and returns the 10-felt withdrawal payload of the
 /// note as it actually landed on-chain — read out of the note's scheme-tagged attachment, not its
 /// storage (which now holds the stock 8-felt asset).
 ///
@@ -182,7 +181,7 @@ fn burn_note_payload_schema() {
     // The payload rides a scheme-tagged attachment in the codec's field order and widths, so
     // decoding it returns exactly what was encoded.
     let payload_felts = withdrawal_payload(note.attachments());
-    assert_eq!(payload_felts.len(), 18, "DC-7 payload is exactly 18 felts");
+    assert_eq!(payload_felts.len(), 10, "DC-7 payload is exactly 10 felts");
     let decoded = XReserveBurnItems::decode(&payload_felts).expect("decoding DC-7 items");
     assert_eq!(
         decoded, items,
@@ -303,7 +302,6 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
         amount: AssetAmount::new(AMOUNT)?,
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0xCDu8; 32],
     };
     let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(42))?;
 
@@ -355,7 +353,6 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
         amount: AssetAmount::new(over)?,
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0xCDu8; 32],
     };
     let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(7))?;
     let over_asset = FungibleAsset::new(h.faucet_id, over)?;

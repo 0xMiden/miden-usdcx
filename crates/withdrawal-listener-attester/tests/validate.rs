@@ -54,8 +54,7 @@ fn hex32(s: &str) -> [u8; 32] {
 }
 
 /// The burn payload that MATCHES `prepare_withdrawal_200.json`: `value = 10000000`,
-/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`. `salt` is not a compared field,
-/// so any value serves.
+/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`.
 fn matching_payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(10_000_000).unwrap(),
@@ -63,7 +62,6 @@ fn matching_payload() -> BurnPayload {
         dest_recipient: ForeignChainAddress::new(hex32(
             "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         )),
-        salt: [0x11; 32],
     }
 }
 

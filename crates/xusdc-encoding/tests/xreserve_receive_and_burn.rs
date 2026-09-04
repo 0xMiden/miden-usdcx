@@ -64,14 +64,13 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A withdrawal payload for the given amount, with an arbitrary destination and salt. Those fields
-/// exist for the off-chain listener to read; consuming the note does not look at them.
+/// A withdrawal payload for the given amount, with an arbitrary destination. Those fields exist for
+/// the off-chain listener to read; consuming the note does not look at them.
 fn items(amount: u64) -> Result<XReserveBurnItems> {
     Ok(XReserveBurnItems {
         amount: AssetAmount::new(amount)?,
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0xCDu8; 32],
     })
 }
 

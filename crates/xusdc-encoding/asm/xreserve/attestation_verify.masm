@@ -111,11 +111,12 @@ end
 
 #! ECDSA-verifies the attested signature over keccak256 of the payload, from the caller's memory.
 #!
-#! `verify_bytes` takes the key and scalars from the ADVICE stack and binds only the key, so this
-#! stages the caller's hash-verified regions there, each keyed by its own Poseidon2 commitment:
-#! `adv.insert_mem` refuses a key already present with different values, so the verifier consumes
-#! the attested bytes or the transaction aborts. The signature half of that binding is contingent
-#! on the core-library keccak handler's advice-element count. The message is not hashed here.
+#! `verify_bytes` takes the key and scalars from the ADVICE stack and binds only the key to its
+#! commitment. This procedure stages the caller's hash-verified key under that verifier-enforced
+#! commitment, then stages the rewritten signature scalars under a local Poseidon2 commitment so
+#! `push_mapval` places the expected scalars at the verifier's read position. The pinned verifier
+#! has no scalar-commitment operand, so the signature-scalar side is positional rather than
+#! cryptographically bound here. The message is not hashed here.
 #!
 #! Inputs:  [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []

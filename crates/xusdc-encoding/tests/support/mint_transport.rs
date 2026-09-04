@@ -267,7 +267,9 @@ fn transport_felts(
 
 fn words_of(felts: &[Felt]) -> Vec<Word> {
     felts
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| Word::from([c[0], c[1], c[2], c[3]]))
         .collect()
 }

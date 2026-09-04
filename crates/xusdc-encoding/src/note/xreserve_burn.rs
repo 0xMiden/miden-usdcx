@@ -94,8 +94,10 @@ impl From<&XUsdcBurnAttachment> for NoteAttachment {
         }
 
         let words: Vec<Word> = elements
-            .chunks_exact(Word::NUM_ELEMENTS)
-            .map(|chunk| Word::new([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .as_chunks::<{ Word::NUM_ELEMENTS }>()
+            .0
+            .iter()
+            .map(|chunk| Word::new(*chunk))
             .collect();
         NoteAttachment::with_words(
             NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)

@@ -4,22 +4,20 @@ mod config;
 mod preflight;
 mod store;
 
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use miden_protocol::account::AccountId;
-use reqwest::StatusCode;
 use tempfile::TempDir;
 
 use crate::attester::Attester;
-use crate::chain::{ChainError, ChainReader};
-use crate::circle::{read_info, CircleApi, CircleError, RawResponse};
+use crate::circle::CircleApi;
 use crate::config::Config;
 
-const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
+use super::support::{
+    faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle, ObservedRequest,
+    TestChain, FAUCET_ACCOUNT_ID,
+};
+
 const SIGNING_KEY_ONE: &str =
     "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const SIGNING_KEY_TWO: &str =
@@ -29,12 +27,16 @@ const STORE_FILE: &str = "state/checkpoints/withdrawal-cursor.sqlite3";
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(275);
 
 pub(super) fn config_toml(deployment_block: u64) -> String {
+    let anchor_commitment = startup_anchor().header().commitment().to_hex();
     format!(
         "circle_request_timeout_ms = {}\n\
          faucet_account_id_hex = \"{FAUCET_ACCOUNT_ID}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          poll_interval_ms = 1000\n\
          faucet_deployment_block = {deployment_block}\n\
+         trusted_anchor_block = 0\n\
+         trusted_anchor_commitment_hex = \"{anchor_commitment}\"\n\
+         minimum_finality_depth_blocks = 1\n\
          expected_signing_public_keys_hex = [\"{SIGNING_KEY_ONE}\", \"{SIGNING_KEY_TWO}\"]\n\
          store_path = \"{STORE_FILE}\"\n",
         REQUEST_TIMEOUT.as_millis()
@@ -57,100 +59,10 @@ pub(super) fn create_store_parent(tempdir: &TempDir) -> PathBuf {
     path
 }
 
-fn faucet_account_id() -> AccountId {
-    AccountId::from_hex(FAUCET_ACCOUNT_ID).unwrap()
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum ChainState {
-    Ready,
-    Unreachable,
-    FaucetMissing,
-}
-
-struct FakeChain(ChainState);
-
-impl ChainReader for FakeChain {
-    fn check_connection(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ChainError>> + Send + '_>> {
-        Box::pin(async move {
-            match self.0 {
-                ChainState::Unreachable => Err(ChainError::Unavailable),
-                ChainState::Ready | ChainState::FaucetMissing => Ok(()),
-            }
-        })
-    }
-
-    fn account_exists<'a>(
-        &'a self,
-        account_id: &'a AccountId,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, ChainError>> + Send + 'a>> {
-        Box::pin(async move {
-            Ok(account_id == &faucet_account_id() && matches!(self.0, ChainState::Ready))
-        })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CircleState {
-    Response(StatusCode),
-    TransportError,
-}
-
-impl CircleState {
-    /// What a call to Circle gets back in this state.
-    fn answer(self) -> Result<RawResponse, CircleError> {
-        match self {
-            CircleState::Response(status) => Ok(RawResponse::new(status)),
-            CircleState::TransportError => Err(CircleError::Unavailable),
-        }
-    }
-}
-
-/// The Circle calls a fake received, in order.
-#[derive(Debug, PartialEq, Eq)]
-enum ObservedRequest {
-    Info,
-}
-
-struct FakeCircle {
-    state: CircleState,
-    requests: Arc<Mutex<Vec<ObservedRequest>>>,
-}
-
-impl FakeCircle {
-    fn new(state: CircleState) -> (Self, Arc<Mutex<Vec<ObservedRequest>>>) {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                state,
-                requests: Arc::clone(&requests),
-            },
-            requests,
-        )
-    }
-}
-
-impl CircleApi for FakeCircle {
-    fn check_connection(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
-        self.requests.lock().unwrap().push(ObservedRequest::Info);
-        let answer = self.state.answer();
-        Box::pin(async move { read_info(&answer?) })
-    }
-}
-
-fn ready_circle() -> Box<dyn CircleApi> {
-    let (circle, _) = FakeCircle::new(CircleState::Response(StatusCode::OK));
-    Box::new(circle)
-}
-
 pub(super) async fn start(
     config: Config,
-    chain: ChainState,
+    chain: TestChain,
     circle: Box<dyn CircleApi>,
 ) -> anyhow::Result<Attester> {
-    Attester::start(config, Box::new(FakeChain(chain)), circle).await
+    Attester::start(config, Box::new(chain), circle).await
 }

@@ -2,7 +2,7 @@ use miden_protocol::block::BlockNumber;
 
 use crate::config::Config;
 
-use super::{config_toml, create_store_parent, CONFIG_FILE};
+use super::{config_toml, create_store_parent, startup_anchor, CONFIG_FILE};
 
 fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
     config
@@ -72,6 +72,36 @@ fn invalid_config_is_rejected() {
             "failed to parse config",
         ),
         (
+            "trusted_anchor_block",
+            "trusted_anchor_block = 4294967296",
+            "failed to parse config",
+        ),
+        (
+            "trusted_anchor_commitment_hex",
+            "trusted_anchor_commitment_hex = \"0X0100000000000000020000000000000003000000000000000400000000000000\"",
+            "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
+        ),
+        (
+            "trusted_anchor_commitment_hex",
+            "trusted_anchor_commitment_hex = \"0x01\"",
+            "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
+        ),
+        (
+            "trusted_anchor_commitment_hex",
+            "trusted_anchor_commitment_hex = \"0x01000000000000000200000000000000030000000000000004000000000000AA\"",
+            "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
+        ),
+        (
+            "trusted_anchor_commitment_hex",
+            "trusted_anchor_commitment_hex = \"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+            "trusted anchor commitment is invalid",
+        ),
+        (
+            "minimum_finality_depth_blocks",
+            "minimum_finality_depth_blocks = 0",
+            "minimum finality depth must be greater than zero",
+        ),
+        (
             "store_path",
             "store_path = \"\"",
             "store path must not be empty",
@@ -93,6 +123,9 @@ fn invalid_config_is_rejected() {
         "circle_api_base_url",
         "poll_interval_ms",
         "faucet_deployment_block",
+        "trusted_anchor_block",
+        "trusted_anchor_commitment_hex",
+        "minimum_finality_depth_blocks",
         "expected_signing_public_keys_hex",
         "store_path",
     ] {
@@ -153,5 +186,11 @@ fn invalid_config_is_rejected() {
     let config = Config::load(&path).expect("unchecked signing keys remain accepted in S1");
     assert_eq!(config.store_path(), absolute_store);
     assert_eq!(config.faucet_deployment_block(), BlockNumber::from(0u32));
+    assert_eq!(config.trusted_anchor_block(), BlockNumber::from(0u32));
+    assert_eq!(
+        config.trusted_anchor_commitment(),
+        startup_anchor().header().commitment()
+    );
+    assert_eq!(config.minimum_finality_depth_blocks(), 1);
     assert_eq!(config.expected_signing_public_keys_hex(), ["unchecked"]);
 }

@@ -4,8 +4,8 @@ use crate::chain::ChainError;
 use crate::circle::CircleError;
 
 use super::{
-    create_store_parent, load_config, ready_circle, start, ChainState, CircleState, FakeCircle,
-    ObservedRequest, REQUEST_TIMEOUT,
+    create_store_parent, load_config, ready_circle, start, CircleState, FakeCircle,
+    ObservedRequest, TestChain, REQUEST_TIMEOUT,
 };
 
 #[tokio::test]
@@ -14,28 +14,29 @@ async fn unreachable_miden_node_is_rejected() {
     let store_path = create_store_parent(&tempdir);
     let result = start(
         load_config(&tempdir, 1),
-        ChainState::Unreachable,
+        TestChain::anchor_only().unreachable(),
         ready_circle(),
     )
     .await;
 
     assert!(result.err().unwrap().downcast_ref::<ChainError>().is_some());
-    assert!(store_path.is_file());
+    assert!(!store_path.exists());
 }
 
 #[tokio::test]
 async fn missing_faucet_is_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
-    create_store_parent(&tempdir);
+    let store_path = create_store_parent(&tempdir);
     let (circle, requests) = FakeCircle::new(CircleState::Response(StatusCode::OK));
     let result = start(
         load_config(&tempdir, 1),
-        ChainState::FaucetMissing,
+        TestChain::anchor_only().faucet_missing(),
         Box::new(circle),
     )
     .await;
 
     assert!(result.is_err());
+    assert!(!store_path.exists());
     assert!(requests.lock().unwrap().is_empty());
 }
 
@@ -46,11 +47,11 @@ async fn unreachable_circle_api_is_rejected() {
         CircleState::Response(StatusCode::NO_CONTENT),
     ] {
         let tempdir = tempfile::tempdir().unwrap();
-        create_store_parent(&tempdir);
+        let store_path = create_store_parent(&tempdir);
         let (circle, requests) = FakeCircle::new(state);
         let result = start(
             load_config(&tempdir, 1),
-            ChainState::Ready,
+            TestChain::anchor_only(),
             Box::new(circle),
         )
         .await;
@@ -60,6 +61,7 @@ async fn unreachable_circle_api_is_rejected() {
             .unwrap()
             .downcast_ref::<CircleError>()
             .is_some());
+        assert!(!store_path.exists());
         assert_eq!(
             *requests.lock().unwrap(),
             vec![ObservedRequest {

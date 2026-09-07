@@ -4,17 +4,6 @@
 #[ignore]
 fn cycle_runs_in_order() {}
 
-/// Asserts that scanning begins at the exact stored next block and records only authenticated,
-/// correctly-tagged burns.
-#[test]
-#[ignore]
-fn burns_are_discovered_safely() {}
-
-/// Asserts that burns through block M and cursor M + 1 commit or roll back together.
-#[test]
-#[ignore]
-fn burns_and_scan_position_are_saved_together() {}
-
 /// Asserts that invalid or insufficiently proven burns never reach a signer.
 #[test]
 #[ignore]

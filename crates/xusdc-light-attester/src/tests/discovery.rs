@@ -8,6 +8,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, ProvenBlock};
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 
@@ -16,6 +17,7 @@ use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::validation::BurnRefusal;
 
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
@@ -56,7 +58,7 @@ fn write_config(
     Config::load(&path).unwrap()
 }
 
-async fn start(
+pub(super) async fn start(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
     blocks: Vec<ProvenBlock>,
@@ -500,6 +502,37 @@ fn burns_and_scan_position_are_saved_together() {
     );
     assert_eq!(store.scan_state(), Ok(after_child.clone()));
 
+    assert_eq!(
+        store.refuse_burn(burn.note_id(), BurnRefusal::AmountMismatch),
+        Ok(())
+    );
+    assert_eq!(
+        store.refuse_burn(burn.note_id(), BurnRefusal::AmountMismatch),
+        Ok(()),
+        "repeating the same refusal is harmless"
+    );
+    for (id, reason) in [
+        (burn.note_id(), BurnRefusal::WrongTag),
+        (second_candidate.note_id(), BurnRefusal::AmountMismatch),
+    ] {
+        assert_eq!(store.refuse_burn(id, reason), Err(StoreError::Conflict));
+    }
+    assert_eq!(
+        store.save_scan_progress(
+            std::slice::from_ref(&candidate),
+            std::slice::from_ref(&burn),
+            &after_child,
+        ),
+        Err(StoreError::Conflict)
+    );
+    assert_eq!(store.scan_state(), Ok(after_child.clone()));
+    assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+    assert!(store.candidates().unwrap().is_empty());
+    assert!(store
+        .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
+        .unwrap()
+        .is_empty());
+
     drop(store);
     let store = Store::open_or_create(
         &path,
@@ -510,8 +543,23 @@ fn burns_and_scan_position_are_saved_together() {
         trusted_anchor,
     )
     .unwrap();
-    assert_eq!(store.discovered_burns(), Ok(vec![burn]));
+    assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+    assert_eq!(store.scan_state(), Ok(after_child));
+    assert!(store
+        .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
+        .unwrap()
+        .is_empty());
     drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let refusal = connection
+        .query_row(
+            "SELECT status, refusal_reason FROM burns WHERE note_id = ?1",
+            [burn.note_id().to_bytes()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(refusal, ("REFUSED".into(), "amount_mismatch".into()));
+    drop(connection);
 
     let changed_anchor = TrustedAnchor {
         commitment: Word::empty(),

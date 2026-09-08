@@ -14,6 +14,8 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleClient, HttpTransport};
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::validation::{validate_burn, ValidatedBurn};
+use miden_standards::note::BurnNote;
 
 #[derive(Debug)]
 pub struct RunError;
@@ -306,6 +308,36 @@ impl Attester {
             return Err(DiscoverError::ChainDiverged);
         }
         Ok(block)
+    }
+
+    pub(crate) fn validate_ready_burns(
+        &mut self,
+        proof_lag_block: BlockNumber,
+    ) -> Result<Vec<ValidatedBurn>, StoreError> {
+        let burns = self.store.burns_ready_for_withdrawal(
+            proof_lag_block,
+            self.config.minimum_finality_depth_blocks(),
+        )?;
+        let mut validated = Vec::new();
+        for burn in burns {
+            match validate_burn(
+                &burn,
+                self.config.faucet_account_id(),
+                BurnNote::script_root(),
+            ) {
+                Ok(items) => validated.push(ValidatedBurn { burn, items }),
+                Err(reason) => {
+                    self.store.refuse_burn(burn.note_id(), reason)?;
+                    eprintln!(
+                        "refused burn: note={} transaction={} reason={}",
+                        burn.note_id(),
+                        burn.burn_tx_id(),
+                        reason.as_str()
+                    );
+                }
+            }
+        }
+        Ok(validated)
     }
 
     async fn submit_withdrawals(&mut self) -> Result<(), SubmitError> {

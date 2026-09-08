@@ -199,6 +199,8 @@ fn salt_is_omitted_for_circle_generation() {
         None,
         "the request salt is omitted so Circle can generate it"
     );
+    let wire = serde_json::to_value(&input).expect("request serializes");
+    assert!(wire.get("salt").is_none(), "salt must be absent, not null");
 }
 
 // ================================================================================================

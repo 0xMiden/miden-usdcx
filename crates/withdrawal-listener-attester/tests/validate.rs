@@ -522,8 +522,9 @@ fn discovery_rejects_a_prefix_only_tag_match() {
 fn discovery_rejects_malformed_items() {
     let faucet_id = ListenerConfig::default().faucet_id();
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
-    // 17 felts, not the required 18.
-    let items = vec![Felt::from(0u32); 17];
+    // One felt short of the required payload width.
+    let items =
+        vec![Felt::from(0u32); xusdc_encoding::xreserve::encoding::BURN_NOTE_ITEMS_FELTS - 1];
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),

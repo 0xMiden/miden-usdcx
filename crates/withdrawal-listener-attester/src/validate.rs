@@ -162,7 +162,7 @@ pub fn validate_discovery(
         .as_ref()
         .ok_or(DiscoveryReject::PrivateNoteUnobservable)?;
 
-    // 3. decode the four-field payload through the shared encoding crate's codec (single-owner;
+    // 3. decode the three-field payload through the shared encoding crate's codec (single-owner;
     // no re-parse).
     let payload = decode_burn_payload(&details.items).map_err(DiscoveryReject::Decode)?;
 

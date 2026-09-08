@@ -96,6 +96,9 @@ fn withdrawal_payload(attachments: &NoteAttachments) -> Vec<Felt> {
         "the withdrawal-payload attachment carries exactly 3 words",
     );
     let mut felts = attachment.content().to_elements();
+    assert!(felts[XReserveBurnNote::NUM_PAYLOAD_ITEMS..]
+        .iter()
+        .all(|felt| *felt == Felt::ZERO));
     felts.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
     felts
 }
@@ -165,6 +168,22 @@ fn burn_note_is_public_with_fixed_tag() {
         NoteTag::with_account_target(faucet),
         "the fixed xUSDC burn tag must differ from the stock account-target tag",
     );
+}
+
+/// Equal withdrawal terms still produce distinct notes through fresh serial numbers.
+#[test]
+fn repeated_burn_terms_have_distinct_note_ids_without_payload_salt() {
+    let sender = test_account_id(3);
+    let faucet = test_faucet_id(1);
+    let mut rng = note_rng(7);
+    let first = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut rng).unwrap();
+    let second = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut rng).unwrap();
+    assert_eq!(
+        withdrawal_payload(first.attachments()),
+        withdrawal_payload(second.attachments())
+    );
+    assert_ne!(first.id(), second.id());
+    assert_ne!(first.nullifier(), second.nullifier());
 }
 
 // 2 — PAYLOAD SCHEMA: the withdrawal fields ride a note attachment; storage is the stock asset

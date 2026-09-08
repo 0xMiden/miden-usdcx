@@ -300,40 +300,6 @@ fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreErro
         .map_err(classify_error)
 }
 
-fn migrate_store(
-    connection: &mut rusqlite::Connection,
-    faucet_account_id: AccountId,
-    trusted_anchor: TrustedAnchor,
-) -> Result<(), StoreError> {
-    let transaction = connection.transaction().map_err(classify_error)?;
-    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
-    // Keep the old evidence and schema intact if any copy or validation step fails.
-    transaction
-        .execute_batch("ALTER TABLE burns RENAME TO burns_v3;")
-        .map_err(classify_error)?;
-    create_burns_table(&transaction)?;
-    transaction
-        .execute_batch(
-            "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block,
-                            burn_tx_id, status, refusal_reason)
-         SELECT note_id, nullifier, note, creation_block, consumption_block,
-                burn_tx_id, status, NULL FROM burns_v3;
-         DROP TABLE burns_v3;",
-        )
-        .map_err(classify_error)?;
-    transaction
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(classify_error)?;
-    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
-    transaction.commit().map_err(classify_error)
-}
-
-fn schema_version(connection: &rusqlite::Connection) -> Result<i64, StoreError> {
-    connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(classify_error)
-}
-
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
@@ -342,12 +308,20 @@ fn validate_store(
 ) -> Result<(), StoreError> {
     validate_store_format(connection)?;
 
-    // Stored chain state becomes the next run's trust base, so reject any malformed or
-    // internally inconsistent row before using it.
-    if !matches!(schema_version(connection)?, 3 | SCHEMA_VERSION) {
+    // Older development stores need an explicit rebuild. Add migrations before sending
+    // real withdrawals.
+    let version = connection
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(classify_error)?;
+    if version != SCHEMA_VERSION {
         return Err(StoreError::Invalid);
     }
 
+    // Stored chain state becomes the next run's trust base, so reject any malformed or
+    // internally inconsistent row before using it.
+
+    // Stored chain state becomes the next run's trust base, so reject any malformed or
+    // internally inconsistent row before using it.
     let row_count = connection
         .query_row("SELECT COUNT(*) FROM attester_state", [], |row| {
             row.get::<_, i64>(0)
@@ -513,16 +487,11 @@ fn load_burns(
     faucet_account_id: AccountId,
     include_refused: bool,
 ) -> Result<Vec<DiscoveredBurn>, StoreError> {
-    let reason_column = match schema_version(connection)? {
-        3 => "NULL",
-        SCHEMA_VERSION => "refusal_reason",
-        _ => return Err(StoreError::Invalid),
-    };
     let mut statement = connection
-        .prepare(&format!(
+        .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
-                    burn_tx_id, status, {reason_column} FROM burns"
-        ))
+                    burn_tx_id, status, refusal_reason FROM burns",
+        )
         .map_err(classify_error)?;
     let rows = statement
         .query_map([], |row| {

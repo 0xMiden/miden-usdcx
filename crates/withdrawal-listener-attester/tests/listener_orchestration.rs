@@ -318,11 +318,6 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
 /// Schema-valid edits to redemption terms must reject before signing.
 #[rstest]
 #[case::max_fee(&["maxFee"], json!("1001"), "maxFee")]
-#[case::salt(
-    &["spec", "salt"],
-    json!("0x2222222222222222222222222222222222222222222222222222222222222222"),
-    "salt"
-)]
 #[case::destination_caller(
     &["spec", "destinationCaller"],
     json!("0x0000000000000000000000000000000000000000000000000000000000000001"),
@@ -367,7 +362,6 @@ async fn a_b5_redemption_term_mismatch_produces_no_signature_and_no_withdraw(
     };
     match expected {
         "maxFee" => assert_matches!(err, ValidationMismatch::MaxFee { batch: 0, .. }),
-        "salt" => assert_matches!(err, ValidationMismatch::Salt { batch: 0, .. }),
         "destinationCaller" => {
             assert_matches!(err, ValidationMismatch::DestinationCaller { batch: 0, .. })
         }

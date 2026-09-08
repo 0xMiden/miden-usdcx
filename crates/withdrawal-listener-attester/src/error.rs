@@ -547,13 +547,6 @@ pub enum ValidationMismatch {
         returned: String,
     },
 
-    /// A returned `salt` does not equal the burn-note payload's `salt`.
-    Salt {
-        batch: usize,
-        expected: String,
-        returned: String,
-    },
-
     /// A returned `burnIntents[].maxFee` exceeds the configured ceiling or the burn amount.
     MaxFee {
         batch: usize,
@@ -618,14 +611,6 @@ impl fmt::Display for ValidationMismatch {
             } => write!(
                 f,
                 "batch {batch}: returned destination recipient `{returned}` does not match the burn payload recipient `{expected}`"
-            ),
-            Self::Salt {
-                batch,
-                expected,
-                returned,
-            } => write!(
-                f,
-                "batch {batch}: returned salt `{returned}` does not match the burn payload salt `{expected}`"
             ),
             Self::MaxFee {
                 batch,

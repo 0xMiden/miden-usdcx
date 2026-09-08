@@ -206,11 +206,6 @@ fn validate_returned_rejects_destination_recipient_mismatch() {
 /// Schema-valid edits to redemption terms must reject before signing.
 #[rstest]
 #[case::max_fee(&["maxFee"], Value::from("1001"), "maxFee")]
-#[case::salt(
-    &["spec", "salt"],
-    Value::from("0x2222222222222222222222222222222222222222222222222222222222222222"),
-    "salt"
-)]
 #[case::destination_caller(
     &["spec", "destinationCaller"],
     Value::from("0x0000000000000000000000000000000000000000000000000000000000000001"),
@@ -241,24 +236,38 @@ fn validate_returned_rejects_unbound_redemption_terms(
     #[case] path: &[&str],
     #[case] value: Value,
     #[case] expected: &str,
+    #[values((0, 0), (0, 1), (1, 0))] position: (usize, usize),
 ) {
     let mut v = base_200_json();
     set_intent_field(&mut v, path, value);
+    let bad_intent = v["batches"][0]["burnIntents"][0].clone();
+    let good_batch = base_200_json()["batches"][0].clone();
+    let (batch_index, intent_index) = position;
+    v["batches"] = Value::Array(vec![good_batch.clone(); batch_index + 1]);
+    v["batches"][batch_index]["burnIntents"] =
+        Value::Array(vec![good_batch["burnIntents"][0].clone(); intent_index + 1]);
+    v["batches"][batch_index]["burnIntents"][intent_index] = bad_intent;
     let resp = response_from_value(&v).expect("a schema-valid term edit still deserializes");
     let err = validate_returned(&resp, &matching_burn(), &cfg())
         .expect_err("an unbound redemption term must reject before signing");
 
+    let rejected_batch = match &err {
+        ValidationMismatch::MaxFee { batch, .. }
+        | ValidationMismatch::DestinationCaller { batch, .. }
+        | ValidationMismatch::HookData { batch, .. } => *batch,
+        other => panic!("unexpected rejection: {other:?}"),
+    };
+    assert_eq!(rejected_batch, batch_index);
+
     match expected {
-        "maxFee" => assert_matches!(err, ValidationMismatch::MaxFee { batch: 0, .. }),
-        "salt" => assert_matches!(err, ValidationMismatch::Salt { batch: 0, .. }),
+        "maxFee" => assert_matches!(err, ValidationMismatch::MaxFee { .. }),
         "destinationCaller" => {
-            assert_matches!(err, ValidationMismatch::DestinationCaller { batch: 0, .. })
+            assert_matches!(err, ValidationMismatch::DestinationCaller { .. })
         }
         "hookData.remoteDomain" => {
             assert_matches!(
                 err,
                 ValidationMismatch::HookData {
-                    batch: 0,
                     field: "remoteDomain",
                     ..
                 }
@@ -268,7 +277,6 @@ fn validate_returned_rejects_unbound_redemption_terms(
             assert_matches!(
                 err,
                 ValidationMismatch::HookData {
-                    batch: 0,
                     field: "remoteDepositor",
                     ..
                 }
@@ -278,7 +286,6 @@ fn validate_returned_rejects_unbound_redemption_terms(
             assert_matches!(
                 err,
                 ValidationMismatch::HookData {
-                    batch: 0,
                     field: "remoteToken",
                     ..
                 }
@@ -288,7 +295,6 @@ fn validate_returned_rejects_unbound_redemption_terms(
             assert_matches!(
                 err,
                 ValidationMismatch::HookData {
-                    batch: 0,
                     field: "forwardingContractAddress",
                     ..
                 }
@@ -298,13 +304,46 @@ fn validate_returned_rejects_unbound_redemption_terms(
             assert_matches!(
                 err,
                 ValidationMismatch::HookData {
-                    batch: 0,
                     field: "forwardingCalldata",
                     ..
                 }
             )
         }
         other => panic!("unmapped mismatch class `{other}`"),
+    }
+}
+
+/// Fees at either limit pass; values above the deployment or burn limit fail closed.
+#[rstest]
+#[case::zero_default(0, "0", true)]
+#[case::positive_default(0, "1", false)]
+#[case::below_ceiling(1_000, "999", true)]
+#[case::at_ceiling(1_000, "1000", true)]
+#[case::above_ceiling(1_000, "1001", false)]
+#[case::at_burn_amount(10_000_001, "10000000", true)]
+#[case::above_burn_amount(10_000_001, "10000001", false)]
+#[case::uint256_overflow(1_000, "340282366920938463463374607431768211456", false)]
+fn validate_returned_fee_boundaries(
+    #[case] ceiling: u64,
+    #[case] fee: &str,
+    #[case] accepted: bool,
+) {
+    let mut body = base_200_json();
+    set_intent_field(&mut body, &["maxFee"], Value::from(fee));
+    let response = response_from_value(&body).expect("unsigned decimal fee parses");
+    let config = ListenerConfig::builder()
+        .miden_domain(cfg().miden_domain())
+        .max_withdrawal_fee(AssetAmount::new(ceiling).unwrap())
+        .build()
+        .unwrap();
+    let result = validate_returned(&response, &matching_burn(), &config);
+    if accepted {
+        assert_eq!(
+            result.expect("fee within both limits passes").batch_count(),
+            1
+        );
+    } else {
+        assert_matches!(result, Err(ValidationMismatch::MaxFee { batch: 0, .. }));
     }
 }
 

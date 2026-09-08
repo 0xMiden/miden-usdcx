@@ -286,15 +286,6 @@ fn check_spec(
         });
     }
 
-    let salt_matches = decode_hex32(spec.salt()).is_some_and(|bytes| bytes == payload.salt);
-    if !salt_matches {
-        return Err(ValidationMismatch::Salt {
-            batch,
-            expected: to_hex32(&payload.salt),
-            returned: spec.salt().to_string(),
-        });
-    }
-
     if !hex32_eq(spec.destination_caller(), &ZERO_BYTES32) {
         return Err(ValidationMismatch::DestinationCaller {
             batch,

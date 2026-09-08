@@ -9,7 +9,7 @@ use miden_usdcx::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
-use miden_usdcx::xreserve::encoding::XReserveBurnItems;
+use miden_usdcx::xreserve::encoding::{CircleDomain, XReserveBurnItems};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("note is not a consumable xUSDC burn: {0}")]
@@ -174,6 +174,9 @@ pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Option<ValidatedBurn> {
         attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
     })?;
     let items = XUsdcBurnAttachment::try_from(withdrawal).ok()?.into_items();
+    if items.dest_domain == CircleDomain::MIDEN {
+        return None;
+    }
     // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
     // of the faucet.
     let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());

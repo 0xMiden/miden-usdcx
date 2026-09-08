@@ -152,9 +152,10 @@ impl ChainReader for TestChain {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum CircleState {
     Response(StatusCode),
+    ResponseBody(StatusCode, Vec<u8>),
     TransportError,
 }
 
@@ -162,7 +163,8 @@ impl CircleState {
     /// What a call to Circle gets back in this state.
     fn answer(self) -> Result<RawResponse, CircleError> {
         match self {
-            CircleState::Response(status) => Ok(RawResponse::new(status)),
+            CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
+            CircleState::ResponseBody(status, body) => Ok(RawResponse::new(status, body)),
             CircleState::TransportError => Err(CircleError::Unavailable),
         }
     }
@@ -197,7 +199,7 @@ impl CircleApi for FakeCircle {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
         self.requests.lock().unwrap().push(ObservedRequest::Info);
-        let answer = self.state.answer();
+        let answer = self.state.clone().answer();
         Box::pin(async move { read_info(&answer?) })
     }
 }

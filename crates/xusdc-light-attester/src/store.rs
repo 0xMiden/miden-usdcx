@@ -155,23 +155,6 @@ impl Store {
         // either records that complete block or scans it again from the previous checkpoint.
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let current_state = load_scan_state(&transaction, self.initial_cursor)?;
-        if next_state.cursor.next_block == current_state.cursor.next_block {
-            // Exact replay is harmless; different evidence at the same cursor is a conflict.
-            if next_state != &current_state {
-                return Err(StoreError::Conflict);
-            }
-            for candidate in candidates {
-                if !candidate_is_recorded(&transaction, candidate)? {
-                    return Err(StoreError::Conflict);
-                }
-            }
-            for burn in burns {
-                if !burn_is_recorded(&transaction, burn)? {
-                    return Err(StoreError::Conflict);
-                }
-            }
-            return Ok(());
-        }
 
         // Advance one block at a time so no caller can silently skip burn evidence.
         if next_state.cursor.next_block.checked_sub(1) != Some(current_state.cursor.next_block) {
@@ -503,59 +486,24 @@ fn insert_candidate(
     let note = candidate.note.to_bytes();
     let creation_block = i64::from(candidate.creation_block.as_u32());
 
-    // An exact candidate may already have been promoted by a replay. Any different row sharing
-    // its note ID or nullifier is conflicting evidence.
+    // A promoted note cannot become a candidate again.
     let overlaps_burn = exists(
         transaction,
         "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 OR nullifier = ?2)",
         params![note_id, nullifier],
     )?;
     if overlaps_burn {
-        let exact = exists(
-            transaction,
-            "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4)",
-            params![note_id, nullifier, note, creation_block],
-        )?;
-        return exact.then_some(()).ok_or(StoreError::Conflict);
+        return Err(StoreError::Conflict);
     }
 
-    let inserted = transaction
+    transaction
         .execute(
-            "INSERT OR IGNORE INTO burn_candidates (note_id, nullifier, note, creation_block)
+            "INSERT INTO burn_candidates (note_id, nullifier, note, creation_block)
              VALUES (?1, ?2, ?3, ?4)",
             params![note_id, nullifier, note, creation_block],
         )
-        .map_err(classify_error)?;
-    let exact = inserted == 1
-        || exists(
-            transaction,
-            "SELECT EXISTS (SELECT 1 FROM burn_candidates
-             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4)",
-            params![note_id, nullifier, note, creation_block],
-        )?;
-    exact.then_some(()).ok_or(StoreError::Conflict)
-}
-
-fn candidate_is_recorded(
-    transaction: &Transaction<'_>,
-    candidate: &BurnCandidate,
-) -> Result<bool, StoreError> {
-    let note_id = candidate.note_id().to_bytes();
-    let nullifier = candidate.nullifier().to_bytes();
-    let note = candidate.note.to_bytes();
-    let creation_block = i64::from(candidate.creation_block.as_u32());
-    exists(
-        transaction,
-        "SELECT EXISTS (
-            SELECT 1 FROM burn_candidates
-            WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
-            UNION ALL
-            SELECT 1 FROM burns
-            WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
-        )",
-        params![note_id, nullifier, note, creation_block],
-    )
+        .map_err(classify_write_error)?;
+    Ok(())
 }
 
 fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(), StoreError> {
@@ -565,30 +513,6 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(
     let creation_block = i64::from(burn.creation_block.as_u32());
     let consumption_block = i64::from(burn.consumption_block.as_u32());
     let burn_tx_id = burn.burn_tx_id.to_bytes();
-
-    // Burn insertion is idempotent only for byte-for-byte equivalent authenticated evidence.
-    let overlaps_burn = exists(
-        transaction,
-        "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 OR nullifier = ?2)",
-        params![note_id, nullifier],
-    )?;
-    if overlaps_burn {
-        let exact = exists(
-            transaction,
-            "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
-               AND consumption_block = ?5 AND burn_tx_id = ?6)",
-            params![
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id
-            ],
-        )?;
-        return exact.then_some(()).ok_or(StoreError::Conflict);
-    }
 
     let overlaps_candidate = exists(
         transaction,
@@ -636,26 +560,6 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(
         .execute("DELETE FROM burn_candidates WHERE note_id = ?1", [&note_id])
         .map_err(classify_error)?;
     Ok(())
-}
-
-fn burn_is_recorded(
-    transaction: &Transaction<'_>,
-    burn: &DiscoveredBurn,
-) -> Result<bool, StoreError> {
-    exists(
-        transaction,
-        "SELECT EXISTS (SELECT 1 FROM burns
-         WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
-           AND consumption_block = ?5 AND burn_tx_id = ?6)",
-        params![
-            burn.note_id().to_bytes(),
-            burn.nullifier().to_bytes(),
-            burn.note.to_bytes(),
-            i64::from(burn.creation_block.as_u32()),
-            i64::from(burn.consumption_block.as_u32()),
-            burn.burn_tx_id.to_bytes(),
-        ],
-    )
 }
 
 fn decode_note(

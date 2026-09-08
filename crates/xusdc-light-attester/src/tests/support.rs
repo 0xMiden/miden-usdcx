@@ -50,7 +50,7 @@ pub(super) struct TestChain {
     blocks: Vec<SignedBlock>,
     scan_limits: Arc<Mutex<ScanLimits>>,
     requests: Arc<Mutex<Vec<BlockNumber>>>,
-    scan_limit_requests: Arc<Mutex<Vec<BlockNumber>>>,
+    scan_limit_requests: Arc<Mutex<usize>>,
     missing: Option<BlockNumber>,
     reachable: bool,
     faucet_present: bool,
@@ -59,14 +59,14 @@ pub(super) struct TestChain {
 pub(super) struct ChainControls {
     pub(super) scan_limits: Arc<Mutex<ScanLimits>>,
     pub(super) requests: Arc<Mutex<Vec<BlockNumber>>>,
-    pub(super) scan_limit_requests: Arc<Mutex<Vec<BlockNumber>>>,
+    pub(super) scan_limit_requests: Arc<Mutex<usize>>,
 }
 
 impl TestChain {
     pub(super) fn new(blocks: Vec<SignedBlock>, scan_limits: ScanLimits) -> (Self, ChainControls) {
         let scan_limits = Arc::new(Mutex::new(scan_limits));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let scan_limit_requests = Arc::new(Mutex::new(Vec::new()));
+        let scan_limit_requests = Arc::new(Mutex::new(0));
         (
             Self {
                 blocks,
@@ -129,12 +129,8 @@ impl ChainReader for TestChain {
 
     fn scan_limits(
         &self,
-        last_verified_block: BlockNumber,
     ) -> Pin<Box<dyn Future<Output = Result<ScanLimits, ChainError>> + Send + '_>> {
-        self.scan_limit_requests
-            .lock()
-            .unwrap()
-            .push(last_verified_block);
+        *self.scan_limit_requests.lock().unwrap() += 1;
         let scan_limits = *self.scan_limits.lock().unwrap();
         Box::pin(async move { Ok(scan_limits) })
     }

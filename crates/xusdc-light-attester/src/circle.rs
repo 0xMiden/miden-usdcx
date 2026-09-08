@@ -1,14 +1,20 @@
-//! Circle API reachability boundary used during startup.
+//! Circle reachability and prepare requests. Responses are not trusted for signing.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use reqwest::{StatusCode, Url};
+use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use miden_usdcx::account::xreserve::USDCX_DECIMALS;
+use miden_usdcx::xreserve::encoding::CircleDomain;
 
+use crate::burn::DiscoveredBurn;
 use crate::config::Config;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,16 +26,21 @@ pub enum CircleError {
     Transport(#[source] reqwest::Error),
     #[error("Circle returned HTTP {0}")]
     UnexpectedStatus(StatusCode),
+    #[error("Circle prepare returned HTTP {status}")]
+    UnexpectedPrepareStatus { status: StatusCode, body: Vec<u8> },
+    #[error("Circle prepare response is malformed")]
+    InvalidResponse(#[source] serde_json::Error),
 }
 
 #[derive(Debug)]
 pub struct RawResponse {
     status: StatusCode,
+    body: Vec<u8>,
 }
 
 impl RawResponse {
-    pub fn new(status: StatusCode) -> Self {
-        Self { status }
+    pub fn new(status: StatusCode, body: Vec<u8>) -> Self {
+        Self { status, body }
     }
 }
 
@@ -56,6 +67,7 @@ pub trait CircleApi: Send + Sync {
 pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
+    use_circle_forwarding: bool,
     requests: mpsc::Sender<Job>,
 }
 
@@ -75,6 +87,7 @@ impl CircleClient {
             .user_agent(concat!("xusdc-attester/", env!("CARGO_PKG_VERSION")))
             // Circle is only ever reached over HTTPS.
             .https_only(true)
+            .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(CircleError::Transport)?;
@@ -83,6 +96,7 @@ impl CircleClient {
         let circle = Self {
             base_url: config.circle_api_base_url().clone(),
             request_timeout: config.circle_request_timeout(),
+            use_circle_forwarding: config.use_circle_forwarding(),
             requests,
         };
         Ok((circle, worker))
@@ -107,6 +121,68 @@ impl CircleClient {
             .map_err(|_| CircleError::Unavailable)?;
         response.await.map_err(|_| CircleError::Unavailable)?
     }
+
+    /// Decodes Circle's reply only. Its contents must be verified before signing.
+    #[allow(dead_code)]
+    pub(crate) async fn prepare_withdrawals(
+        &self,
+        burns: &[DiscoveredBurn],
+    ) -> Result<UnverifiedPrepareResponse, CircleError> {
+        if burns.is_empty() {
+            return Ok(UnverifiedPrepareResponse { batches: vec![] });
+        }
+
+        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+        let batches: Vec<_> = burns
+            .iter()
+            .map(|burn| {
+                let note = burn.note().as_note();
+                let amount = burn.amount();
+                let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
+                // Circle takes whole-USDC decimal strings, not smallest-unit integers.
+                let value_including_fees = format!(
+                    "{}.{:0width$}",
+                    amount / units_per_usdc,
+                    amount % units_per_usdc,
+                    width = usize::from(USDCX_DECIMALS),
+                );
+                // Use the note serial as salt. Ignoring the attachment salt is deliberate
+                // until the note builder derives the same value.
+                let salt = note.serial_num().to_hex();
+                json!({
+                    "token": "USDC",
+                    "remoteDomain": CircleDomain::MIDEN.as_u32(),
+                    "remoteDepositor": format!("0x{}", hex::encode(sender.to_bytes32())),
+                    "finalDestinationDomain": burn.items().dest_domain.as_u32(),
+                    "finalDestinationRecipient": format!(
+                        "0x{}", hex::encode(burn.items().dest_recipient.as_bytes())
+                    ),
+                    "valueIncludingFees": value_including_fees,
+                    "salt": salt,
+                    "useCircleForwarding": self.use_circle_forwarding,
+                })
+            })
+            .collect();
+        let url = self
+            .base_url
+            .join("/v1/prepare-withdrawal")
+            .map_err(|_| CircleError::Unavailable)?;
+        let mut request = reqwest::Request::new(reqwest::Method::POST, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        request.headers_mut().insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        *request.body_mut() = Some(json!({ "batches": batches }).to_string().into());
+        let response = self.send(request).await?;
+        if response.status != StatusCode::OK {
+            return Err(CircleError::UnexpectedPrepareStatus {
+                status: response.status,
+                body: response.body,
+            });
+        }
+        serde_json::from_slice(&response.body).map_err(CircleError::InvalidResponse)
+    }
 }
 
 /// Sends the queued requests one at a time, each at least [`REQUEST_GAP`] after the previous
@@ -122,11 +198,17 @@ async fn request_worker(client: reqwest::Client, mut jobs: mpsc::Receiver<Job>) 
         if job.reply.is_closed() {
             continue;
         }
-        let result = client
-            .execute(job.request)
-            .await
-            .map(|response| RawResponse::new(response.status()))
-            .map_err(CircleError::Transport);
+        let result = match client.execute(job.request).await {
+            Ok(response) => {
+                let status = response.status();
+                response
+                    .bytes()
+                    .await
+                    .map(|body| RawResponse::new(status, body.to_vec()))
+                    .map_err(CircleError::Transport)
+            }
+            Err(error) => Err(CircleError::Transport(error)),
+        };
         // The gap counts from when this attempt ended, so two dispatches are always further apart.
         next_dispatch = Instant::now() + REQUEST_GAP;
         let _ = job.reply.send(result);
@@ -148,4 +230,60 @@ pub(crate) fn read_info(response: &RawResponse) -> Result<(), CircleError> {
     } else {
         Err(CircleError::UnexpectedStatus(response.status))
     }
+}
+
+/// Decoded wire data, not a verified or signable withdrawal.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub(crate) struct UnverifiedPrepareResponse {
+    pub(crate) batches: Vec<UnverifiedPrepareBatch>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UnverifiedPrepareBatch {
+    pub(crate) burn_intents: Vec<BurnIntent>,
+    pub(crate) encoded: String,
+    pub(crate) message_hash_to_sign: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BurnIntent {
+    pub(crate) max_block_height: String,
+    pub(crate) max_fee: String,
+    pub(crate) spec: TransferSpec,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TransferSpec {
+    pub(crate) version: u32,
+    pub(crate) source_domain: u32,
+    pub(crate) destination_domain: u32,
+    pub(crate) source_contract: String,
+    pub(crate) destination_contract: String,
+    pub(crate) source_token: String,
+    pub(crate) destination_token: String,
+    pub(crate) source_depositor: String,
+    pub(crate) destination_recipient: String,
+    pub(crate) source_signer: String,
+    pub(crate) destination_caller: String,
+    pub(crate) value: String,
+    pub(crate) salt: String,
+    pub(crate) hook_data: StructuredHookData,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StructuredHookData {
+    pub(crate) remote_domain: u32,
+    pub(crate) remote_depositor: String,
+    pub(crate) remote_token: String,
+    pub(crate) forwarding_contract_address: String,
+    pub(crate) forwarding_calldata: String,
 }

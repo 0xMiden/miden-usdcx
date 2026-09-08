@@ -7,6 +7,7 @@ pub mod circle;
 pub mod config;
 pub mod signer;
 pub(crate) mod store;
+pub(crate) mod validation;
 
 pub use attester::{Attester, CycleReport, RunError};
 

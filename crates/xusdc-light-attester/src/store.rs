@@ -15,8 +15,11 @@ use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::validation::BurnRefusal;
 
+const SCHEMA_VERSION: i64 = 4;
 const DISCOVERED: &str = "DISCOVERED";
+const REFUSED: &str = "REFUSED";
 
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
@@ -121,9 +124,39 @@ impl Store {
         Ok(candidates.pop())
     }
 
+    /// Records a proven-invalid burn without changing its evidence or scan progress.
+    #[allow(dead_code)]
+    pub(crate) fn refuse_burn(
+        &mut self,
+        note_id: NoteId,
+        reason: BurnRefusal,
+    ) -> Result<(), StoreError> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE burns SET status = ?1, refusal_reason = ?2
+             WHERE note_id = ?3 AND status = ?4 AND refusal_reason IS NULL",
+                params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
+            )
+            .map_err(classify_error)?;
+        if updated == 1 {
+            return Ok(());
+        }
+        // Retrying the same refusal is harmless; a different reason is a conflict.
+        let already_refused = exists(
+            &self.connection,
+            "SELECT EXISTS (SELECT 1 FROM burns
+             WHERE note_id = ?1 AND status = ?2 AND refusal_reason = ?3)",
+            params![note_id.to_bytes(), REFUSED, reason.as_str()],
+        )?;
+        (updated == 0 && already_refused)
+            .then_some(())
+            .ok_or(StoreError::Conflict)
+    }
+
     #[cfg(test)]
-    pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
-        load_burns(&self.connection, self.faucet_account_id)
+    pub(crate) fn discovered_burns(&self) -> Result<Vec<DiscoveredBurn>, StoreError> {
+        load_burns(&self.connection, self.faucet_account_id, true)
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
@@ -142,7 +175,7 @@ impl Store {
         };
         // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
         let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
-        Ok(load_burns(&self.connection, self.faucet_account_id)?
+        Ok(load_burns(&self.connection, self.faucet_account_id, false)?
             .into_iter()
             .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
@@ -219,23 +252,10 @@ fn initialize_store(
                 anchor_commitment BLOB NOT NULL,
                 next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 4294967295),
                 authenticated_parent BLOB
-            ) STRICT;
-
-            CREATE TABLE burns (
-                note_id BLOB PRIMARY KEY,
-                nullifier BLOB NOT NULL UNIQUE,
-                note BLOB NOT NULL,
-                creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295),
-                consumption_block INTEGER
-                    CHECK (consumption_block > creation_block
-                           AND consumption_block <= 4294967295),
-                burn_tx_id BLOB,
-                status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED')),
-                CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
-                CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
             ) STRICT;",
         )
         .map_err(classify_error)?;
+    create_burns_table(&transaction)?;
     transaction
         .execute(
             "INSERT INTO attester_state (
@@ -257,6 +277,66 @@ fn initialize_store(
     transaction.commit().map_err(classify_error)
 }
 
+fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    connection
+        .execute_batch(
+            "CREATE TABLE burns (
+            note_id BLOB PRIMARY KEY,
+            nullifier BLOB NOT NULL UNIQUE,
+            note BLOB NOT NULL,
+            creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295),
+            consumption_block INTEGER
+                CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
+            burn_tx_id BLOB,
+            status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
+            refusal_reason TEXT CHECK (refusal_reason IN (
+                'wrong_script', 'wrong_tag', 'wrong_attachments', 'invalid_routing',
+                'wrong_target', 'wrong_asset', 'stored_asset_mismatch',
+                'invalid_withdrawal', 'amount_mismatch'
+            )),
+            CHECK ((status != 'REFUSED' AND refusal_reason IS NULL)
+                OR (status = 'REFUSED' AND refusal_reason IS NOT NULL)),
+            CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
+            CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
+        ) STRICT;",
+        )
+        .map_err(classify_error)
+}
+
+fn migrate_store(
+    connection: &mut rusqlite::Connection,
+    faucet_account_id: AccountId,
+    trusted_anchor: TrustedAnchor,
+) -> Result<(), StoreError> {
+    let transaction = connection.transaction().map_err(classify_error)?;
+    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
+    // Keep the old evidence and schema intact if any copy or validation step fails.
+    transaction
+        .execute_batch("ALTER TABLE burns RENAME TO burns_v3;")
+        .map_err(classify_error)?;
+    create_burns_table(&transaction)?;
+    transaction
+        .execute_batch(
+            "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block,
+                            burn_tx_id, status, refusal_reason)
+         SELECT note_id, nullifier, note, creation_block, consumption_block,
+                burn_tx_id, status, NULL FROM burns_v3;
+         DROP TABLE burns_v3;",
+        )
+        .map_err(classify_error)?;
+    transaction
+        .pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(classify_error)?;
+    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
+    transaction.commit().map_err(classify_error)
+}
+
+fn schema_version(connection: &rusqlite::Connection) -> Result<i64, StoreError> {
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(classify_error)
+}
+
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
@@ -267,6 +347,9 @@ fn validate_store(
 
     // Stored chain state becomes the next run's trust base, so reject any malformed or
     // internally inconsistent row before using it.
+    if !matches!(schema_version(connection)?, 3 | SCHEMA_VERSION) {
+        return Err(StoreError::Invalid);
+    }
 
     let row_count = connection
         .query_row("SELECT COUNT(*) FROM attester_state", [], |row| {
@@ -429,16 +512,21 @@ fn load_candidates<P: Params>(
     Ok(candidates)
 }
 
-#[allow(dead_code)]
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-) -> anyhow::Result<Vec<DiscoveredBurn>> {
+    include_refused: bool,
+) -> Result<Vec<DiscoveredBurn>, StoreError> {
+    let reason_column = match schema_version(connection)? {
+        3 => "NULL",
+        SCHEMA_VERSION => "refusal_reason",
+        _ => return Err(StoreError::Invalid),
+    };
     let mut statement = connection
-        .prepare(
-            "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-             FROM burns WHERE status = 'DISCOVERED'",
-        )
+        .prepare(&format!(
+            "SELECT note_id, nullifier, note, creation_block, consumption_block,
+                    burn_tx_id, status, {reason_column} FROM burns WHERE status != 'CANDIDATE'"
+        ))
         .map_err(classify_error)?;
     let rows = statement
         .query_map([], |row| {
@@ -450,20 +538,38 @@ fn load_burns(
                 row.get::<_, i64>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(classify_error)?;
 
     let mut burns = Vec::new();
     for row in rows {
-        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status) =
-            row.map_err(classify_error)?;
+        let (
+            note_id,
+            nullifier,
+            note,
+            creation_block,
+            consumption_block,
+            burn_tx_id,
+            status,
+            reason,
+        ) = row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         let creation_block = decode_block_number(creation_block)?;
         let consumption_block = decode_block_number(consumption_block)?;
         let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
-        if status != DISCOVERED || consumption_block <= creation_block {
-            bail!(INVALID);
+        let refusal = match (status.as_str(), reason.as_deref()) {
+            (DISCOVERED, None) => None,
+            (REFUSED, Some(reason)) => Some(BurnRefusal::parse(reason).ok_or(StoreError::Invalid)?),
+            _ => return Err(StoreError::Invalid),
+        };
+        if consumption_block <= creation_block {
+            return Err(StoreError::Invalid);
+        }
+        // Terminal rows still have to decode correctly; they are only excluded from pending work.
+        if refusal.is_some() && !include_refused {
+            continue;
         }
         burns.push(
             DiscoveredBurn::new(

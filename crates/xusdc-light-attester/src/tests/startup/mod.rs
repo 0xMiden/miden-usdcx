@@ -32,6 +32,7 @@ pub(super) fn config_toml(deployment_block: u64) -> String {
         "circle_request_timeout_ms = {}\n\
          faucet_account_id_hex = \"{FAUCET_ACCOUNT_ID}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
+         use_circle_forwarding = false\n\
          poll_interval_ms = 1000\n\
          faucet_deployment_block = {deployment_block}\n\
          trusted_anchor_block = 0\n\

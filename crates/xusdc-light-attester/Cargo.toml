@@ -8,6 +8,7 @@ description = "Off-chain xUSDC withdrawal attester"
 [dependencies]
 anyhow = { workspace = true }
 xusdc-encoding = { path = "../xusdc-encoding" }
+hex = { workspace = true }
 miden-client = { version = "=0.17.0-rc.1", features = ["tonic"] }
 miden-protocol = { version = "=0.17.0-rc.5" }
 miden-standards = { version = "=0.17.0-rc.5" }
@@ -15,12 +16,13 @@ miden-objects = { version = "=0.17.0-rc.5" }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tokio-util = "0.7"
 toml = "1"
 
 [dev-dependencies]
-hex = { workspace = true }
 miden-protocol = { version = "=0.17.0-rc.5", features = ["testing"] }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time"] }

@@ -21,7 +21,7 @@ use xusdc_encoding::note::xreserve_burn::{
 };
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
-use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn};
+use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 
 use super::discovery::start;
 use super::support::{faucet_account_id, scan_limits, transaction, word, BlockFactory};
@@ -93,14 +93,14 @@ impl NoteFixture {
     }
 
     fn note(self, serial: u64) -> Note {
+        self.with_serial(word(serial))
+    }
+
+    fn with_serial(self, serial: Word) -> Note {
         Note::with_attachments(
             NoteAssets::new(self.assets).unwrap(),
             PartialNoteMetadata::new(sender(), NoteType::Public).with_tag(NoteTag::new(self.tag)),
-            NoteRecipient::new(
-                word(serial),
-                self.script,
-                NoteStorage::new(self.storage).unwrap(),
-            ),
+            NoteRecipient::new(serial, self.script, NoteStorage::new(self.storage).unwrap()),
             NoteAttachments::new(self.attachments).unwrap(),
         )
     }
@@ -114,6 +114,19 @@ fn discovered(note: Note) -> DiscoveredBurn {
     BurnCandidate::new(note, BlockNumber::from(1u32), faucet_account_id())
         .unwrap()
         .into_discovered(BlockNumber::from(2u32), burn_tx_id)
+}
+
+pub(super) fn validated_burn(amount: u64, serial: Word, destination_domain: u32) -> ValidatedBurn {
+    let mut fixture = NoteFixture::new();
+    let asset = fungible(faucet_account_id(), amount);
+    fixture.assets = vec![asset];
+    fixture.storage = asset.as_elements().to_vec();
+    let mut payload = items();
+    payload.dest_domain = destination_domain;
+    payload.dest_recipient = ForeignChainAddress::new(core::array::from_fn(|i| i as u8));
+    fixture.set_items(payload);
+    let burn = discovered(fixture.with_serial(serial));
+    validate_burn(burn).unwrap()
 }
 
 /// Accepts valid request formats, refuses a burn whose withdrawal payload does not decode, and
@@ -326,6 +339,15 @@ fn check_note_content_cases() {
         (
             "withdrawal cannot decode",
             |n| n.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
+            Refused,
+        ),
+        (
+            "destination is our own domain",
+            |n| {
+                let mut payload = items();
+                payload.dest_domain = 10_007;
+                n.set_items(payload);
+            },
             Refused,
         ),
     ];

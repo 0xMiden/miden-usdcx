@@ -40,6 +40,7 @@ fn write_config(
         "circle_request_timeout_ms = 100\n\
          faucet_account_id_hex = \"{}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
+         use_circle_forwarding = false\n\
          poll_interval_ms = 1\n\
          faucet_deployment_block = {deployment_block}\n\
          trusted_anchor_block = {}\n\

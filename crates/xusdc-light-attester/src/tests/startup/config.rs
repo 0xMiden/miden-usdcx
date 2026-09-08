@@ -2,22 +2,7 @@ use miden_protocol::block::BlockNumber;
 
 use crate::config::Config;
 
-use super::{config_toml, create_store_parent, startup_anchor, CONFIG_FILE};
-
-fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
-    config
-        .lines()
-        .map(|line| {
-            if line.starts_with(&format!("{key} =")) {
-                replacement
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
+use super::{config_toml, create_store_parent, replace_setting, startup_anchor, CONFIG_FILE};
 
 fn remove_setting(config: &str, key: &str) -> String {
     replace_setting(config, key, "")

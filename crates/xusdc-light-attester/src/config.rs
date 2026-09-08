@@ -71,6 +71,9 @@ pub struct Config {
     circle_api_base_url: Url,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
+    /// For a new store, pin at the deployment block or shortly before it, never after.
+    /// An earlier anchor adds block checks that repeat until the first scan save.
+    /// An existing store keeps its original anchor; the node must keep serving that block.
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,

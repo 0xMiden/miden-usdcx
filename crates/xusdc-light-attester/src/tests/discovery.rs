@@ -70,8 +70,8 @@ async fn start(
     (attester, controls)
 }
 
-/// Scans every height through the conservative finality bound, selects public notes by the stock
-/// burn script root, and promotes only faucet transactions that consume known candidates.
+/// Saves every authenticated block, matches faucet burns to public stock notes, and selects
+/// ready burns only when both the saved chain and proof-lag height allow withdrawal.
 #[tokio::test]
 async fn burns_are_discovered_safely() {
     let mut factory = BlockFactory::new();
@@ -141,18 +141,20 @@ async fn burns_are_discovered_safely() {
         )],
     );
 
-    let unconsumed = note(BurnNote::script(), NoteType::Public, 10, 6);
+    let later_burn = note(BurnNote::script(), NoteType::Public, 10, 6);
     let erased = note(BurnNote::script(), NoteType::Public, 11, 7);
     let consuming_tx = transaction(
         faucet_account_id(),
         &[burn_one.nullifier, burn_two.nullifier, erased.nullifier],
     );
     let consuming_tx_id = consuming_tx.id();
-    factory.push(vec![unconsumed.output], vec![consuming_tx]);
+    factory.push(vec![later_burn.output], vec![consuming_tx]);
     factory.push(
         Vec::new(),
-        vec![transaction(faucet_account_id(), &[unconsumed.nullifier])],
+        vec![transaction(faucet_account_id(), &[later_burn.nullifier])],
     );
+    let pending = note(BurnNote::script(), NoteType::Public, 12, 9);
+    factory.push(vec![pending.output], Vec::new());
 
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 2, factory.blocks(), scan_limits(6, 4)).await;
@@ -160,28 +162,26 @@ async fn burns_are_discovered_safely() {
 
     assert_eq!(
         *controls.requests.lock().unwrap(),
-        (0u32..=4).map(BlockNumber::from).collect::<Vec<_>>()
+        (0u32..=6).map(BlockNumber::from).collect::<Vec<_>>()
     );
-    assert_eq!(
-        *controls.scan_limit_requests.lock().unwrap(),
-        [BlockNumber::GENESIS]
-    );
+    assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 1);
     let state = attester.store.scan_state().unwrap();
-    assert_eq!(state.cursor.next_block, BlockNumber::from(5u32));
+    assert_eq!(state.cursor.next_block, BlockNumber::from(7u32));
     assert_eq!(
         state.authenticated_parent.unwrap().block_num(),
-        BlockNumber::from(4u32)
+        BlockNumber::from(6u32)
     );
 
     let candidates = attester.store.candidates().unwrap();
     assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].note_id(), unconsumed.id);
-    assert_eq!(
-        candidates[0].note(),
-        &unconsumed.public_note.clone().unwrap()
-    );
+    assert_eq!(candidates[0].note_id(), pending.id);
+    assert_eq!(candidates[0].note(), &pending.public_note.unwrap());
 
-    let mut burns = attester.store.discovered_burns().unwrap();
+    assert_eq!(attester.store.discovered_burns().unwrap().len(), 3);
+    let mut burns = attester
+        .store
+        .burns_ready_for_withdrawal(BlockNumber::from(4u32), 1)
+        .unwrap();
     burns.sort_by_key(DiscoveredBurn::note_id);
     assert_eq!(burns.len(), 2);
     assert_eq!(burns[0].burn_tx_id(), consuming_tx_id);
@@ -197,8 +197,13 @@ async fn burns_are_discovered_safely() {
             ids
         }
     );
-    assert_eq!(burns[0].note().id(), burns[0].note_id());
-    assert_eq!(burns[1].note().id(), burns[1].note_id());
+    for original in [burn_one, burn_two] {
+        let saved = burns
+            .iter()
+            .find(|burn| burn.note_id() == original.id)
+            .unwrap();
+        assert_eq!(saved.note(), &original.public_note.unwrap());
+    }
 
     drop(attester);
     let (mut attester, restart_controls) =
@@ -210,16 +215,19 @@ async fn burns_are_discovered_safely() {
     attester.discover_burns().await.unwrap();
     assert_eq!(
         *restart_controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS, BlockNumber::from(5u32)]
+        [BlockNumber::GENESIS]
     );
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(6u32)
+        BlockNumber::from(7u32)
     );
-    assert!(attester.store.candidates().unwrap().is_empty());
-    let burns = attester.store.discovered_burns().unwrap();
+    assert_eq!(attester.store.candidates().unwrap().len(), 1);
+    let burns = attester
+        .store
+        .burns_ready_for_withdrawal(BlockNumber::from(5u32), 1)
+        .unwrap();
     assert_eq!(burns.len(), 3);
-    assert!(burns.iter().any(|burn| burn.note_id() == unconsumed.id));
+    assert!(burns.iter().any(|burn| burn.note_id() == later_burn.id));
 
     let burn_at_anchor = note(BurnNote::script(), NoteType::Public, 12, 8);
     let mut factory = BlockFactory::new();
@@ -240,6 +248,54 @@ async fn burns_are_discovered_safely() {
             .collect::<Vec<_>>(),
         [burn_at_anchor.id]
     );
+
+    // A burn at block 2 needs verified block 4 for depth 2, regardless of reported heights.
+    let mut factory = BlockFactory::new(faucet_account_id());
+    factory.push(Vec::new(), Vec::new());
+    let burn = note(BurnNote::script(), NoteType::Public, 1, 10);
+    factory.push(vec![burn.output], Vec::new());
+    factory.push(
+        Vec::new(),
+        vec![transaction(faucet_account_id(), &[burn.nullifier])],
+    );
+    factory.push(Vec::new(), Vec::new());
+    factory.push(Vec::new(), Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let config = write_config(&tempdir, 1, &factory.blocks()[0], 2);
+    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(3, 3));
+    let mut attester = Attester::start(config, Box::new(chain), ready_circle())
+        .await
+        .unwrap();
+    attester.discover_burns().await.unwrap();
+    assert_eq!(attester.store.discovered_burns().unwrap().len(), 1);
+    for (proof_lag, depth) in [(3u32, 2), (3, 4), (1, 1)] {
+        assert!(attester
+            .store
+            .burns_ready_for_withdrawal(proof_lag.into(), depth)
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(
+        attester
+            .store
+            .burns_ready_for_withdrawal(2u32.into(), 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    controls.requests.lock().unwrap().clear();
+    *controls.scan_limits.lock().unwrap() = scan_limits(4, 4);
+    attester.discover_burns().await.unwrap();
+    assert_eq!(
+        *controls.requests.lock().unwrap(),
+        [BlockNumber::from(4u32)]
+    );
+    let ready = attester
+        .store
+        .burns_ready_for_withdrawal(2u32.into(), 2)
+        .unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].note_id(), burn.id);
 }
 
 /// Proves candidate insertion, burn promotion, cursor movement, and authenticated-parent updates
@@ -286,6 +342,10 @@ fn burns_and_scan_position_are_saved_together() {
         authenticated_parent: Some(child.header().clone()),
     };
     let initial_state = store.scan_state().unwrap();
+    assert!(store
+        .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
+        .unwrap()
+        .is_empty());
     // Even the first saved block must not skip a height. No stored parent can mask this check.
     assert_eq!(
         store
@@ -746,6 +806,60 @@ async fn bad_blocks_are_rejected() {
         &saved_note.public_note.unwrap()
     );
 
+    // Reporting block 12 is not evidence of ten descendants after the burn in block 2.
+    for bad_signature in [false, true] {
+        let mut factory = BlockFactory::new();
+        factory.push(Vec::new(), Vec::new());
+        let burn = note(BurnNote::script(), NoteType::Public, 1, 32);
+        factory.push(vec![burn.output], Vec::new());
+        let consumed = factory.push(
+            Vec::new(),
+            vec![transaction(faucet_account_id(), &[burn.nullifier])],
+        );
+        let mut blocks = factory.blocks();
+        if bad_signature {
+            let (header, body, _) = factory.push(Vec::new(), Vec::new()).into_parts();
+            blocks.push(SignedBlock::new_unchecked(
+                header,
+                body,
+                BlockSignatures::new(Vec::new()).unwrap(),
+            ));
+        }
+        let tempdir = tempfile::tempdir().unwrap();
+        let config = write_config(&tempdir, 1, &blocks[0], 10);
+        let (chain, _) = TestChain::new(blocks, scan_limits(12, 12));
+        let mut attester = Attester::start(config, Box::new(chain), ready_circle())
+            .await
+            .unwrap();
+        let error = attester
+            .discover_burns()
+            .await
+            .expect_err("descendant must authenticate");
+        if bad_signature {
+            assert!(matches!(error, DiscoverError::ChainDiverged));
+        } else {
+            assert!(matches!(error, DiscoverError::Chain(_)));
+        }
+        assert_eq!(
+            attester.store.scan_state().unwrap(),
+            ScanState {
+                cursor: ScanCursor {
+                    next_block: 3u32.into()
+                },
+                authenticated_parent: Some(consumed.header().clone()),
+            }
+        );
+        assert_eq!(
+            attester.store.discovered_burns().unwrap()[0].note_id(),
+            burn.id
+        );
+        assert!(attester
+            .store
+            .burns_ready_for_withdrawal(12u32.into(), 10)
+            .unwrap()
+            .is_empty());
+    }
+
     let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
@@ -770,12 +884,12 @@ async fn bad_blocks_are_rejected() {
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(3, 3)).await;
     attester.discover_burns().await.unwrap();
     controls.requests.lock().unwrap().clear();
-    *controls.scan_limits.lock().unwrap() = scan_limits(3, 2);
+    *controls.scan_limits.lock().unwrap() = scan_limits(3, 0);
     attester.discover_burns().await.unwrap();
     assert!(controls.requests.lock().unwrap().is_empty());
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(3u32)
+        BlockNumber::from(4u32)
     );
 
     *controls.scan_limits.lock().unwrap() = scan_limits(2, 1);
@@ -785,8 +899,16 @@ async fn bad_blocks_are_rejected() {
     ));
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(3u32)
+        BlockNumber::from(4u32)
     );
+    let saved = attester.store.scan_state().unwrap();
+    *controls.scan_limits.lock().unwrap() = scan_limits(u32::MAX, u32::MAX);
+    assert!(matches!(
+        attester.discover_burns().await,
+        Err(DiscoverError::CursorOverflow)
+    ));
+    assert_eq!(attester.store.scan_state(), Ok(saved));
+    assert!(controls.requests.lock().unwrap().is_empty());
 }
 
 /// A note published again with the same id, before or after the faucet consumed it, is the same
@@ -865,6 +987,6 @@ async fn run_stops_when_shutdown_is_set() {
     shutdown.cancel();
     attester.run(shutdown).await.unwrap();
 
-    assert!(controls.scan_limit_requests.lock().unwrap().is_empty());
+    assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 0);
     assert_eq!(*controls.requests.lock().unwrap(), [BlockNumber::GENESIS]);
 }

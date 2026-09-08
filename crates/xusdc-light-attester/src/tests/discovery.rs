@@ -8,7 +8,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, ProvenBlock};
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::OrderedTransactionHeaders;
-use miden_protocol::Word;
+use miden_protocol::{Word, MAX_BATCHES_PER_BLOCK, MAX_OUTPUT_NOTES_PER_BATCH};
 use miden_standards::note::{BurnNote, P2idNote};
 
 use crate::attester::{Attester, DiscoverError, StartError};
@@ -19,8 +19,8 @@ use crate::store::{
 };
 
 use super::support::{
-    faucet_account_id, note, ready_circle, scan_limits, transaction, BlockFactory, ChainControls,
-    TestChain,
+    faucet_account_id, note, ready_circle, replace_note_batches, scan_limits, transaction,
+    BlockFactory, ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -249,6 +249,18 @@ fn burns_and_scan_position_are_saved_together() {
         authenticated_parent: Some(child.header().clone()),
     };
     let initial_state = store.scan_state().unwrap();
+    assert_eq!(
+        store.save_scan_progress(
+            &[],
+            &[],
+            &ScanState {
+                cursor: after_anchor.cursor,
+                authenticated_parent: None,
+            }
+        ),
+        Err(StoreError::Invalid),
+        "moving the cursor requires the authenticated block header"
+    );
     // Even the first saved block must not skip a height. No stored parent can mask this check.
     assert_eq!(
         store.save_scan_progress(std::slice::from_ref(&candidate), &[], &after_child),
@@ -449,13 +461,16 @@ fn burns_and_scan_position_are_saved_together() {
         ScanCursor {
             next_block: BlockNumber::from(2u32),
         },
-        trusted_anchor,
+        TrustedAnchor {
+            block_num: child.header().block_num(),
+            commitment: child.header().commitment(),
+        },
     )
     .unwrap();
     assert_eq!(
         store.save_scan_progress(
             &[BurnCandidate {
-                creation_block: BlockNumber::from(1u32),
+                creation_block: BlockNumber::GENESIS,
                 ..candidate.clone()
             }],
             &[],
@@ -510,16 +525,77 @@ async fn bad_blocks_are_rejected() {
         Err(StartError::TrustedAnchorInvalid)
     ));
 
+    let first = note(BurnNote::script(), NoteType::Public, 1, 40);
+    let second = note(BurnNote::script(), NoteType::Public, 1, 41);
+    let malformed_batches = [
+        (
+            "too many batches",
+            vec![Vec::new(); MAX_BATCHES_PER_BLOCK + 1],
+        ),
+        (
+            "note position outside batch",
+            vec![vec![(MAX_OUTPUT_NOTES_PER_BATCH, first.output.clone())]],
+        ),
+        (
+            "duplicate position",
+            vec![vec![(0, first.output.clone()), (0, second.output.clone())]],
+        ),
+    ];
+    for (name, batches) in malformed_batches {
+        let mut factory = BlockFactory::new(faucet_account_id());
+        let anchor = factory.push(Vec::new(), Vec::new());
+        let child = factory.push(Vec::new(), Vec::new());
+        let tempdir = tempfile::tempdir().unwrap();
+        let config = write_config(&tempdir, 1, &anchor, 1);
+        let malformed_anchor = replace_note_batches(anchor.clone(), batches.clone());
+        let (chain, _) = TestChain::new(vec![malformed_anchor], scan_limits(2, 1));
+        assert!(
+            matches!(
+                Attester::start(config, Box::new(chain), ready_circle()).await,
+                Err(StartError::TrustedAnchorInvalid)
+            ),
+            "{name}: startup must return an error, not panic"
+        );
+        assert!(!tempdir.path().join("state.sqlite3").exists(), "{name}");
+
+        let malformed_child = replace_note_batches(child, batches);
+        let (mut attester, _) = start(
+            &tempdir,
+            1,
+            vec![anchor, malformed_child],
+            scan_limits(2, 1),
+        )
+        .await;
+        assert!(
+            matches!(
+                attester.discover_burns().await,
+                Err(DiscoverError::ChainDiverged)
+            ),
+            "{name}"
+        );
+        assert_eq!(
+            attester.store.scan_state().unwrap().cursor.next_block,
+            BlockNumber::from(1u32),
+            "{name}"
+        );
+        assert!(attester.store.candidates().unwrap().is_empty(), "{name}");
+    }
+
+    // Maximum legal positions, unsorted entries, and index 0 in separate batches are all valid.
+    let mut batches = vec![Vec::new(); MAX_BATCHES_PER_BLOCK];
+    batches[0] = vec![
+        (MAX_OUTPUT_NOTES_PER_BATCH - 1, first.output),
+        (0, second.output),
+    ];
+    batches[MAX_BATCHES_PER_BLOCK - 1] =
+        vec![(0, note(BurnNote::script(), NoteType::Public, 1, 42).output)];
     let mut factory = BlockFactory::new(faucet_account_id());
-    factory.push(Vec::new(), Vec::new());
-    let later_anchor = factory.push(Vec::new(), Vec::new());
+    factory.push_note_batches(batches.clone(), Vec::new());
+    factory.push_note_batches(batches, Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 0, &later_anchor, 1);
-    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    assert!(matches!(
-        Attester::start(config, Box::new(chain), ready_circle()).await,
-        Err(StartError::AnchorAfterScanStart)
-    ));
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
+    attester.discover_burns().await.unwrap();
+    assert_eq!(attester.store.candidates().unwrap().len(), 3);
 
     let cases = [
         ("missing", 0u8, 1u32, Expected::ReadFailure),

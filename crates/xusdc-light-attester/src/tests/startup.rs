@@ -5,19 +5,22 @@ use std::process::Command;
 use std::time::Duration;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::{BlockNumber, ProvenBlock};
+use miden_protocol::note::NoteType;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
+use miden_standards::note::BurnNote;
 use reqwest::{Method, StatusCode};
 use tempfile::TempDir;
 
 use crate::attester::{Attester, StartError};
 use crate::circle::HttpTransport;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
+use crate::store::{BurnCandidate, DiscoveredBurn, ScanCursor, ScanState, Store, TrustedAnchor};
 
 use super::support::{
-    faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle, ObservedRequest,
-    TestChain, FAUCET_ACCOUNT_ID,
+    faucet_account_id, note, ready_circle, scan_limits, startup_anchor, transaction, BlockFactory,
+    CircleState, FakeCircle, ObservedRequest, TestChain, FAUCET_ACCOUNT_ID,
 };
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -74,6 +77,29 @@ fn write_config(tempdir: &TempDir, deployment_block: u32) -> PathBuf {
 
 fn load_config(tempdir: &TempDir, deployment_block: u32) -> Config {
     Config::load(&write_config(tempdir, deployment_block)).unwrap()
+}
+
+fn load_config_with_anchor(
+    tempdir: &TempDir,
+    deployment_block: u32,
+    anchor: &ProvenBlock,
+) -> Config {
+    let config = replace_setting(
+        &config_toml(u64::from(deployment_block)),
+        "trusted_anchor_block",
+        &format!("trusted_anchor_block = {}", anchor.header().block_num()),
+    );
+    let config = replace_setting(
+        &config,
+        "trusted_anchor_commitment_hex",
+        &format!(
+            "trusted_anchor_commitment_hex = \"{}\"",
+            anchor.header().commitment()
+        ),
+    );
+    let path = tempdir.path().join(CONFIG_FILE);
+    std::fs::write(&path, config).unwrap();
+    Config::load(&path).unwrap()
 }
 
 fn create_store_parent(tempdir: &TempDir) -> PathBuf {
@@ -329,36 +355,131 @@ async fn bad_anchor_does_not_create_store() {
         BlockNumber::from(1u32)
     );
     assert!(store_path.is_file());
+    drop(attester);
+
+    let mut factory = BlockFactory::new(faucet_account_id());
+    factory.push(Vec::new(), Vec::new());
+    let anchor = factory.push(Vec::new(), Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let store_path = create_store_parent(&tempdir);
+    let result = start(
+        load_config_with_anchor(&tempdir, 0, &anchor),
+        TestChain::new(factory.blocks(), scan_limits(1, 1)).0,
+        ready_circle(),
+    )
+    .await;
+    assert!(matches!(result, Err(StartError::AnchorAfterScanStart)));
+    assert!(
+        !store_path.exists(),
+        "rejected config must not pin a fresh store"
+    );
+    let attester = start(
+        load_config_with_anchor(&tempdir, 1, &anchor),
+        TestChain::new(factory.blocks(), scan_limits(1, 1)).0,
+        ready_circle(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        attester.store.scan_state().unwrap().cursor.next_block,
+        BlockNumber::from(1u32)
+    );
+}
+
+/// One public note is still pending and another was consumed in the next block.
+fn create_populated_store(path: &Path) -> (Vec<ProvenBlock>, BurnCandidate, DiscoveredBurn) {
+    let pending = note(BurnNote::script(), NoteType::Public, 1, 60);
+    let consumed = note(BurnNote::script(), NoteType::Public, 1, 61);
+    let tx = transaction(faucet_account_id(), &[consumed.nullifier]);
+    let candidate = BurnCandidate {
+        note: pending.public_note.unwrap(),
+        creation_block: 1u32.into(),
+    };
+    let burn = DiscoveredBurn {
+        note: consumed.public_note.unwrap(),
+        creation_block: 1u32.into(),
+        consumption_block: 2u32.into(),
+        burn_tx_id: tx.id(),
+    };
+    let mut factory = BlockFactory::new(faucet_account_id());
+    factory.push(Vec::new(), Vec::new());
+    let anchor = factory.push(vec![pending.output, consumed.output], Vec::new());
+    let child = factory.push(Vec::new(), vec![tx]);
+    let mut store = Store::open_or_create(
+        path,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: 1u32.into(),
+        },
+        TrustedAnchor {
+            block_num: 1u32.into(),
+            commitment: anchor.header().commitment(),
+        },
+    )
+    .unwrap();
+    store
+        .save_scan_progress(
+            &[
+                candidate.clone(),
+                BurnCandidate {
+                    note: burn.note.clone(),
+                    creation_block: burn.creation_block,
+                },
+            ],
+            &[],
+            &ScanState {
+                cursor: ScanCursor {
+                    next_block: 2u32.into(),
+                },
+                authenticated_parent: Some(anchor.header().clone()),
+            },
+        )
+        .unwrap();
+    store
+        .save_scan_progress(
+            &[],
+            std::slice::from_ref(&burn),
+            &ScanState {
+                cursor: ScanCursor {
+                    next_block: 3u32.into(),
+                },
+                authenticated_parent: Some(child.header().clone()),
+            },
+        )
+        .unwrap();
+    (factory.blocks(), candidate, burn)
 }
 
 #[tokio::test]
 async fn existing_store_resumes_from_saved_block() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let saved_block = BlockNumber::from(2u32);
-    let mut store = Store::open_or_create(
-        &store_path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::from(1u32),
-        },
-        trusted_anchor(),
-    )
-    .unwrap();
-    store
-        .save_scan_progress(
-            &[],
-            &[],
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: saved_block,
-                },
-                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[], Word::empty())),
-            },
+    let (blocks, candidate, burn) = create_populated_store(&store_path);
+    for fallback in [0, 700] {
+        let attester = start(
+            load_config_with_anchor(&tempdir, fallback, &blocks[1]),
+            TestChain::new(blocks.clone(), scan_limits(2, 2)).0,
+            ready_circle(),
         )
+        .await
         .unwrap();
-    drop(store);
+        assert_eq!(
+            attester.store.scan_state().unwrap(),
+            ScanState {
+                cursor: ScanCursor {
+                    next_block: 3u32.into()
+                },
+                authenticated_parent: Some(blocks[2].header().clone()),
+            }
+        );
+        assert_eq!(attester.store.candidates(), Ok(vec![candidate.clone()]));
+        assert_eq!(attester.store.discovered_burns(), Ok(vec![burn.clone()]));
+    }
 
+    // Even before the first scan, the saved cursor wins over an edited fallback.
+    let tempdir = tempfile::tempdir().unwrap();
+    let store_path = create_store_parent(&tempdir);
+    create_valid_store(&store_path);
     let attester = start(
         load_config(&tempdir, 700),
         TestChain::anchor_only(),
@@ -366,10 +487,14 @@ async fn existing_store_resumes_from_saved_block() {
     )
     .await
     .unwrap();
-
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        saved_block
+        attester.store.scan_state().unwrap(),
+        ScanState {
+            cursor: ScanCursor {
+                next_block: 1u32.into()
+            },
+            authenticated_parent: None,
+        }
     );
 }
 
@@ -409,7 +534,7 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             connection
                 .execute("CREATE TABLE unrelated (value INTEGER NOT NULL)", [])
                 .unwrap();
-            connection.pragma_update(None, "user_version", 2).unwrap();
+            connection.pragma_update(None, "user_version", 3).unwrap();
         }
         InvalidStoreCase::WrongVersion => {
             create_valid_store(path);
@@ -517,6 +642,35 @@ async fn invalid_store_is_rejected() {
         )
         .await;
         assert!(matches!(result, Err(StartError::InvalidStore)));
+    }
+
+    // History is bounded by the saved anchor and cursor, never by today's fallback config.
+    for (name, damage) in [
+        ("parent does not precede cursor", "UPDATE attester_state SET next_block = 4"),
+        ("candidate before anchor", "UPDATE burn_candidates SET creation_block = 0"),
+        ("candidate at cursor", "UPDATE burn_candidates SET creation_block = 3"),
+        ("burn before anchor", "UPDATE burns SET creation_block = 0"),
+        ("burn created and consumed together", "UPDATE burns SET creation_block = 2"),
+        ("burn consumed at cursor", "UPDATE burns SET consumption_block = 3"),
+        ("candidate without parent", "DELETE FROM burns; UPDATE attester_state SET authenticated_parent = NULL"),
+        ("burn without parent", "DELETE FROM burn_candidates; UPDATE attester_state SET authenticated_parent = NULL"),
+        ("cursor before anchor", "DELETE FROM burn_candidates; DELETE FROM burns; UPDATE attester_state SET authenticated_parent = NULL, next_block = 0"),
+        ("parent before anchor", "DELETE FROM burn_candidates; DELETE FROM burns; UPDATE attester_state SET next_block = 1"),
+    ] {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = create_store_parent(&tempdir);
+        let (blocks, _, _) = create_populated_store(&path);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        // Simulate corrupt stored data so startup, rather than SQLite's write checks, rejects it.
+        connection.pragma_update(None, "ignore_check_constraints", true).unwrap();
+        connection.execute_batch(damage).unwrap();
+        if name == "parent before anchor" {
+            connection.execute("UPDATE attester_state SET authenticated_parent = ?1", [blocks[0].header().to_bytes()]).unwrap();
+        }
+        drop(connection);
+        let result = start(load_config_with_anchor(&tempdir, 0, &blocks[1]),
+            TestChain::new(blocks, scan_limits(2, 2)).0, ready_circle()).await;
+        assert!(matches!(result, Err(StartError::InvalidStore)), "{name}");
     }
 }
 

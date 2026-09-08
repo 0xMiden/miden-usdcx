@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{
-    BlockBody, BlockHeader, BlockNumber, BlockProof, BlockSignatures, FeeParameters, ProvenBlock,
-    ValidatorKeys,
+    BlockBody, BlockHeader, BlockNumber, BlockProof, BlockSignatures, FeeParameters,
+    OutputNoteBatch, ProvenBlock, ValidatorKeys,
 };
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
 use miden_protocol::note::{
@@ -18,7 +18,7 @@ use miden_protocol::transaction::{
     InputNoteCommitment, InputNotes, OrderedTransactionHeaders, OutputNote, PublicOutputNote,
     RawOutputNote, TransactionHeader,
 };
-use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 use reqwest::{Method, StatusCode};
 
@@ -240,12 +240,20 @@ impl BlockFactory {
         output_notes: Vec<OutputNote>,
         transactions: Vec<TransactionHeader>,
     ) -> ProvenBlock {
-        let block_num = BlockNumber::from(self.blocks.len() as u32);
         let output_note_batches = if output_notes.is_empty() {
             Vec::new()
         } else {
             vec![output_notes.into_iter().enumerate().collect()]
         };
+        self.push_note_batches(output_note_batches, transactions)
+    }
+
+    pub(super) fn push_note_batches(
+        &mut self,
+        output_note_batches: Vec<OutputNoteBatch>,
+        transactions: Vec<TransactionHeader>,
+    ) -> ProvenBlock {
+        let block_num = BlockNumber::from(self.blocks.len() as u32);
         let body = BlockBody::new_unchecked(
             Vec::new(),
             output_note_batches,
@@ -285,6 +293,22 @@ impl BlockFactory {
     pub(super) fn blocks(&self) -> Vec<ProvenBlock> {
         self.blocks.clone()
     }
+}
+
+/// Keep the signed header but replace the untrusted body, then deserialize it as the RPC does.
+pub(super) fn replace_note_batches(
+    block: ProvenBlock,
+    batches: Vec<OutputNoteBatch>,
+) -> ProvenBlock {
+    let (header, body, signatures, proof) = block.into_parts();
+    let body = BlockBody::new_unchecked(
+        body.updated_accounts().to_vec(),
+        batches,
+        body.created_nullifiers().to_vec(),
+        body.transactions().clone(),
+    );
+    let block = ProvenBlock::new_unchecked(header, body, signatures, proof);
+    ProvenBlock::read_from_bytes(&block.to_bytes()).unwrap()
 }
 
 pub(super) fn note(script: NoteScript, note_type: NoteType, tag: u32, serial: u64) -> TestNote {

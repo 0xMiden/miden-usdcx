@@ -1,13 +1,14 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNoteIndex, BlockNumber, ProvenBlock};
 use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::note::Nullifier;
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::MAX_BATCHES_PER_BLOCK;
 
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleClient, CircleError, HttpTransport};
@@ -117,6 +118,7 @@ impl Attester {
             .map_err(StartError::MidenNodeUnavailable)?;
         if block.header().block_num() != trusted_anchor.block_num
             || block.header().commitment() != trusted_anchor.commitment
+            || !has_valid_note_positions(&block)
             || block.validate(None).is_err()
         {
             return Err(StartError::TrustedAnchorInvalid);
@@ -146,12 +148,10 @@ impl Attester {
             StoreError::Invalid => StartError::InvalidStore,
             StoreError::Locked => StartError::StoreLocked,
             StoreError::AnchorChanged => StartError::AnchorChanged,
+            StoreError::AnchorAfterScanStart => StartError::AnchorAfterScanStart,
             StoreError::Conflict => StartError::InvalidStore,
         })?;
         let scan_state = store.scan_state().map_err(|_| StartError::InvalidStore)?;
-        if trusted_anchor.block_num > scan_state.cursor.next_block {
-            return Err(StartError::AnchorAfterScanStart);
-        }
         let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
 
         Ok(Self {
@@ -333,6 +333,7 @@ impl Attester {
             .await
             .map_err(DiscoverError::Chain)?;
         if block.header().block_num() != block_num
+            || !has_valid_note_positions(&block)
             || block.validate(Some(last_verified_header)).is_err()
         {
             return Err(DiscoverError::ChainDiverged);
@@ -348,6 +349,21 @@ impl Attester {
         let _ = now;
         todo!()
     }
+}
+
+fn has_valid_note_positions(block: &ProvenBlock) -> bool {
+    // The protocol's block validator assumes these positions are valid and panics otherwise.
+    // Check RPC-supplied positions first, without requiring the notes to arrive sorted.
+    let batches = block.body().output_note_batches();
+    if batches.len() > MAX_BATCHES_PER_BLOCK {
+        return false;
+    }
+    batches.iter().enumerate().all(|(batch_index, notes)| {
+        let mut positions = BTreeSet::new();
+        notes.iter().all(|(note_index, _)| {
+            BlockNoteIndex::new(batch_index, *note_index).is_some() && positions.insert(*note_index)
+        })
+    })
 }
 
 fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = BlockNumber> {
@@ -409,8 +425,9 @@ fn find_burns_in_block(
 fn map_store_error(error: StoreError) -> DiscoverError {
     match error {
         StoreError::Conflict => DiscoverError::ConflictingEvidence,
-        StoreError::Invalid | StoreError::Locked | StoreError::AnchorChanged => {
-            DiscoverError::InvalidStore
-        }
+        StoreError::Invalid
+        | StoreError::Locked
+        | StoreError::AnchorChanged
+        | StoreError::AnchorAfterScanStart => DiscoverError::InvalidStore,
     }
 }

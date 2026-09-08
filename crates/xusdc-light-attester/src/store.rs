@@ -74,12 +74,14 @@ pub(crate) enum StoreError {
     Invalid,
     Locked,
     AnchorChanged,
+    AnchorAfterScanStart,
     Conflict,
 }
 
 pub(crate) struct Store {
     connection: rusqlite::Connection,
-    initial_cursor: ScanCursor,
+    // Historical records are bounded by the stored anchor, not today's deployment fallback.
+    anchor_block: BlockNumber,
 }
 
 impl Store {
@@ -95,6 +97,9 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => return Err(StoreError::Invalid),
         };
+        if existing_length.is_none() && trusted_anchor.block_num > initial_cursor.next_block {
+            return Err(StoreError::AnchorAfterScanStart);
+        }
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
         // Keep the exclusive connection lock for the store's lifetime so a second attester cannot
@@ -117,22 +122,17 @@ impl Store {
                 trusted_anchor,
             )?,
             Some(0) => return Err(StoreError::Invalid),
-            Some(_) => validate_store(
-                &connection,
-                faucet_account_id,
-                initial_cursor,
-                trusted_anchor,
-            )?,
+            Some(_) => validate_store(&connection, faucet_account_id, trusted_anchor)?,
         }
 
         Ok(Self {
             connection,
-            initial_cursor,
+            anchor_block: trusted_anchor.block_num,
         })
     }
 
     pub(crate) fn scan_state(&self) -> Result<ScanState, StoreError> {
-        load_scan_state(&self.connection, self.initial_cursor)
+        load_scan_state(&self.connection, self.anchor_block)
     }
 
     pub(crate) fn candidates(&self) -> Result<Vec<BurnCandidate>, StoreError> {
@@ -150,23 +150,23 @@ impl Store {
         burns: &[DiscoveredBurn],
         next_state: &ScanState,
     ) -> Result<(), StoreError> {
-        validate_scan_state(next_state, self.initial_cursor)?;
-        validate_discovery_records(candidates, burns, next_state.cursor, self.initial_cursor)?;
+        validate_scan_state(next_state, self.anchor_block)?;
+        validate_discovery_records(candidates, burns, next_state, self.anchor_block)?;
 
         // One block's evidence, cursor, and verified header commit as one unit. A crash therefore
         // either records that complete block or scans it again from the previous checkpoint.
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        let current_state = load_scan_state(&transaction, self.initial_cursor)?;
+        let current_state = load_scan_state(&transaction, self.anchor_block)?;
 
         // Advance one block at a time so no caller can silently skip burn evidence.
         if next_state.cursor.next_block.checked_sub(1) != Some(current_state.cursor.next_block) {
             return Err(StoreError::Conflict);
         }
+        let next_parent = next_state
+            .authenticated_parent
+            .as_ref()
+            .ok_or(StoreError::Invalid)?;
         if let Some(current_parent) = &current_state.authenticated_parent {
-            let next_parent = next_state
-                .authenticated_parent
-                .as_ref()
-                .ok_or(StoreError::Invalid)?;
             if next_parent.prev_block_commitment() != current_parent.commitment() {
                 return Err(StoreError::Conflict);
             }
@@ -267,7 +267,6 @@ fn initialize_store(
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-    initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
 ) -> Result<(), StoreError> {
     // Stored chain state becomes the next run's trust base, so reject any malformed or
@@ -314,17 +313,10 @@ fn validate_store(
     if stored_anchor != trusted_anchor {
         return Err(StoreError::AnchorChanged);
     }
-    let state = load_scan_state(connection, initial_cursor)?;
-    if state
-        .authenticated_parent
-        .as_ref()
-        .is_some_and(|parent| parent.block_num() < trusted_anchor.block_num)
-    {
-        return Err(StoreError::Invalid);
-    }
+    let state = load_scan_state(connection, trusted_anchor.block_num)?;
     let candidates = load_candidates(connection)?;
     let burns = load_burns(connection)?;
-    validate_discovery_records(&candidates, &burns, state.cursor, initial_cursor)
+    validate_discovery_records(&candidates, &burns, &state, trusted_anchor.block_num)
         .map_err(|_| StoreError::Invalid)?;
 
     if exists(
@@ -343,7 +335,7 @@ fn validate_store(
 
 fn load_scan_state(
     connection: &rusqlite::Connection,
-    initial_cursor: ScanCursor,
+    anchor_block: BlockNumber,
 ) -> Result<ScanState, StoreError> {
     let (next_block, authenticated_parent) = connection
         .query_row(
@@ -363,31 +355,38 @@ fn load_scan_state(
             .map(decode_canonical)
             .transpose()?,
     };
-    validate_scan_state(&state, initial_cursor)?;
+    validate_scan_state(&state, anchor_block)?;
     Ok(state)
 }
 
-fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> Result<(), StoreError> {
-    match &state.authenticated_parent {
-        Some(parent) if state.cursor.next_block.checked_sub(1) != Some(parent.block_num()) => {
-            Err(StoreError::Invalid)
-        }
-        None if state.cursor != initial_cursor => Err(StoreError::Invalid),
-        _ => Ok(()),
+fn validate_scan_state(state: &ScanState, anchor_block: BlockNumber) -> Result<(), StoreError> {
+    if state.cursor.next_block < anchor_block {
+        return Err(StoreError::Invalid);
     }
+    if let Some(parent) = &state.authenticated_parent {
+        if parent.block_num() < anchor_block
+            || state.cursor.next_block.checked_sub(1) != Some(parent.block_num())
+        {
+            return Err(StoreError::Invalid);
+        }
+    }
+    Ok(())
 }
 
 fn validate_discovery_records(
     candidates: &[BurnCandidate],
     burns: &[DiscoveredBurn],
-    cursor: ScanCursor,
-    initial_cursor: ScanCursor,
+    state: &ScanState,
+    anchor_block: BlockNumber,
 ) -> Result<(), StoreError> {
+    if state.authenticated_parent.is_none() && (!candidates.is_empty() || !burns.is_empty()) {
+        return Err(StoreError::Conflict);
+    }
+    let cursor = state.cursor;
     if candidates.iter().any(|candidate| {
-        candidate.creation_block < initial_cursor.next_block
-            || candidate.creation_block >= cursor.next_block
+        candidate.creation_block < anchor_block || candidate.creation_block >= cursor.next_block
     }) || burns.iter().any(|burn| {
-        burn.creation_block < initial_cursor.next_block
+        burn.creation_block < anchor_block
             || burn.creation_block >= burn.consumption_block
             || burn.consumption_block >= cursor.next_block
     }) {

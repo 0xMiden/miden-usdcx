@@ -38,17 +38,17 @@ fn hex32(s: &str) -> [u8; 32] {
     bytes.try_into().expect("exactly 32 bytes")
 }
 
-/// The burn payload that matches `prepare_withdrawal_200.json`.
+/// The burn payload that MATCHES `prepare_withdrawal_200.json`: `value = 10000000`,
+/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`. `salt` is not a compared field,
+/// so any value serves.
 fn matching_payload() -> BurnPayload {
-    let body = base_200_json();
-    let spec = &body["batches"][0]["burnIntents"][0]["spec"];
     BurnPayload {
-        amount: AssetAmount::new(spec["value"].as_str().unwrap().parse().unwrap()).unwrap(),
-        dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
+        amount: AssetAmount::new(10_000_000).unwrap(),
+        dest_domain: 0,
         dest_recipient: ForeignChainAddress::new(hex32(
-            spec["destinationRecipient"].as_str().unwrap(),
+            "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         )),
-        salt: hex32(spec["salt"].as_str().unwrap()),
+        salt: [0x11; 32],
     }
 }
 

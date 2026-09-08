@@ -141,7 +141,7 @@ pub fn payload_matching_fixture() -> BurnPayload {
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
-        salt: decode_hex32(spec["salt"].as_str().unwrap()),
+        salt: [0u8; 32],
     }
 }
 

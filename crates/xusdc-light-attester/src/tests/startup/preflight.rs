@@ -68,6 +68,8 @@ async fn unreachable_circle_api_is_rejected() {
                 method: Method::GET,
                 url: "https://circle.example.invalid/v1/info".to_string(),
                 timeout: Some(REQUEST_TIMEOUT),
+                headers: Default::default(),
+                body: Vec::new(),
             }]
         );
     }

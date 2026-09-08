@@ -115,6 +115,28 @@ impl Store {
         load_burns(&self.connection, self.faucet_account_id)
     }
 
+    /// Filters discovered burns by verified waiting depth; used by the later submit stage.
+    #[allow(dead_code)]
+    pub(crate) fn burns_ready_for_withdrawal(
+        &self,
+        proof_lag_block: BlockNumber,
+        minimum_depth_blocks: u32,
+    ) -> Result<Vec<DiscoveredBurn>, StoreError> {
+        let Some(parent) = self.scan_state()?.authenticated_parent else {
+            return Ok(Vec::new());
+        };
+        let Some(last_depth_safe_block) = parent.block_num().checked_sub(minimum_depth_blocks)
+        else {
+            return Ok(Vec::new());
+        };
+        // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
+        let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
+        Ok(load_burns(&self.connection)?
+            .into_iter()
+            .filter(|burn| burn.consumption_block <= last_ready_block)
+            .collect())
+    }
+
     pub(crate) fn save_scan_progress(
         &mut self,
         candidates: &[BurnCandidate],

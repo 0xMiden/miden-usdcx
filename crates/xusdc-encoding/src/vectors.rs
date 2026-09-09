@@ -13,12 +13,14 @@ use miden_standards::interop::eth::EthAmount;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VectorFile {
     pub version: u32,
     pub families: Families,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Families {
     pub b32: Vec<B32Vector>,
     pub amt: Vec<AmtVector>,
@@ -31,6 +33,7 @@ pub struct Families {
 
 /// bytes32 → Word vectors. `lossless_error` marks the TV-B32-2 limb-ge-p entry.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct B32Vector {
     pub id: String,
     pub tv: Vec<String>,
@@ -45,6 +48,7 @@ pub struct B32Vector {
 
 /// uint256 → AssetAmount vectors. `kind`: accept | reject.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmtVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -63,6 +67,7 @@ pub struct AmtVector {
 
 /// AccountId ↔ bytes32 vectors (`expected_variant` set ⇒ reject entry).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AidVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -80,6 +85,7 @@ pub struct AidVector {
 /// DepositIntent vectors. `kind`: accept | reject. `mode: masm-only` for the felt-len
 /// staging case (unrepresentable in the byte API).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -106,6 +112,7 @@ pub struct DiVector {
 /// Per-field expectations for accept vectors: semantic values plus each field's packed
 /// felts at its felt offset in the packed layout.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiFields {
     pub magic: u32,
     pub version: u32,
@@ -129,6 +136,7 @@ pub struct DiFields {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackedField {
     pub name: String,
     pub felt_off: u64,
@@ -144,6 +152,7 @@ pub struct PackedField {
 /// live-account tests check the MASM writer against the Rust mirror instead. The ownership map's
 /// anti-duplication section records that split.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MiVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -173,6 +182,7 @@ pub struct MiVector {
 /// 32-byte keccak digest over a full DepositIntent payload (→ 8 felts), and the 65-byte
 /// `r‖s‖v` signature (→ 17 felts; `v` carried in felt 16, unused on-chain).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -194,6 +204,7 @@ pub struct AttVector {
 /// the four semantic inputs plus the 18-felt golden `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BnVector {
     pub id: String,
     pub tv: Vec<String>,
@@ -482,14 +493,17 @@ mod tests {
 
         let v = load();
         assert_eq!(v.version, 1);
-        assert!(!v.families.b32.is_empty(), "b32 family");
-        assert!(!v.families.amt.is_empty(), "amt family");
-        assert!(!v.families.aid.is_empty(), "aid family");
-        assert!(!v.families.di.is_empty(), "di family");
-        assert!(!v.families.att.is_empty(), "att family");
-        assert!(!v.families.bn.is_empty(), "bn family");
+        // row counts are pinned: a dropped row fails here, not as an empty filtered loop
+        assert_eq!(v.families.b32.len(), 4, "b32 family");
+        assert_eq!(v.families.amt.len(), 4, "amt family");
+        assert_eq!(v.families.aid.len(), 5, "aid family");
+        assert_eq!(v.families.di.len(), 10, "di family");
+        assert_eq!(v.families.att.len(), 3, "att family");
+        assert_eq!(v.families.bn.len(), 9, "bn family");
+        assert_eq!(v.families.mi.len(), 6, "mi family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
         let tv_ok = |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);
+        let kind_ok = |kind: &str| kind == "accept" || kind == "reject";
         for e in &v.families.b32 {
             assert!(
                 !no_provenance(&e.cite, &e.derivation),
@@ -503,6 +517,7 @@ mod tests {
             );
         }
         for e in &v.families.amt {
+            assert!(kind_ok(&e.kind), "{}: kind", e.id);
             assert!(
                 !no_provenance(&e.cite, &e.derivation),
                 "{} provenance",
@@ -527,6 +542,7 @@ mod tests {
             );
         }
         for e in &v.families.di {
+            assert!(kind_ok(&e.kind), "{}: kind", e.id);
             assert!(
                 !no_provenance(&e.cite, &e.derivation),
                 "{} provenance",
@@ -551,6 +567,20 @@ mod tests {
             );
         }
         for e in &v.families.bn {
+            assert!(kind_ok(&e.kind), "{}: kind", e.id);
+            assert!(
+                !no_provenance(&e.cite, &e.derivation),
+                "{} provenance",
+                e.id
+            );
+            assert!(
+                tv_ok(&e.id, &e.tv),
+                "{}: empty tv tags and not allowlisted",
+                e.id
+            );
+        }
+        for e in &v.families.mi {
+            assert!(kind_ok(&e.kind), "{}: kind", e.id);
             assert!(
                 !no_provenance(&e.cite, &e.derivation),
                 "{} provenance",

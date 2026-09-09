@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::Word;
 use reqwest::Url;
@@ -18,6 +19,8 @@ struct RawConfig {
     faucet_account_id_hex: String,
     circle_api_base_url: String,
     use_circle_forwarding: bool,
+    #[serde(default)]
+    max_withdrawal_fee: u64,
     poll_interval_ms: u64,
     faucet_deployment_block: u32,
     trusted_anchor_block: u32,
@@ -34,6 +37,7 @@ pub struct Config {
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
     use_circle_forwarding: bool,
+    max_withdrawal_fee: AssetAmount,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -48,6 +52,8 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let encoded = fs::read_to_string(path).context("failed to read config")?;
         let raw: RawConfig = toml::from_str(&encoded).context("failed to parse config")?;
+        let max_withdrawal_fee = AssetAmount::new(raw.max_withdrawal_fee)
+            .context("maximum withdrawal fee is invalid")?;
 
         if raw.circle_request_timeout_ms == 0 {
             bail!("circle request timeout must be greater than zero");
@@ -109,6 +115,7 @@ impl Config {
             faucet_account_id,
             circle_api_base_url,
             use_circle_forwarding: raw.use_circle_forwarding,
+            max_withdrawal_fee,
             poll_interval: Duration::from_millis(raw.poll_interval_ms),
             faucet_deployment_block: BlockNumber::from(raw.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(raw.trusted_anchor_block),
@@ -133,6 +140,10 @@ impl Config {
 
     pub(crate) fn use_circle_forwarding(&self) -> bool {
         self.use_circle_forwarding
+    }
+
+    pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
+        self.max_withdrawal_fee
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

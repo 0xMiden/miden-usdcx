@@ -7,6 +7,8 @@ description = "Off-chain xUSDC withdrawal attester"
 
 [dependencies]
 anyhow = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
 hex = { workspace = true }
 miden-usdcx = { workspace = true }
 miden-client = { workspace = true, features = ["std", "tonic"] }

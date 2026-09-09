@@ -815,13 +815,8 @@ async fn mint_ignores_a_hostile_advice_stack() -> Result<()> {
     Ok(())
 }
 
-/// The faucet's pinned advice-staging path verifies against the signature the NOTE carries, not one
-/// the host offers.
-///
-/// The note carries the allowlisted attester's key with that attester's signature over a
-/// DIFFERENT payload, while the host stages the witness that would verify. The mint must
-/// reject. If this ever passes, the current advice staging no longer protects the verifier's
-/// positional signature read.
+/// The note carries a signature for a different payload. Minting must fail even when the host
+/// supplies a valid signature for the actual payload through the advice stack.
 #[tokio::test]
 async fn mint_rejects_a_forged_signature_the_host_tries_to_rescue() -> Result<()> {
     let mut pf = fixture()?;

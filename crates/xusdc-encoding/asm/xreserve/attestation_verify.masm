@@ -109,14 +109,11 @@ end
 # INTERNAL PROCEDURES
 # =================================================================================================
 
-#! ECDSA-verifies the attested signature over keccak256 of the payload, from the caller's memory.
+#! Verifies the ECDSA signature over the payload's Keccak-256 digest using the caller's public key
+#! and signature.
 #!
-#! `verify_bytes` takes the key and scalars from the ADVICE stack and binds only the key to its
-#! commitment. This procedure stages the caller's hash-verified key under that verifier-enforced
-#! commitment, then stages the rewritten signature scalars under a local Poseidon2 commitment so
-#! `push_mapval` places the expected scalars at the verifier's read position. The pinned verifier
-#! has no scalar-commitment operand, so the signature-scalar side is positional rather than
-#! cryptographically bound here. The message is not hashed here.
+#! The verifier checks the public key against its commitment, but does not check a commitment to
+#! the signature itself.
 #!
 #! Inputs:  [PUBKEY_COMMITMENT, intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []

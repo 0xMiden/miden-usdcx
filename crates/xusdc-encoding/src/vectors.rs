@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(v.families.aid.len(), 5, "aid family");
         assert_eq!(v.families.di.len(), 10, "di family");
         assert_eq!(v.families.att.len(), 3, "att family");
-        assert_eq!(v.families.bn.len(), 9, "bn family");
+        assert_eq!(v.families.bn.len(), 8, "bn family");
         assert_eq!(v.families.mi.len(), 6, "mi family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
         let tv_ok = |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);

@@ -493,7 +493,6 @@ mod tests {
 
         let v = load();
         assert_eq!(v.version, 1);
-        // row counts are pinned: a dropped row fails here, not as an empty filtered loop
         assert_eq!(v.families.b32.len(), 4, "b32 family");
         assert_eq!(v.families.amt.len(), 4, "amt family");
         assert_eq!(v.families.aid.len(), 5, "aid family");

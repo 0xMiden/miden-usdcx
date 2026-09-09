@@ -8,8 +8,7 @@
 //! admins must not gain blocking power.
 //!
 //! Rather than trusting deployment to get this right, `build_components` refuses to compose an
-//! account at all when the blocklist manager collides with the administrator, the Domain Pauser, or the
-//! Domain Manager. These tests pin each refusal and the specific error naming the collided role.
+//! account at all when the blocklist manager collides with the administrator or the Domain Pauser. These tests pin each refusal and the specific error naming the collided role.
 //! (They live apart from `builder_api.rs` only to keep that file within its size ceiling.)
 
 mod support;
@@ -23,19 +22,18 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError,
 };
 
-// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
-// id(4). A BLK_MANAGER holder equal to id(1)/(2)/(3) collides with the administrator/DOM_PAUSER/DOM_MANAGER.
+// The production fixture seeds ADMIN = ATTEST_ADMIN = id(1), DOM_PAUSER = id(2),
+// DOM_UNPAUSER = id(3), BLK_MANAGER = id(4).
 
 /// A blocklist manager that collides with any privileged identity is rejected at build time, with
 /// an error naming which one it collided with.
 ///
 /// Naming the role matters operationally: a generic "invalid configuration" would leave a deployer
-/// guessing which of the three accounts they reused. The three collisions are parametrized rather
+/// guessing which accounts they reused. The collisions are parametrized rather
 /// than copy-pasted.
 #[rstest]
 #[case::administrator(test_account_id(1), "ADMIN")]
 #[case::dom_pauser(test_account_id(2), "DOM_PAUSER")]
-#[case::dom_manager(test_account_id(3), "DOM_MANAGER")]
 fn build_rejects_blk_manager_colliding_with_a_privileged_role(
     #[case] blk_manager: AccountId,
     #[case] expected_role: &str,
@@ -44,8 +42,9 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
         .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(1))
         .pauser_holder(test_account_id(2))
-        .manager_holder(test_account_id(3))
+        .unpauser_holder(test_account_id(3))
         .blocklist_manager_holder(blk_manager)
         .fee_parameters(test_fee_parameters())
         .domain(TEST_DOMAIN)
@@ -65,7 +64,7 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
     Ok(())
 }
 
-/// POSITIVE: with the `BLK_MANAGER` holder DISTINCT from owner/DOM_PAUSER/DOM_MANAGER, the build
+/// POSITIVE: with the `BLK_MANAGER` holder DISTINCT from owner/DOM_PAUSER, the build
 /// succeeds — the isolation guard does not reject a properly external administrator.
 #[test]
 fn build_accepts_isolated_blk_manager() -> Result<()> {
@@ -73,8 +72,9 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
         .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(1))
         .pauser_holder(test_account_id(2))
-        .manager_holder(test_account_id(3))
+        .unpauser_holder(test_account_id(3))
         .blocklist_manager_holder(test_account_id(4)) // distinct external BLK_MANAGER
         .fee_parameters(test_fee_parameters())
         .domain(TEST_DOMAIN)

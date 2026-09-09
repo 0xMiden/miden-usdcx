@@ -5,32 +5,21 @@
 //! the policy dispatch), so every supply increase passes the attestation gate — the
 //! faucet's core mint-security invariant.
 //!
-//! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
-//! component (carrying the attestation mint policy and the `set_attester` admin proc), a
-//! `TokenPolicyManager` whose ACTIVE mint policy is the attestation
-//! policy and whose ACTIVE burn policy requires the withdrawal attachment shape and an initial
-//! floor of at least one, using the stock [`MinBurnAmount`] companion's slot, the STOCK [`PausableManager`] and
-//! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
-//! (a seeded `RoleBasedAccessControl` under the
-//! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
-//! Domain role members (`DOM_PAUSER` / `DOM_MANAGER`) with `DOM_PAUSER` administration DELEGATED
-//! to `DOM_MANAGER`, the stock `ADMIN` role on the administrator's account, and the external
-//! `BLK_MANAGER` transfer-blocklist administrator. There is NO two-step ownership component: the
-//! built-in `ADMIN` role is the account's only authority handle, and the standard role-action note
-//! is what rotates it. That note also makes the delegation graph seeded here RUNTIME-MUTABLE — see
-//! the allowlist doc in `network_auth`.
+//! Composes the `FungibleFaucet`, the attestation mint policy and `set_attester` extension,
+//! a `TokenPolicyManager` with the withdrawal-shape burn policy and stock [`MinBurnAmount`]
+//! floor, plus the stock [`PausableManager`], [`BlocklistManager`] and [`ConstantFeeManager`].
+//! The RBAC seed holds five roles: `ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`, `DOM_UNPAUSER` and
+//! `BLK_MANAGER`. Every role is administered directly by `ADMIN`; there is no ownership component.
+//! The standard role-action note rotates membership and can change role administration at runtime.
+//!
+//! [`XReserveAdminAuthority`] maps `pause` to `DOM_PAUSER`, `unpause` to `DOM_UNPAUSER`,
+//! `set_attester` to `ATTEST_ADMIN`, and block/unblock to `BLK_MANAGER`. Other authority-gated
+//! procedures, including `set_note_fee`, resolve to `ADMIN`. Pause and blocklist storage belong
+//! to the base `Pausable` and `BasicBlocklist` companions; their managers add no storage.
 //!
 //! Fee administration uses a standard
 //! [`BasicConstantFeePolicy`](miden_standards::account::fees::BasicConstantFeePolicy) constructed
-//! from the network fee parameters and the xUSDC note-cost table. The builder installs
-//! [`ConstantFeeManager`], and `set_note_fee` is authorized through the account's `ADMIN` role.
-//!
-//! Pause and blocklist administration are the STOCK managers gated per procedure: the authority's
-//! role map assigns `pause`/`unpause` to `DOM_PAUSER` and `block_account`/`unblock_account` to
-//! `BLK_MANAGER`, so neither capability reaches the administrator — Circle's distinct-role model, expressed
-//! in the standard components rather than in hand-rolled wrappers. The managers install no storage
-//! of their own: `is_paused` comes from the base `Pausable` component and `blocked_accounts` from
-//! the `BasicBlocklist` companion, both of which were already installed.
+//! from the network fee parameters and the xUSDC note-cost table.
 //!
 //! Domain config is entirely BUILD-SEEDED: `domain` is a required builder input written into its
 //! declared slot at composition time. The faucet identifier has no slot — it is the account's own
@@ -59,15 +48,11 @@ use construction::build_usdcx_faucet;
 pub use construction::{build_faucet_account, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
 
-/// The two Circle Domain RoleSymbols this faucet seeds under the ratified Circle-faithful admin
-/// model: `DOM_PAUSER` (pause/unpause) and `DOM_MANAGER` (rotation / role
-/// management — the delegated admin of `DOM_PAUSER`). [`XReserveAdminAuthority`] is the single
-/// place `DOM_PAUSER` gates a procedure — it assigns the symbol to the stock `PausableManager`'s
-/// two roots, so no MASM mentions either symbol; role management consumes the STOCK rbac procs,
-/// so no MASM references `DOM_MANAGER` either. The remaining setters are unassigned and so
-/// resolve to `ADMIN`, whose sole seeded member is the bootstrap administrator.
+/// Dedicated role symbols mapped to attester administration, pause and unpause by
+/// [`XReserveAdminAuthority`]. All role administration resolves directly to `ADMIN`.
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
-pub const DOM_MANAGER_ROLE: &str = "DOM_MANAGER";
+pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
+pub const DOM_UNPAUSER_ROLE: &str = "DOM_UNPAUSER";
 
 /// The dedicated blocklist-administration RoleSymbol this faucet seeds under the ratified
 /// transfer-blocklist decision: `BLK_MANAGER` is held by an EXTERNAL entity that
@@ -86,6 +71,10 @@ pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 /// under its own namespace, and it is that re-export the account installs and resolves by.
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_extension::check_policy";
+
+/// Path of the attester setter exported by the shipped faucet extension.
+pub const XRESERVE_SET_ATTESTER_PROC_PATH: &str =
+    "xreserve::components::faucet_extension::set_attester";
 
 /// Path exported by the separate zero-slot burn-policy component.
 pub const XRESERVE_BURN_POLICY_PROC_PATH: &str =
@@ -124,16 +113,17 @@ pub const USDCX_DECIMALS: u8 = 6;
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
     /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
-    /// gates every unmapped authority-gated procedure (`set_attester` / the
+    /// gates every unmapped authority-gated procedure (the
     /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
     /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating it is a
     /// grant and a revoke of `ADMIN` through the standard role-action note.
     owner: AccountId,
-    /// The seeded `DOM_PAUSER` role member — the holder the role map assigns the stock
-    /// `PausableManager`'s pause and unpause procedures to.
+    /// The seeded `ATTEST_ADMIN` role member, authorized to call `set_attester`.
+    attest_admin_holder: AccountId,
+    /// The seeded `DOM_PAUSER` role member, authorized to pause the faucet.
     pauser_holder: AccountId,
-    /// The seeded `DOM_MANAGER` role member (role management — the delegated admin of `DOM_PAUSER`).
-    manager_holder: AccountId,
+    /// The seeded `DOM_UNPAUSER` role member, authorized to unpause the faucet.
+    unpauser_holder: AccountId,
     /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
     /// blocklist (block/unblock) and holds NO other admin capability. Its concrete
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
@@ -158,8 +148,8 @@ impl XReserveStablecoinBuilder {
 
     /// Creates a builder from the faucet supply parameters (`max_supply` / `token_supply`), the
     /// `owner` (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
-    /// `pauser_holder` / `manager_holder`
-    /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
+    /// `attest_admin_holder`, `pauser_holder` and `unpauser_holder` seeded as the sole members of
+    /// `ATTEST_ADMIN`, `DOM_PAUSER` and `DOM_UNPAUSER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
     /// transfer-blocklist administrator), the network `fee_parameters`, plus the BUILD-SEEDED
     /// u32 `domain`. The domain is required because a faucet without it would ship a domain
@@ -187,8 +177,9 @@ impl XReserveStablecoinBuilder {
         max_supply: AssetAmount,
         token_supply: AssetAmount,
         owner: AccountId,
+        attest_admin_holder: AccountId,
         pauser_holder: AccountId,
-        manager_holder: AccountId,
+        unpauser_holder: AccountId,
         blocklist_manager_holder: AccountId,
         fee_parameters: FeeParameters,
         domain: u32,
@@ -206,8 +197,9 @@ impl XReserveStablecoinBuilder {
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
             owner,
+            attest_admin_holder,
             pauser_holder,
-            manager_holder,
+            unpauser_holder,
             blocklist_manager_holder,
             fee_parameters,
             min_burn_amount,
@@ -229,7 +221,7 @@ impl XReserveStablecoinBuilder {
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        // BLK_MANAGER must not collide with ADMIN / DOM_PAUSER / DOM_MANAGER.
+        // BLK_MANAGER must not collide with ADMIN / DOM_PAUSER.
         if self.blocklist_manager_holder == self.owner {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
@@ -241,13 +233,6 @@ impl XReserveStablecoinBuilder {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
                     collides_with: "DOM_PAUSER",
-                },
-            );
-        }
-        if self.blocklist_manager_holder == self.manager_holder {
-            return Err(
-                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "DOM_MANAGER",
                 },
             );
         }
@@ -289,8 +274,9 @@ impl XReserveStablecoinBuilder {
         components.push(ConstantFeeManager::for_basic_constant_fee_policy().into());
         components.push(seeded_dom_roles_rbac(
             self.owner,
+            self.attest_admin_holder,
             self.pauser_holder,
-            self.manager_holder,
+            self.unpauser_holder,
             self.blocklist_manager_holder,
         ));
         components.push(XReserveAdminAuthority::new().into());
@@ -298,33 +284,29 @@ impl XReserveStablecoinBuilder {
     }
 }
 
-/// Seeds the faucet's `RoleBasedAccessControl` component with four roles: `DOM_PAUSER` whose admin
-/// is delegated to `DOM_MANAGER`, plus `DOM_MANAGER`, `BLK_MANAGER` and the built-in `ADMIN` seeded
-/// with `owner`. A role with no delegated admin falls under `ADMIN`, which is the account's only
-/// authority handle since it installs no ownership component.
-///
+/// Seeds all five roles with one member each and direct `ADMIN` administration.
 /// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
     owner: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser =
         RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
-    let manager =
-        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol (≤12)");
+    let attest_admin = RoleSymbol::new(ATTEST_ADMIN_ROLE)
+        .expect("ATTEST_ADMIN is a fixed valid role symbol (≤12)");
+    let unpauser = RoleSymbol::new(DOM_UNPAUSER_ROLE)
+        .expect("DOM_UNPAUSER is a fixed valid role symbol (≤12)");
     let blk_manager =
         RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol (≤12)");
     let admin = RoleBasedAccessControl::admin_role();
 
     RoleBasedAccessControl::builder()
-        .role(
-            RoleConfig::new(pauser)
-                .with_member(pauser_holder)
-                .with_admin(manager.clone()),
-        )
-        .role(RoleConfig::new(manager).with_member(manager_holder))
+        .role(RoleConfig::new(pauser).with_member(pauser_holder))
+        .role(RoleConfig::new(attest_admin).with_member(attest_admin_holder))
+        .role(RoleConfig::new(unpauser).with_member(unpauser_holder))
         .role(RoleConfig::new(admin).with_member(owner))
         .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
         .build()

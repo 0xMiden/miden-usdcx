@@ -28,12 +28,12 @@ use xusdc_encoding::account::xreserve::BLK_MANAGER_ROLE;
 
 const MAX_SUPPLY: u64 = 1_000_000;
 
-// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4).
+// The production builder seeds ADMIN = ATTEST_ADMIN = id(1), DOM_PAUSER = id(2),
+// DOM_UNPAUSER = id(3), BLK_MANAGER = id(4).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
-fn dom_manager() -> AccountId {
+fn dom_unpauser() -> AccountId {
     test_account_id(3)
 }
 fn blk_manager() -> AccountId {
@@ -204,13 +204,13 @@ async fn unblock_by_blk_manager_holder_succeeds_and_clears_the_map() -> Result<(
 }
 
 /// The block gate is BLK_MANAGER-specific: a stranger, the OWNER (two-way capability isolation — the
-/// owner holds no block power), and a DIFFERENT role holder (DOM_MANAGER — spoof-proof, only the
+/// owner holds no block power), and a DIFFERENT role holder (DOM_UNPAUSER — spoof-proof, only the
 /// hard-coded BLK_MANAGER symbol passes) are ALL rejected with the EXACT stock role error, and the
 /// map is unchanged.
 #[rstest]
 #[case::stranger(stranger())]
 #[case::owner(administrator())]
-#[case::dom_manager(dom_manager())]
+#[case::dom_unpauser(dom_unpauser())]
 #[tokio::test]
 async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
     let gm = policed_faucet()?;
@@ -232,7 +232,7 @@ async fn block_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Resu
 #[rstest]
 #[case::stranger(stranger())]
 #[case::owner(administrator())]
-#[case::dom_manager(dom_manager())]
+#[case::dom_unpauser(dom_unpauser())]
 #[tokio::test]
 async fn unblock_by_non_blk_manager_is_rejected(#[case] sender: AccountId) -> Result<()> {
     let gm = policed_faucet()?;

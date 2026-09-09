@@ -52,7 +52,7 @@ use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
-    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
+    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl, RoleConfig,
 };
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
@@ -73,7 +73,8 @@ use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::builder::XRESERVE_BURN_POLICY_PROC_PATH;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
-    XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveStablecoinBuilderError, ATTEST_ADMIN_ROLE, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    DOM_UNPAUSER_ROLE,
 };
 use xusdc_encoding::errors;
 use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
@@ -553,8 +554,9 @@ pub fn production_builder_verdict(
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
         .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(1))
         .pauser_holder(test_account_id(2))
-        .manager_holder(test_account_id(3))
+        .unpauser_holder(test_account_id(3))
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(test_fee_parameters())
         .domain(domain)
@@ -1722,134 +1724,33 @@ pub struct BurnPolicyHarness {
     pub burn_amount: u64,
 }
 
-/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
-/// replica of the production builder's private `seeded_dom_roles_rbac` (both stock RBAC maps
-/// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
-/// `DOM_MANAGER`→`manager_holder`; `DOM_PAUSER` administration delegated to `DOM_MANAGER` — the
-/// seed `role_config[DOM_PAUSER] = [1, DOM_MANAGER, 0, 0]`). The burn oracle needs the RBAC foundation
-/// so the DOM_PAUSER-sent stock `PausableManager::pause` clears its role gate (the pause gate
-/// `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
-/// Replica fidelity to the production seed is pinned by
-/// `set_min_burn.rs::support_replica_carries_delegation_seed` (the production twin is
-/// `role_admin.rs::shipped_delegation_reads_back`).
+/// Seeds the burn oracle through the stock RBAC builder with the same five roles as production.
+/// `support_replica_matches_the_production_role_seed` pins both maps to the production seed.
 fn seeded_dom_roles_rbac_component(
     owner: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
-    let manager =
-        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
+    let attest_admin =
+        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid role symbol");
+    let unpauser =
+        RoleSymbol::new(DOM_UNPAUSER_ROLE).expect("DOM_UNPAUSER is a fixed valid role symbol");
     let blk_manager =
         RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol");
-    // v16 (#3215): the administrator has no implicit super-admin standing — the stock ADMIN role is
-    // seeded on the administrator's account, mirroring the production seed.
     let admin = RoleBasedAccessControl::admin_role();
-    let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER.
-    let delegated_config_word = Word::from([
-        Felt::from(1u32),
-        Felt::from(&manager),
-        Felt::ZERO,
-        Felt::ZERO,
-    ]);
 
-    let role_config = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&pauser),
-            ])),
-            delegated_config_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&manager),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&admin),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&blk_manager),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the four-role role_config seed is valid");
-
-    let role_membership = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&pauser),
-                pauser_holder.suffix(),
-                pauser_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&manager),
-                manager_holder.suffix(),
-                manager_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&admin),
-                owner.suffix(),
-                owner.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&blk_manager),
-                blocklist_manager_holder.suffix(),
-                blocklist_manager_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the four-role role_membership seed is valid");
-
-    AccountComponent::new(
-        RoleBasedAccessControl::code().clone(),
-        vec![
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_config_slot().clone(),
-                role_config,
-            ),
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_membership_slot().clone(),
-                role_membership,
-            ),
-        ],
-        RoleBasedAccessControl::component_metadata(),
-    )
-    .expect("the seeded RBAC component mirrors the stock From impl and is valid")
+    RoleBasedAccessControl::builder()
+        .role(RoleConfig::new(pauser).with_member(pauser_holder))
+        .role(RoleConfig::new(attest_admin).with_member(attest_admin_holder))
+        .role(RoleConfig::new(unpauser).with_member(unpauser_holder))
+        .role(RoleConfig::new(admin).with_member(owner))
+        .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
+        .build()
+        .expect("the seeded RBAC component mirrors production and is valid")
+        .into()
 }
 
 /// TEST-ONLY burn-oracle composition: registers the attestation mint policy and both the custom
@@ -1862,8 +1763,9 @@ fn oracle_burn_components(
     min_burn_size: u64,
     burn_real_active: bool,
     administrator: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
     let min_burn =
@@ -1925,8 +1827,9 @@ fn oracle_burn_components(
     components.push(PausableManager.into());
     components.push(seeded_dom_roles_rbac_component(
         administrator,
+        attest_admin_holder,
         pauser_holder,
-        manager_holder,
+        unpauser_holder,
         blocklist_manager_holder,
     ));
     components.push(XReserveAdminAuthority::new().into());
@@ -1936,7 +1839,8 @@ fn oracle_burn_components(
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
 /// (the domain-config value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
-/// (`administrator` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
+/// (`ADMIN` = `ATTEST_ADMIN` = id(1), `DOM_PAUSER` = id(2), `DOM_UNPAUSER` = id(3),
+/// `BLK_MANAGER` = id(4)), adds a user wallet seeded with the single burn asset, and
 /// creates the canonical [`XReserveBurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
 /// 6, mirroring the mint composition fixtures.
 pub fn setup_burn_policy_account(
@@ -1986,6 +1890,7 @@ pub fn setup_burn_policy_account(
         xreserve_component,
         min_burn_size,
         burn_real_active,
+        test_account_id(1),
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),
@@ -2377,7 +2282,7 @@ pub fn dom_pauser_pause_note(sender: AccountId, seed: u64) -> Result<Note> {
     dom_pauser_manager_note(sender, seed, "pause", 21, 22)
 }
 
-/// A `PausableManager::unpause` note sent by `sender` (the Domain pauser, for success).
+/// A `PausableManager::unpause` note sent by `sender` (the Domain unpauser, for success).
 pub fn dom_pauser_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
     dom_pauser_manager_note(sender, seed, "unpause", 23, 24)
 }

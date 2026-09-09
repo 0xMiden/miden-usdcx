@@ -3,7 +3,7 @@
 //!
 //! Nothing here executes a transaction. These are the structural claims the executing suites rest
 //! on — that the four standard manager procedures are four distinct roots, that the map covers
-//! exactly them, that the roles it names are the same two the retired MASM wrappers hard-coded, and
+//! them plus the attester setter, that the two retired-wrapper role identities are preserved, and
 //! that writing the map into an account and reading it back is lossless. A lossy round trip or a
 //! stray extra entry would silently regate a procedure, which no effects test would necessarily
 //! catch: the wrong role can still be a role someone holds.
@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountStorage;
-use miden_protocol::account::{AccountComponent, StorageSlotName};
+use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
@@ -92,27 +92,39 @@ fn the_four_manager_procedure_roots_are_distinct() {
     );
 }
 
-/// The map covers exactly the four manager procedures, with pause and unpause on the pause role
-/// and block and unblock on the blocklist role — the gates the custom wrappers enforce today.
+/// The map covers the four manager procedures and the attester setter, with separate pause and
+/// unpause roles, block and unblock on the blocklist role, and the setter on the attester role.
 #[test]
-fn the_admin_authority_maps_exactly_the_four_manager_procedures() {
+fn the_admin_authority_maps_exactly_the_five_gated_procedures() -> Result<()> {
+    let library = assemble_xreserve_lib()?;
+    let component = AccountComponent::new(
+        library,
+        Vec::new(),
+        miden_protocol::account::component::AccountComponentMetadata::new(
+            "xusdc-attester-root-probe",
+        ),
+    )
+    .context("binding the assembled xreserve library to read a procedure root")?;
+    let set_attester = component
+        .get_procedure_root_by_path("xreserve::attester_admin::set_attester")
+        .context("the assembled xreserve library must expose the attester setter")?;
     let roles = XReserveAdminAuthority::new().procedure_roles().clone();
 
     assert_eq!(
         roles.len(),
-        4,
-        "the map must cover exactly the four manager procedures; any extra entry moves a \
+        5,
+        "the map must cover exactly the five gated procedures; any extra entry moves a \
          capability off its current holder"
     );
     assert_eq!(
         roles.get(&PausableManager::pause_root()),
         Some(&pauser_symbol()),
-        "pause must be gated on the pause role, as pause_admin.masm gates it today"
+        "pause must be gated on the pause role"
     );
     assert_eq!(
         roles.get(&PausableManager::unpause_root()),
-        Some(&pauser_symbol()),
-        "unpause must be gated on the pause role"
+        Some(&RoleSymbol::new("DOM_UNPAUSER").expect("the Domain unpauser role symbol is valid")),
+        "unpause must be gated on the unpause role"
     );
     assert_eq!(
         roles.get(&BlocklistManager::block_account_root()),
@@ -124,6 +136,12 @@ fn the_admin_authority_maps_exactly_the_four_manager_procedures() {
         Some(&blocklist_symbol()),
         "unblock must be gated on the blocklist role"
     );
+    assert_eq!(
+        roles.get(&set_attester),
+        Some(&RoleSymbol::new("ATTEST_ADMIN").expect("the attester administrator role is valid")),
+        "the attester setter must be gated on the attester administrator role"
+    );
+    Ok(())
 }
 
 /// The role identities carried by the map are the same two roles the current MASM wrappers
@@ -170,33 +188,6 @@ fn the_map_round_trips_through_real_account_storage() -> Result<()> {
         !Authority::try_read_frozen(&storage)
             .map_err(|e| anyhow::anyhow!("reading the frozen flag: {e}"))?,
         "a freshly composed account must not ship frozen"
-    );
-    Ok(())
-}
-
-/// The attester setter is deliberately left out of the map, so it keeps falling back to the
-/// administrator role — which is the same account that owns it today. Mapping it to a dedicated
-/// role would move a capability, so it must not happen by accident.
-#[test]
-fn the_attester_setter_is_not_mapped_to_a_dedicated_role() -> Result<()> {
-    let library = assemble_xreserve_lib()?;
-    let component = AccountComponent::new(
-        library,
-        Vec::new(),
-        miden_protocol::account::component::AccountComponentMetadata::new(
-            "xusdc-attester-root-probe",
-        ),
-    )
-    .context("binding the assembled xreserve library to read a procedure root")?;
-    let set_attester = component
-        .get_procedure_root_by_path("xreserve::attester_admin::set_attester")
-        .context("the assembled xreserve library must expose the attester setter")?;
-
-    let roles = XReserveAdminAuthority::new().procedure_roles().clone();
-    assert!(
-        !roles.contains_key(&set_attester),
-        "the attester setter must stay unmapped so it keeps falling back to the administrator \
-         role; mapping it moves the capability to a new holder"
     );
     Ok(())
 }

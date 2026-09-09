@@ -13,7 +13,7 @@
 //! network execution.
 //!
 //! This module ships the one faucet-owned row of the note-script allowlist: the `set_attester`
-//! reference op, which resolves, through the account-wide authority, to the built-in `ADMIN` role.
+//! reference op, which resolves, through the account-wide authority, to the `ATTEST_ADMIN` role.
 //!
 //! The other admin surfaces do NOT ship a faucet-owned note script, because a standard note
 //! already covers each of them and calls the standard component the faucet installs. Pausing uses

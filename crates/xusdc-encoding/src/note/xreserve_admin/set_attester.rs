@@ -53,10 +53,10 @@ impl XReserveSetAttesterNoteStorage {
     }
 }
 
-/// The administrator-gated `set_attester` admin note. Storage layout: `[pk_commitment(4),
+/// The `ATTEST_ADMIN`-gated `set_attester` admin note. Storage layout: `[pk_commitment(4),
 /// enabled]`. Consumed against the faucet network account; `attester_admin::set_attester` gates on
-/// the (kernel-forced) note sender through the account-wide authority, resolving to the built-in
-/// `ADMIN` role.
+/// the (kernel-forced) note sender through the account-wide authority, resolving to the
+/// `ATTEST_ADMIN` role.
 pub struct XReserveSetAttesterNote;
 
 #[bon::bon]
@@ -75,7 +75,7 @@ impl XReserveSetAttesterNote {
 
     /// Builds a `set_attester` admin note via a `bon` builder
     /// (`XReserveSetAttesterNote::builder().sender(..).faucet_id(..).storage(..).rng(..).build()`):
-    /// `sender` is the admin party (an `ADMIN` role holder, for success), `faucet_id` the target
+    /// `sender` is the admin party (an `ATTEST_ADMIN` role holder, for success), `faucet_id` the target
     /// faucet (PUBLIC), `storage` the typed [`XReserveSetAttesterNoteStorage`] payload.
     #[builder]
     pub fn new<R: FeltRng>(

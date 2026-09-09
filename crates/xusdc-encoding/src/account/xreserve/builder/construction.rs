@@ -192,8 +192,9 @@ pub fn build_faucet_account(
     max_supply: AssetAmount,
     token_supply: AssetAmount,
     owner: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
     fee_parameters: FeeParameters,
     domain: u32,
@@ -202,8 +203,9 @@ pub fn build_faucet_account(
         .max_supply(max_supply)
         .token_supply(token_supply)
         .owner(owner)
+        .attest_admin_holder(attest_admin_holder)
         .pauser_holder(pauser_holder)
-        .manager_holder(manager_holder)
+        .unpauser_holder(unpauser_holder)
         .blocklist_manager_holder(blocklist_manager_holder)
         .fee_parameters(fee_parameters)
         .domain(domain)

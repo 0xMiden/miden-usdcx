@@ -42,11 +42,10 @@ pub enum XReserveStablecoinBuilderError {
     /// factory's floor refusal). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
-    /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
+    /// identity — the administrator or the `DOM_PAUSER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
     /// capability, so that neither `ADMIN` gains a direct block/unblock path nor the pause and
-    /// blocklist roles fuse. `collides_with` names the offending role (`"ADMIN"` / `"DOM_PAUSER"` /
-    /// `"DOM_MANAGER"`).
+    /// blocklist roles fuse. `collides_with` names the offending role (`"ADMIN"` / `"DOM_PAUSER"`).
     BlocklistManagerNotIsolated { collides_with: &'static str },
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).

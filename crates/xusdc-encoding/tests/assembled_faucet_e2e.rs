@@ -18,7 +18,7 @@
 //!   consume, burn-item schema asserted);
 //! - S10-S11 DOM_PAUSER pause halts BOTH mint and burn (and the administrator has NO pause path);
 //!   unpause resumes BOTH, and the SAME halted mint note lands;
-//! - S12 role rotation: DOM_MANAGER grant → the new pauser pauses; revoke → rejected;
+//! - S12 role rotation: ADMIN grant → the new pauser pauses; revoke → rejected;
 //! - S13 the final ledger: the exact whole-arc supply equation and the config read-backs.
 //!
 //! Every tx is COMMITTED (`add_pending_executed_transaction` + `prove_next_block`) so all stages
@@ -50,7 +50,7 @@ use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveFaucetExtension, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveFaucetExtension, DOM_PAUSER_ROLE, DOM_UNPAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::{
@@ -62,8 +62,8 @@ use xusdc_encoding::xreserve::encoding::{
     bytes32_to_storage_map_key, DepositIntent, ForeignChainAddress, Signature, XReserveBurnItems,
 };
 
-// ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4); id(5) is the unseeded rotation candidate)
+// ACTORS (the builder seeds ADMIN / ATTEST_ADMIN = id(1), DOM_PAUSER = id(2),
+// DOM_UNPAUSER = id(3), BLK_MANAGER = id(4); id(5) is the unseeded rotation candidate)
 // ================================================================================================
 
 fn administrator() -> AccountId {
@@ -72,7 +72,7 @@ fn administrator() -> AccountId {
 fn pauser() -> AccountId {
     test_account_id(2)
 }
-fn manager() -> AccountId {
+fn unpauser() -> AccountId {
     test_account_id(3)
 }
 fn new_pauser() -> AccountId {
@@ -386,12 +386,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             // 8: S10d stranger custom pause (reject)
             stock_pause_note(stranger(), route, 922)
                 .expect("building the seeded pause-stranger note"),
-            // 9: S11 DOM_PAUSER unpause
-            stock_unpause_note(pauser(), route, 923)
-                .expect("building the seeded unpause-pauser note"),
-            // 10: S12 DOM_MANAGER grant_role(DOM_PAUSER, new_pauser)
+            // 9: S11 DOM_UNPAUSER unpause
+            stock_unpause_note(unpauser(), route, 923)
+                .expect("building the seeded unpause-unpauser note"),
+            // 10: S12 ADMIN grant_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
-                manager(),
+                administrator(),
                 route,
                 RbacConfig::GrantRole {
                     role: psym.clone(),
@@ -402,12 +402,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
             .expect("building the seeded grant note"),
             // 11: S12 new pauser pause
             stock_pause_note(new_pauser(), route, 925).expect("building the seeded pause-new note"),
-            // 12: S12 new pauser unpause
-            stock_unpause_note(new_pauser(), route, 926)
-                .expect("building the seeded unpause-new note"),
-            // 13: S12 DOM_MANAGER revoke_role(DOM_PAUSER, new_pauser)
+            // 12: S12 DOM_UNPAUSER lifts the new pauser's pause
+            stock_unpause_note(unpauser(), route, 926)
+                .expect("building the seeded unpause-after-rotation note"),
+            // 13: S12 ADMIN revoke_role(DOM_PAUSER, new_pauser)
             stock_role_action_note(
-                manager(),
+                administrator(),
                 route,
                 RbacConfig::RevokeRole {
                     role: psym.clone(),
@@ -435,10 +435,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let payload3 = payload_for(holder_id, MINT_AMOUNT, 0xA5, faucet_id);
     let attester1 = gen_attester(1, &payload1);
     let pauser_sym = RoleSymbol::new(DOM_PAUSER_ROLE).expect("valid role symbol");
-    let manager_sym = RoleSymbol::new(DOM_MANAGER_ROLE).expect("valid role symbol");
+    let unpauser_sym = RoleSymbol::new(DOM_UNPAUSER_ROLE).expect("valid role symbol");
 
     // S0 read-backs: the BUILD-SEEDED domain config, supply 0, the
-    // seeded role delegation, the stock MinBurnAmount builder-default floor.
+    // directly administered roles, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
     let domain0 = faucet0
         .storage()
@@ -451,18 +451,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_supply(&pf.mock_chain, faucet_id, 0, "S0 assembly")?;
     assert_eq!(
         read_role_config(&faucet0, &pauser_sym)?,
-        Word::new([
-            Felt::from(1u32),
-            Felt::from(&manager_sym),
-            Felt::from(0u32),
-            Felt::from(0u32)
-        ]),
-        "S0: role_config[DOM_PAUSER] carries the CMP-F5 delegation (admin_role = DOM_MANAGER)"
+        marker(),
+        "S0: role_config[DOM_PAUSER] resolves directly to ADMIN"
     );
     assert_eq!(
-        read_role_config(&faucet0, &manager_sym)?,
+        read_role_config(&faucet0, &unpauser_sym)?,
         marker(),
-        "S0: role_config[DOM_MANAGER] resolves to ADMIN, the seeded owner account ([1,0,0,0])"
+        "S0: role_config[DOM_UNPAUSER] resolves directly to ADMIN"
     );
     assert_eq!(
         read_min_burn_size(&faucet0)?,
@@ -859,10 +854,10 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     let result = consume_committed_note(&pf.mock_chain, &faucet, note_id(8)).await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
 
-    // ── S11 — UNPAUSE: DOM_PAUSER unpauses; BOTH paths resume.
+    // ── S11 — UNPAUSE: DOM_UNPAUSER unpauses; BOTH paths resume.
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(9))
         .await
-        .expect("S11: the DOM_PAUSER unpause must succeed");
+        .expect("S11: the DOM_UNPAUSER unpause must succeed");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     assert_eq!(
@@ -923,12 +918,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S11b after the resumed burn",
     )?;
 
-    // ── S12 — ROTATION: DOM_MANAGER grants a new pauser -> the new member can pause
+    // ── S12 — ROTATION: ADMIN grants a new pauser -> the new member can pause
     // (capability-proven against a REAL attested mint); revoke -> they cannot.
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(10))
         .await
-        .expect("S12: the DOM_MANAGER grant must succeed (delegated admin)");
+        .expect("S12: the ADMIN grant must succeed");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     assert_eq!(
@@ -949,12 +944,12 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     assert_transaction_executor_error!(result, err_paused());
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(12))
         .await
-        .expect("S12: the new pauser unpauses");
+        .expect("S12: DOM_UNPAUSER lifts the new pauser's pause");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     let tx = consume_committed_note(&pf.mock_chain, &faucet, note_id(13))
         .await
-        .expect("S12: the DOM_MANAGER revoke must succeed");
+        .expect("S12: the ADMIN revoke must succeed");
     commit(&mut pf.mock_chain, &tx)?;
     let faucet = committed(&pf.mock_chain, faucet_id)?;
     assert_eq!(
@@ -1024,13 +1019,8 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     );
     assert_eq!(
         read_role_config(&faucet, &pauser_sym)?,
-        Word::new([
-            Felt::from(1u32),
-            Felt::from(&manager_sym),
-            Felt::from(0u32),
-            Felt::from(0u32)
-        ]),
-        "S13: the CMP-F5 delegation word survives the whole arc"
+        marker(),
+        "S13: DOM_PAUSER remains administered directly by ADMIN through the whole arc"
     );
     assert_eq!(
         read_role_membership(&faucet, &pauser_sym, pauser())?,

@@ -12,10 +12,9 @@
 //!
 //! Role management is the standard role-action note, and its ONE script root carries four actions:
 //! grant, revoke, set-role-admin and renounce. Allowlisting is per root, so admitting it admits all
-//! four, and the sections below drive each of them against the production account — including the
-//! two the faucet gained with the note: re-pointing a role's administrator (gated on that role's own
-//! effective admin, so the built-in administrator is refused for a role delegated away) and a holder
-//! renouncing its own membership.
+//! four, and the sections below drive each of them against the production account. Every seeded
+//! role is administered directly by ADMIN, which may deliberately re-point its administration;
+//! a holder can renounce its own membership.
 
 mod support;
 
@@ -37,7 +36,7 @@ use miden_standards::note::{RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveFaucetExtension, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveFaucetExtension, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 
@@ -51,10 +50,6 @@ fn err_not_role_admin() -> MasmError {
 
 fn pauser_sym() -> RoleSymbol {
     RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol")
-}
-
-fn manager_sym() -> RoleSymbol {
-    RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol")
 }
 
 fn blk_manager_sym() -> RoleSymbol {
@@ -299,7 +294,7 @@ async fn min_burn_dom_pauser_traps() -> Result<()> {
 }
 
 #[tokio::test]
-async fn min_burn_dom_manager_traps() -> Result<()> {
+async fn min_burn_dom_unpauser_traps() -> Result<()> {
     assert_min_burn_nonadmin_traps(test_account_id(3), 42).await
 }
 
@@ -431,7 +426,7 @@ async fn pause_note_args_are_inert() -> Result<()> {
     Ok(())
 }
 
-// UNPAUSE (allowlist row 7) — DOM_PAUSER-gated resume
+// UNPAUSE (allowlist row 7) — DOM_UNPAUSER-gated resume
 // ================================================================================================
 
 /// A production faucet paused by a SEEDED DOM_PAUSER pause note (brought up on-chain), so an unpause
@@ -459,41 +454,43 @@ async fn paused_faucet() -> Result<(MockChain, AccountId)> {
     Ok((chain, faucet_id))
 }
 
-/// DOM_PAUSER-sent unpause PASSES auth + the proc's DOM_PAUSER gate and clears is_paused to 0.
+/// DOM_UNPAUSER-sent unpause PASSES auth + its role gate and clears is_paused to 0.
 #[tokio::test]
-async fn unpause_dom_pauser_clears_is_paused() -> Result<()> {
+async fn unpause_dom_unpauser_clears_is_paused() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = stock_unpause_note(test_account_id(2), faucet_id, 61)
-        .context("building the DOM_PAUSER unpause note")?;
+    let note = stock_unpause_note(test_account_id(3), faucet_id, 61)
+        .context("building the DOM_UNPAUSER unpause note")?;
     let tx = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("DOM_PAUSER unpause tx build")?
+        .context("DOM_UNPAUSER unpause tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("DOM_PAUSER unpause must succeed under network auth: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("DOM_UNPAUSER unpause must succeed under network auth: {e}")
+        })?;
     assert_eq!(
         value_delta(&tx, PausableStorage::is_paused_slot()),
         scalar_word(Felt::from(0u32)),
-        "DOM_PAUSER unpause must clear is_paused to 0",
+        "DOM_UNPAUSER unpause must clear is_paused to 0",
     );
     Ok(())
 }
 
-/// A non-DOM_PAUSER unpause note PASSES auth but TRAPS at the proc's role gate (owner included).
+/// An unpause note without DOM_UNPAUSER PASSES auth but TRAPS at the role gate (owner included).
 async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let note = stock_unpause_note(sender, faucet_id, seed)
-        .context("building the non-pauser unpause note")?;
+        .context("building the unpause note without DOM_UNPAUSER")?;
     let result = chain
         .build_transaction(faucet_id)
         .unauthenticated_input_note(note.clone())
         .build()
-        .context("non-pauser unpause tx build")?
+        .context("unpause tx without DOM_UNPAUSER build")?
         .execute()
         .await;
     assert_transaction_executor_error!(result, err_sender_lacks_role());
@@ -510,12 +507,17 @@ async fn unpause_third_party_traps() -> Result<()> {
     assert_unpause_nonpauser_traps(test_account_id(99), 63).await
 }
 
+#[tokio::test]
+async fn unpause_dom_pauser_traps() -> Result<()> {
+    assert_unpause_nonpauser_traps(test_account_id(2), 65).await
+}
+
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the unpause effect.
 #[tokio::test]
 async fn unpause_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id) = paused_faucet().await?;
-    let note = stock_unpause_note(test_account_id(2), faucet_id, 64)
-        .context("building the DOM_PAUSER unpause note")?;
+    let note = stock_unpause_note(test_account_id(3), faucet_id, 64)
+        .context("building the DOM_UNPAUSER unpause note")?;
     let bogus_args = Word::from([8u32, 8, 8, 8]);
     let tx = chain
         .build_transaction(faucet_id)
@@ -580,48 +582,13 @@ async fn assert_grant_role_authorized(
     Ok(())
 }
 
-/// The administrator's role administration flows through its ADMIN
-/// membership — it administers DOM_MANAGER (whose effective admin defaults to ADMIN), no longer
-/// the delegated DOM_PAUSER.
+/// The administrator directly grants DOM_PAUSER through its ADMIN membership.
 #[tokio::test]
 async fn grant_role_administrator_authorized() -> Result<()> {
-    assert_grant_role_authorized(test_account_id(1), manager_sym(), 70).await
+    assert_grant_role_authorized(test_account_id(1), pauser_sym(), 70).await
 }
 
-#[tokio::test]
-async fn grant_role_dom_manager_authorized() -> Result<()> {
-    assert_grant_role_authorized(test_account_id(3), pauser_sym(), 71).await
-}
-
-/// Delegation is EXCLUSIVE — the administrator (an ADMIN member, not a DOM_MANAGER
-/// holder) can no longer grant the DOM_MANAGER-administered DOM_PAUSER; the delegation gate
-/// traps it like any non-admin sender.
-#[tokio::test]
-async fn grant_role_administrator_on_delegated_role_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
-        .context("building the production network-auth faucet")?;
-    let chain = pf.mock_chain;
-    let faucet_id = pf.faucet_id;
-    let note = stock_grant_role_note(
-        test_account_id(1),
-        faucet_id,
-        pauser_sym(),
-        test_account_id(4),
-        &mut note_rng(73),
-    )
-    .context("building the administrator grant-on-delegated-role note")?;
-    let result = chain
-        .build_transaction(faucet_id)
-        .unauthenticated_input_note(note.clone())
-        .build()
-        .context("owner delegated-role grant tx build")?
-        .execute()
-        .await;
-    assert_transaction_executor_error!(result, err_not_role_admin());
-    Ok(())
-}
-
-/// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
+/// A third party without ADMIN PASSES auth but TRAPS at the role-administration gate.
 #[tokio::test]
 async fn grant_role_third_party_traps() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
@@ -655,9 +622,9 @@ async fn grant_role_note_args_are_inert() -> Result<()> {
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(5);
-    // DOM_PAUSER's effective admin is DOM_MANAGER, so the grant must be manager-sent.
+    // DOM_PAUSER's effective admin is ADMIN, so the grant is administrator-sent.
     let note = stock_grant_role_note(
-        test_account_id(3),
+        test_account_id(1),
         faucet_id,
         pauser_sym(),
         grantee,
@@ -747,7 +714,7 @@ async fn set_max_supply_dom_pauser_traps() -> Result<()> {
 }
 
 #[tokio::test]
-async fn set_max_supply_dom_manager_traps() -> Result<()> {
+async fn set_max_supply_dom_unpauser_traps() -> Result<()> {
     assert_set_max_supply_nonadmin_traps(test_account_id(3), 92).await
 }
 
@@ -800,8 +767,7 @@ async fn faucet_with_granted_role(
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
     let grantee = test_account_id(4);
-    // each role is seeded by its effective admin — DOM_PAUSER by the
-    // DOM_MANAGER holder (delegated admin), DOM_MANAGER by the administrator (ADMIN member).
+    // Every role is administered directly by ADMIN.
     let grant = stock_grant_role_note(
         grantor,
         faucet_id,
@@ -817,7 +783,7 @@ async fn faucet_with_granted_role(
         .context("grant seed tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("seeding the manager grant must succeed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("seeding the administrator grant must succeed: {e}"))?;
     let mut evolved = chain
         .committed_account(faucet_id)
         .context("committed faucet")?
@@ -826,9 +792,7 @@ async fn faucet_with_granted_role(
     Ok((chain, faucet_id, evolved, grantee))
 }
 
-/// Authorized revoke: `sender` (the role's v16 effective admin) revokes id(4)'s `role`
-/// membership; membership cleared. DOM_PAUSER revocation is DOM_MANAGER's
-/// (delegated admin); DOM_MANAGER revocation is the administrator's (ADMIN member).
+/// Authorized revoke: the administrator revokes id(4)'s `role` membership, clearing the marker.
 async fn assert_revoke_authorized(
     sender: AccountId,
     role: RoleSymbol,
@@ -864,13 +828,12 @@ async fn assert_revoke_authorized(
     Ok(())
 }
 
-/// The administrator (ADMIN member) administers DOM_MANAGER — grant seeded by the administrator,
-/// revoked by the administrator.
+/// The administrator grants and revokes DOM_PAUSER directly.
 #[tokio::test]
 async fn revoke_role_administrator_authorized() -> Result<()> {
     assert_revoke_authorized(
         test_account_id(1),
-        manager_sym(),
+        pauser_sym(),
         test_account_id(1),
         110,
         100,
@@ -878,23 +841,11 @@ async fn revoke_role_administrator_authorized() -> Result<()> {
     .await
 }
 
-#[tokio::test]
-async fn revoke_role_dom_manager_authorized() -> Result<()> {
-    assert_revoke_authorized(
-        test_account_id(3),
-        pauser_sym(),
-        test_account_id(3),
-        111,
-        101,
-    )
-    .await
-}
-
-/// A third party (neither owner nor DOM_MANAGER) PASSES auth but TRAPS at the delegation gate.
+/// A third party without ADMIN PASSES auth but TRAPS at the role-administration gate.
 #[tokio::test]
 async fn revoke_role_third_party_traps() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
-        faucet_with_granted_role(pauser_sym(), test_account_id(3), 112).await?;
+        faucet_with_granted_role(pauser_sym(), test_account_id(1), 112).await?;
     let note = stock_revoke_role_note(
         test_account_id(99),
         faucet_id,
@@ -918,16 +869,16 @@ async fn revoke_role_third_party_traps() -> Result<()> {
 #[tokio::test]
 async fn revoke_role_note_args_are_inert() -> Result<()> {
     let (chain, faucet_id, evolved, grantee) =
-        faucet_with_granted_role(pauser_sym(), test_account_id(3), 113).await?;
-    // DOM_PAUSER's effective admin is DOM_MANAGER, so the revoke must be manager-sent.
+        faucet_with_granted_role(pauser_sym(), test_account_id(1), 113).await?;
+    // DOM_PAUSER's effective admin is ADMIN, so the revoke is administrator-sent.
     let note = stock_revoke_role_note(
-        test_account_id(3),
+        test_account_id(1),
         faucet_id,
         pauser_sym(),
         grantee,
         &mut note_rng(103),
     )
-    .context("building the manager revoke note")?;
+    .context("building the administrator revoke note")?;
     let bogus_args = Word::from([6u32, 6, 6, 6]);
     let tx = chain
         .build_transaction(evolved.clone())
@@ -951,12 +902,10 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
 // SET_ROLE_ADMIN — reachable through the standard role note, gated on the target role's own admin
 // ================================================================================================
 
-/// The delegated administrator re-points the role it administers, on the production network
-/// account: the note clears both layers — network auth admits the standard role root, and the
-/// standard procedure accepts the Domain Manager as the Domain Pauser's effective admin — and the
-/// config word's admin field moves.
+/// ADMIN can deliberately re-point a role on the production network account: network auth
+/// admits the standard role root, the role's administration gate passes, and its admin field moves.
 #[tokio::test]
-async fn set_role_admin_dom_manager_authorized() -> Result<()> {
+async fn set_role_admin_administrator_authorized() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
@@ -971,12 +920,12 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     )?;
     assert_eq!(
         before[1],
-        Felt::from(&manager_sym()),
-        "the build seed must delegate DOM_PAUSER's administration to DOM_MANAGER"
+        Felt::ZERO,
+        "the build seed must administer DOM_PAUSER directly through ADMIN"
     );
 
     let note = stock_role_note(
-        test_account_id(3),
+        test_account_id(1),
         faucet_id,
         RbacConfig::SetRoleAdmin {
             role: pauser_sym(),
@@ -984,7 +933,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
         },
         &mut note_rng(150),
     )
-    .context("building the DOM_MANAGER set_role_admin note")?;
+    .context("building the administrator set_role_admin note")?;
     let account = chain
         .committed_account(faucet_id)
         .context("reading the committed faucet")?
@@ -996,7 +945,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
         .context("set_role_admin tx build")?
         .execute()
         .await
-        .map_err(|e| anyhow::anyhow!("the delegated admin's set_role_admin must succeed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("the administrator's set_role_admin must succeed: {e}"))?;
 
     let mut evolved = account;
     evolved.apply_patch(tx.account_patch())?;
@@ -1004,7 +953,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     assert_eq!(
         after[1],
         Felt::from(&blk_manager_sym()),
-        "the delegated admin must be able to re-point the role it administers",
+        "ADMIN must be able to re-point the role it administers",
     );
     assert_eq!(
         after[0], before[0],
@@ -1013,9 +962,7 @@ async fn set_role_admin_dom_manager_authorized() -> Result<()> {
     Ok(())
 }
 
-/// A sender that is not the target role's effective admin is refused — including the `ADMIN`
-/// holder, because delegation is exclusive: `DOM_PAUSER` was delegated to `DOM_MANAGER`, so the
-/// administrator has no authority over it at all.
+/// A sender without ADMIN cannot re-point the administration of a seeded role.
 async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
@@ -1054,8 +1001,8 @@ async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<
 }
 
 #[tokio::test]
-async fn set_role_admin_administrator_rejects_on_a_delegated_role() -> Result<()> {
-    assert_set_role_admin_rejected(test_account_id(1), 151).await
+async fn set_role_admin_role_holder_rejects() -> Result<()> {
+    assert_set_role_admin_rejected(test_account_id(3), 151).await
 }
 
 #[tokio::test]

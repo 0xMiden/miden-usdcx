@@ -223,6 +223,21 @@ fn the_composed_faucet_declares_no_identifier_slot() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn the_composed_faucet_declares_no_source_side_slots() -> Result<()> {
+    let account = production_faucet_account()?;
+    let names: Vec<_> = account
+        .storage()
+        .slots()
+        .iter()
+        .map(|slot| slot.name().as_str())
+        .collect();
+    assert!(!names.contains(&"xusdc::xreserve::domain_config::source_domain"));
+    assert!(!names.contains(&"xusdc::xreserve::domain_config::xreserve_contract_hi"));
+    assert!(!names.contains(&"xusdc::xreserve::domain_config::xreserve_contract_lo"));
+    Ok(())
+}
+
 // HELPERS
 // ================================================================================================
 

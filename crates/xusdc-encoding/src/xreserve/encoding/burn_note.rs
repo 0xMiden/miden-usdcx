@@ -1,8 +1,8 @@
 //! Burn-note item codec: the burn-note withdrawal payload
 //! `(destDomain, destRecipient)`.
 //!
-//! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
-//! payload: the faucet burns the asset, and the destination fields exist for the off-chain
+//! This codec is Rust-only and has no MASM counterpart: the burn policy checks attachment shape
+//! without decoding the payload, and the destination fields exist for the off-chain
 //! withdrawal attester to act on. The burn note encodes and the attester decodes, so the encoding
 //! has to be exactly reversible between them.
 //!

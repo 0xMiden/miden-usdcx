@@ -1,5 +1,5 @@
 [workspace]
-members = ["faucet_extension"]
+members = ["faucet_extension", "faucet_burn_policy"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,84 @@
+# xreserve::burn_policy
+#
+# Requires the withdrawal attachment shape and the configured minimum burn amount.
+
+use miden::protocol::active_account
+use miden::protocol::active_note
+use miden::standards::assets::fungible_asset
+use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
+use {MIN_BURN_AMOUNT_SLOT} from miden::standards::faucets::policies::burn::min_burn_amount
+
+# CONSTANTS
+# =================================================================================================
+
+const XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME = 6
+const XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS = 3
+
+# check_burn_policy locals: one word for the amount, then four attachment commitments.
+const CHECK_BURN_POLICY_AMOUNT_LOC = 0
+const CHECK_BURN_POLICY_COMMITMENTS_LOC = 4
+# reserve the full 256-word ceiling: content is written before its word count is returned.
+const CHECK_BURN_POLICY_WITHDRAWAL_LOC = 20
+
+# ERRORS
+# =================================================================================================
+
+const ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING = "burn note withdrawal attachment is missing"
+const ERR_XRESERVE_BURN_NOTE_TARGET_MISSING = "burn note routing target attachment is missing"
+const ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT = "burn note must carry exactly two attachments"
+const ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS = "burn note withdrawal attachment must contain exactly three words"
+const ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN = "amount to be burned must meet or exceed specified minimum burn amount"
+
+# POLICY PROCEDURE
+# =================================================================================================
+
+#! Verifies the withdrawal attachment shape and enforces the minimum burn amount.
+#! No withdrawal payload field is decoded or compared.
+#!
+#! Inputs:  [ASSET_ID, ASSET_VALUE, pad(8)]
+#! Outputs: [pad(16)]
+#!
+#! Where:
+#! - ASSET_ID is the burned asset's identifier.
+#! - ASSET_VALUE is the fungible asset value word `[amount, 0, 0, 0]`.
+#!
+#! Panics if:
+#! - no note is active, or either the routing or withdrawal attachment is missing.
+#! - the note has other than two attachments, or the withdrawal has other than three words.
+#! - attachment content does not match its note-committed commitment.
+#! - the burn amount is below the configured minimum.
+#!
+#! Invocation: call
+@locals(1044)
+@account_procedure
+pub proc check_burn_policy
+    dropw
+    exec.fungible_asset::value_into_amount
+    loc_store.CHECK_BURN_POLICY_AMOUNT_LOC
+    # => [pad(16)]
+
+    push.XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME exec.active_note::find_attachment
+    assert.err=ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING
+    # => [withdrawal_idx, pad(16)]
+
+    push.NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME exec.active_note::find_attachment
+    assert.err=ERR_XRESERVE_BURN_NOTE_TARGET_MISSING
+    drop
+    # => [withdrawal_idx, pad(16)]
+
+    locaddr.CHECK_BURN_POLICY_COMMITMENTS_LOC exec.active_note::write_attachment_commitments_to_memory
+    eq.2 assert.err=ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT
+    # => [withdrawal_idx, pad(16)]
+
+    locaddr.CHECK_BURN_POLICY_WITHDRAWAL_LOC exec.active_note::write_attachment_to_memory
+    eq.XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS assert.err=ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS
+    # => [pad(16)]
+
+    loc_load.CHECK_BURN_POLICY_AMOUNT_LOC
+    push.MIN_BURN_AMOUNT_SLOT[0..2] exec.active_account::get_item
+    # => [min_burn_amount, 0, 0, 0, amount, pad(16)]
+
+    movdn.4 drop drop drop
+    lte assert.err=ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN
+    # => [pad(16)]
+end

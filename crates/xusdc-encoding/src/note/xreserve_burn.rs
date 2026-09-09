@@ -13,11 +13,9 @@
 //! ATTACHMENT instead. The note is forced public, carries the fixed xUSDC burn tag, and packs the
 //! payload with the shared codec so the listener decodes precisely what was encoded.
 //!
-//! Nothing on-chain reads that payload. The destination fields exist purely so the burn is legible
-//! off-chain, which is what makes the note evidence rather than just an accounting entry. The stock
-//! consume script never reads attachments at all, so the payload is not verified on-chain; it is
-//! covered by the note id (which commits to the note's attachments), so it is tamper-evident to any
-//! off-chain reader who holds the note.
+//! The burn policy requires the routing attachment and a three-word withdrawal attachment,
+//! whose content is bound to the note id. It decodes no destination field; those remain for the
+//! off-chain withdrawal attester to validate.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};

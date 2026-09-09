@@ -11,7 +11,9 @@ use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
 use miden_tx::NotePricingError;
 
-use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
+use super::{
+    ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR, XRESERVE_BURN_POLICY_PROC_PATH,
+};
 
 /// Errors returned while composing the xUSDC faucet account.
 #[derive(Debug)]
@@ -31,6 +33,8 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
+    /// The burn-policy component does not export its expected procedure (assembly/path drift).
+    BurnPolicyProcNotFound,
     /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
@@ -70,6 +74,11 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "the xreserve component does not export the attestation mint policy procedure \
                  '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
+            ),
+            Self::BurnPolicyProcNotFound => write!(
+                f,
+                "the burn-policy component does not export the burn policy procedure \
+                 '{XRESERVE_BURN_POLICY_PROC_PATH}'"
             ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,

@@ -37,6 +37,12 @@ pub enum XReserveStablecoinBuilderError {
     /// rejected at construction (the post-deploy twin is the `XReserveMinBurnAmountNote`
     /// factory's floor refusal). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
+    /// The seed would place one account id in both roles, defeating their separation.
+    /// `first` and `second` name the colliding roles.
+    PrivilegedHoldersNotDistinct {
+        first: &'static str,
+        second: &'static str,
+    },
     /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
     /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
     /// transfer-blocklist administrator must be an external entity with no other faucet-admin
@@ -75,6 +81,11 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "min_burn_amount {value} is below the construction floor \
                  {MIN_BURN_SIZE_FLOOR}"
+            ),
+            Self::PrivilegedHoldersNotDistinct { first, second } => write!(
+                f,
+                "the {first} holder and the {second} holder must be distinct accounts, \
+                 but the same account id was supplied for both"
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,

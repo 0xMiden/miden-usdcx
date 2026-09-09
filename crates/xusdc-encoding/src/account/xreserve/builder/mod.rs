@@ -240,6 +240,31 @@ impl XReserveStablecoinBuilder {
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
+        // ADMIN / DOM_PAUSER / DOM_MANAGER must be pairwise distinct.
+        if self.owner == self.pauser_holder {
+            return Err(
+                XReserveStablecoinBuilderError::PrivilegedHoldersNotDistinct {
+                    first: "ADMIN",
+                    second: "DOM_PAUSER",
+                },
+            );
+        }
+        if self.owner == self.manager_holder {
+            return Err(
+                XReserveStablecoinBuilderError::PrivilegedHoldersNotDistinct {
+                    first: "ADMIN",
+                    second: "DOM_MANAGER",
+                },
+            );
+        }
+        if self.pauser_holder == self.manager_holder {
+            return Err(
+                XReserveStablecoinBuilderError::PrivilegedHoldersNotDistinct {
+                    first: "DOM_PAUSER",
+                    second: "DOM_MANAGER",
+                },
+            );
+        }
         // BLK_MANAGER must not collide with ADMIN / DOM_PAUSER / DOM_MANAGER.
         if self.blocklist_manager_holder == self.owner {
             return Err(

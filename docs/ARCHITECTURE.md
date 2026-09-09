@@ -46,7 +46,7 @@ Two properties are load-bearing:
 
 ## 4. The faucet: composition and state
 
-The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. The local MASM contributes two account procedures: the attester setter and the mint policy.
+The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. A separate zero-slot component supplies the burn policy.
 
 State, grouped by writer posture:
 
@@ -77,17 +77,13 @@ Semantics worth stating plainly:
 
 ## 6. Burn and redemption path
 
-The burn note factory builds a public note carrying the `miden-standards` `BurnNote` script, one USDCx asset in the note's storage (the script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (amount, destination domain, destination recipient) as a **committed attachment**. Consumed against the faucet, the `miden-standards` path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
+The burn note factory builds a public note carrying the `miden-standards` `BurnNote` script, one USDCx asset in the note's storage (the script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (destination domain, destination recipient) as a **committed attachment**. Consumed against the faucet, the `miden-standards` path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
 
-The attachment design has a property reviewers must not miss: **the consume script never reads attachments, so the withdrawal payload is not verified on-chain.** It is tamper-evident, because the note identifier commits to the note's attachments, but nothing on-chain checks its content. Consequences:
+**Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
 
-- **Attachment payload-amount binding is off-chain work.** The chain burns and debits exactly the note's asset amount; the attachment's declared amount is unread. A hand-built note can declare a payload amount that differs from the asset it burns, or use a different tag. The withdrawal attester must therefore validate the attachment payload against the actually burned asset before signing, and Circle's confirmation that payload-equals-asset is required before authorization is one of our open questions to them.
-- **Attachment presence is not guaranteed.** The `BurnNote` script does not require the withdrawal attachment, so a burn note without it, or with a malformed one, still burns on-chain. Discovery and verification must handle such notes rather than assume the attachment exists.
-- **Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
+The burn policy decodes no destination domain or recipient; these fields are validated off chain.
 
-No onchain contract code reads the encoded destination domain or recipient; this data is read and verified during withdrawal.
-
-Neither the attachment's presence nor its amount is constrained on chain today; both are tracked in issue #146, which proposes a dedicated burn policy that requires the attachment and the removal of the duplicated amount from it.
+The burn policy requires exactly two attachments: a scheme-2 routing target and a scheme-6 withdrawal attachment of three words, with content verified against the note commitment.
 
 ## 7. Roles and hierarchy
 

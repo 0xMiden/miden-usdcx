@@ -1,3 +1,4 @@
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
 use crate::config::Config;
@@ -194,4 +195,18 @@ fn invalid_config_is_rejected() {
     );
     assert_eq!(config.minimum_finality_depth_blocks(), 1);
     assert_eq!(config.expected_signing_public_keys_hex(), ["unchecked"]);
+    assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
+
+    std::fs::write(&path, format!("{valid}max_withdrawal_fee = 3500\n")).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().max_withdrawal_fee().as_u64(),
+        3500
+    );
+    assert_config_error(
+        &format!(
+            "{valid}max_withdrawal_fee = {}\n",
+            AssetAmount::MAX.as_u64() + 1
+        ),
+        "maximum withdrawal fee is invalid",
+    );
 }

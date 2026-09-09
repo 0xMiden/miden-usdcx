@@ -105,7 +105,7 @@ mod tests {
         for vec in accept {
             let x = vec.expected_struct();
             let encoded = x.encode();
-            assert_eq!(encoded.len(), BURN_NOTE_ITEMS_FELTS, "{}: width", vec.id);
+            assert_eq!(encoded.len(), 9, "{}: width", vec.id);
             assert_eq!(
                 encoded,
                 vec.items_values(),
@@ -128,7 +128,7 @@ mod tests {
     }
 
     /// TV-BN-2 (destination-in-items): the destination fields land in the
-    /// payload felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`). `encode` has no
+    /// payload felt layout (`destDomain` at `[0]`, `destRecipient` at `[1..9]`). `encode` has no
     /// metadata path — its only output is `Vec<Felt>`, so `metadata.sender` is structurally reserved
     /// for the depositor.
     #[test]
@@ -137,11 +137,11 @@ mod tests {
         for vec in v.families.bn.iter().filter(|x| x.kind == "accept") {
             let items = vec.expected_struct().encode();
             let golden = vec.items_values();
-            assert_eq!(items[1], golden[1], "{}: destDomain in items[1]", vec.id);
+            assert_eq!(items[0], golden[0], "{}: destDomain in items[0]", vec.id);
             assert_eq!(
-                &items[2..10],
-                &golden[2..10],
-                "{}: destRecipient in items[2..10]",
+                &items[1..9],
+                &golden[1..9],
+                "{}: destRecipient in items[1..9]",
                 vec.id
             );
         }
@@ -160,11 +160,10 @@ mod tests {
     }
 
     /// TV-BN-4 (malformed → exact error): every malformed-items vector decodes to the exact
-    /// `BurnItemsMalformed` (wrong length, out-of-range amount/domain, or a non-u32 limb).
+    /// `BurnItemsMalformed` (wrong length, out-of-range domain, or a non-u32 limb).
     #[rstest]
     #[case("bn-rej-len-short")]
     #[case("bn-rej-len-long")]
-    #[case("bn-rej-amount-over-cap")]
     #[case("bn-rej-domain-over-u32")]
     #[case("bn-rej-recipient-limb-not-u32")]
     fn tv_bn_4_malformed_burn_items(#[case] id: &str) {

@@ -28,14 +28,22 @@ mod support;
 use anyhow::Result;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_protocol::note::{
+    Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteRecipient,
+    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::policies::MinBurnAmount;
+use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;
-use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
+use xusdc_encoding::note::xreserve_burn::{
+    XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+};
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 // Amounts are arbitrary: this suite asserts which code path runs and what it is gated by, never
@@ -72,6 +80,152 @@ fn items(amount: u64) -> Result<XReserveBurnItems> {
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     })
+}
+
+/// Builds a stock-script burn note with exactly the supplied attachments.
+fn raw_burn_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    attachments: Vec<NoteAttachment>,
+) -> Note {
+    let asset = FungibleAsset::new(faucet_id, VALID_BURN).expect("valid burn asset");
+    let storage = NoteStorage::new(Asset::from(asset).as_elements().to_vec())
+        .expect("stock burn asset storage");
+    Note::with_attachments(
+        NoteAssets::new(vec![asset.into()]).expect("one burn asset"),
+        PartialNoteMetadata::new(sender, NoteType::Public)
+            .with_tag(NoteTag::new(FIXED_XUSDC_BURN_TAG)),
+        NoteRecipient::new(
+            Word::from([1u32, 2, 3, 4]),
+            XReserveBurnNote::script(),
+            storage,
+        ),
+        NoteAttachments::new(attachments).expect("attachments within protocol limits"),
+    )
+}
+
+#[tokio::test]
+async fn burn_rejects_a_missing_withdrawal_attachment() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+        let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
+            .expect("public network faucet");
+        vec![raw_burn_note(sender, faucet_id, vec![routing.into()])]
+    })?;
+    let result = pf
+        .mock_chain
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(pf.seeded_notes[0].id())
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        result.is_err(),
+        "burn accepted without a withdrawal attachment"
+    );
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn burn_rejects_a_wrong_withdrawal_word_count() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+        let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
+            .expect("public network faucet");
+        let withdrawal = NoteAttachment::with_words(
+            NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+                .expect("withdrawal scheme"),
+            vec![Word::empty(); 4],
+        )
+        .expect("four-word attachment");
+        vec![raw_burn_note(
+            sender,
+            faucet_id,
+            vec![routing.into(), withdrawal],
+        )]
+    })?;
+    let result = pf
+        .mock_chain
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(pf.seeded_notes[0].id())
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        result.is_err(),
+        "burn accepted a four-word withdrawal attachment"
+    );
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn burn_rejects_an_extra_attachment() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+        let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
+            .expect("public network faucet");
+        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(
+            items(VALID_BURN).expect("valid withdrawal payload"),
+        ));
+        let extra = NoteAttachment::with_words(
+            NoteAttachmentScheme::new(7).expect("extra scheme"),
+            vec![Word::empty()],
+        )
+        .expect("one-word attachment");
+        vec![raw_burn_note(
+            sender,
+            faucet_id,
+            vec![routing.into(), withdrawal, extra],
+        )]
+    })?;
+    let result = pf
+        .mock_chain
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(pf.seeded_notes[0].id())
+        .build()?
+        .execute()
+        .await;
+    assert!(result.is_err(), "burn accepted three attachments");
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn burn_rejects_a_missing_routing_attachment() -> Result<()> {
+    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(
+            items(VALID_BURN).expect("valid withdrawal payload"),
+        ));
+        vec![raw_burn_note(
+            sender,
+            faucet_id,
+            vec![withdrawal.clone(), withdrawal],
+        )]
+    })?;
+    let result = pf
+        .mock_chain
+        .build_transaction(pf.faucet_id)
+        .authenticated_input_note(pf.seeded_notes[0].id())
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        result.is_err(),
+        "burn accepted without a routing attachment"
+    );
+    assert_transaction_executor_error!(
+        result,
+        shell_error_by_name("ERR_XRESERVE_BURN_NOTE_TARGET_MISSING")
+    );
+    Ok(())
 }
 
 // THE ACTIVE BURN POLICY — read off the built account's storage, not inferred from behavior

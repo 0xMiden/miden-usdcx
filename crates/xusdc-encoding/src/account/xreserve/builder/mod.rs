@@ -221,11 +221,18 @@ impl XReserveStablecoinBuilder {
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        // BLK_MANAGER must not collide with ADMIN / DOM_PAUSER.
+        // BLK_MANAGER must not collide with any other role holder.
         if self.blocklist_manager_holder == self.owner {
             return Err(
                 XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
                     collides_with: "ADMIN",
+                },
+            );
+        }
+        if self.blocklist_manager_holder == self.attest_admin_holder {
+            return Err(
+                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
+                    collides_with: "ATTEST_ADMIN",
                 },
             );
         }
@@ -235,6 +242,29 @@ impl XReserveStablecoinBuilder {
                     collides_with: "DOM_PAUSER",
                 },
             );
+        }
+        if self.blocklist_manager_holder == self.unpauser_holder {
+            return Err(
+                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
+                    collides_with: "DOM_UNPAUSER",
+                },
+            );
+        }
+        // DOM_PAUSER must not hold another role; BLK_MANAGER collisions were checked above.
+        if self.pauser_holder == self.owner {
+            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
+                collides_with: "ADMIN",
+            });
+        }
+        if self.pauser_holder == self.attest_admin_holder {
+            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
+                collides_with: "ATTEST_ADMIN",
+            });
+        }
+        if self.pauser_holder == self.unpauser_holder {
+            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
+                collides_with: "DOM_UNPAUSER",
+            });
         }
         // Seed domain config before the mint policy takes the component, so the manager
         // emits the installable copy.

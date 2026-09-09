@@ -1,5 +1,5 @@
 //! Burn-note item codec: the burn-note withdrawal payload
-//! `(amount, destDomain, destRecipient)`.
+//! `(destDomain, destRecipient)`.
 //!
 //! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
 //! payload: the faucet burns the asset, and the destination fields exist for the off-chain
@@ -9,45 +9,41 @@
 //! The `destRecipient` field is packed and unpacked with the shared bytes32 codec in both
 //! directions, so there is one definition of how 32 bytes become field elements.
 
-use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;
 
 use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::ForeignChainAddress;
 use super::error::EncodingError;
 
-/// Felt width of the burn-note withdrawal payload: `amount` (1) then `destDomain`
-/// (1) then `destRecipient` (8 u32-LE), totalling 10 felts (≤ 1024, the note-model felt bound).
-pub const BURN_NOTE_ITEMS_FELTS: usize = 10;
+/// Felt width of the burn-note withdrawal payload: `destDomain` (1) then `destRecipient`
+/// (8 u32-LE), totalling 9 felts (≤ 1024, the note-model felt bound).
+pub const BURN_NOTE_ITEMS_FELTS: usize = 9;
 
-/// The burn-note public payload `(amount, destDomain, destRecipient)` — the burn note's
+/// The burn-note public payload `(destDomain, destRecipient)` — the burn note's
 /// dedicated payload type. Destination fields live in the withdrawal-payload attachment, never note
 /// metadata (`metadata.sender` carries the burner and nothing else). Built either as a struct
-/// literal or with a `bon` builder (`XReserveBurnItems::builder().amount(..).dest_domain(..)…build()`),
+/// literal or with a `bon` builder (`XReserveBurnItems::builder().dest_domain(..)…build()`),
 /// the standards note-payload-type pattern.
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct XReserveBurnItems {
-    pub amount: AssetAmount,
     pub dest_domain: u32,
     pub dest_recipient: ForeignChainAddress,
 }
 
 impl XReserveBurnItems {
-    /// Encodes `(amount, destDomain, destRecipient)` into the payload felt layout
-    /// (`amount` at `[0]`, `destDomain` at `[1]`, `destRecipient` at `[2..10]`). Infallible:
-    /// `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a `u32`, and the bytes32 field packs via
-    /// the shared `bytes32` codec.
+    /// Encodes `(destDomain, destRecipient)` into the payload felt layout
+    /// (`destDomain` at `[0]`, `destRecipient` at `[1..9]`). Infallible: `destDomain` is a `u32`,
+    /// and the bytes32 field packs via the shared `bytes32` codec.
     pub fn encode(&self) -> Vec<Felt> {
         let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
-        out.push(Felt::from(self.amount)); // [0]
-        out.push(Felt::from(self.dest_domain)); // [1]
-        out.extend_from_slice(&self.dest_recipient.to_packed_felts()); // [2..10]
+        out.push(Felt::from(self.dest_domain)); // [0]
+        out.extend_from_slice(&self.dest_recipient.to_packed_felts()); // [1..9]
         out
     }
 
     /// Decodes a burn-payload felt slice back into the typed struct — the inverse of
-    /// [`encode`](Self::encode). Fail-closed: a wrong length, an out-of-range `amount` or
-    /// `destDomain`, or a non-u32 bytes32 limb all return [`EncodingError::BurnItemsMalformed`]
+    /// [`encode`](Self::encode). Fail-closed: a wrong length, an out-of-range `destDomain`,
+    /// or a non-u32 bytes32 limb all return [`EncodingError::BurnItemsMalformed`]
     /// (never a panic, never a generic error).
     ///
     /// # Errors
@@ -58,21 +54,18 @@ impl XReserveBurnItems {
         if items.len() != BURN_NOTE_ITEMS_FELTS {
             return Err(EncodingError::BurnItemsMalformed);
         }
-        let amount = AssetAmount::new(items[0].as_canonical_u64())
-            .map_err(|_| EncodingError::BurnItemsMalformed)?;
-        let dest_domain = u32::try_from(items[1].as_canonical_u64())
+        let dest_domain = u32::try_from(items[0].as_canonical_u64())
             .map_err(|_| EncodingError::BurnItemsMalformed)?;
         // The length was checked above, so each slice is exactly 8 felts. Unpacking goes through the
         // shared bytes32 inverse; a limb that is not a valid u32 is reported as a malformed payload
         // rather than being truncated into a plausible-looking address.
-        let recipient_felts: [Felt; 8] = items[2..10]
+        let recipient_felts: [Felt; 8] = items[1..9]
             .try_into()
-            .expect("len == 10 ⇒ items[2..10] is exactly 8 felts");
+            .expect("len == 9 ⇒ items[1..9] is exactly 8 felts");
         let dest_recipient = packed_felts_to_bytes32(&recipient_felts)
             .map(ForeignChainAddress::new)
             .map_err(|_| EncodingError::BurnItemsMalformed)?;
         Ok(Self {
-            amount,
             dest_domain,
             dest_recipient,
         })

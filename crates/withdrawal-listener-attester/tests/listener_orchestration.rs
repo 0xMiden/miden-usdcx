@@ -35,6 +35,7 @@ use withdrawal_listener_attester::idempotency::SubmissionStatus;
 use withdrawal_listener_attester::listener::{
     run_once, Outcome, RunContext, RunError, ONE_BATCH_PER_BURN, ONE_INTENT_PER_BURN,
 };
+use withdrawal_listener_attester::validate::validate_discovery;
 
 #[path = "listener_support/mod.rs"]
 mod listener_support;
@@ -268,8 +269,8 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 /// in which the amount comparison had silently stopped working, which is the one this table exists
 /// to catch.
 ///
-/// The expected error is derived from the same `payload()` the request was built from rather than
-/// written out as a literal: a literal would be a second source of truth for the fixture, and the
+/// The expected error is derived from the same discovered burn the request was built from, rather
+/// than written out as a literal: a literal would be a second source of truth for the fixture, and the
 /// natural response to a fixture edit would be to "correct" the literal until the test passed
 /// again.
 #[rstest]
@@ -284,7 +285,10 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
     let expected = match field {
         "value" => ValidationMismatch::Amount {
             batch: 0,
-            expected: payload().amount.as_u64(),
+            expected: validate_discovery(discovered().record(), &config())
+                .unwrap()
+                .amount()
+                .as_u64(),
             returned: String::from("999"),
         },
         "destinationDomain" => ValidationMismatch::DestinationDomain {

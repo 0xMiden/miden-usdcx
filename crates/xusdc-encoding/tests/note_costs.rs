@@ -173,8 +173,8 @@ async fn burn_cycles() -> Result<u32> {
     let note = XReserveBurnNote::create(
         user.id(),
         faucet.id(),
+        AssetAmount::new(BURN_AMOUNT)?,
         XReserveBurnItems {
-            amount: AssetAmount::new(BURN_AMOUNT)?,
             dest_domain: 9,
             dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         },

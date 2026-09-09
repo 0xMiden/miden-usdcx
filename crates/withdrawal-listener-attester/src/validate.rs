@@ -9,7 +9,7 @@
 //! `burnIntents[]`/`encoded`/`messageHashToSign`; the partner VALIDATES, then signs. [Local binary
 //! reconstruction of the `BurnIntent` is optional validation only, and it is deliberately absent
 //! here — building it as the required path is the trap this module exists to avoid.]
-//! [`validate_returned`] compares Circle's returned `spec` against the burn-note payload field by
+//! [`validate_returned`] compares Circle's returned `spec` against the discovered burn field by
 //! field, for EVERY batch, and only a full match may proceed to signing.
 //!
 //! # The signer is reachable ONLY behind validation (structural, not by convention)
@@ -35,6 +35,7 @@
 //!   [`ListenerConfig`] is accepted as the reserved seam for them and not yet read.
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::Felt;
 
@@ -81,44 +82,64 @@ impl DiscoveryRecord {
     }
 }
 
-/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts and its
-/// `metadata.sender`. Present exactly when `GetNotesById` returned `details = Some(..)`.
+/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts, burned
+/// asset amount, and `metadata.sender`. Present when `GetNotesById` returned `details = Some(..)`.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDetails {
     items: Vec<Felt>,
+    amount: AssetAmount,
     sender: BurnNoteMetadata,
 }
 
 impl DiscoveredDetails {
-    /// From the raw withdrawal-payload attachment felts and an already-modelled sender.
-    pub fn new(items: Vec<Felt>, sender: BurnNoteMetadata) -> Self {
-        Self { items, sender }
+    /// From the raw withdrawal-payload attachment felts, the note's asset amount, and its sender.
+    pub fn new(items: Vec<Felt>, amount: AssetAmount, sender: BurnNoteMetadata) -> Self {
+        Self {
+            items,
+            amount,
+            sender,
+        }
     }
 
-    /// From the raw items and a public note's `NoteMetadata` (the happy-path discovery shape).
-    pub fn from_metadata(items: Vec<Felt>, meta: &NoteMetadata) -> Self {
-        Self::new(items, BurnNoteMetadata::from_metadata(meta))
+    /// From the raw items, the note's asset amount, and its `NoteMetadata`.
+    pub fn from_metadata(items: Vec<Felt>, amount: AssetAmount, meta: &NoteMetadata) -> Self {
+        Self::new(items, amount, BurnNoteMetadata::from_metadata(meta))
     }
 
-    /// From the raw items and the reported `(prefix, suffix)` sender felts — the shape a node hands
-    /// back before the sender is known to be an account id.
-    pub fn from_raw_sender(items: Vec<Felt>, prefix: Felt, suffix: Felt) -> Self {
-        Self::new(items, BurnNoteMetadata::from_raw_sender(prefix, suffix))
+    /// From the raw items, the note's asset amount, and the reported `(prefix, suffix)` sender
+    /// felts, before the sender is known to be an account id.
+    pub fn from_raw_sender(
+        items: Vec<Felt>,
+        amount: AssetAmount,
+        prefix: Felt,
+        suffix: Felt,
+    ) -> Self {
+        Self::new(
+            items,
+            amount,
+            BurnNoteMetadata::from_raw_sender(prefix, suffix),
+        )
     }
 }
 
-/// A burn that PASSED discovery — its decoded payload and the depositor (`metadata.sender`) that
-/// later becomes Circle's `remoteDepositor`. Only [`validate_discovery`] constructs it.
+/// A burn that PASSED discovery — its decoded payload, asset amount, and depositor
+/// (`metadata.sender`) that becomes Circle's `remoteDepositor`. Only [`validate_discovery`] constructs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredBurn {
     payload: BurnPayload,
+    amount: AssetAmount,
     depositor: AccountId,
 }
 
 impl DiscoveredBurn {
-    /// The decoded `(amount, destDomain, destRecipient)` payload.
+    /// The decoded `(destDomain, destRecipient)` payload.
     pub fn payload(&self) -> &BurnPayload {
         &self.payload
+    }
+
+    /// The burned asset amount supplied by discovery's caller from the note's asset.
+    pub fn amount(&self) -> AssetAmount {
+        self.amount
     }
 
     /// The Miden burner (`metadata.sender`) — a genuine, canonical account id, never a fabricated
@@ -134,7 +155,7 @@ impl DiscoveredBurn {
 ///    (`SyncNotes` does not prefix-scan — an exact match, never a prefix).
 /// 2. **Observability** — `details = Some(..)`; a `details = None` (private/erased) note is refused
 ///    as unobservable for Circle.
-/// 3. **Payload** — the `(amount, destDomain, destRecipient)` felts are decoded by the shared
+/// 3. **Payload** — the `(destDomain, destRecipient)` felts are decoded by the shared
 ///    encoding crate's codec (consumed by reference — no re-parse here).
 /// 4. **Sender** — `metadata.sender` is read as the Miden burner; an absent/zero/malformed sender
 ///    is refused, never defaulted.
@@ -162,14 +183,18 @@ pub fn validate_discovery(
         .as_ref()
         .ok_or(DiscoveryReject::PrivateNoteUnobservable)?;
 
-    // 3. decode the three-field payload through the shared encoding crate's codec (single-owner;
+    // 3. decode the two-field payload through the shared encoding crate's codec (single-owner;
     // no re-parse).
     let payload = decode_burn_payload(&details.items).map_err(DiscoveryReject::Decode)?;
 
     // 4. read metadata.sender as the Miden burner (refused, never defaulted).
     let depositor = read_sender(&details.sender).map_err(DiscoveryReject::Decode)?;
 
-    Ok(DiscoveredBurn { payload, depositor })
+    Ok(DiscoveredBurn {
+        payload,
+        amount: details.amount,
+        depositor,
+    })
 }
 
 // ================================================================================================
@@ -177,7 +202,7 @@ pub fn validate_discovery(
 // ================================================================================================
 
 /// Proof that a Circle `prepare-withdrawal` response passed the field-by-field gate against a
-/// burn payload — and, with it, the per-batch digests cleared to sign.
+/// discovered burn — and, with it, the per-batch digests cleared to sign.
 ///
 /// Its ONLY constructor is [`validate_returned`]'s full-match path, and its digests are private, so
 /// the sole way to feed the withdrawal signer a digest is to have passed validation. This is what
@@ -200,15 +225,15 @@ impl ValidatedWithdrawal {
     }
 }
 
-/// The gate: validate Circle's returned data against the burn-note `payload`, field by
+/// The gate: validate Circle's returned data against the discovered `burn`, field by
 /// field, for EVERY batch — and, on a full match, mint the [`ValidatedWithdrawal`] that clears
 /// signing. A mismatch in ANY batch (not just `batches[0]`) is a hard `Err` that MUST abort before
 /// signing.
 ///
-/// For each batch, every returned `burnIntents[].spec` must match the payload on:
-/// * `value` (the amount, in the smallest token unit) == `payload.amount`;
-/// * `destinationDomain` == `payload.dest_domain`;
-/// * `destinationRecipient` == `payload.dest_recipient`.
+/// For each batch, every returned `burnIntents[].spec` must match the burn on:
+/// * `value` (the amount, in the smallest token unit) == `burn.amount()`;
+/// * `destinationDomain` == `burn.payload().dest_domain`;
+/// * `destinationRecipient` == `burn.payload().dest_recipient`.
 ///
 /// and the batch's `messageHashToSign` must be present and a signable 32-byte digest. A batch with
 /// an EMPTY `burnIntents` array is refused (`EmptyBurnIntents`) — with no `spec` to compare,
@@ -225,7 +250,7 @@ impl ValidatedWithdrawal {
 /// [`ValidatedWithdrawal`] is produced — so no signature over the mismatching data can follow.
 pub fn validate_returned(
     resp: &PrepareWithdrawalResponse,
-    payload: &BurnPayload,
+    burn: &DiscoveredBurn,
     _cfg: &ListenerConfig,
 ) -> Result<ValidatedWithdrawal, ValidationMismatch> {
     let batches = resp.batches();
@@ -235,16 +260,16 @@ pub fn validate_returned(
 
     let mut digests = Vec::with_capacity(batches.len());
     for (batch, prepared) in batches.iter().enumerate() {
-        // A batch with no burn intents has nothing to compare against the payload — clearing it
+        // A batch with no burn intents has nothing to compare against the burn — clearing it
         // would bind its digest to no amount/domain/recipient and mint a signing token vacuously.
         // Refuse it BEFORE the per-intent loop, which would otherwise be skippable straight into Ok.
         let intents = prepared.burn_intents();
         if intents.is_empty() {
             return Err(ValidationMismatch::EmptyBurnIntents { batch });
         }
-        // Every burn intent in the batch must match the payload — not merely the first.
+        // Every burn intent in the batch must match the burn — not merely the first.
         for intent in intents {
-            check_spec(batch, intent.spec(), payload)?;
+            check_spec(batch, intent.spec(), burn)?;
         }
         // The digest must be present and signable BEFORE the batch is cleared.
         digests.push(decode_digest(batch, prepared.message_hash_to_sign())?);
@@ -253,15 +278,15 @@ pub fn validate_returned(
     Ok(ValidatedWithdrawal { digests })
 }
 
-/// Compares one returned `TransferSpec` against the burn payload on the three compared fields, in
-/// order.
+/// Compares one returned `TransferSpec` against the discovered burn on the three fields, in order.
 fn check_spec(
     batch: usize,
     spec: &TransferSpec,
-    payload: &BurnPayload,
+    burn: &DiscoveredBurn,
 ) -> Result<(), ValidationMismatch> {
-    // amount — spec.value is a smallest-unit decimal string; the payload amount fits in u64.
-    let expected_amount = payload.amount.as_u64();
+    let payload = burn.payload();
+    // amount — spec.value is a smallest-unit decimal string; the burned asset amount fits in u64.
+    let expected_amount = burn.amount().as_u64();
     let amount_matches = spec
         .value()
         .parse::<u128>()

@@ -72,14 +72,13 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A withdrawal payload for the given amount, with an arbitrary destination. Those fields exist for
+/// A withdrawal payload with an arbitrary destination. Those fields exist for
 /// the off-chain listener to read; consuming the note does not look at them.
-fn items(amount: u64) -> Result<XReserveBurnItems> {
-    Ok(XReserveBurnItems {
-        amount: AssetAmount::new(amount)?,
+fn items() -> XReserveBurnItems {
+    XReserveBurnItems {
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-    })
+    }
 }
 
 /// Builds a stock-script burn note with exactly the supplied attachments.
@@ -169,9 +168,7 @@ async fn burn_rejects_an_extra_attachment() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
         let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
             .expect("public network faucet");
-        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(
-            items(VALID_BURN).expect("valid withdrawal payload"),
-        ));
+        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(items()));
         let extra = NoteAttachment::with_words(
             NoteAttachmentScheme::new(7).expect("extra scheme"),
             vec![Word::empty()],
@@ -201,9 +198,7 @@ async fn burn_rejects_an_extra_attachment() -> Result<()> {
 #[tokio::test]
 async fn burn_rejects_a_missing_routing_attachment() -> Result<()> {
     let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
-        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(
-            items(VALID_BURN).expect("valid withdrawal payload"),
-        ));
+        let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(items()));
         vec![raw_burn_note(
             sender,
             faucet_id,
@@ -303,7 +298,8 @@ async fn run_set_min_burn_then_consume(
     let note = XReserveBurnNote::create(
         h.user_id,
         h.faucet_id,
-        items(burn_amount)?,
+        AssetAmount::new(burn_amount)?,
+        items(),
         &mut note_rng(23),
     )?;
     let faucet_id = h.faucet_id;

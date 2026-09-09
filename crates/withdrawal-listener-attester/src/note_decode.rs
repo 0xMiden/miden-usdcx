@@ -4,8 +4,8 @@
 //!
 //! # The codec is the shared encoding crate's, consumed by reference
 //!
-//! The `(amount, destDomain, destRecipient)` felt layout — `amount` at `[0]`, `destDomain` at
-//! `[1]`, `destRecipient` at `[2..10]`, `BURN_NOTE_ITEMS_FELTS = 10` — is the burn-note payload
+//! The `(destDomain, destRecipient)` felt layout — `destDomain` at `[0]`,
+//! `destRecipient` at `[1..9]`, `BURN_NOTE_ITEMS_FELTS = 9` — is the burn-note payload
 //! codec, and that codec is OWNED by `xusdc-encoding`
 //! ([`XReserveBurnItems::decode`]). This module calls it; it re-derives no offset,
 //! packs no felt, and reads no byte. The layout appears nowhere below, deliberately: the burn note
@@ -92,7 +92,7 @@ impl BurnNoteMetadata {
 }
 
 /// Decodes a burn note's withdrawal-payload attachment felts into Circle's documented
-/// [`BurnPayload`] `(amount, dest_domain, dest_recipient)`.
+/// [`BurnPayload`] `(dest_domain, dest_recipient)`.
 ///
 /// The decode IS the shared encoding crate's [`XReserveBurnItems::decode`] (single-owner);
 /// [`BurnPayload`] is that codec's `XReserveBurnItems`, so the mapping is the identity and there is
@@ -104,7 +104,7 @@ impl BurnNoteMetadata {
 /// # Errors
 ///
 /// [`DecodeError::BurnItemsMalformed`] if the felts are not a well-formed burn payload — a felt
-/// count other than 10, an out-of-range `amount` or `destDomain`, or a non-`u32` bytes32 limb. No
+/// count other than 9, an out-of-range `destDomain`, or a non-`u32` bytes32 limb. No
 /// partial payload is ever surfaced.
 pub fn decode_burn_payload(items: &[Felt]) -> Result<BurnPayload, DecodeError> {
     XReserveBurnItems::decode(items).map_err(|source| DecodeError::BurnItemsMalformed { source })

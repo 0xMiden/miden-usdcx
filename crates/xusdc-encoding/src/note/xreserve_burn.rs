@@ -2,7 +2,7 @@
 //!
 //! A withdrawing xUSDC holder creates this note carrying the burned xUSDC; Circle's off-chain
 //! withdrawal attester discovers it by its FIXED full-32-bit tag (`SyncNotes` exact-match) and
-//! reads its withdrawal-payload attachment `(amount, destDomain, destRecipient)` to release
+//! reads its withdrawal-payload attachment `(destDomain, destRecipient)` to release
 //! USDC on the source chain.
 //!
 //! It is built as a standalone note factory. What it does reuse is the standard burn consume
@@ -20,7 +20,7 @@
 //! off-chain reader who holds the note.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
@@ -43,7 +43,7 @@ use crate::xreserve::encoding::{XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
 /// has assigned.
 pub const FIXED_XUSDC_BURN_TAG: u32 = 0x4255_524E;
 
-/// The withdrawal-payload attachment scheme (u16, project-chosen). It carries the 10-felt Circle
+/// The withdrawal-payload attachment scheme (u16, project-chosen). It carries the 9-felt Circle
 /// withdrawal payload, mirroring how the mint transport carries its own payload as a scheme-tagged
 /// attachment.
 ///
@@ -54,8 +54,8 @@ pub const FIXED_XUSDC_BURN_TAG: u32 = 0x4255_524E;
 /// other payload, so it does not resurrect a retired scheme.
 pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME: u16 = 6;
 
-/// Word count of the withdrawal-payload attachment: the 10 payload felts zero-padded to a word
-/// boundary (3 words, 2 pad felts). Fixed, because [`BURN_NOTE_ITEMS_FELTS`] is fixed.
+/// Word count of the withdrawal-payload attachment: the 9 payload felts zero-padded to a word
+/// boundary (3 words, 3 pad felts). Fixed, because [`BURN_NOTE_ITEMS_FELTS`] is fixed.
 pub const XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS: usize = 3;
 
 /// The withdrawal payload a burn note carries — the [`XReserveBurnItems`] the off-chain attester
@@ -121,7 +121,7 @@ const _: () = assert!(
 pub struct XReserveBurnNote;
 
 impl XReserveBurnNote {
-    /// Number of withdrawal-payload felts (10), owned by the shared-encoding codec.
+    /// Number of withdrawal-payload felts (9), owned by the shared-encoding codec.
     pub const NUM_PAYLOAD_ITEMS: usize = BURN_NOTE_ITEMS_FELTS;
 
     /// Returns the (reused) stock burn note consume script — targets `faucet::receive_and_burn`.
@@ -139,12 +139,14 @@ impl XReserveBurnNote {
     pub fn create<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
+        amount: AssetAmount,
         items: XReserveBurnItems,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
         Self::builder()
             .sender(sender)
             .faucet_id(faucet_id)
+            .amount(amount)
             .items(items)
             .rng(rng)
             .build()
@@ -154,24 +156,23 @@ impl XReserveBurnNote {
 #[bon::bon]
 impl XReserveBurnNote {
     /// Builds an `XReserveBurnNote` via a `bon` builder
-    /// (`XReserveBurnNote::builder().sender(..).faucet_id(..).items(..).rng(..).build()`):
+    /// (`XReserveBurnNote::builder().sender(..).faucet_id(..).amount(..).items(..).rng(..).build()`):
     /// `NoteType::Public`, the fixed xUSDC burn tag, `metadata.sender = sender` (the depositor),
     /// `NoteAssets` = the burned xUSDC `FungibleAsset` (`amount` issued by `faucet_id`), and
     /// `NoteStorage.items` = the stock 8-felt asset layout the stock burn script asserts against. The
-    /// `(amount, destDomain, destRecipient)` withdrawal payload rides in a scheme-tagged
-    /// [`XUsdcBurnAttachment`]. The note's amount is single-sourced from `items.amount`.
+    /// `(destDomain, destRecipient)` withdrawal payload rides in a scheme-tagged
+    /// [`XUsdcBurnAttachment`]. The amount is supplied separately for the burned asset.
     #[builder]
     pub fn new<R: FeltRng>(
         sender: AccountId,
         faucet_id: AccountId,
+        amount: AssetAmount,
         items: XReserveBurnItems,
         rng: &mut R,
     ) -> Result<Note, NoteError> {
         let serial_num = rng.draw_word();
 
-        // the amount is single-sourced from items.amount so the recorded amount and the burned asset
-        // can never diverge.
-        let asset = FungibleAsset::new(faucet_id, u64::from(items.amount))
+        let asset = FungibleAsset::new(faucet_id, u64::from(amount))
             .map_err(|err| NoteError::other_with_source("invalid burned xUSDC asset", err))?;
 
         // NoteStorage carries the STOCK 8-felt asset layout (ASSET_ID(4) + ASSET_VALUE(4)); the stock

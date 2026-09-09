@@ -101,7 +101,6 @@ pub fn payload() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
     BurnPayload {
-        amount: AssetAmount::new(spec["value"].as_str().unwrap().parse().unwrap()).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
@@ -130,9 +129,20 @@ pub fn discovered() -> DiscoveredNote {
 /// None`) — the two discovery rejects that must stop the flow before Circle is touched.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
+        let fixture = support::fixture_json("prepare_withdrawal_200");
+        let value = fixture["batches"][0]["burnIntents"][0]["spec"]["value"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
         let id = evidence_support::other_account_id();
         let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
-        DiscoveredDetails::from_raw_sender(p.encode(), prefix, suffix)
+        DiscoveredDetails::from_raw_sender(
+            p.encode(),
+            AssetAmount::new(value).unwrap(),
+            prefix,
+            suffix,
+        )
     });
     DiscoveredNote::new(note_id(), DiscoveryRecord::new(tag, details))
 }

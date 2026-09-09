@@ -575,7 +575,7 @@ impl fmt::Display for ValidationMismatch {
                 returned,
             } => write!(
                 f,
-                "batch {batch}: returned amount `{returned}` does not match the burn payload amount {expected}"
+                "batch {batch}: returned amount `{returned}` does not match the burned asset amount {expected}"
             ),
             Self::DestinationDomain {
                 batch,

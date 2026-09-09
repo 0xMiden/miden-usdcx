@@ -41,8 +41,10 @@ use withdrawal_listener_attester::circle::wire::{DecimalAmount, Hex32, HexBytes}
 use withdrawal_listener_attester::circle::CircleClient;
 use withdrawal_listener_attester::config::ListenerConfig;
 use withdrawal_listener_attester::idempotency::{BurnKey, SubmissionStatus, SubmitLedger};
-use withdrawal_listener_attester::types::BurnPayload;
-use withdrawal_listener_attester::validate::{validate_returned, ValidatedWithdrawal};
+use withdrawal_listener_attester::validate::{
+    validate_discovery, validate_returned, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
+    ValidatedWithdrawal,
+};
 use withdrawal_listener_attester::withdrawal_api::{
     authorize_submission, build_withdraw_request, AuthorizedWithdrawal,
 };
@@ -124,19 +126,30 @@ pub fn batch_for(burn_tx_id: &str, signatures: Vec<HexBytes>) -> WithdrawBatch {
         .expect("a 1-intent, 2-signature batch")
 }
 
-/// A burn payload that MATCHES the 200 fixture's returned spec, so `validate_returned` accepts
+/// A discovered burn that MATCHES the 200 fixture's returned spec, so `validate_returned` accepts
 /// the fixture response.
-pub fn payload_matching_fixture() -> BurnPayload {
+pub fn burn_matching_fixture() -> DiscoveredBurn {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
     let value: u64 = spec["value"].as_str().unwrap().parse().unwrap();
-    XReserveBurnItems {
-        amount: AssetAmount::new(value).unwrap(),
+    let payload = XReserveBurnItems {
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
-    }
+    };
+    let cfg = ListenerConfig::default();
+    let sender = cfg.faucet_id();
+    let record = DiscoveryRecord::new(
+        cfg.burn_tag(),
+        Some(DiscoveredDetails::from_raw_sender(
+            payload.encode(),
+            AssetAmount::new(value).unwrap(),
+            sender.prefix().as_felt(),
+            sender.suffix(),
+        )),
+    );
+    validate_discovery(&record, &cfg).expect("the fixture burn passes discovery")
 }
 
 /// A `ValidatedWithdrawal` carrying exactly `digests`, minted through the REAL validation gate
@@ -154,12 +167,8 @@ pub fn validated(digests: &[[u8; 32]]) -> ValidatedWithdrawal {
         .collect();
     let resp: PrepareWithdrawalResponse =
         serde_json::from_value(json!({ "batches": batches })).expect("a valid prepare response");
-    validate_returned(
-        &resp,
-        &payload_matching_fixture(),
-        &ListenerConfig::default(),
-    )
-    .expect("the fixture response passes B5")
+    validate_returned(&resp, &burn_matching_fixture(), &ListenerConfig::default())
+        .expect("the fixture response passes B5")
 }
 
 /// A `ListenerConfig` whose attester allowlist is exactly `addrs`.

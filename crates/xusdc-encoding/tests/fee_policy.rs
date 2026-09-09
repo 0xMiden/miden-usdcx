@@ -89,8 +89,6 @@ fn production_builder_with_supply(token_supply: AssetAmount) -> Result<XReserveS
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(fee_parameters())
         .domain(TEST_DOMAIN)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .build()?)
 }
 

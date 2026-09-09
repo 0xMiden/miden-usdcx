@@ -226,7 +226,7 @@ fn custom_mint_transport_masm_is_deleted() -> Result<()> {
 /// TRIPWIRE: the legacy config/burn admin MASM is replaced — `domain_config`/`min_burn_admin`/
 /// `burn_policy` delete; the identifier-init module + note are gone too (the identifier is a
 /// provable fixpoint of the account id, which is why the mint path derives it instead of reading a
-/// seeded slot; the other three domain-config fields are build-seeded).
+/// seeded slot).
 #[test]
 fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();

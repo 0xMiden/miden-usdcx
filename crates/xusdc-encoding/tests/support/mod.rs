@@ -40,7 +40,7 @@ use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountIdVersion, AccountProcedureRoot, AccountType,
-    AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+    AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
 };
 use miden_protocol::assembly::Package;
 use miden_protocol::asset::{Asset, AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
@@ -77,7 +77,7 @@ use xusdc_encoding::account::xreserve::{
 use xusdc_encoding::errors;
 use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
@@ -104,16 +104,8 @@ use sha3::{Digest, Keccak256};
 pub const TEST_DOMAIN: u32 = 7;
 /// Any value != the vectors' remote_domain, for the wrong-domain reject.
 pub const TEST_WRONG_DOMAIN: u32 = 8;
-/// Test `source_domain` (config-only; nonzero so read-backs are distinguishable). Build-seeded
-/// by the production fixtures (there is no runtime writer).
+/// Test destination domain for burn fixtures.
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
-
-/// Test `xreserve_contract` source-chain address (sequential distinct bytes) — the third
-/// build-seeded domain-config field the production fixtures seed through the builder. Its leading
-/// bytes are non-zero, so the fixture is a source-chain address no EVM chain could produce.
-pub fn test_xreserve_contract() -> ForeignChainAddress {
-    ForeignChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
-}
 
 /// The production mint note over a RAW Circle payload, built exactly the way the relayer builds
 /// one: decode the payload, then drive the typed [`XUsdcMintNote`] builder at [`TEST_DOMAIN`].
@@ -154,7 +146,7 @@ pub fn mint_note_from_payload_at_domain(
     Ok(Note::from(note))
 }
 
-// NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
+// NOTE: the tests do not bind slot names of their own. The three xreserve slots come from
 // `XReserveFaucetExtension::*_slot()` and the stock ones from their owning standards component
 // (`FungibleFaucet::token_config_slot()`, `MinBurnAmount::slot_name()` — the latter read via
 // [`read_min_burn_size`]), so a test and the shipped faucet can never key different slots.
@@ -545,8 +537,6 @@ pub fn production_builder_verdict(
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(test_fee_parameters())
         .domain(domain)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .maybe_min_burn_amount(min_burn_amount)
         .build())
 }
@@ -1437,24 +1427,6 @@ pub fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
 
-/// Reads the FOUR domain-config words `[domain, source_domain, xrc_hi, xrc_lo]` from a
-/// committed/evolved account — the build-seeded read-back (+ the no-write assert of the guard
-/// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
-pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
-    let read = |name: &StorageSlotName| -> Result<Word> {
-        account
-            .storage()
-            .get_item(name)
-            .map_err(|e| anyhow::anyhow!("reading domain-config slot {name}: {e}"))
-    };
-    Ok([
-        read(XReserveFaucetExtension::domain_config_slot())?,
-        read(XReserveFaucetExtension::source_domain_config_slot())?,
-        read(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
-        read(XReserveFaucetExtension::xreserve_contract_lo_slot())?,
-    ])
-}
-
 // Minimum-burn configuration note and slot read-back
 // ================================================================================================
 
@@ -1542,8 +1514,7 @@ pub struct GuardedMint {
 /// attestation policy or allow-all per `selection`) via [`XReserveStablecoinBuilder`]. The
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
-/// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// the generated `XReserveStablecoinBuilder::builder()`.
+/// (element 0) through the generated `XReserveStablecoinBuilder::builder()`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable
@@ -1578,17 +1549,6 @@ pub fn setup_guarded_mint_account(
             StorageSlot::with_value(
                 XReserveFaucetExtension::domain_config_slot().clone(),
                 domain,
-            ),
-            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; the fixtures never read them).
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::source_domain_config_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
             ),
             StorageSlot::with_map(
                 XReserveFaucetExtension::used_nonces_slot().clone(),
@@ -1971,17 +1931,6 @@ pub fn setup_burn_policy_account(
             StorageSlot::with_value(
                 XReserveFaucetExtension::domain_config_slot().clone(),
                 Word::from([TEST_DOMAIN, 0, 0, 0]),
-            ),
-            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; the burn fixtures never read them).
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::source_domain_config_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
             ),
             StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
             StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),

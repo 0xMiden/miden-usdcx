@@ -186,13 +186,12 @@ fn account_id_bytes32_form_is_stock_and_byte_identical() {
     }
 }
 
-// The EVM-address bytes32 container the domain config is seeded through
+// Source-chain bytes32 address packing
 // ================================================================================================
 
-/// A source-chain address seeds `xreserve_contract` as its raw bytes32, so the felts the builder
-/// writes are the shared `bytes32_to_packed_felts` packing — the same packing every other bytes32
-/// goes through. The address here has non-zero leading bytes, which no EVM address has: a source
-/// chain wider than 20 bytes must survive the packing unchanged.
+/// A source-chain address uses the shared `bytes32_to_packed_felts` packing. The address here has
+/// non-zero leading bytes, which no EVM address has: a source chain wider than 20 bytes must survive
+/// the packing unchanged.
 #[test]
 fn local_chain_address_packs_like_the_shared_codec() {
     let bytes: [u8; 32] = core::array::from_fn(|i| 0x10 + i as u8);

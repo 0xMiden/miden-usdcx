@@ -6578,6 +6578,8 @@ name = "xusdc-attester"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "alloy-primitives",
+ "alloy-sol-types",
  "hex",
  "http",
  "miden-client",

@@ -49,6 +49,8 @@ assert_matches = "1.5"
 # faucet-owned). Pinned here so the two crates cannot drift onto different versions
 # (workspace-shared-dependencies).
 hex = "0.4"
+alloy-primitives = { version = "=1.6.1", default-features = false }
+alloy-sol-types = { version = "=1.6.1", default-features = false }
 k256 = { version = "0.13", features = ["ecdsa"] }
 # Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
 # adopter: `PrepareBurnIntentInput` carries eleven fields, five of them optional, and a positional

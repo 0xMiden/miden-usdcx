@@ -10,6 +10,7 @@
 //! Rather than trusting deployment to get this right, `build_components` refuses to compose an
 //! account at all when the blocklist manager collides with the administrator, the Domain Pauser, or the
 //! Domain Manager. These tests pin each refusal and the specific error naming the collided role.
+//! The same refusal covers collisions among the three privileged holders themselves.
 //! (They live apart from `builder_api.rs` only to keep that file within its size ceiling.)
 
 mod support;
@@ -63,6 +64,60 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
             );
         }
         other => panic!("expected BlocklistManagerNotIsolated{{{expected_role}}}, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[rstest]
+#[case::admin_is_pauser(
+    test_account_id(1),
+    test_account_id(1),
+    test_account_id(3),
+    "ADMIN",
+    "DOM_PAUSER"
+)]
+#[case::admin_is_manager(
+    test_account_id(1),
+    test_account_id(2),
+    test_account_id(1),
+    "ADMIN",
+    "DOM_MANAGER"
+)]
+#[case::pauser_is_manager(
+    test_account_id(1),
+    test_account_id(2),
+    test_account_id(2),
+    "DOM_PAUSER",
+    "DOM_MANAGER"
+)]
+fn build_rejects_privileged_roles_sharing_a_holder(
+    #[case] owner: AccountId,
+    #[case] pauser: AccountId,
+    #[case] manager: AccountId,
+    #[case] expected_first: &str,
+    #[case] expected_second: &str,
+) -> Result<()> {
+    let err = XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
+        .token_supply(AssetAmount::new(0).context("valid token supply")?)
+        .owner(owner)
+        .pauser_holder(pauser)
+        .manager_holder(manager)
+        .blocklist_manager_holder(test_account_id(4))
+        .fee_parameters(test_fee_parameters())
+        .domain(TEST_DOMAIN)
+        .source_domain(TEST_SOURCE_DOMAIN)
+        .xreserve_contract(test_xreserve_contract())
+        .build()
+        .context("the fixed-identity USDCx faucet builds")?
+        .build_components()
+        .expect_err("privileged roles sharing a holder must be rejected");
+    match err {
+        XReserveStablecoinBuilderError::PrivilegedHoldersNotDistinct { first, second } => {
+            assert_eq!(first, expected_first);
+            assert_eq!(second, expected_second);
+        }
+        other => panic!("expected PrivilegedHoldersNotDistinct, got {other:?}"),
     }
     Ok(())
 }

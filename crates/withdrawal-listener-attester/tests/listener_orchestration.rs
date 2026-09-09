@@ -315,7 +315,7 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
     assert_eq!(withdraw_posts(&mock), 0, "and nothing was submitted");
 }
 
-/// Schema-valid edits to redemption terms must reject before signing.
+/// Rejects withdrawal terms that violate policy even when the response matches the JSON schema.
 #[rstest]
 #[case::max_fee(&["maxFee"], json!("1001"), "maxFee")]
 #[case::destination_caller(

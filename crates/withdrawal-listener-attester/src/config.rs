@@ -143,7 +143,7 @@ pub struct ListenerConfig {
     #[builder(default = 0)]
     miden_domain: u32,
 
-    /// Maximum returned `burnIntents[].maxFee` this deployment will sign for, in smallest units.
+    /// Maximum permitted withdrawal fee, in smallest token units.
     /// Defaults to zero, so fee-bearing withdrawals require an explicit operator setting. The
     /// returned fee must also fit within the burned amount; Circle's fee/scale decisions stay OPEN.
     #[builder(default = AssetAmount::ZERO)]
@@ -357,7 +357,7 @@ impl ListenerConfig {
         self.miden_domain
     }
 
-    /// Maximum returned `burnIntents[].maxFee` this deployment will sign for, in smallest units.
+    /// Maximum permitted withdrawal fee, in smallest token units.
     pub fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
     }

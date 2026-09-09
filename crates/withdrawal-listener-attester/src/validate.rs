@@ -200,8 +200,8 @@ impl ValidatedWithdrawal {
     }
 }
 
-/// The gate: validate every returned intent against the discovered burn and request terms before
-/// minting the [`ValidatedWithdrawal`] that clears signing.
+/// Validates every returned intent against the discovered burn and configured withdrawal terms.
+/// Returns the validated batch digests for signing.
 ///
 /// # Errors
 /// A [`ValidationMismatch`] naming the batch and the field that diverged. On any `Err`, no
@@ -218,12 +218,10 @@ pub fn validate_returned(
 
     let mut digests = Vec::with_capacity(batches.len());
     for (batch, prepared) in batches.iter().enumerate() {
-        // Empty batches are invalid.
         let intents = prepared.burn_intents();
         if intents.is_empty() {
             return Err(ValidationMismatch::EmptyBurnIntents { batch });
         }
-        // Every burn intent in the batch must match, not merely the first.
         for intent in intents {
             check_intent(batch, intent, burn, cfg)?;
         }

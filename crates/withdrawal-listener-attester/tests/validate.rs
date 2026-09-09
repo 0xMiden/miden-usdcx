@@ -203,7 +203,7 @@ fn validate_returned_rejects_destination_recipient_mismatch() {
     );
 }
 
-/// Schema-valid edits to redemption terms must reject before signing.
+/// Rejects withdrawal terms that violate policy even when the response matches the JSON schema.
 #[rstest]
 #[case::max_fee(&["maxFee"], Value::from("1001"), "maxFee")]
 #[case::destination_caller(
@@ -313,7 +313,7 @@ fn validate_returned_rejects_unbound_redemption_terms(
     }
 }
 
-/// Fees at either limit pass; values above the deployment or burn limit fail closed.
+/// Accepts fees within both the configured limit and the burned amount.
 #[rstest]
 #[case::zero_default(0, "0", true)]
 #[case::positive_default(0, "1", false)]

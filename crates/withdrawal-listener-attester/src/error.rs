@@ -555,7 +555,7 @@ pub enum ValidationMismatch {
         returned: String,
     },
 
-    /// A returned `destinationCaller` is not the zero caller the neutral request implies.
+    /// The returned `destinationCaller` is nonzero.
     DestinationCaller {
         batch: usize,
         expected: String,
@@ -627,7 +627,7 @@ impl fmt::Display for ValidationMismatch {
                 returned,
             } => write!(
                 f,
-                "batch {batch}: returned destination caller `{returned}` does not match the neutral caller `{expected}`"
+                "batch {batch}: returned destination caller `{returned}` does not match the expected caller `{expected}`"
             ),
             Self::HookData {
                 batch,

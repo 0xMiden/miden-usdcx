@@ -32,7 +32,7 @@ use super::{
     Ledger, BURN_UNITS, LOWERED_MIN_BURN, MINT_ROUND_UNITS, RAISED_MAX_SUPPLY, RAISED_MIN_BURN,
 };
 
-// Admin-only nonce salts (distinct from the mint/burn salts in checks.rs).
+// Admin-only nonce salts (distinct from the mint salts in checks.rs).
 const SALT_PAUSED_MINT: u8 = 0x77;
 const SALT_MINT_AFTER_UNPAUSE: u8 = 0x88;
 const SALT_DISABLED_ATTESTER: u8 = 0x99;

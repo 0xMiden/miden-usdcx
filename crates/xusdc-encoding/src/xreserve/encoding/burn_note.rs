@@ -1,27 +1,26 @@
 //! Burn-note item codec: the burn-note withdrawal payload
-//! `(amount, destDomain, destRecipient, salt)`.
+//! `(amount, destDomain, destRecipient)`.
 //!
 //! This codec is Rust-only and has no MASM counterpart, because nothing on-chain ever reads the
 //! payload: the faucet burns the asset, and the destination fields exist for the off-chain
 //! withdrawal attester to act on. The burn note encodes and the attester decodes, so the encoding
 //! has to be exactly reversible between them.
 //!
-//! The `destRecipient` and `salt` fields are packed and unpacked with the shared bytes32 codec in
-//! both directions, so there is one definition of how 32 bytes become field elements.
+//! The `destRecipient` field is packed and unpacked with the shared bytes32 codec in both
+//! directions, so there is one definition of how 32 bytes become field elements.
 
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;
 
-use super::bytes32::{bytes32_to_packed_felts, packed_felts_to_bytes32};
+use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::ForeignChainAddress;
 use super::error::EncodingError;
 
 /// Felt width of the burn-note withdrawal payload: `amount` (1) then `destDomain`
-/// (1) then `destRecipient` (8 u32-LE) then `salt` (8 u32-LE), totalling 18 felts
-/// (≤ 1024, the note-model felt bound).
-pub const BURN_NOTE_ITEMS_FELTS: usize = 18;
+/// (1) then `destRecipient` (8 u32-LE), totalling 10 felts (≤ 1024, the note-model felt bound).
+pub const BURN_NOTE_ITEMS_FELTS: usize = 10;
 
-/// The burn-note public payload `(amount, destDomain, destRecipient, salt)` — the burn note's
+/// The burn-note public payload `(amount, destDomain, destRecipient)` — the burn note's
 /// dedicated payload type. Destination fields live in the withdrawal-payload attachment, never note
 /// metadata (`metadata.sender` carries the burner and nothing else). Built either as a struct
 /// literal or with a `bon` builder (`XReserveBurnItems::builder().amount(..).dest_domain(..)…build()`),
@@ -31,20 +30,18 @@ pub struct XReserveBurnItems {
     pub amount: AssetAmount,
     pub dest_domain: u32,
     pub dest_recipient: ForeignChainAddress,
-    pub salt: [u8; 32],
 }
 
 impl XReserveBurnItems {
-    /// Encodes `(amount, destDomain, destRecipient, salt)` into the payload felt layout
-    /// (`amount` at `[0]`, `destDomain` at `[1]`, `destRecipient` at `[2..10]`, `salt` at
-    /// `[10..18]`). Infallible: `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a `u32`, and both
-    /// bytes32 fields pack via the shared `bytes32` codec.
+    /// Encodes `(amount, destDomain, destRecipient)` into the payload felt layout
+    /// (`amount` at `[0]`, `destDomain` at `[1]`, `destRecipient` at `[2..10]`). Infallible:
+    /// `AssetAmount::MAX = 2^63 − 2^31`, `destDomain` is a `u32`, and the bytes32 field packs via
+    /// the shared `bytes32` codec.
     pub fn encode(&self) -> Vec<Felt> {
         let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
         out.push(Felt::from(self.amount)); // [0]
         out.push(Felt::from(self.dest_domain)); // [1]
         out.extend_from_slice(&self.dest_recipient.to_packed_felts()); // [2..10]
-        out.extend_from_slice(&bytes32_to_packed_felts(&self.salt)); // [10..18]
         out
     }
 
@@ -70,20 +67,14 @@ impl XReserveBurnItems {
         // rather than being truncated into a plausible-looking address.
         let recipient_felts: [Felt; 8] = items[2..10]
             .try_into()
-            .expect("len == 18 ⇒ items[2..10] is exactly 8 felts");
+            .expect("len == 10 ⇒ items[2..10] is exactly 8 felts");
         let dest_recipient = packed_felts_to_bytes32(&recipient_felts)
             .map(ForeignChainAddress::new)
             .map_err(|_| EncodingError::BurnItemsMalformed)?;
-        let salt_felts: [Felt; 8] = items[10..18]
-            .try_into()
-            .expect("len == 18 ⇒ items[10..18] is exactly 8 felts");
-        let salt =
-            packed_felts_to_bytes32(&salt_felts).map_err(|_| EncodingError::BurnItemsMalformed)?;
         Ok(Self {
             amount,
             dest_domain,
             dest_recipient,
-            salt,
         })
     }
 }
@@ -137,9 +128,9 @@ mod tests {
     }
 
     /// TV-BN-2 (destination-in-items): the destination fields land in the
-    /// payload felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`,
-    /// `salt` at `[10..18]`). `encode` has no metadata path — its only output is `Vec<Felt>`,
-    /// so `metadata.sender` is structurally reserved for the depositor.
+    /// payload felt layout (`destDomain` at `[1]`, `destRecipient` at `[2..10]`). `encode` has no
+    /// metadata path — its only output is `Vec<Felt>`, so `metadata.sender` is structurally reserved
+    /// for the depositor.
     #[test]
     fn tv_bn_2_destination_in_items() {
         let v = load();
@@ -151,12 +142,6 @@ mod tests {
                 &items[2..10],
                 &golden[2..10],
                 "{}: destRecipient in items[2..10]",
-                vec.id
-            );
-            assert_eq!(
-                &items[10..18],
-                &golden[10..18],
-                "{}: salt in items[10..18]",
                 vec.id
             );
         }
@@ -182,7 +167,6 @@ mod tests {
     #[case("bn-rej-amount-over-cap")]
     #[case("bn-rej-domain-over-u32")]
     #[case("bn-rej-recipient-limb-not-u32")]
-    #[case("bn-rej-salt-limb-not-u32")]
     fn tv_bn_4_malformed_burn_items(#[case] id: &str) {
         let vec = load()
             .families

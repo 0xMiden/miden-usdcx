@@ -82,7 +82,6 @@ fn sample_burn_items(amount: u64) -> XReserveBurnItems {
         amount: miden_protocol::asset::AssetAmount::new(amount).expect("amount within bounds"),
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0xCDu8; 32],
     }
 }
 

@@ -94,7 +94,7 @@ const NEG_BURN: u64 = 50;
 
 /// The nonce salt for the single committed mint (distinct from any admin op).
 const SALT_MINT: u8 = 0x51;
-/// Destination salts for the burn notes (distinct ⇒ distinct note ids).
+/// Legacy per-case burn variants; the burn payload carries no salt.
 const SALT_BURN_BELOW: u8 = 0x61;
 const SALT_BURN_WRONG_ASSET: u8 = 0x62;
 const SALT_BURN_PAUSED: u8 = 0x63;

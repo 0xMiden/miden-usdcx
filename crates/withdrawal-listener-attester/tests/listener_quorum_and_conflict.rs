@@ -360,9 +360,20 @@ async fn a_409_echoing_another_burn_is_a_defect_and_is_not_chased() {
 /// Re-running an already-withdrawn burn does **not** double-submit. The second pass re-does
 /// discovery through signing (the flow is stateless up to the ledger) and then the durable claim
 /// answers: `AlreadySubmitted`, with **zero** further `POST /v1/withdraw` calls.
+#[rstest]
+#[case::same_preparation(false)]
+#[case::fresh_circle_salt(true)]
 #[tokio::test]
-async fn re_running_an_already_withdrawn_burn_does_not_double_submit() {
-    let mock = mock(happy_script());
+async fn re_running_an_already_withdrawn_burn_does_not_double_submit(#[case] fresh_salt: bool) {
+    let first = prepare_200();
+    let mut second = first.clone();
+    if fresh_salt {
+        second["batches"][0]["burnIntents"][0]["spec"]["salt"] =
+            json!(format!("0x{}", "77".repeat(32)));
+        second["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "88".repeat(32)));
+    }
+    let mock =
+        mock(happy_script().prepare(vec![Reply::json(200, first), Reply::json(200, second)]));
     let circle = client_for(&mock);
     let dir = tempfile::tempdir().unwrap();
     let ledger = ledger_in(&dir);

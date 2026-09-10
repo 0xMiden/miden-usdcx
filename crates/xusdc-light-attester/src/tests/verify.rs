@@ -68,7 +68,7 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
         "messageHashToSign": "0x"
     }))
     .unwrap();
-    // This gives semantic cases consistent bytes/hash, not an independent crypto reference.
+    // This gives semantic cases a consistent header/hash, not an independent crypto reference.
     rebuild_for_test(&mut batch, false).unwrap();
     batch
 }
@@ -153,34 +153,31 @@ fn circle_response_matches_burns() {
         .push(batch(SECOND_SALT, 2_000, 7).burn_intents.remove(0));
     refuse("two intents in one batch", vec![split], WrongCount);
 
-    let encoded_cases: [Case; 2] = [
-        (
-            "changed encoded bytes",
-            |b| {
-                let last = b.encoded.len() - 2;
-                b.encoded.replace_range(last.., "01");
-            },
-            EncodedMismatch,
-        ),
-        (
-            "different digest",
-            |b| b.message_hash_to_sign = ZERO_WORD.into(),
-            DigestMismatch,
-        ),
-    ];
-    for (name, edit, expected) in encoded_cases {
-        let mut changed = batch(FIRST_SALT, 1_000, 9);
-        edit(&mut changed);
-        refuse(name, vec![changed], expected);
-    }
     for as_set in [false, true] {
         let mut accepted = batch(FIRST_SALT, 1_000, 9);
         rebuild_for_test(&mut accepted, as_set).unwrap();
+        // Only the header selects the hash form; the unused body need not match.
+        accepted.encoded.replace_range(10.., "00");
         let response = UnverifiedPrepareResponse {
             batches: vec![accepted],
         };
-        assert!(verify_prepared_response(&burns[..1], response, &config).is_ok());
+        assert_eq!(
+            verify_prepared_response(&burns[..1], response, &config).err(),
+            None
+        );
+
+        let mut changed = batch(FIRST_SALT, 1_000, 9);
+        rebuild_for_test(&mut changed, as_set).unwrap();
+        changed.message_hash_to_sign = ZERO_WORD.into();
+        refuse("different digest", vec![changed], DigestMismatch);
     }
+    let mut unknown_header = batch(FIRST_SALT, 1_000, 9);
+    unknown_header.encoded.replace_range(..10, "0x00000000");
+    refuse(
+        "unknown header",
+        vec![unknown_header],
+        MalformedField("encoded"),
+    );
     let reordered = UnverifiedPrepareResponse {
         batches: vec![batch(SECOND_SALT, 2_000, 7), batch(FIRST_SALT, 1_000, 9)],
     };
@@ -285,13 +282,6 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         rebuild_for_test(&mut changed, false).unwrap();
         check(name, changed, None, Some(expected));
     }
-}
-
-/// Reconstruct the exact packed bytes from Philipp's verbatim public-testnet response.
-#[test]
-#[ignore = "awaiting Philipp's captured prepare response with encoded and messageHashToSign"]
-fn circle_encoding_matches_reference() {
-    todo!("use the captured response as the independent encoding reference")
 }
 
 /// Reconstruct the EIP-712 digest and compare it with Circle's captured messageHashToSign.

@@ -274,6 +274,9 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 /// again.
 #[rstest]
 #[case::amount("value", json!("999"))]
+#[case::fee_not_deducted("value", json!("10000000"))]
+#[case::zero_net_value("value", json!("0"))]
+#[case::amount_overflow("value", json!("340282366920938463463374607431768211455"))]
 #[case::destination_domain("destinationDomain", json!(WRONG_DOMAIN))]
 #[case::destination_recipient("destinationRecipient", json!(WRONG_RECIPIENT))]
 #[tokio::test]
@@ -285,7 +288,7 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
         "value" => ValidationMismatch::Amount {
             batch: 0,
             expected: payload().amount.as_u64(),
-            returned: String::from("999"),
+            returned: value.as_str().unwrap().to_string(),
         },
         "destinationDomain" => ValidationMismatch::DestinationDomain {
             batch: 0,

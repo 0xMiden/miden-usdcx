@@ -38,7 +38,7 @@ fn hex32(s: &str) -> [u8; 32] {
     bytes.try_into().expect("exactly 32 bytes")
 }
 
-/// The burn payload that MATCHES `prepare_withdrawal_200.json`: `value = 10000000`,
+/// The burn payload that matches the fixture: net value 9999000 plus fee 1000,
 /// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`. `salt` is not a compared field,
 /// so any value serves.
 fn matching_payload() -> BurnPayload {
@@ -320,7 +320,7 @@ fn validate_returned_rejects_unbound_redemption_terms(
 #[case::below_ceiling(1_000, "999", true)]
 #[case::at_ceiling(1_000, "1000", true)]
 #[case::above_ceiling(1_000, "1001", false)]
-#[case::at_burn_amount(10_000_001, "10000000", true)]
+#[case::one_unit_remaining(10_000_001, "9999999", true)]
 #[case::above_burn_amount(10_000_001, "10000001", false)]
 #[case::uint256_overflow(1_000, "340282366920938463463374607431768211456", false)]
 fn validate_returned_fee_boundaries(
@@ -330,6 +330,17 @@ fn validate_returned_fee_boundaries(
 ) {
     let mut body = base_200_json();
     set_intent_field(&mut body, &["maxFee"], Value::from(fee));
+    if let Some(value) = fee
+        .parse::<u64>()
+        .ok()
+        .and_then(|fee| matching_payload().amount.as_u64().checked_sub(fee))
+    {
+        set_intent_field(
+            &mut body,
+            &["spec", "value"],
+            Value::from(value.to_string()),
+        );
+    }
     let response = response_from_value(&body).expect("unsigned decimal fee parses");
     let config = ListenerConfig::builder()
         .miden_domain(cfg().miden_domain())
@@ -344,6 +355,49 @@ fn validate_returned_fee_boundaries(
         );
     } else {
         assert_matches!(result, Err(ValidationMismatch::MaxFee { batch: 0, .. }));
+    }
+}
+
+/// Only a positive net value whose sum with the fee equals the burn may reach signing.
+#[rstest]
+#[case::zero_fee("10000000", "0", true)]
+#[case::fee_deducted("9999000", "1000", true)]
+#[case::fee_not_deducted("10000000", "1000", false)]
+#[case::total_too_low("9998999", "1000", false)]
+#[case::total_too_high("9999001", "1000", false)]
+#[case::zero_net_value("0", "10000000", false)]
+#[case::sum_overflow("340282366920938463463374607431768211455", "1", false)]
+#[case::value_overflow("340282366920938463463374607431768211456", "0", false)]
+fn withdrawal_amount_accounting_gates_signing(
+    #[case] value: &str,
+    #[case] fee: &str,
+    #[case] accepted: bool,
+    #[values((0, 0), (0, 1), (1, 0))] position: (usize, usize),
+) {
+    let mut body = base_200_json();
+    let good_batch = body["batches"][0].clone();
+    let (batch, intent) = position;
+    body["batches"] = Value::Array(vec![good_batch.clone(); batch + 1]);
+    body["batches"][batch]["burnIntents"] =
+        Value::Array(vec![good_batch["burnIntents"][0].clone(); intent + 1]);
+    body["batches"][batch]["burnIntents"][intent]["spec"]["value"] = Value::from(value);
+    body["batches"][batch]["burnIntents"][intent]["maxFee"] = Value::from(fee);
+    let response = response_from_value(&body).expect("unsigned decimal amounts parse");
+    let burn = matching_burn();
+    let config = ListenerConfig::builder()
+        .miden_domain(cfg().miden_domain())
+        .max_withdrawal_fee(burn.payload().amount)
+        .build()
+        .unwrap();
+    let result = attempt_sign_flow(&response, &burn, &config, &a_key());
+    if accepted {
+        assert_eq!(result.expect("valid totals reach signing").len(), batch + 1);
+    } else {
+        assert_matches!(
+            result,
+            Err(ValidationMismatch::Amount { batch: rejected, expected: 10_000_000, returned })
+                if rejected == batch && returned == value
+        );
     }
 }
 

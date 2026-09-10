@@ -101,9 +101,12 @@ pub fn fixture_digest() -> [u8; 32] {
 /// response. Every field is read out of the fixture; nothing is typed twice.
 pub fn payload() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
-    let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    let spec = &intent["spec"];
+    let value: u64 = spec["value"].as_str().unwrap().parse().unwrap();
+    let fee: u64 = intent["maxFee"].as_str().unwrap().parse().unwrap();
     BurnPayload {
-        amount: AssetAmount::new(spec["value"].as_str().unwrap().parse().unwrap()).unwrap(),
+        amount: AssetAmount::new(value.checked_add(fee).unwrap()).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),

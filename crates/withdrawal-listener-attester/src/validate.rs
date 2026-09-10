@@ -239,23 +239,23 @@ fn check_intent(
     cfg: &ListenerConfig,
 ) -> Result<(), ValidationMismatch> {
     let payload = burn.payload();
-    check_max_fee(batch, intent.max_fee(), payload, cfg)?;
-    check_spec(batch, intent.spec(), burn, cfg)
+    let max_fee = check_max_fee(batch, intent.max_fee(), payload, cfg)?;
+    check_spec(batch, intent.spec(), max_fee, burn, cfg)
 }
 
 fn check_spec(
     batch: usize,
     spec: &TransferSpec,
+    max_fee: u128,
     burn: &DiscoveredBurn,
     cfg: &ListenerConfig,
 ) -> Result<(), ValidationMismatch> {
     let payload = burn.payload();
-    // amount — spec.value is a smallest-unit decimal string; the payload amount fits in u64.
+    // Circle returns the net value and fee separately, both in smallest token units.
     let expected_amount = payload.amount.as_u64();
-    let amount_matches = spec
-        .value()
-        .parse::<u128>()
-        .is_ok_and(|v| v == u128::from(expected_amount));
+    let amount_matches = spec.value().parse::<u128>().is_ok_and(|value| {
+        value > 0 && value.checked_add(max_fee) == Some(u128::from(expected_amount))
+    });
     if !amount_matches {
         return Err(ValidationMismatch::Amount {
             batch,
@@ -361,21 +361,20 @@ fn check_max_fee(
     max_fee: &str,
     payload: &BurnPayload,
     cfg: &ListenerConfig,
-) -> Result<(), ValidationMismatch> {
+) -> Result<u128, ValidationMismatch> {
     let ceiling = cfg.max_withdrawal_fee().as_u64();
     let amount = payload.amount.as_u64();
     let limit = u128::from(ceiling.min(amount));
-    let fee_matches = max_fee.parse::<u128>().is_ok_and(|fee| fee <= limit);
-    if !fee_matches {
-        return Err(ValidationMismatch::MaxFee {
+    max_fee
+        .parse::<u128>()
+        .ok()
+        .filter(|fee| *fee <= limit)
+        .ok_or_else(|| ValidationMismatch::MaxFee {
             batch,
             ceiling,
             amount,
             returned: max_fee.to_string(),
-        });
-    }
-
-    Ok(())
+        })
 }
 
 /// Decodes a batch's `messageHashToSign` into the 32-byte digest the attester signs. Empty ⇒

@@ -74,6 +74,14 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline.
 
 ## Start here
 
+Audit note for OpenZeppelin: the existing `withdrawal-listener-attester` is being replaced by the
+lightweight attester introduced in [PR #194](https://github.com/0xMiden/miden-usdcx/pull/194).
+[PR #195](https://github.com/0xMiden/miden-usdcx/pull/195) fixes withdrawal-term validation in the
+existing implementation; [PR #217](https://github.com/0xMiden/miden-usdcx/pull/217) carries those
+checks into the replacement and verifies the encoded bytes and signing hash. As of September 10,
+2026, both replacement PRs are open; #217 leaves signing and submission out of scope and awaits a
+captured Circle response for its two reference tests.
+
 - **What the faucet does and how it's built:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **The encoding contracts:** the codecs in `crates/xusdc-encoding/src/xreserve/encoding/`, each of
   which documents its own wire form alongside the MASM module that mirrors it.

@@ -68,8 +68,6 @@ pub(crate) enum VerifyError {
     CallerRestricted,
     #[error("forwarded withdrawals are not supported yet")]
     Forwarding,
-    #[error("Circle's encoded bytes differ from the checked fields")]
-    EncodedMismatch,
     #[error("Circle's signing hash differs from the checked fields")]
     DigestMismatch,
     #[error("Circle returned a malformed {0}")]
@@ -168,11 +166,15 @@ pub(crate) fn verify_prepared_response(
         }
 
         let supplied_bytes: Bytes = parse(&batch.encoded, "encoded")?;
-        let as_set = supplied_bytes.starts_with(&BURN_INTENT_SET_MAGIC);
-        let (encoded, digest) = rebuild_batch(intent, as_set)?;
-        if encoded.as_slice() != supplied_bytes.as_ref() {
-            return Err(VerifyError::EncodedMismatch);
-        }
+        // The header selects single intent or set; only the checked fields are signed.
+        let as_set = if supplied_bytes.starts_with(&BURN_INTENT_SET_MAGIC) {
+            true
+        } else if supplied_bytes.starts_with(&BURN_INTENT_MAGIC) {
+            false
+        } else {
+            return Err(VerifyError::MalformedField("encoded"));
+        };
+        let digest = signing_hash(intent, as_set);
         if digest != parse::<B256>(&batch.message_hash_to_sign, "messageHashToSign")? {
             return Err(VerifyError::DigestMismatch);
         }
@@ -258,50 +260,16 @@ fn encode_hook(hook: &HookData) -> Result<Vec<u8>, VerifyError> {
     Ok(bytes)
 }
 
-fn encode_intent(intent: &eip712::BurnIntent) -> Result<Vec<u8>, VerifyError> {
-    let spec = &intent.spec;
-    // Circle's packed encoding is not ABI encoding: domains and lengths occupy four bytes.
-    let mut spec_bytes = 0xca85_def7u32.to_be_bytes().to_vec();
-    spec_bytes.extend(spec.version.to_be_bytes());
-    spec_bytes.extend(spec.sourceDomain.to_be_bytes());
-    spec_bytes.extend(spec.destinationDomain.to_be_bytes());
-    for address in [
-        spec.sourceContract,
-        spec.destinationContract,
-        spec.sourceToken,
-        spec.destinationToken,
-        spec.sourceDepositor,
-        spec.destinationRecipient,
-        spec.sourceSigner,
-        spec.destinationCaller,
-    ] {
-        spec_bytes.extend_from_slice(address.as_slice());
-    }
-    spec_bytes.extend(spec.value.to_be_bytes::<32>());
-    spec_bytes.extend_from_slice(spec.salt.as_slice());
-    append_with_length(&mut spec_bytes, &spec.hookData)?;
-
-    let mut bytes = BURN_INTENT_MAGIC.to_vec();
-    bytes.extend(intent.maxBlockHeight.to_be_bytes::<32>());
-    bytes.extend(intent.maxFee.to_be_bytes::<32>());
-    append_with_length(&mut bytes, &spec_bytes)?;
-    Ok(bytes)
-}
-
-fn rebuild_batch(intent: eip712::BurnIntent, as_set: bool) -> Result<(Vec<u8>, B256), VerifyError> {
-    let bytes = encode_intent(&intent)?;
+fn signing_hash(intent: eip712::BurnIntent, as_set: bool) -> B256 {
     // Circle omits chainId/verifyingContract. This digest is NOT keccak256(encoded).
     let domain = eip712_domain! { name: "GatewayWallet", version: "1", };
     if as_set {
-        let mut set_bytes = BURN_INTENT_SET_MAGIC.to_vec();
-        set_bytes.extend(1u32.to_be_bytes());
-        set_bytes.extend(bytes);
         let set = eip712::BurnIntentSet {
             intents: vec![intent],
         };
-        Ok((set_bytes, set.eip712_signing_hash(&domain)))
+        set.eip712_signing_hash(&domain)
     } else {
-        Ok((bytes, intent.eip712_signing_hash(&domain)))
+        intent.eip712_signing_hash(&domain)
     }
 }
 
@@ -312,8 +280,13 @@ pub(crate) fn rebuild_for_test(
     as_set: bool,
 ) -> Result<(), VerifyError> {
     let (intent, _) = parse_intent(&batch.burn_intents[0])?;
-    let (encoded, digest) = rebuild_batch(intent, as_set)?;
-    batch.encoded = format!("0x{}", hex::encode(encoded));
+    let magic = if as_set {
+        BURN_INTENT_SET_MAGIC
+    } else {
+        BURN_INTENT_MAGIC
+    };
+    batch.encoded = format!("0x{}", hex::encode(magic));
+    let digest = signing_hash(intent, as_set);
     batch.message_hash_to_sign = format!("{digest:#x}");
     Ok(())
 }

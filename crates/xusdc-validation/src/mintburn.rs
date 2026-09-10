@@ -14,7 +14,7 @@
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{AssetAmount, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::note::{
@@ -26,7 +26,7 @@ use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_standards::note::{
     MintNote, MintNoteStorage, NetworkAccountTarget, NoteExecutionHint, P2idNoteStorage,
 };
-use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
+use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, XUsdcBurnAttachment};
 use xusdc_encoding::note::xreserve_mint::{
     DepositAttestation, XUsdcMintNote, XUSDC_DEPOSIT_SCALE_EXP,
     XUSDC_MINT_ATTESTATION_ATTACHMENT_SCHEME, XUSDC_MINT_ATTESTATION_NUM_WORDS,
@@ -460,14 +460,13 @@ pub fn burn_note<R: FeltRng>(
     sender: AccountId,
     faucet: AccountId,
     amount: u64,
-    dest_salt: u8,
+    _dest_salt: u8,
     rng: &mut R,
 ) -> Result<Note> {
     let items = XReserveBurnItems {
         amount: AssetAmount::new(amount).context("burn amount is a valid AssetAmount")?,
         dest_domain: 3,
         dest_recipient: ForeignChainAddress::new([0xAB; 32]),
-        salt: [dest_salt; 32],
     };
     XReserveBurnNote::create(sender, faucet, items, rng)
         .context("building the XReserveBurnNote probe")
@@ -476,9 +475,10 @@ pub fn burn_note<R: FeltRng>(
 /// Builds an `XReserveBurnNote`-shaped note whose VAULT ASSET is issued by `asset_faucet` (a
 /// DIFFERENT faucet) while the note is still routed at `target_faucet` — the Row-I wrong-asset
 /// negative. It is the production burn transport (the reused stock `BurnNote` consume script, the
-/// fixed xUSDC burn tag, the DC-7 storage items via the shared-encoding codec, the scheme-2 `NetworkAccountTarget`
-/// routing bind at `target_faucet`) with ONLY the vault asset's issuer swapped to `asset_faucet`, so
-/// the faucet's `receive_and_burn` → `faucet::burn` → `fungible_asset::validate_origin` trap fires
+/// fixed xUSDC burn tag, the stock asset storage, the scheme-2 `NetworkAccountTarget` routing bind
+/// at `target_faucet`, and the scheme-6 withdrawal payload) with ONLY the vault asset's issuer
+/// swapped to `asset_faucet`, so the faucet's `receive_and_burn` → `faucet::burn` →
+/// `fungible_asset::validate_origin` trap fires
 /// (`ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`: a faucet can only burn its OWN token). It never
 /// re-implements a faucet gate — it is the harness's adversarial burn builder, the twin of
 /// [`mint_note_with_fee`], staging a negative the production factory (which single-sources the asset
@@ -488,22 +488,23 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
     target_faucet: AccountId,
     asset_faucet: AccountId,
     amount: u64,
-    dest_salt: u8,
+    _dest_salt: u8,
     rng: &mut R,
 ) -> Result<Note> {
     use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
-    use xusdc_encoding::xreserve::encoding::encode_burn_note_items;
 
     let items = XReserveBurnItems {
         amount: AssetAmount::new(amount)
             .context("wrong-asset burn amount is a valid AssetAmount")?,
         dest_domain: 3,
         dest_recipient: ForeignChainAddress::new([0xAB; 32]),
-        salt: [dest_salt; 32],
     };
-    // DC-7 payload → NoteStorage.items via the shared-encoding codec (consumed by reference; no re-impl).
-    let storage =
-        NoteStorage::new(encode_burn_note_items(&items)).context("wrong-asset burn storage")?;
+    let asset = FungibleAsset::new(asset_faucet, amount)
+        .map_err(|e| anyhow::anyhow!("building the wrong-asset fungible asset: {e}"))?;
+    // NoteStorage carries the same stock 8-felt asset layout as production. The issuer is wrong
+    // because the carried asset is wrong, not because the storage was manually malformed.
+    let storage = NoteStorage::new(Asset::from(asset).as_elements().to_vec())
+        .context("wrong-asset burn storage")?;
     // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → the burn security policy,
     // CMP-A10), exactly as the production factory does.
     let recipient = NoteRecipient::new(rng.draw_word(), XReserveBurnNote::script(), storage);
@@ -511,14 +512,15 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)
         .with_tag(NoteTag::new(FIXED_XUSDC_BURN_TAG));
     // The vault asset is issued by the WRONG faucet — the whole point of this negative.
-    let asset = FungibleAsset::new(asset_faucet, amount)
-        .map_err(|e| anyhow::anyhow!("building the wrong-asset fungible asset: {e}"))?;
     let vault = NoteAssets::new(vec![asset.into()]).context("wrong-asset burn vault")?;
     // Route at the TARGET faucet (network account) — the note is still addressed at our faucet; only
     // the asset issuer differs.
     let target = NetworkAccountTarget::new(target_faucet, NoteExecutionHint::Always)
         .map_err(|e| anyhow::anyhow!("target faucet id is not a public network account: {e}"))?;
-    let attachments = NoteAttachments::new(vec![NoteAttachment::from(target)])
+    let attachments = NoteAttachments::new(vec![
+        NoteAttachment::from(target),
+        NoteAttachment::from(&XUsdcBurnAttachment::new(items)),
+    ])
         .context("wrong-asset burn attachments")?;
     Ok(Note::with_attachments(
         vault,

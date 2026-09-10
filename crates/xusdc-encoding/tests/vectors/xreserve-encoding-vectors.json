@@ -430,7 +430,7 @@
       {
         "amount": "0",
         "cite": "DC-7",
-        "derivation": "lower boundary: amount=0, destDomain=0, destRecipient/salt all-zero",
+        "derivation": "lower boundary: amount=0, destDomain=0, destRecipient all-zero",
         "dest_domain": 0,
         "dest_recipient": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "id": "bn-pos-min",
@@ -444,18 +444,9 @@
           "0x0",
           "0x0",
           "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
-          "0x0",
           "0x0"
         ],
         "kind": "accept",
-        "salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "tv": [
           "TV-BN-1",
           "TV-BN-2",
@@ -479,18 +470,9 @@
           "0x24232221",
           "0x28272625",
           "0x2c2b2a29",
-          "0x302f2e2d",
-          "0x25242322",
-          "0x29282726",
-          "0x2d2c2b2a",
-          "0x31302f2e",
-          "0x35343332",
-          "0x39383736",
-          "0x3d3c3b3a",
-          "0x41403f3e"
+          "0x302f2e2d"
         ],
         "kind": "accept",
-        "salt": "0x22232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041",
         "tv": [
           "TV-BN-1",
           "TV-BN-2",
@@ -514,18 +496,9 @@
           "0xffffffff",
           "0xffffffff",
           "0xffffffff",
-          "0xffffffff",
-          "0x47464544",
-          "0x4b4a4948",
-          "0x4f4e4d4c",
-          "0x53525150",
-          "0x57565554",
-          "0x5b5a5958",
-          "0x5f5e5d5c",
-          "0x63626160"
+          "0xffffffff"
         ],
         "kind": "accept",
-        "salt": "0x4445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
         "tv": [
           "TV-BN-1",
           "TV-BN-2",
@@ -534,7 +507,7 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "17 felts (< 18) → wrong length",
+        "derivation": "9 felts (< 10) → wrong length",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-len-short",
         "items": [
@@ -546,15 +519,7 @@
           "0x64636261",
           "0x68676665",
           "0x6c6b6a69",
-          "0x706f6e6d",
-          "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x71706f6e",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e"
+          "0x706f6e6d"
         ],
         "kind": "reject",
         "tv": [
@@ -563,7 +528,7 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "19 felts (> 18) → wrong length",
+        "derivation": "11 felts (> 10) → wrong length",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-len-long",
         "items": [
@@ -577,14 +542,6 @@
           "0x6c6b6a69",
           "0x706f6e6d",
           "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x71706f6e",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e",
-          "0x85848382",
           "0x0"
         ],
         "kind": "reject",
@@ -607,15 +564,7 @@
           "0x68676665",
           "0x6c6b6a69",
           "0x706f6e6d",
-          "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x71706f6e",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e",
-          "0x85848382"
+          "0x74737271"
         ],
         "kind": "reject",
         "tv": [
@@ -637,15 +586,7 @@
           "0x68676665",
           "0x6c6b6a69",
           "0x706f6e6d",
-          "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x71706f6e",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e",
-          "0x85848382"
+          "0x74737271"
         ],
         "kind": "reject",
         "tv": [
@@ -667,45 +608,7 @@
           "0x68676665",
           "0x6c6b6a69",
           "0x706f6e6d",
-          "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x71706f6e",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e",
-          "0x85848382"
-        ],
-        "kind": "reject",
-        "tv": [
-          "TV-BN-4"
-        ]
-      },
-      {
-        "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "items[12] = 2^32 → salt limb not a u32",
-        "expected_variant": "BurnItemsMalformed",
-        "id": "bn-rej-salt-limb-not-u32",
-        "items": [
-          "0xf4240",
-          "0x6",
-          "0x58575655",
-          "0x5c5b5a59",
-          "0x605f5e5d",
-          "0x64636261",
-          "0x68676665",
-          "0x6c6b6a69",
-          "0x706f6e6d",
-          "0x74737271",
-          "0x69686766",
-          "0x6d6c6b6a",
-          "0x100000000",
-          "0x75747372",
-          "0x79787776",
-          "0x7d7c7b7a",
-          "0x81807f7e",
-          "0x85848382"
+          "0x74737271"
         ],
         "kind": "reject",
         "tv": [

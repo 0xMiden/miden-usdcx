@@ -242,7 +242,7 @@ impl core::error::Error for ListenerError {
 #[non_exhaustive]
 pub enum DecodeError {
     /// The withdrawal-payload attachment felts are not a well-formed burn payload — a felt count
-    /// other than `BURN_NOTE_ITEMS_FELTS = 18`, an out-of-range `amount`/`destDomain`, or a non-`u32`
+    /// other than `BURN_NOTE_ITEMS_FELTS = 10`, an out-of-range `amount`/`destDomain`, or a non-`u32`
     /// bytes32 limb.
     ///
     /// The shared encoding crate's codec is the sole judge of that, and its verdict is carried

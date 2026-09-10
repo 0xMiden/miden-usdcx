@@ -85,9 +85,9 @@ fn public_metadata(sender: AccountId) -> NoteMetadata {
 // (PURE) — BURN-PAYLOAD DECODE VIA THE UNIT-04 BURN-NOTE CODEC
 // ================================================================================================
 
-/// Every accept vector's golden felts decode to exactly the four fields the burn wrote — asserted
-/// FIELD BY FIELD, so a permuted layout (`destRecipient` read where `salt` lives, say) fails here
-/// rather than silently sending someone else's money to the wrong address.
+/// Every accept vector's golden felts decode to exactly the three fields the burn wrote — asserted
+/// FIELD BY FIELD, so a permuted layout fails here rather than silently sending someone else's money
+/// to the wrong address.
 #[test]
 fn t_la_01_decode_golden_items_field_by_field() {
     for vector in accept_vectors() {
@@ -106,7 +106,6 @@ fn t_la_01_decode_golden_items_field_by_field() {
             "{}: destRecipient",
             vector.id
         );
-        assert_eq!(decoded.salt, expected.salt, "{}: salt", vector.id);
         assert_eq!(decoded, expected, "{}: whole payload", vector.id);
     }
 }
@@ -165,29 +164,8 @@ fn t_la_01_decodes_the_boundary_payload() {
     assert_eq!(decoded, expected);
 }
 
-/// The typical vector carries a `destRecipient` and a `salt` that differ, so a decoder that swapped
-/// the two 8-felt regions is caught rather than hidden behind the all-zero minimum vector.
-#[test]
-fn t_la_01_recipient_and_salt_are_not_interchangeable() {
-    let vector = load()
-        .families
-        .bn
-        .iter()
-        .find(|x| x.id == "bn-pos-typical")
-        .expect("bn-pos-typical vector present");
-    let expected = vector.expected_struct();
-    assert_ne!(
-        expected.dest_recipient.as_bytes(),
-        &expected.salt,
-        "the vector itself must distinguish the two regions, or this test proves nothing"
-    );
-    let decoded = decode_burn_payload(&vector.items_values()).expect("typical payload decodes");
-    assert_eq!(decoded.dest_recipient, expected.dest_recipient);
-    assert_eq!(decoded.salt, expected.salt);
-}
-
 /// Every malformed-items vector — wrong felt count (short and long), an out-of-range `amount`, a
-/// `destDomain` above `u32::MAX`, a non-`u32` limb in either bytes32 region — is REFUSED with the
+/// `destDomain` above `u32::MAX`, or a non-`u32` recipient limb — is REFUSED with the
 /// exact crate variant, and nothing partial is surfaced.
 #[rstest]
 #[case("bn-rej-len-short")]
@@ -195,7 +173,6 @@ fn t_la_01_recipient_and_salt_are_not_interchangeable() {
 #[case("bn-rej-amount-over-cap")]
 #[case("bn-rej-domain-over-u32")]
 #[case("bn-rej-recipient-limb-not-u32")]
-#[case("bn-rej-salt-limb-not-u32")]
 fn t_la_01_malformed_items_are_refused_exactly(#[case] id: &str) {
     let vector = load()
         .families

@@ -738,7 +738,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         amount: AssetAmount::new(BURN_LOW)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
-        salt: [0x01u8; 32],
     };
     let low_note = XReserveBurnNote::create(holder_id, faucet_id, low_items, &mut note_rng(41))?;
     let low_asset = FungibleAsset::new(faucet_id, BURN_LOW)?;
@@ -762,7 +761,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         amount: AssetAmount::new(BURN_OK)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xCDu8; 32]),
-        salt: [0x02u8; 32],
     };
     let burn_note =
         XReserveBurnNote::create(holder_id, faucet_id, items.clone(), &mut note_rng(42))?;
@@ -861,7 +859,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
-        salt: [0x03u8; 32],
     };
     let paused_note =
         XReserveBurnNote::create(holder_id, faucet_id, paused_items, &mut note_rng(43))?;
@@ -918,7 +915,6 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
-        salt: [0x04u8; 32],
     };
     let resumed_note =
         XReserveBurnNote::create(holder_id, faucet_id, resumed_items, &mut note_rng(44))?;

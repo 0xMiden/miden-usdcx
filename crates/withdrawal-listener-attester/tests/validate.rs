@@ -39,8 +39,7 @@ fn hex32(s: &str) -> [u8; 32] {
 }
 
 /// The burn payload that matches the fixture: net value 9999000 plus fee 1000,
-/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`. `salt` is not a compared field,
-/// so any value serves.
+/// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`.
 fn matching_payload() -> BurnPayload {
     BurnPayload {
         amount: AssetAmount::new(10_000_000).unwrap(),
@@ -48,7 +47,6 @@ fn matching_payload() -> BurnPayload {
         dest_recipient: ForeignChainAddress::new(hex32(
             "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         )),
-        salt: [0x11; 32],
     }
 }
 
@@ -785,8 +783,9 @@ fn discovery_rejects_a_prefix_only_tag_match() {
 fn discovery_rejects_malformed_items() {
     let faucet_id = ListenerConfig::default().faucet_id();
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
-    // 17 felts, not the required 18.
-    let items = vec![Felt::from(0u32); 17];
+    // One felt short of the required payload width.
+    let items =
+        vec![Felt::from(0u32); xusdc_encoding::xreserve::encoding::BURN_NOTE_ITEMS_FELTS - 1];
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),

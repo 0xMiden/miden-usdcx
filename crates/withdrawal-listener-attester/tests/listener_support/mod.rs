@@ -111,7 +111,6 @@ pub fn payload() -> BurnPayload {
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
-        salt: [0x5a; 32],
     }
 }
 

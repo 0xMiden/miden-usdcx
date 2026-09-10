@@ -326,7 +326,6 @@ fn setup_sponsored_burn() -> Result<SponsoredBurnFixture> {
         .amount(amount)
         .dest_domain(TEST_SOURCE_DOMAIN)
         .dest_recipient(ForeignChainAddress::new([0xAB; 32]))
-        .salt([0xCD; 32])
         .build();
     let burn_note = XReserveBurnNote::create(
         user.id(),

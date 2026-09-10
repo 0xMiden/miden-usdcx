@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
-use miden_protocol::note::Note;
+use miden_protocol::note::{Note, NoteAttachmentScheme};
 use miden_standards::note::NetworkAccountTarget;
 
 use withdrawal_listener_attester::config::ListenerConfig;
@@ -14,7 +14,9 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredDetails, DiscoveryRecord,
 };
 
-use xusdc_encoding::note::xreserve_burn::{XReserveBurnNote, FIXED_XUSDC_BURN_TAG};
+use xusdc_encoding::note::xreserve_burn::{
+    XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+};
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
@@ -93,17 +95,29 @@ pub(crate) fn burn_items(amount: u64) -> Result<XReserveBurnItems> {
             .context("valid burn AssetAmount")?,
         dest_domain: BURN_DEST_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xAB; 32]),
-        salt: [0xCD; 32],
     })
+}
+
+fn withdrawal_payload_items(note: &Note) -> Result<Vec<miden_protocol::Felt>, String> {
+    let withdrawal_scheme = NoteAttachmentScheme::new(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME)
+        .map_err(|e| format!("invalid withdrawal scheme: {e}"))?;
+    let attachment = note
+        .attachments()
+        .iter()
+        .find(|a| a.attachment_scheme() == withdrawal_scheme)
+        .ok_or_else(|| "missing withdrawal-payload attachment".to_string())?;
+    let mut items = attachment.content().to_elements();
+    items.truncate(XReserveBurnNote::NUM_PAYLOAD_ITEMS);
+    Ok(items)
 }
 
 // PUBLIC ASSERTION HELPERS (also unit-tested offline)
 // ================================================================================================
 
-/// Structural assertions on a produced `XReserveBurnNote`: exactly ONE attachment — the scheme-2
-/// `NetworkAccountTarget` routing to `faucet_id` — tag `0x4255_524E`, and the DC-7 payload fields
-/// (amount/destDomain/destRecipient/salt) decoding to the expected values. `Ok(detail)` on a correct
-/// note; `Err(specific reason)` naming the exact structural mismatch.
+/// Structural assertions on a produced `XReserveBurnNote`: the scheme-2 `NetworkAccountTarget`
+/// routing to `faucet_id`, the scheme-6 withdrawal-payload attachment, tag `0x4255_524E`, and the
+/// DC-7 payload fields (amount/destDomain/destRecipient) decoding to the expected values.
+/// `Ok(detail)` on a correct note; `Err(specific reason)` naming the exact structural mismatch.
 pub fn assert_burn_note_structure(
     note: &Note,
     faucet_id: AccountId,
@@ -116,9 +130,9 @@ pub fn assert_burn_note_structure(
         ));
     }
     let num = note.attachments().num_attachments();
-    if num != 1 {
+    if num != 2 {
         return Err(format!(
-            "burn note carries {num} attachments, expected exactly 1 (the routing target)"
+            "burn note carries {num} attachments, expected exactly 2 (routing + withdrawal)"
         ));
     }
     let target = NetworkAccountTarget::try_from(note.attachments())
@@ -130,7 +144,7 @@ pub fn assert_burn_note_structure(
             faucet_id
         ));
     }
-    let items = note.recipient().storage().items().to_vec();
+    let items = withdrawal_payload_items(note)?;
     let decoded = decode_burn_payload(&items).map_err(|e| format!("DC-7 decode failed: {e:?}"))?;
     if u64::from(decoded.amount) != u64::from(expected.amount) {
         return Err(format!(
@@ -148,11 +162,8 @@ pub fn assert_burn_note_structure(
     if decoded.dest_recipient != expected.dest_recipient {
         return Err("destRecipient mismatch".to_string());
     }
-    if decoded.salt != expected.salt {
-        return Err("salt mismatch".to_string());
-    }
     Ok(format!(
-        "tag 0x{tag:08X}, one NetworkAccountTarget → faucet, amount={} destDomain={} (DC-7 decoded)",
+        "tag 0x{tag:08X}, NetworkAccountTarget + withdrawal payload → faucet, amount={} destDomain={} (DC-7 decoded)",
         u64::from(decoded.amount),
         decoded.dest_domain
     ))
@@ -163,7 +174,7 @@ pub fn assert_burn_note_structure(
 /// `decode_burn_payload`. `Err` is the attester's own rejection reason (used both for the positive
 /// check and to prove a foreign-tag note is REJECTED in the offline tests).
 pub fn assert_attester_consumable(note: &Note, faucet_id: AccountId) -> Result<String, String> {
-    let items = note.recipient().storage().items().to_vec();
+    let items = withdrawal_payload_items(note)?;
     let tag = note.metadata().tag().as_u32();
     let record = DiscoveryRecord::new(
         tag,

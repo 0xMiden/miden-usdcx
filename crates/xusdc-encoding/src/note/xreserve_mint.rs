@@ -52,7 +52,7 @@ pub const XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF: usize = XUSDC_MINT_ATTESTATION_
 
 /// How much hookData this transport can carry: the protocol's per-attachment ceiling less the fixed
 /// prefix (the attestation section and the carried payload), in bytes. Everything past that prefix
-/// is packed hookData, so this is the whole remainder.
+/// is packed hookData. Deposits with more data than this cannot be processed.
 ///
 /// This is what bounds hookData — see [`HookData::MAX_LEN`], which is defined as this value.
 ///

@@ -73,7 +73,7 @@ Semantics worth stating plainly:
 
 - The signed `maxFee` is a ceiling (`maxFee <= amount`), not an amount paid. No separate `feeAmount` or relayer payout exists _today_; the complete amount goes to the recipient.
 - `localToken`, `localDepositor`, and `hookData` change the signature digest but carry no local semantics. The binding MASM does not yet reject zero `localToken`/`localDepositor` (the off-chain relayer does, but preflight is not the on-chain gate; adding the on-chain checks is planned). These fields are treated as opaque 32-byte values, not EVM-typed addresses. `hookData` is never executed.
-- The supported `hookData` ceiling is 3,840 bytes: the codec constant is computed at compile time as the note-attachment capacity less the fixed transport prefixes, and a compile-time assertion separately keeps the rebuilt preimage within the Miden protocol's note-storage limit.
+- Do not deposit with `hookData` longer than 3,840 bytes. The source contract accepts these deposits, but they cannot be claimed on Miden and the USDC remains locked on the source chain.
 
 ## 6. Burn and redemption path
 

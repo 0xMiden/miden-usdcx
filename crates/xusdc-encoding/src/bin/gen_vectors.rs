@@ -4,8 +4,10 @@
 //! Arithmetic and layout expectations are derived here with exact integer math (the formula is
 //! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
 //! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
-//! `AccountIdBuilder::build_with_seed`. The vectors are derived independently of the code they
-//! check. Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
+//! `AccountIdBuilder::build_with_seed`. Every family is derived independently of the code it
+//! checks, except the `mi` carried and rebuilt felts, which are recorded from the Rust mirror and
+//! pinned against the MASM writer. Regeneration is an explicit, reviewed act:
+//! `cargo run --bin gen_vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,

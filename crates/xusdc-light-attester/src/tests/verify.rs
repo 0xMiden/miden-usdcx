@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifyError};
+use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifiedWithdrawal, VerifyError};
 
 use super::startup::{config_toml, create_store_parent};
 use super::validation::validated_burn;
@@ -70,6 +70,20 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
     // This gives semantic cases a consistent header/hash, not an independent crypto reference.
     rebuild_for_test(&mut batch).unwrap();
     batch
+}
+
+pub(crate) fn verified_withdrawal() -> VerifiedWithdrawal {
+    let burn = validated_burn(1_000, serial(0x3132_3334_3536_3738), 9);
+    let mut prepared = batch(FIRST_SALT, 1_000, 9);
+    rebuild_for_test(&mut prepared, true).unwrap();
+    verify_prepared_response(
+        &burn,
+        UnverifiedPrepareResponse {
+            batches: vec![prepared],
+        },
+        &config(None),
+    )
+    .unwrap()
 }
 
 /// The returned intent must belong to the burn and preserve all of its fields.

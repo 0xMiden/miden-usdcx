@@ -1,6 +1,6 @@
-//! Checks Circle's prepared authorization against the burns, without signing or storing it.
+//! Checks Circle's prepared authorization against the burns, then signs only the checked digest.
 
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{Address, Bytes, Signature, B256, U256};
 use alloy_sol_types::{eip712_domain, SolStruct};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
@@ -10,6 +10,7 @@ use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 use crate::burn::ValidatedBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
 use crate::config::Config;
+use crate::signer::{Signer, SignerError};
 
 // Circle's Gateway contracts (BurnIntents.sol) start an encoded burn intent with
 // bytes4(keccak256("circle.gateway.BurnIntent")).
@@ -86,6 +87,21 @@ impl VerifiedWithdrawal {
     pub(crate) fn note_id(&self) -> NoteId {
         self.batch.note_id
     }
+
+    /// Keep the checked batch with both signatures; return no partial result on failure.
+    pub(crate) async fn sign(
+        self,
+        signers: [&dyn Signer; 2],
+    ) -> Result<SignedWithdrawal, SignerError> {
+        let first = signers[0].sign_digest(self.batch.digest).await?;
+        let second = signers[1].sign_digest(self.batch.digest).await?;
+        Ok(SignedWithdrawal {
+            batch: SignedBatch {
+                batch: self.batch,
+                signatures: [first, second],
+            },
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -95,6 +111,17 @@ struct VerifiedBatch {
     burn_tx_id: TransactionId,
     intent: BurnIntent,
     digest: B256,
+}
+
+#[derive(Debug)]
+pub(crate) struct SignedWithdrawal {
+    batch: SignedBatch,
+}
+
+#[derive(Debug)]
+struct SignedBatch {
+    batch: VerifiedBatch,
+    signatures: [Signature; 2],
 }
 
 impl UnverifiedPrepareResponse {
@@ -321,3 +348,7 @@ pub(crate) fn canonical_values_for_test(
     let digest = intent.signing_hash();
     Ok((encoded, digest))
 }
+
+#[cfg(test)]
+#[path = "tests/signing.rs"]
+mod signing_tests;

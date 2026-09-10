@@ -21,8 +21,8 @@
             "salt": "0x203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1",
             "hookData": {
               "remoteDomain": 10001,
-              "remoteDepositor": "0x000000000000000000000000000000009a1b2c3d4e5f60718899aabbccdd0011",
-              "remoteToken": "0x2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef",
+              "remoteDepositor": "0x000000000000000000000000000000000a8770f581c324b114fb42884cddc900",
+              "remoteToken": "0x00000000000000000000000000000000bb405fd9fe431bd1135a292de098cb00",
               "forwardingContractAddress": "0x0000000000000000000000000000000000000000",
               "forwardingCalldata": "0x"
             }

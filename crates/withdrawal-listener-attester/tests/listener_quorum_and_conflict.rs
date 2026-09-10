@@ -513,6 +513,7 @@ async fn no_emitted_event_carries_key_material_or_a_credential() {
     let cfg = withdrawal_listener_attester::config::ListenerConfig::builder()
         .burn_tag(BURN_TAG)
         .miden_domain(MIDEN_DOMAIN)
+        .max_withdrawal_fee(fixture_max_fee())
         .attester_allowlist(
             withdrawal_listener_attester::attester::AttesterAllowlist::new([
                 address(ATTESTER_A),

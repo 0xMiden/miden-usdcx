@@ -9,8 +9,8 @@
 //! `burnIntents[]`/`encoded`/`messageHashToSign`; the partner VALIDATES, then signs. [Local binary
 //! reconstruction of the `BurnIntent` is optional validation only, and it is deliberately absent
 //! here — building it as the required path is the trap this module exists to avoid.]
-//! [`validate_returned`] compares Circle's returned `spec` against the burn-note payload field by
-//! field, for EVERY batch, and only a full match may proceed to signing.
+//! [`validate_returned`] compares Circle's returned `burnIntents[]` against the discovered burn and
+//! request terms before signing.
 //!
 //! # The signer is reachable ONLY behind validation (structural, not by convention)
 //!
@@ -29,17 +29,17 @@
 //!   bytes; whether it equals the Gateway pipeline's final digest is Circle's to confirm.
 //!   Parameterized, never resolved here.
 //! * **`sourceDepositor`** — Circle-assigned and appears on the RETURNED `TransferSpec` only; the
-//!   partner never supplies it and the gate never compares it against the burn payload. The domain
-//!   cross-checks that would consume the config are gated on the still-open domain-id and
-//!   `sourceDepositor` questions; wiring one now would hard-code an unconfirmed decision, so
-//!   [`ListenerConfig`] is accepted as the reserved seam for them and not yet read.
+//!   partner never supplies it and the gate never compares it against the discovered burn.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::Felt;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 
 use crate::attester::{sign, SecretKey, Signature65};
-use crate::circle::schema::{PrepareWithdrawalResponse, TransferSpec};
+use crate::circle::schema::{
+    BurnIntent, PrepareWithdrawalResponse, StructuredHookData, TransferSpec,
+};
 use crate::config::ListenerConfig;
 use crate::error::{DiscoveryReject, SignError, ValidationMismatch};
 use crate::note_decode::{decode_burn_payload, read_sender, BurnNoteMetadata};
@@ -200,33 +200,16 @@ impl ValidatedWithdrawal {
     }
 }
 
-/// The gate: validate Circle's returned data against the burn-note `payload`, field by
-/// field, for EVERY batch — and, on a full match, mint the [`ValidatedWithdrawal`] that clears
-/// signing. A mismatch in ANY batch (not just `batches[0]`) is a hard `Err` that MUST abort before
-/// signing.
-///
-/// For each batch, every returned `burnIntents[].spec` must match the payload on:
-/// * `value` (the amount, in the smallest token unit) == `payload.amount`;
-/// * `destinationDomain` == `payload.dest_domain`;
-/// * `destinationRecipient` == `payload.dest_recipient`.
-///
-/// and the batch's `messageHashToSign` must be present and a signable 32-byte digest. A batch with
-/// an EMPTY `burnIntents` array is refused (`EmptyBurnIntents`) — with no `spec` to compare,
-/// clearing it would bind the digest to nothing. The `encoded` binary blob is treated as OPAQUE and
-/// never decoded — the optional local reconstruction is off the critical path (anti-`the
-/// do-not-sign trap`).
-///
-/// `cfg` is the reserved seam for the source-domain / `sourceDepositor` cross-checks that land when
-/// the still-open domain-id and `sourceDepositor` questions resolve; wiring one now would hard-code
-/// an unconfirmed Circle decision, so it is accepted but not yet read.
+/// Validates every returned intent against the discovered burn and configured withdrawal terms.
+/// Returns the validated batch digests for signing.
 ///
 /// # Errors
 /// A [`ValidationMismatch`] naming the batch and the field that diverged. On any `Err`, no
 /// [`ValidatedWithdrawal`] is produced — so no signature over the mismatching data can follow.
 pub fn validate_returned(
     resp: &PrepareWithdrawalResponse,
-    payload: &BurnPayload,
-    _cfg: &ListenerConfig,
+    burn: &DiscoveredBurn,
+    cfg: &ListenerConfig,
 ) -> Result<ValidatedWithdrawal, ValidationMismatch> {
     let batches = resp.batches();
     if batches.is_empty() {
@@ -235,16 +218,12 @@ pub fn validate_returned(
 
     let mut digests = Vec::with_capacity(batches.len());
     for (batch, prepared) in batches.iter().enumerate() {
-        // A batch with no burn intents has nothing to compare against the payload — clearing it
-        // would bind its digest to no amount/domain/recipient and mint a signing token vacuously.
-        // Refuse it BEFORE the per-intent loop, which would otherwise be skippable straight into Ok.
         let intents = prepared.burn_intents();
         if intents.is_empty() {
             return Err(ValidationMismatch::EmptyBurnIntents { batch });
         }
-        // Every burn intent in the batch must match the payload — not merely the first.
         for intent in intents {
-            check_spec(batch, intent.spec(), payload)?;
+            check_intent(batch, intent, burn, cfg)?;
         }
         // The digest must be present and signable BEFORE the batch is cleared.
         digests.push(decode_digest(batch, prepared.message_hash_to_sign())?);
@@ -253,19 +232,30 @@ pub fn validate_returned(
     Ok(ValidatedWithdrawal { digests })
 }
 
-/// Compares one returned `TransferSpec` against the burn payload on the three compared fields, in
-/// order.
+fn check_intent(
+    batch: usize,
+    intent: &BurnIntent,
+    burn: &DiscoveredBurn,
+    cfg: &ListenerConfig,
+) -> Result<(), ValidationMismatch> {
+    let payload = burn.payload();
+    let max_fee = check_max_fee(batch, intent.max_fee(), payload, cfg)?;
+    check_spec(batch, intent.spec(), max_fee, burn, cfg)
+}
+
 fn check_spec(
     batch: usize,
     spec: &TransferSpec,
-    payload: &BurnPayload,
+    max_fee: u128,
+    burn: &DiscoveredBurn,
+    cfg: &ListenerConfig,
 ) -> Result<(), ValidationMismatch> {
-    // amount — spec.value is a smallest-unit decimal string; the payload amount fits in u64.
+    let payload = burn.payload();
+    // Circle returns the net value and fee separately, both in smallest token units.
     let expected_amount = payload.amount.as_u64();
-    let amount_matches = spec
-        .value()
-        .parse::<u128>()
-        .is_ok_and(|v| v == u128::from(expected_amount));
+    let amount_matches = spec.value().parse::<u128>().is_ok_and(|value| {
+        value > 0 && value.checked_add(max_fee) == Some(u128::from(expected_amount))
+    });
     if !amount_matches {
         return Err(ValidationMismatch::Amount {
             batch,
@@ -294,7 +284,97 @@ fn check_spec(
         });
     }
 
+    if !hex32_eq(spec.destination_caller(), &ZERO_BYTES32) {
+        return Err(ValidationMismatch::DestinationCaller {
+            batch,
+            expected: to_hex32(&ZERO_BYTES32),
+            returned: spec.destination_caller().to_string(),
+        });
+    }
+
+    check_hook_data(batch, spec.hook_data(), burn, cfg)?;
+
     Ok(())
+}
+
+fn check_hook_data(
+    batch: usize,
+    hook: &StructuredHookData,
+    burn: &DiscoveredBurn,
+    cfg: &ListenerConfig,
+) -> Result<(), ValidationMismatch> {
+    if hook.remote_domain() != cfg.miden_domain() {
+        return Err(ValidationMismatch::HookData {
+            batch,
+            field: "remoteDomain",
+            expected: cfg.miden_domain().to_string(),
+            returned: hook.remote_domain().to_string(),
+        });
+    }
+
+    let expected_depositor = EthEmbeddedAccountId::from_account_id(burn.depositor()).to_bytes32();
+    if !hex32_eq(hook.remote_depositor(), &expected_depositor) {
+        return Err(ValidationMismatch::HookData {
+            batch,
+            field: "remoteDepositor",
+            expected: to_hex32(&expected_depositor),
+            returned: hook.remote_depositor().to_string(),
+        });
+    }
+
+    let expected_token = EthEmbeddedAccountId::from_account_id(cfg.faucet_id()).to_bytes32();
+    if !hex32_eq(hook.remote_token(), &expected_token) {
+        return Err(ValidationMismatch::HookData {
+            batch,
+            field: "remoteToken",
+            expected: to_hex32(&expected_token),
+            returned: hook.remote_token().to_string(),
+        });
+    }
+
+    if !hook
+        .forwarding_contract_address()
+        .eq_ignore_ascii_case(ZERO_HEX20)
+    {
+        return Err(ValidationMismatch::HookData {
+            batch,
+            field: "forwardingContractAddress",
+            expected: ZERO_HEX20.to_string(),
+            returned: hook.forwarding_contract_address().to_string(),
+        });
+    }
+
+    if hook.forwarding_calldata() != NO_FORWARDING_CALLDATA {
+        return Err(ValidationMismatch::HookData {
+            batch,
+            field: "forwardingCalldata",
+            expected: NO_FORWARDING_CALLDATA.to_string(),
+            returned: hook.forwarding_calldata().to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn check_max_fee(
+    batch: usize,
+    max_fee: &str,
+    payload: &BurnPayload,
+    cfg: &ListenerConfig,
+) -> Result<u128, ValidationMismatch> {
+    let ceiling = cfg.max_withdrawal_fee().as_u64();
+    let amount = payload.amount.as_u64();
+    let limit = u128::from(ceiling.min(amount));
+    max_fee
+        .parse::<u128>()
+        .ok()
+        .filter(|fee| *fee <= limit)
+        .ok_or_else(|| ValidationMismatch::MaxFee {
+            batch,
+            ceiling,
+            amount,
+            returned: max_fee.to_string(),
+        })
 }
 
 /// Decodes a batch's `messageHashToSign` into the 32-byte digest the attester signs. Empty ⇒
@@ -322,10 +402,18 @@ fn decode_hex32(s: &str) -> Option<[u8; 32]> {
     <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
 
+fn hex32_eq(s: &str, expected: &[u8; 32]) -> bool {
+    decode_hex32(s).is_some_and(|bytes| &bytes == expected)
+}
+
 /// 32 bytes → `0x…`-hex (lowercase) — for naming the expected recipient in a mismatch error.
 fn to_hex32(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
+
+const ZERO_BYTES32: [u8; 32] = [0u8; 32];
+const ZERO_HEX20: &str = "0x0000000000000000000000000000000000000000";
+const NO_FORWARDING_CALLDATA: &str = "0x";
 
 // ================================================================================================
 // THE GATED SIGNER

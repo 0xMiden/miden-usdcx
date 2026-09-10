@@ -87,7 +87,7 @@ fn prepare_withdrawal_200_round_trips_through_the_batches_wrapper() {
     // (never a hex bytes string: the binary WithdrawHookData is a different representation entirely)
     let spec = batch.burn_intents()[0].spec();
     assert_eq!(spec.version(), 1);
-    assert_eq!(spec.value(), "10000000");
+    assert_eq!(spec.value(), "9999000");
     assert_eq!(spec.destination_domain(), 0);
     assert_eq!(spec.hook_data().forwarding_calldata(), "0x");
 }

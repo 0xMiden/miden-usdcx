@@ -191,20 +191,14 @@ fn successor() -> AccountId {
 #[tokio::test]
 async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> {
     let admin = RoleBasedAccessControl::admin_role();
-    let successor_commitment = Word::from([21u32, 22, 23, 24]);
-    let predecessor_commitment = Word::from([31u32, 32, 33, 34]);
+    let successor_min_burn = 21u32;
+    let predecessor_min_burn = 31u32;
 
     let mut pf = admin_faucet(|faucet_id| {
         vec![
             // 0 — the successor has no administrator-gated capability yet.
-            XReserveSetAttesterNote::create(
-                successor(),
-                faucet_id,
-                successor_commitment,
-                1,
-                &mut note_rng(601),
-            )
-            .expect("the successor's set_attester note builds"),
+            stock_min_burn_note(successor(), faucet_id, successor_min_burn.into(), 601)
+                .expect("the successor's min-burn note builds"),
             // 1 — the incumbent grants the administrator role to the successor.
             role_note(
                 admin_holder(),
@@ -217,14 +211,8 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             )
             .expect("the ADMIN grant note builds"),
             // 2 — the same capability, retried after the grant.
-            XReserveSetAttesterNote::create(
-                successor(),
-                faucet_id,
-                successor_commitment,
-                1,
-                &mut note_rng(603),
-            )
-            .expect("the successor's second set_attester note builds"),
+            stock_min_burn_note(successor(), faucet_id, successor_min_burn.into(), 603)
+                .expect("the successor's second min-burn note builds"),
             // 3 — the successor revokes the predecessor.
             role_note(
                 successor(),
@@ -237,14 +225,8 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
             )
             .expect("the ADMIN revoke note builds"),
             // 4 — the predecessor's capability, retried after the revoke.
-            XReserveSetAttesterNote::create(
-                admin_holder(),
-                faucet_id,
-                predecessor_commitment,
-                1,
-                &mut note_rng(605),
-            )
-            .expect("the predecessor's set_attester note builds"),
+            stock_min_burn_note(admin_holder(), faucet_id, predecessor_min_burn.into(), 605)
+                .expect("the predecessor's min-burn note builds"),
         ]
     })?;
     let notes: Vec<Note> = pf.seeded_notes.clone();
@@ -267,10 +249,10 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
     );
 
     // CAPABILITY GAINED — the same write the successor was refused now lands.
-    let after = consume_and_commit(&mut pf, &notes[2], "successor set_attester").await?;
+    let after = consume_and_commit(&mut pf, &notes[2], "successor min-burn update").await?;
     assert_eq!(
-        read_attester(&after, successor_commitment)?,
-        set_word(),
+        read_min_burn_size(&after)?,
+        Word::from([successor_min_burn, 0, 0, 0]),
         "the successor must gain the administrator-gated capability with the role"
     );
 
@@ -293,21 +275,20 @@ async fn the_administrator_role_hands_over_by_grant_then_revoke() -> Result<()> 
     assert_transaction_executor_error!(refused, err_sender_lacks_role());
     let final_state = pf.mock_chain.committed_account(pf.faucet_id)?.clone();
     assert_eq!(
-        read_attester(&final_state, predecessor_commitment)?,
-        Word::empty(),
-        "the refused predecessor write must leave the attester allowlist untouched"
+        read_min_burn_size(&final_state)?,
+        Word::from([successor_min_burn, 0, 0, 0]),
+        "the refused predecessor write must leave the burn floor untouched"
     );
     Ok(())
 }
 
 /// The handover cannot be hijacked: the administrator role administers ITSELF, so only a current
-/// administrator may add another. An account holding a different role — here the Domain manager,
-/// which administers the Domain pauser — is refused.
+/// administrator may add another. A different role holder, here the Domain unpauser, is refused.
 #[tokio::test]
 async fn only_an_administrator_can_grant_the_administrator_role() -> Result<()> {
     let pf = admin_faucet(|faucet_id| {
         vec![role_note(
-            role_manager_holder(),
+            unpauser_holder(),
             faucet_id,
             RbacConfig::GrantRole {
                 role: RoleBasedAccessControl::admin_role(),

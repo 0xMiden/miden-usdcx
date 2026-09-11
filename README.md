@@ -63,13 +63,12 @@ deposit and burns it on withdrawal.
 - **Identity.** The faucet's identifier — the value every deposit intent's `remoteToken` is checked
   against — is the faucet's OWN account id in the frozen bytes32 packaging, derived on chain by the
   mint path rather than stored. Nothing seeds it, so the faucet mints from the moment it exists.
-- **Admin.** Pure role-based: there is no ownership component and no owner slot, so the built-in
-  `ADMIN` role is the account's only authority handle, and rotating it is a grant then a revoke of
-  that role. `ADMIN` gates the setters (`set_attester`, the stock `set_min_burn_amount` — a
-  zero floor is refused at note-building time — and `set_max_supply`); a separate `DOM_PAUSER`
-  gates pause/unpause, which halts both mint and burn-consume. Role management runs on the stock
-  `RbacConfigNote`, whose one script root also exposes re-pointing a role's administrator and
-  self-renounce — both accepted, both pinned by test.
+- **Admin.** Pure role-based: `ADMIN` administers every seeded role directly and gates
+  `set_min_burn_amount` (a zero floor is refused at note-building time), `set_max_supply`
+  and note fees. `ATTEST_ADMIN` gates `set_attester`; `DOM_PAUSER` pauses and `DOM_UNPAUSER`
+  unpauses the flag that halts mint and burn-consume. There is no ownership component or owner slot.
+  Rotation is a grant then a revoke through the stock `RbacConfigNote`, whose root also exposes
+  re-pointing a role's administrator and self-renounce, both accepted and pinned by tests.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline.
 

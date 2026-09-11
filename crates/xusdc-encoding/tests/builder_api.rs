@@ -11,7 +11,9 @@
 mod support;
 
 use anyhow::{Context, Result};
-use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
+use miden_protocol::account::{
+    AccountComponent, AccountProcedureRoot, RoleSymbol, StorageSlotName,
+};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{PausableManager, PausableStorage};
@@ -19,13 +21,13 @@ use miden_standards::account::policies::{BlocklistManager, MinBurnAmount, TokenP
 use support::*;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
-    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
-    DOM_PAUSER_ROLE,
+    XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, ATTEST_ADMIN_ROLE,
+    BLK_MANAGER_ROLE, DOM_PAUSER_ROLE, DOM_UNPAUSER_ROLE,
 };
 
 /// The standard production builder: the fixed test supplies through the ONE production-shape
-/// definition in `support` (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
-/// id(4), plus the build-seeded domain config).
+/// definition in `support` (ADMIN = ATTEST_ADMIN = id(1), DOM_PAUSER = id(2), DOM_UNPAUSER = id(3),
+/// BLK_MANAGER = id(4), plus the build-seeded domain config).
 fn production_builder() -> XReserveStablecoinBuilder {
     support::production_builder(1_000_000, 0, TEST_DOMAIN)
         .expect("the fixed-identity USDCx faucet builds")
@@ -194,8 +196,8 @@ fn build_seeds_the_domain_slot() -> Result<()> {
 /// `PausableManager` and `BlocklistManager`, and the authority's role map is what keeps each of
 /// their procedures with its own role rather than with the administrator.
 ///
-/// The structural half is here — every one of the four manager roots is really installed, and each
-/// really carries the role the faucet intends. The executing half is
+/// The structural half is here — the four manager roots and the attester setter are installed,
+/// and each carries the role the faucet intends. The executing half is
 /// `administrator_has_no_pause_path` / `administrator_has_no_unpause_path` (pause_admin.rs) and the effects suite.
 #[test]
 fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()> {
@@ -209,12 +211,16 @@ fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()>
         .collect();
     let roles = XReserveAdminAuthority::new().procedure_roles().clone();
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("the Domain pauser role symbol is valid");
+    let unpauser =
+        RoleSymbol::new(DOM_UNPAUSER_ROLE).expect("the Domain unpauser role symbol is valid");
+    let attest_admin =
+        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("the attester administrator role is valid");
     let blocklist_manager = RoleSymbol::new(BLK_MANAGER_ROLE)
         .expect("the blocklist administrator role symbol is valid");
 
     for (what, root, role) in [
         ("pause", PausableManager::pause_root(), &pauser),
-        ("unpause", PausableManager::unpause_root(), &pauser),
+        ("unpause", PausableManager::unpause_root(), &unpauser),
         (
             "block_account",
             BlocklistManager::block_account_root(),
@@ -225,16 +231,27 @@ fn builder_installs_the_stock_managers_with_their_roles_assigned() -> Result<()>
             BlocklistManager::unblock_account_root(),
             &blocklist_manager,
         ),
+        (
+            "set_attester",
+            AccountProcedureRoot::from_raw(
+                resolve_proc_root(
+                    &components,
+                    "xreserve::components::faucet_extension::set_attester",
+                )
+                .context("the composed set must carry the attester setter")?,
+            ),
+            &attest_admin,
+        ),
     ] {
         assert!(
             installed.contains(&root),
-            "the production composition must install the stock manager procedure {what} — the \
-             standard config note calls that exact root"
+            "the production composition must install the gated procedure {what} — the \
+             config note calls that exact root"
         );
         assert_eq!(
             roles.get(&root),
             Some(role),
-            "the stock manager procedure {what} must be gated on its intended role, or the \
+            "the procedure {what} must be gated on its intended role, or the \
              capability lands on the administrator instead"
         );
     }

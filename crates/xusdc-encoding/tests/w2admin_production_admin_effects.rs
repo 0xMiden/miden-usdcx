@@ -192,7 +192,7 @@ async fn the_standard_manager_procedures_are_on_the_callable_surface() -> Result
     Ok(())
 }
 
-/// The shipped authority is role-based and carries exactly the four ratified assignments. Read out
+/// The shipped authority is role-based and carries exactly the five ratified assignments. Read out
 /// of the built account's storage, not from the builder that wrote it, so a lossy write would show
 /// up here.
 #[tokio::test]
@@ -291,13 +291,14 @@ async fn the_pauser_pauses_the_faucet_through_the_standard_note() -> Result<()> 
     Ok(())
 }
 
-/// And clears it again.
+/// The unpause-role holder clears it again.
 #[tokio::test]
 async fn the_pauser_unpauses_the_faucet_through_the_standard_note() -> Result<()> {
     let mut pf = admin_faucet(|id| {
         vec![
             pause_action_note(pauser_holder(), id, PauseConfig::Pause, 2).expect("pause note"),
-            pause_action_note(pauser_holder(), id, PauseConfig::Unpause, 3).expect("unpause note"),
+            pause_action_note(unpauser_holder(), id, PauseConfig::Unpause, 3)
+                .expect("unpause note"),
         ]
     })?;
     let (pause, unpause) = (pf.seeded_notes[0].clone(), pf.seeded_notes[1].clone());
@@ -322,7 +323,8 @@ async fn a_standard_note_pause_halts_a_real_mint_and_the_unpause_resumes_it() ->
     let mut pf = mint_faucet(|id| {
         vec![
             pause_action_note(pauser_holder(), id, PauseConfig::Pause, 4).expect("pause note"),
-            pause_action_note(pauser_holder(), id, PauseConfig::Unpause, 5).expect("unpause note"),
+            pause_action_note(unpauser_holder(), id, PauseConfig::Unpause, 5)
+                .expect("unpause note"),
         ]
     })?;
     let recipient = pf.recipient_id;
@@ -471,14 +473,13 @@ async fn the_blocklist_manager_cannot_pause() -> Result<()> {
     Ok(())
 }
 
-/// The role-management holder administers roles and nothing else — it can neither pause nor block.
+/// The unpauser can lift a pause but can neither pause nor block.
 #[tokio::test]
-async fn the_role_manager_can_neither_pause_nor_block() -> Result<()> {
+async fn the_unpauser_can_neither_pause_nor_block() -> Result<()> {
     let pf = admin_faucet(|id| {
         vec![
-            pause_action_note(role_manager_holder(), id, PauseConfig::Pause, 9)
-                .expect("pause note"),
-            stock_block_note(role_manager_holder(), id, stranger(), 16).expect("block note"),
+            pause_action_note(unpauser_holder(), id, PauseConfig::Pause, 9).expect("pause note"),
+            stock_block_note(unpauser_holder(), id, stranger(), 16).expect("block note"),
         ]
     })?;
 

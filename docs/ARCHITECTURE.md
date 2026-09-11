@@ -91,26 +91,26 @@ Authorization is decided by the *sender* of an admitted administrative note, che
 
 ```mermaid
 flowchart TD
-    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"]
-    DOM_MANAGER["<b>DOM_MANAGER</b>"]
-    DOM_PAUSER["<b>DOM_PAUSER</b>"]
-    BLOCK_LISTER["<b>BLOCK_LISTER</b>"]
-    ADMIN -->|administers| DOM_MANAGER
-    ADMIN -->|administers| BLOCK_LISTER
-    DOM_MANAGER -->|administers| DOM_PAUSER
-    ADMIN --- A1["set_attester<br/>set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
-    DOM_PAUSER --- A2["pause / unpause"]
-    BLOCK_LISTER --- A3["block_account / unblock_account"]
+    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"] --- A1["set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
+    ADMIN -->|administers| ATTEST_ADMIN["<b>ATTEST_ADMIN</b>"]
+    ADMIN -->|administers| DOM_PAUSER["<b>DOM_PAUSER</b>"]
+    ADMIN -->|administers| DOM_UNPAUSER["<b>DOM_UNPAUSER</b>"]
+    ADMIN -->|administers| BLK_MANAGER["<b>BLK_MANAGER</b>"]
+    ATTEST_ADMIN --- A2["set_attester"]
+    DOM_PAUSER --- A3["pause"]
+    DOM_UNPAUSER --- A4["unpause"]
+    BLK_MANAGER --- A5["block_account / unblock_account"]
 ```
 
 | Role | Initial administrator | Direct admitted powers |
 |---|---|---|
-| `ADMIN` | `ADMIN` (self) | Attester commitment map, maximum supply, minimum burn, note fees, and every fallback Authority path |
-| `DOM_PAUSER` | `DOM_MANAGER` | Pause and unpause |
-| `DOM_MANAGER` | `ADMIN` | Grant and revoke `DOM_PAUSER` membership |
-| `BLOCK_LISTER` | `ADMIN` | Block and unblock transfer participants |
+| `ADMIN` | `ADMIN` (self) | Maximum supply, minimum burn, note fees, RBAC changes, and every fallback Authority path |
+| `ATTEST_ADMIN` | `ADMIN` | Attester commitment map |
+| `DOM_PAUSER` | `ADMIN` | Pause |
+| `DOM_UNPAUSER` | `ADMIN` | Unpause |
+| `BLK_MANAGER` | `ADMIN` | Block and unblock transfer participants |
 
-Only the pause pair and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. `ADMIN` reaches every role: it administers `DOM_MANAGER` and `BLOCK_LISTER` directly and `DOM_PAUSER` in two hops by granting itself `DOM_MANAGER`. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
+Pause, unpause, the attester setter and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. The initial seed lets `ADMIN` administer every role directly. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
 
 What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the `miden-standards` RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself).
 

@@ -7,7 +7,7 @@
 //!
 //! Authority follows Circle's admin model: this setter carries no role of its own, so the
 //! account-wide role-based authority resolves it to the built-in `ADMIN` role, seeded on the
-//! administrator's account. The account also seeds two Domain roles — Pauser and Manager — but neither may
+//! administrator's account. The account also seeds separate Domain Pauser and Unpauser roles, but neither may
 //! set the floor, and their own powers are tested in the pause and role suites. `ADMIN` membership
 //! is account-bound: it is the faucet's only authority handle.
 //!
@@ -21,33 +21,27 @@
 
 mod support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Ownable2Step, RoleBasedAccessControl};
 use miden_standards::account::policies::MinBurnAmount;
 use support::*;
 
-// The seeded principals the reconciled production builder installs: the administrator = id(1) (the
-// sole seeded `ADMIN` member), and
-// the two DOM role members DOM_PAUSER = id(2), DOM_MANAGER = id(3). A plain non-administrator is any other id.
+// The production fixture seeds ADMIN and ATTEST_ADMIN on id(1), DOM_PAUSER on id(2),
+// DOM_UNPAUSER on id(3), and BLK_MANAGER on id(4).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
-fn dom_manager() -> AccountId {
-    test_account_id(3)
-}
 fn plain_non_administrator() -> AccountId {
     test_account_id(99)
 }
 
-// The fixed role aliases. Inlined as strings (not the green-only Rust consts) so the red-suite
-// compiles + executes against the un-flipped build.
+// The role read by the non-member seed check.
 const DOM_PAUSER_SYMBOL: &str = "DOM_PAUSER";
-const DOM_MANAGER_SYMBOL: &str = "DOM_MANAGER";
 
 const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 100_000;
@@ -63,9 +57,6 @@ fn role_membership_key(role: &RoleSymbol, id: AccountId) -> Word {
         id.suffix(),
         id.prefix().as_felt(),
     ])
-}
-fn role_config_key(role: &RoleSymbol) -> Word {
-    Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::from(role)])
 }
 
 /// The STOCK `MinBurnAmount` floor-slot value word for a floor `v` (`[v,0,0,0]`) — the read-back
@@ -150,86 +141,33 @@ async fn set_min_burn_administrator_succeeds_while_paused() -> Result<()> {
     Ok(())
 }
 
-// DOM ROLE SEEDING (administrator-ONLY foundation) — the DOM_PAUSER/DOM_MANAGER members are seeded + valid
+// ROLE SEEDING — the replica matches production
 // ================================================================================================
 
-/// The test-side role seeding matches the shape the production builder seeds.
-///
-/// Several suites — the pause rejects, the non-administrator setter reject below — run against a support
-/// harness that installs its own role-seeding component rather than the production builder. Those
-/// tests are only meaningful while the replica seeds the same thing production does, and nothing
-/// else checks that. So this reads the replica's storage directly and pins all three facts: the
-/// Domain Pauser role is administered by the Domain Manager (one member, admin role = Domain
-/// Manager), the Domain Manager is administered by the built-in admin role (one member, admin role
-/// 0), and both memberships are present — and that the replica installs no ownership component,
-/// because the shipped account does not either. The equivalent assertions against a production-built
-/// account live in `role_admin.rs::shipped_delegation_reads_back`.
+/// The burn-oracle replica carries exactly the production RBAC config and membership maps.
 #[tokio::test]
-async fn support_replica_carries_delegation_seed() -> Result<()> {
-    let pauser =
-        RoleSymbol::new(DOM_PAUSER_SYMBOL).expect("DOM_PAUSER is a valid <=12 role symbol");
-    let manager =
-        RoleSymbol::new(DOM_MANAGER_SYMBOL).expect("DOM_MANAGER is a valid <=12 role symbol");
-
+async fn support_replica_matches_the_production_role_seed() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
-
-    // The Domain Pauser's config records one member and names the Domain Manager as its admin
-    // role — that delegation is what lets the Manager rotate the Pauser without administrator
-    // involvement. The Domain Manager itself records admin role 0, the built-in admin role, whose
-    // membership the builder seeds on the administrator's account. Note that this admin membership
-    // is bound to that ACCOUNT, so an administratorship handover has to re-seat the role explicitly
-    // (grant-new / revoke-old).
-    let pauser_config = account.storage().get_map_item(
+    let components = production_component_set(MAX_SUPPLY, TOKEN_SUPPLY)?;
+    for name in [
         RoleBasedAccessControl::role_config_slot(),
-        StorageMapKey::new(role_config_key(&pauser)),
-    )?;
-    assert_eq!(
-        pauser_config[0],
-        Felt::from(1u32),
-        "DOM_PAUSER member_count == 1"
-    );
-    assert_eq!(
-        pauser_config[1],
-        Felt::from(&manager),
-        "DOM_PAUSER admin_role == DOM_MANAGER (the CMP-F5 delegation, replica seed)"
-    );
-
-    let manager_config = account.storage().get_map_item(
-        RoleBasedAccessControl::role_config_slot(),
-        StorageMapKey::new(role_config_key(&manager)),
-    )?;
-    assert_eq!(
-        manager_config[0],
-        Felt::from(1u32),
-        "DOM_MANAGER member_count == 1"
-    );
-    assert_eq!(
-        manager_config[1],
-        Felt::ZERO,
-        "DOM_MANAGER admin_role == 0 (resolves to ADMIN = the seeded administrator account)"
-    );
-
-    // role_membership[{0,<role>,holder.suffix,holder.prefix}] = [1,0,0,0] for each DOM holder.
-    let pauser_membership = account.storage().get_map_item(
         RoleBasedAccessControl::role_membership_slot(),
-        StorageMapKey::new(role_membership_key(&pauser, dom_pauser())),
-    )?;
-    assert_eq!(
-        pauser_membership[0],
-        Felt::from(1u32),
-        "DOM_PAUSER holder id(2) is a seeded member"
-    );
-
-    let manager_membership = account.storage().get_map_item(
-        RoleBasedAccessControl::role_membership_slot(),
-        StorageMapKey::new(role_membership_key(&manager, dom_manager())),
-    )?;
-    assert_eq!(
-        manager_membership[0],
-        Felt::from(1u32),
-        "DOM_MANAGER holder id(3) is a seeded member"
-    );
+    ] {
+        let expected = components
+            .iter()
+            .flat_map(|component| component.storage_slots())
+            .find(|slot| slot.name() == name)
+            .context("the production composition carries the RBAC slot")?;
+        assert_eq!(
+            account
+                .storage()
+                .get(name)
+                .context("the replica carries the RBAC slot")?,
+            expected,
+            "the replica must match the production {name} seed"
+        );
+    }
 
     // And the replica must not carry an authority handle the shipped account has retired: the
     // ownership component is gone from production, so a replica that still installs it would give

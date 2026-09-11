@@ -6,37 +6,36 @@ Everything here is about the audited surface: the `crates/xusdc-encoding` crate 
 
 ## 1. Governance and the role hierarchy
 
-The faucet has no signing key. Every administrative action arrives as an allowlisted note, and the faucet checks which account sent that note against its on-chain role map. Roles bind to account IDs, not public keys, so any role can be held by a multisig account without changing the faucet. One naming note: this document says BLOCK_LISTER for the blocklist-administration role; the code still uses an earlier working name, and the rename is planned.
+The faucet has no signing key. Every administrative action arrives as an allowlisted note, and the faucet checks which account sent that note against its on-chain role map. Roles bind to account IDs, not public keys, so any role can be held by a multisig account without changing the faucet.
 
 ```mermaid
 flowchart TD
-    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"]
-    DOM_MANAGER["<b>DOM_MANAGER</b>"]
-    DOM_PAUSER["<b>DOM_PAUSER</b>"]
-    BLOCK_LISTER["<b>BLOCK_LISTER</b>"]
-    ADMIN -->|administers| DOM_MANAGER
-    ADMIN -->|administers| BLOCK_LISTER
-    DOM_MANAGER -->|administers| DOM_PAUSER
-    ADMIN --- A1["set_attester<br/>set_max_supply<br/>set_min_burn_size<br/>set_note_fee<br/>RBAC role changes"]
-    DOM_PAUSER --- A2["pause / unpause"]
-    BLOCK_LISTER --- A3["block_account / unblock_account"]
+    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"] --- A1["set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
+    ADMIN -->|administers| ATTEST_ADMIN["<b>ATTEST_ADMIN</b>"]
+    ADMIN -->|administers| DOM_PAUSER["<b>DOM_PAUSER</b>"]
+    ADMIN -->|administers| DOM_UNPAUSER["<b>DOM_UNPAUSER</b>"]
+    ADMIN -->|administers| BLK_MANAGER["<b>BLK_MANAGER</b>"]
+    ATTEST_ADMIN --- A2["set_attester"]
+    DOM_PAUSER --- A3["pause"]
+    DOM_UNPAUSER --- A4["unpause"]
+    BLK_MANAGER --- A5["block_account / unblock_account"]
 ```
 
 | Operation | Required role |
 |---|---|
-| pause / unpause | DOM_PAUSER |
-| block_account / unblock_account | BLOCK_LISTER |
-| everything else (attester allowlist, supply cap, burn floor, note fees, role administration) | ADMIN |
+| pause | DOM_PAUSER |
+| unpause | DOM_UNPAUSER |
+| set_attester | ATTEST_ADMIN |
+| block_account / unblock_account | BLK_MANAGER |
+| everything else (supply cap, burn floor, note fees, role administration) | ADMIN |
 
-Only pause/unpause and block/unblock have a dedicated role. Every other gated procedure falls back to ADMIN ([role map](https://github.com/0xMiden/miden-usdcx/blob/f1a0a4cee961e7d8ad1073ad99f01aedd4c03987/crates/xusdc-encoding/src/account/xreserve/admin_authority.rs#L57-L79)). The following properties are designed, not accidental:
+Pause, unpause, set_attester and block/unblock have dedicated roles; every other gated procedure falls back to ADMIN ([role map](https://github.com/0xMiden/miden-usdcx/blob/f1a0a4cee961e7d8ad1073ad99f01aedd4c03987/crates/xusdc-encoding/src/account/xreserve/admin_authority.rs#L57-L79)). The following properties are designed, not accidental:
 
-- **ADMIN can reach every role.** It administers DOM_MANAGER and BLOCK_LISTER directly, and it reaches DOM_PAUSER in two hops by first granting itself DOM_MANAGER. This mirrors Circle's reference token, where a single owner holds everything. The role split below ADMIN keeps day-to-day operations away from the top role; it is not a defense against a compromised ADMIN. The defense there is custody, not code.
+- **ADMIN can reach every role.** It administers ATTEST_ADMIN, DOM_PAUSER, DOM_UNPAUSER and BLK_MANAGER directly; as with Circle's all-powerful owner, custody is the defense against a compromised ADMIN.
 - **Handover is grant-then-revoke.** There is no two-step ownership transfer. During a handover, the old and the new account both hold ADMIN for a moment. The stock RBAC ([rbac.masm](https://github.com/0xMiden/protocol/blob/v0.16.0-rc.4/crates/miden-standards/asm/standards/access/rbac.masm#L158-L291)) also allows self-renounce, role-admin changes, overlapping memberships, and emptying any role, including ADMIN. There is no last-admin guard and no timelock. We know this and accept it for the audited revision; recommendations are still welcome.
-- **One pause flag, one role, one authorization.** A single flag halts both mint and burn. Pause and unpause share the DOM_PAUSER role and the same admitted note root, and an unpause needs exactly one authorized note ([manager](https://github.com/0xMiden/protocol/blob/v0.16.0-rc.4/crates/miden-standards/asm/standards/access/pausable/manager.masm#L20-L54)). Circle's partner integration guidelines contemplate joint approval for an unpause. If that requirement applies to this local switch, we would satisfy it through custody: a multisig holding DOM_PAUSER.
+- **One pause flag, separate roles.** DOM_PAUSER pauses mint and burn, while DOM_UNPAUSER lifts the same flag through the same admitted note root ([manager](https://github.com/0xMiden/protocol/blob/v0.16.0-rc.4/crates/miden-standards/asm/standards/access/pausable/manager.masm#L20-L54)); the unpauser's quorum is a deployment custody decision (#197).
 - **Admin actions still work while paused, with one exception.** Pause does not gate the administrative paths, so a compromised attester key can be disabled while the faucet is paused ([attester_admin.masm](https://github.com/0xMiden/miden-usdcx/blob/f1a0a4cee961e7d8ad1073ad99f01aedd4c03987/crates/xusdc-encoding/asm/xreserve/attester_admin.masm#L1-L67)). The exception is the supply cap: the stock max-supply setter asserts the faucet is not paused, so the cap cannot be changed during a pause.
-- **BLOCK_LISTER separation is only checked at deployment.** The builder refuses a BLOCK_LISTER holder that is also ADMIN, DOM_PAUSER, or DOM_MANAGER ([collision checks](https://github.com/0xMiden/miden-usdcx/blob/f1a0a4cee961e7d8ad1073ad99f01aedd4c03987/crates/xusdc-encoding/src/account/xreserve/builder/mod.rs#L248-L268)). Other seed collisions are not checked; they are tracked in the audit-finding issues. And because role membership can change at runtime, even the checked separation can be undone later by authorized role changes.
-
-**The hierarchy may still change.** Pending Circle's sign-off, we are considering two changes from our governance review: removing DOM_MANAGER (its only job on the token side is administering DOM_PAUSER), and splitting the broad ADMIN into per-function admin roles, for example a deposit-attester admin that alone holds `set_attester`. For custody, the direction is multisig accounts holding the critical roles, with keys held by a security council of co-founders, investors, and directly affected parties. None of this is implemented. Audit the current model, but keep this restructuring in mind when writing recommendations.
+- **Pause and blocklist holders are isolated at deployment.** The builder requires DOM_PAUSER and BLK_MANAGER each to hold no other role ([collision checks](https://github.com/0xMiden/miden-usdcx/blob/f1a0a4cee961e7d8ad1073ad99f01aedd4c03987/crates/xusdc-encoding/src/account/xreserve/builder/mod.rs#L248-L268)); ADMIN, ATTEST_ADMIN and DOM_UNPAUSER may overlap, and authorized runtime role changes can undo the initial separation.
 
 ## 2. Intentional deviations from Circle's specification
 

@@ -29,12 +29,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([9191545194162689996, 4633678988417719960, 7090410590693516502, 14974543390240893324])";
+    "Word([16509777361630469288, 229038349820898471, 2143915472240274036, 13306707353858942409])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([1693898141629290850, 3486605369382239683, 15811355070471926110, 582180616080670137])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([3720803996111311834, 3780084893145571811, 458220963415719823, 9676516619530803970])";
-const GOLDEN_ACCOUNT_ID: &str = "0xe4eb95836cb1c8b1036e3862bbabb7";
+    "Word([11866194280076609367, 16665019112898950860, 7731240504137810335, 13244847863466113741])";
+const GOLDEN_ACCOUNT_ID: &str = "0xca8c89d08f9e59317248bfa132ecdb";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -108,6 +108,7 @@ fn account_via_crate_root_constructor() -> Account {
         SEED,
         AssetAmount::new(MAX_SUPPLY).expect("max supply is a valid asset amount"),
         AssetAmount::new(TOKEN_SUPPLY).expect("token supply is a valid asset amount"),
+        test_account_id(1),
         test_account_id(1),
         test_account_id(2),
         test_account_id(3),

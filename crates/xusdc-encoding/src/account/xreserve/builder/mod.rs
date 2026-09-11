@@ -133,9 +133,10 @@ pub struct XReserveStablecoinBuilder {
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
     blocklist_manager_holder: AccountId,
-    /// Parameters used to price notes and identify the network fee asset.
-    ///
-    /// TODO: Use native fee faucet account construction when it is available.
+    /// Parameters used to price notes and identify the network fee asset. For a genesis (native
+    /// fee faucet) build these carry the OPERATOR's account id as the fee faucet id during the
+    /// seed grind; `build_genesis_account` then rebinds the fee-asset slot to the asset the
+    /// faucet itself issues.
     fee_parameters: FeeParameters,
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
     /// and is validated at construction.

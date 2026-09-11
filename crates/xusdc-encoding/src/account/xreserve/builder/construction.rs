@@ -10,14 +10,15 @@ use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap,
     StorageMapKey, StorageSlot, StorageSlotName,
 };
-use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
+use miden_protocol::asset::{AssetAmount, AssetCallbacks, AssetId, TokenSymbol};
 use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::errors::StorageMapError;
 use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::vm::Package;
-use miden_protocol::Word;
+use miden_protocol::{Felt, Word};
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::fees::FeePolicyManager;
 
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
@@ -197,6 +198,34 @@ impl XReserveStablecoinBuilder {
         builder = builder.with_components(Self::auth_component(self.fee_parameters.clone())?);
         builder
             .build()
+            .map_err(XReserveStablecoinBuilderError::AccountComposition)
+    }
+
+    /// Builds the faucet as the network's NATIVE fee faucet for inclusion in a genesis block,
+    /// mirroring the ending of the stock `create_native_fungible_faucet_for_genesis`: the account
+    /// id is derived by [`Self::build_account`] while the builder's `fee_parameters` still carry a
+    /// placeholder fee faucet id (the operator's), then the fee-asset slot is rebound to the asset
+    /// the faucet itself issues, and the account is rebuilt at nonce one with no seed. The id is
+    /// unchanged by the rebinding because it was derived before the swap.
+    ///
+    /// # Warning
+    ///
+    /// The returned account can only be added at genesis. With nonce one and no seed it cannot be
+    /// deployed in a transaction.
+    pub fn build_genesis_account(
+        &self,
+        init_seed: [u8; 32],
+    ) -> Result<Account, XReserveStablecoinBuilderError> {
+        let account = self.build_account(init_seed)?;
+        let fee_asset_id = AssetId::new_fungible(account.id());
+        let (id, vault, mut storage, code, _nonce, _seed) = account.into_parts();
+        storage
+            .set_item(
+                FeePolicyManager::fee_asset_id_slot(),
+                fee_asset_id.to_word(),
+            )
+            .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
+        Account::new(id, vault, storage, code, Felt::ONE, None)
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 }

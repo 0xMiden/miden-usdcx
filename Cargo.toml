@@ -2,10 +2,11 @@
 resolver = "2"
 members = [
   "crates/xusdc-encoding",
+  "crates/xusdc-genesis",
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
 ]
-# PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
+# PARKED: `crates/xusdc-validation` sits outside the workspace. The members above resolve
 # the protocol family from the published crates.io `=0.16.1` release, but the validation crate
 # still carries the `=0.16.0-alpha.4` protocol pins (via the alpha `miden-client`) and predates
 # the current encoding API, so it cannot build alongside the rest. A released `miden-client`
@@ -56,6 +57,11 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 bon = "3"
 sha3 = "0.10"
 rand = "0.8"
+# Deterministic key generation in the genesis tool: the protocol's own rand generation is the
+# 0.10 family (`AuthSecretKey::new_falcon512_poseidon2_with_rng` takes a rand-0.10 `Rng`), so the
+# seeded ChaCha20 generator must come from rand_chacha 0.10 for the rand_core versions to unify.
+# The rand 0.8 pin above is unrelated (k256's test-fixture signing) and stays.
+rand_chacha = "0.10"
 
 # Circle-facing HTTP (the relayer's `circle::client` info/attestation-fetch drivers) + the offline
 # mock Circle server its contract tests run against. Both are pinned here, not in the crate, so the

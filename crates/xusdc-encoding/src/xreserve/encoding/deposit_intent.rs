@@ -30,8 +30,7 @@
 //! packaging these conversions apply.
 //!
 //! WARNING: Do not deposit with more than 3,840 bytes of `hookData`. The deposit cannot be claimed
-//! on Miden, and the USDC remains locked on the source chain. The final hookData cap remains OPEN
-//! with Circle.
+//! on Miden, and the USDC remains locked on the source chain.
 
 use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;

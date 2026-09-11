@@ -29,6 +29,7 @@ use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{
     read_info, read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
+use crate::submission::SavedSubmission;
 
 pub(super) const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
@@ -158,14 +159,16 @@ impl ChainReader for TestChain {
 #[derive(Clone)]
 pub(super) enum CircleState {
     Response(StatusCode),
+    ResponseBody(StatusCode, Vec<u8>),
     TransportError,
 }
 
 impl CircleState {
     /// What a call to Circle gets back in this state.
-    fn answer(self) -> Result<RawResponse, CircleError> {
+    pub(super) fn answer(self) -> Result<RawResponse, CircleError> {
         match self {
             CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
+            CircleState::ResponseBody(status, body) => Ok(RawResponse::new(status, body)),
             CircleState::TransportError => Err(CircleError::Unavailable),
         }
     }
@@ -176,6 +179,8 @@ impl CircleState {
 pub(super) enum ObservedRequest {
     Info,
     Prepare,
+    Submit { endpoint: String, body: Vec<u8> },
+    Lookup { endpoint: String, id: String },
 }
 
 pub(super) struct FakeCircle {
@@ -214,6 +219,31 @@ impl CircleApi for FakeCircle {
         self.requests.lock().unwrap().push(ObservedRequest::Prepare);
         let answer = self.state.clone().answer();
         Box::pin(async move { read_prepared(answer?) })
+    }
+
+    fn post_submission<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        self.requests.lock().unwrap().push(ObservedRequest::Submit {
+            endpoint: saved.endpoint.clone(),
+            body: saved.body.clone(),
+        });
+        let answer = self.state.clone().answer();
+        Box::pin(async move { answer })
+    }
+
+    fn get_withdrawal<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        self.requests.lock().unwrap().push(ObservedRequest::Lookup {
+            endpoint: saved.endpoint.clone(),
+            id: id.to_owned(),
+        });
+        let answer = self.state.clone().answer();
+        Box::pin(async move { answer })
     }
 }
 

@@ -34,7 +34,7 @@ fn config(fee_ceiling: Option<u64>) -> Config {
     Config::load(&path).unwrap()
 }
 
-fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {
+pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {
     // The burn-bound bytes are written independently of the prepare/verify helpers.
     let mut batch = serde_json::from_value(json!({
         "burnIntents": [{

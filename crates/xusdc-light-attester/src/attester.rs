@@ -30,8 +30,7 @@ pub enum DiscoverError {
     Store(#[from] anyhow::Error),
 }
 
-#[derive(Debug)]
-pub struct SubmitError;
+pub use crate::submission::SubmitError;
 
 #[derive(Debug)]
 pub struct PollError;
@@ -46,10 +45,10 @@ pub struct CycleReport {
 
 #[allow(dead_code)]
 pub struct Attester {
-    config: Config,
+    pub(crate) config: Config,
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
-    circle: Box<dyn CircleApi>,
+    pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
 }
 

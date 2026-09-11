@@ -71,8 +71,9 @@ declaring a schema Circle has not published.
 ## The scenario the happy-path fixtures encode
 
 One coherent withdrawal, so the validation slice (T-LA-06) has a payload to compare against:
-10.000000 xUSDC (`value` = `"10000000"`, the smallest-unit form; `"10.00"` in the request's decimal
-`valueExcludingFees`) burned on Miden (`remoteDomain` = `10001`, "typically greater than 10000") for
+10.000000 xUSDC burned, with returned net `value` = `"9999000"` and `maxFee` = `"1000"` in smallest
+token units. The positive net value plus fee equals the 10000000 units burned on Miden
+(`remoteDomain` = `10001`, "typically greater than 10000") for
 a final destination of Ethereum (`finalDestinationDomain` = `0`), not forwarded
 (`useCircleForwarding` = `false`, `forwardingCalldata` = `"0x"`).
 

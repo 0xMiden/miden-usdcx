@@ -526,7 +526,7 @@ pub enum ValidationMismatch {
     EmptyBurnIntents { batch: usize },
 
     /// A returned `burnIntents[].spec.value` is zero or its sum with `maxFee` does not equal
-    /// the burn-note payload's `amount`, all in smallest token units.
+    /// the burned asset amount, all in smallest token units.
     Amount {
         batch: usize,
         expected: u64,
@@ -594,7 +594,7 @@ impl fmt::Display for ValidationMismatch {
                 returned,
             } => write!(
                 f,
-                "batch {batch}: returned amount `{returned}` must be positive and sum with max fee to the burn payload amount {expected}"
+                "batch {batch}: returned amount `{returned}` must be positive and sum with max fee to the burned asset amount {expected}"
             ),
             Self::DestinationDomain {
                 batch,

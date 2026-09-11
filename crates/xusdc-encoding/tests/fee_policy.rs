@@ -321,13 +321,13 @@ fn setup_sponsored_burn() -> Result<SponsoredBurnFixture> {
     let burn_asset = FungibleAsset::new(account.id(), amount.as_u64())?;
     let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [burn_asset.into()])?;
     let burn_items = XReserveBurnItems::builder()
-        .amount(amount)
         .dest_domain(TEST_SOURCE_DOMAIN)
         .dest_recipient(ForeignChainAddress::new([0xAB; 32]))
         .build();
     let burn_note = XReserveBurnNote::create(
         user.id(),
         account.id(),
+        amount,
         burn_items.clone(),
         builder.rng_mut(),
     )?;

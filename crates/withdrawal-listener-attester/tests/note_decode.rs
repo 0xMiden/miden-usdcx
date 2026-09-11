@@ -85,7 +85,7 @@ fn public_metadata(sender: AccountId) -> NoteMetadata {
 // (PURE) — BURN-PAYLOAD DECODE VIA THE UNIT-04 BURN-NOTE CODEC
 // ================================================================================================
 
-/// Every accept vector's golden felts decode to exactly the three fields the burn wrote — asserted
+/// Every accept vector's golden felts decode to exactly the two fields the burn wrote — asserted
 /// FIELD BY FIELD, so a permuted layout fails here rather than silently sending someone else's money
 /// to the wrong address.
 #[test]
@@ -95,7 +95,6 @@ fn t_la_01_decode_golden_items_field_by_field() {
         let decoded = decode_burn_payload(&vector.items_values())
             .unwrap_or_else(|e| panic!("{}: golden items must decode, got {e}", vector.id));
 
-        assert_eq!(decoded.amount, expected.amount, "{}: amount", vector.id);
         assert_eq!(
             decoded.dest_domain, expected.dest_domain,
             "{}: destDomain",
@@ -143,7 +142,7 @@ fn t_la_01_decode_round_trips_to_the_golden_felts() {
     }
 }
 
-/// The boundary vector: `amount` at the `AssetAmount` maximum and `destDomain` at `u32::MAX` decode
+/// The boundary vector: `destDomain` at `u32::MAX` decodes
 /// exactly, with no wraparound and no saturation.
 #[test]
 fn t_la_01_decodes_the_boundary_payload() {
@@ -155,7 +154,6 @@ fn t_la_01_decodes_the_boundary_payload() {
         .expect("bn-pos-max vector present");
     let decoded = decode_burn_payload(&vector.items_values()).expect("max payload decodes");
     let expected = vector.expected_struct();
-    assert_eq!(decoded.amount, expected.amount, "max amount is exact");
     assert_eq!(
         decoded.dest_domain,
         u32::MAX,
@@ -164,13 +162,12 @@ fn t_la_01_decodes_the_boundary_payload() {
     assert_eq!(decoded, expected);
 }
 
-/// Every malformed-items vector — wrong felt count (short and long), an out-of-range `amount`, a
+/// Every malformed-items vector — wrong felt count (short and long), a
 /// `destDomain` above `u32::MAX`, or a non-`u32` recipient limb — is REFUSED with the
 /// exact crate variant, and nothing partial is surfaced.
 #[rstest]
 #[case("bn-rej-len-short")]
 #[case("bn-rej-len-long")]
-#[case("bn-rej-amount-over-cap")]
 #[case("bn-rej-domain-over-u32")]
 #[case("bn-rej-recipient-limb-not-u32")]
 fn t_la_01_malformed_items_are_refused_exactly(#[case] id: &str) {

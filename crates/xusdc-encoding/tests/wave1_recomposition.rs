@@ -1,6 +1,6 @@
 //! FAUCET-RECOMPOSITION TRIPWIRES — the posture PINS for the shipped faucet composition
 //! (stock `MintNote` transport + attestation MintPolicy + build-seeded config with an
-//! identifier-only init note + stock `MinBurnAmount` with a zero-floor guard).
+//! identifier-only init note + a burn policy with a zero-floor guard).
 //!
 //! The file is the permanent posture tripwire set:
 //!
@@ -11,7 +11,7 @@
 //!   CONCRETE `MissingAttestationMintPolicy` builder variant.
 //! - There is NO mint-deny guard (nothing needs trapping: the
 //!   stock path IS the attestation-gated path).
-//! - The burn floor: the ACTIVE burn policy is the stock `MinBurnAmount`, its floor slot is
+//! - The burn floor: the burn policy reads the stock `MinBurnAmount` slot, which is
 //!   seeded `>= 1` (the zero-burn reject preserved by construction: `amount >= min >= 1`),
 //!   the builder REJECTS `min_burn_size < 1` with the CONCRETE `MinBurnSizeBelowFloor` variant,
 //!   and the admin note (targeting the stock `set_min_burn_amount`) asserts
@@ -223,18 +223,14 @@ fn custom_mint_transport_masm_is_deleted() -> Result<()> {
     Ok(())
 }
 
-/// TRIPWIRE: the legacy config/burn admin MASM is replaced — `domain_config`/`min_burn_admin`/
-/// `burn_policy` delete; the identifier-init module + note are gone too (the identifier is a
+/// TRIPWIRE: the legacy `domain_config` and `min_burn_admin` MASM are replaced;
+/// the identifier-init module + note are gone too (the identifier is a
 /// provable fixpoint of the account id, which is why the mint path derives it instead of reading a
 /// seeded slot).
 #[test]
 fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    for gone in [
-        "domain_config.masm",
-        "min_burn_admin.masm",
-        "burn_policy.masm",
-    ] {
+    for gone in ["domain_config.masm", "min_burn_admin.masm"] {
         assert!(
             !shipped_masm_path(gone).exists(),
             "asm/xreserve/{gone} must be deleted by the recomposition"
@@ -256,22 +252,14 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
     Ok(())
 }
 
-// 3 — POSTURE: the burn side is the stock MinBurnAmount with the zero floor preserved
+// 3 — POSTURE: one allowed burn policy with the zero floor preserved
 // ================================================================================================
 
-/// TRIPWIRE: the ACTIVE burn policy is the STOCK `MinBurnAmount` (allowed-map exactly that one
-/// root) and its floor slot ships seeded `>= 1` — the zero-burn reject preserved by
-/// construction (`amount >= min >= 1`).
+/// The faucet allows exactly one burn policy and stores a minimum burn amount of at least one.
 #[test]
-fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
+fn burn_policy_has_one_allowed_root_and_a_positive_floor() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
     let components = production_component_set(MAX_SUPPLY, 0)?;
-    let active = value_slot(&components, TokenPolicyManager::active_burn_policy_slot())?;
-    assert_eq!(
-        active,
-        MinBurnAmount::root().as_word(),
-        "the ACTIVE burn policy slot must hold the stock MinBurnAmount root"
-    );
     let map = map_slot(
         &components,
         TokenPolicyManager::allowed_burn_policies_slot(),
@@ -279,7 +267,7 @@ fn burn_policy_is_stock_min_burn_amount_with_a_positive_floor() -> Result<()> {
     assert_eq!(
         map.num_entries(),
         1,
-        "the allowed-burn map must carry EXACTLY the one MinBurnAmount root"
+        "the allowed-burn map must carry exactly one root"
     );
     let floor = value_slot(&components, MinBurnAmount::slot_name())?;
     assert!(

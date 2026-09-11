@@ -28,6 +28,7 @@ use super::{
 /// the account's code commitment is over the procedure roots and its storage over the slot values,
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
+const BURN_POLICY_COMPONENT_LABEL: &str = "xusdc-burn-policy";
 
 /// What the faucet adds on top of the stock fungible faucet, assembled at build time from
 /// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
@@ -39,6 +40,16 @@ static FAUCET_EXTENSION_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| 
             "/assets/components/xreserve-faucet-extension.masp"
         )))
         .expect("the shipped account-component package deserializes"),
+    )
+});
+
+static BURN_POLICY_CODE: LazyLock<AccountComponentCode> = LazyLock::new(|| {
+    AccountComponentCode::from(
+        Package::read_from_bytes_trusted(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/assets/components/xreserve-faucet-burn-policy.masp"
+        )))
+        .expect("the shipped burn-policy package deserializes"),
     )
 });
 
@@ -118,6 +129,17 @@ impl From<XReserveFaucetExtension> for AccountComponent {
 }
 
 impl XReserveStablecoinBuilder {
+    /// Builds the burn policy component. It reads the minimum burn amount from the storage slot
+    /// owned by `MinBurnAmount` and has no storage slots of its own.
+    pub fn burn_policy_component() -> AccountComponent {
+        AccountComponent::new(
+            BURN_POLICY_CODE.clone(),
+            vec![],
+            AccountComponentMetadata::new(BURN_POLICY_COMPONENT_LABEL),
+        )
+        .expect("the burn policy binds with no storage slots")
+    }
+
     /// Builds the final composed faucet [`Account`] from `init_seed`: [`Self::build_components`] plus
     /// the production keyless-network `AuthNetworkAccount` auth component ([`Self::auth_component`]),
     /// assembled as `AccountType::Public`, with asset

@@ -62,10 +62,9 @@ const DEST_DOMAIN: u32 = 0;
 const MIDEN_DOMAIN: u32 = 99_999;
 
 /// The burn payload the burn note wrote, in the shape the xReserve burn evidence prescribes —
-/// `(amount, destDomain, destRecipient)`.
+/// `(destDomain, destRecipient)`.
 fn a_payload() -> BurnPayload {
     BurnPayload {
-        amount: AssetAmount::new(AMOUNT).unwrap(),
         dest_domain: DEST_DOMAIN,
         dest_recipient: ForeignChainAddress::new(DEST_RECIPIENT),
     }
@@ -108,6 +107,7 @@ fn discovered_burn(
         cfg.burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
             payload.encode(),
+            AssetAmount::new(AMOUNT).unwrap(),
             prefix,
             suffix,
         )),

@@ -201,7 +201,7 @@ pub struct AttVector {
 }
 
 /// Burn-note item (BN) vectors. `kind`: accept | reject. Accept entries carry
-/// the three semantic inputs plus the 10-felt golden `items` layout; reject entries carry the
+/// the two destination fields plus the 9-felt expected `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -210,12 +210,10 @@ pub struct BnVector {
     pub tv: Vec<String>,
     pub kind: String,
     #[serde(default)]
-    pub amount: Option<String>,
-    #[serde(default)]
     pub dest_domain: Option<u32>,
     #[serde(default)]
     pub dest_recipient: Option<String>,
-    /// Accept: the 10-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:
+    /// Accept: the 9-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:
     /// the malformed felts.
     pub items: Vec<String>,
     #[serde(default)]
@@ -431,16 +429,6 @@ impl DiFields {
 }
 
 impl BnVector {
-    pub fn amount(&self) -> miden_protocol::asset::AssetAmount {
-        let a: u64 = self
-            .amount
-            .as_deref()
-            .expect("accept vector carries amount")
-            .parse()
-            .expect("u64");
-        miden_protocol::asset::AssetAmount::new(a).expect("vector amount within bounds")
-    }
-
     pub fn dest_recipient(&self) -> crate::xreserve::encoding::ForeignChainAddress {
         crate::xreserve::encoding::ForeignChainAddress::new(parse_hex32(
             self.dest_recipient
@@ -449,7 +437,7 @@ impl BnVector {
         ))
     }
 
-    /// The felt slice under test (accept: 10-felt golden layout; reject: malformed felts).
+    /// The felt slice under test (accept: 9-felt golden layout; reject: malformed felts).
     pub fn items_values(&self) -> Vec<Felt> {
         self.items.iter().map(|s| felt_from_hex(s)).collect()
     }
@@ -457,7 +445,6 @@ impl BnVector {
     /// Reconstructs the semantic `XReserveBurnItems` from an accept vector's inputs.
     pub fn expected_struct(&self) -> crate::xreserve::encoding::XReserveBurnItems {
         crate::xreserve::encoding::XReserveBurnItems {
-            amount: self.amount(),
             dest_domain: self.dest_domain.expect("accept vector carries dest_domain"),
             dest_recipient: self.dest_recipient(),
         }
@@ -491,7 +478,7 @@ mod tests {
         assert_eq!(v.families.aid.len(), 5, "aid family");
         assert_eq!(v.families.di.len(), 10, "di family");
         assert_eq!(v.families.att.len(), 3, "att family");
-        assert_eq!(v.families.bn.len(), 8, "bn family");
+        assert_eq!(v.families.bn.len(), 7, "bn family");
         assert_eq!(v.families.mi.len(), 6, "mi family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();
         let tv_ok = |id: &str, tv: &[String]| !tv.is_empty() || TV_TAG_ALLOWLIST.contains(&id);

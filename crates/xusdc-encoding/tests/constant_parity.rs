@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 use miden_protocol::note::NoteAttachmentScheme;
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
+use xusdc_encoding::note::xreserve_burn::{
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+};
 use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_ATTESTATION_NUM_WORDS, XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME,
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
@@ -36,6 +39,7 @@ const ATTESTATION_VERIFY_MASM: &str = include_str!("../asm/xreserve/attestation_
 /// The attestation mint policy module source (the ACTIVE mint policy; owns the merged attachment
 /// transport + ASSERT-MATCH binding constants), read test-side by reference.
 const MINT_POLICY_MASM: &str = include_str!("../asm/xreserve/mint_policy.masm");
+const BURN_POLICY_MASM: &str = include_str!("../asm/xreserve/burn_policy.masm");
 
 /// The faucet set_attester admin module source, read test-side by reference.
 const ATTESTER_ADMIN_MASM: &str = include_str!("../asm/xreserve/attester_admin.masm");
@@ -123,6 +127,15 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "MINT_INTENT_RECIPIENT_SUFFIX_LOC",
     "MINT_INTENT_MAX_FEE_LOC",
     "MINT_INTENT_HOOK_DATA_LEN_LOC",
+];
+
+/// Constants used by the burn policy. Scheme and word count are compared with the Rust factory.
+const BURN_POLICY_COVERED_NUMS: &[&str] = &[
+    "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME",
+    "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS",
+    "BURN_NOTE_NUM_ATTACHMENTS",
+    "CHECK_BURN_POLICY_COMMITMENTS_LOC",
+    "CHECK_BURN_POLICY_WITHDRAWAL_LOC",
 ];
 
 /// Numeric-constant coverage sets (bidirectional sweep): every numeric const parsed
@@ -420,6 +433,26 @@ fn masm_rust_constant_parity() {
     // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLK_MANAGER_ROLE)`)
     // and the materialized map in `w2admin_production_admin_effects.rs`.
 
+    let (burn_nums, _, _) = parse_masm_consts(BURN_POLICY_MASM);
+    assert_eq!(
+        num(
+            &burn_nums,
+            "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME",
+            "burn_policy.masm"
+        ),
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME as u64,
+        "withdrawal attachment scheme parity (MASM policy == Rust factory)"
+    );
+    assert_eq!(
+        num(
+            &burn_nums,
+            "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS",
+            "burn_policy.masm"
+        ),
+        XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS as u64,
+        "withdrawal attachment word-count parity (MASM policy == Rust factory)"
+    );
+
     // The merged mint-note transport must match across languages — the XUsdcMintNote factory
     // builds exactly what the attestation policy locates (find_attachment by scheme), sub-divides
     // at the attestation offset, and reduces at (scale 0). A one-sided edit — the exact mutation
@@ -493,7 +526,7 @@ fn masm_constants_bidirectional() {
     // every MASM-only string constant must be a known error (the encoding table or the faucet
     // shell table); a new one fails here until it gets a row
     let known_err = |name: &str| support::SHELL_ERR_TABLE.iter().any(|(n, _)| *n == name);
-    let sources: [(&str, &str, &[&str], Vec<(&str, &str)>); 6] = [
+    let sources: [(&str, &str, &[&str], Vec<(&str, &str)>); 7] = [
         (
             "mint_intent.masm",
             MINT_INTENT_MASM,
@@ -523,6 +556,12 @@ fn masm_constants_bidirectional() {
             "mint_policy.masm",
             MINT_POLICY_MASM,
             MINT_POLICY_COVERED_NUMS,
+            Vec::new(),
+        ),
+        (
+            "burn_policy.masm",
+            BURN_POLICY_MASM,
+            BURN_POLICY_COVERED_NUMS,
             Vec::new(),
         ),
         // set_attester: pins XRESERVE_ATTESTERS_SLOT to the shared name (no numeric consts;

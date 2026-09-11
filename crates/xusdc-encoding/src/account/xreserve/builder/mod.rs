@@ -8,9 +8,9 @@
 //! Scope (cumulative): it composes the `FungibleFaucet`, the assembled `xreserve` library
 //! component (carrying the attestation mint policy and the `set_attester` admin proc), a
 //! `TokenPolicyManager` whose ACTIVE mint policy is the attestation
-//! policy and whose ACTIVE burn policy is the STOCK
-//! [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) with an initial floor of at
-//! least one, the STOCK [`PausableManager`] and
+//! policy and whose ACTIVE burn policy checks the required attachments and minimum burn amount.
+//! The minimum amount starts at one or more and is stored by [`MinBurnAmount`]. The composition
+//! also includes the standard [`PausableManager`] and
 //! [`BlocklistManager`] admin components, and the **role-gating admin foundation**
 //! (a seeded `RoleBasedAccessControl` under the
 //! [`XReserveAdminAuthority`]'s `Authority::RbacControlled`). The RBAC seed holds the two Circle
@@ -47,7 +47,7 @@ use miden_standards::account::access::{
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::fees::ConstantFeeManager;
 use miden_standards::account::policies::{
-    BlocklistManager, BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
+    BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
 
 use crate::account::xreserve::XReserveAdminAuthority;
@@ -88,6 +88,10 @@ pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_extension::check_policy";
 
+/// Path of the procedure exported by the burn policy component.
+pub const XRESERVE_BURN_POLICY_PROC_PATH: &str =
+    "xreserve::components::faucet_burn_policy::check_burn_policy";
+
 /// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
 /// zero-burn reject is enforced at note-building time: the builder rejects a floor below this at
@@ -107,8 +111,8 @@ pub const USDCX_DECIMALS: u8 = 6;
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
-/// with the attestation policy active on the mint side and the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) active on
-/// the burn side + the standard [`PausableManager`], [`BlocklistManager`], and
+/// with the attestation mint policy and a burn policy that checks the required attachments
+/// and the minimum amount stored by [`MinBurnAmount`], plus [`PausableManager`], [`BlocklistManager`], and
 /// [`ConstantFeeManager`] components + a seeded `RoleBasedAccessControl` governed by
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`.
 ///
@@ -140,9 +144,8 @@ pub struct XReserveStablecoinBuilder {
     ///
     /// TODO: Use native fee faucet account construction when it is available.
     fee_parameters: FeeParameters,
-    /// The minimum burn amount (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
-    /// companion's floor slot. Defaults to [`MIN_BURN_SIZE_FLOOR`] and is validated at
-    /// construction.
+    /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
+    /// and is validated at construction.
     min_burn_amount: AssetAmount,
     /// The faucet's own Circle domain id.
     domain: u32,
@@ -168,10 +171,9 @@ impl XReserveStablecoinBuilder {
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
-    /// via [`XReserveFaucetExtension`]. The active mint policy is always the attestation policy,
-    /// hard-wired at composition, and so is the stock
-    /// [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) on the burn side; only
-    /// its floor, `min_burn_amount`, is a builder input, defaulting to [`MIN_BURN_SIZE_FLOOR`].
+    /// via [`XReserveFaucetExtension`]. The active mint and burn policies are fixed by the
+    /// composition. The burn policy reads `min_burn_amount` from [`MinBurnAmount`]; this builder
+    /// input defaults to [`MIN_BURN_SIZE_FLOOR`].
     ///
     /// # Errors
     ///
@@ -251,6 +253,10 @@ impl XReserveStablecoinBuilder {
         // Seed domain config before the mint policy takes the component, so the manager
         // emits the installable copy.
         let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(self.domain));
+        let burn_policy_component = Self::burn_policy_component();
+        let burn_root = burn_policy_component
+            .get_procedure_root_by_path(XRESERVE_BURN_POLICY_PROC_PATH)
+            .ok_or(XReserveStablecoinBuilderError::BurnPolicyProcNotFound)?;
 
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(
@@ -262,7 +268,13 @@ impl XReserveStablecoinBuilder {
                 )
                 .map_err(XReserveStablecoinBuilderError::MintPolicy)?,
             )
-            .active_burn_policy(BurnPolicy::min_burn_amount(self.min_burn_amount))
+            .active_burn_policy(BurnPolicy::custom(
+                burn_root,
+                [
+                    burn_policy_component,
+                    MinBurnAmount::new(self.min_burn_amount).into(),
+                ],
+            )?)
             .active_send_policy(TransferPolicy::empty_basic_blocklist())
             .active_receive_policy(TransferPolicy::empty_basic_blocklist())
             .build();

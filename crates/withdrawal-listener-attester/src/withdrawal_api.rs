@@ -143,7 +143,7 @@ const STATUS_WITHDRAWAL_NOT_FOUND: u16 = 404;
 ///
 /// The field mapping (per the request-schema table):
 /// * `token` = `USDC`;
-/// * `valueIncludingFees` = `payload.amount`, the smallest-unit amount as a decimal-integer string
+/// * `valueIncludingFees` = `burn.amount()`, the smallest-unit amount as a decimal-integer string
 ///   (unscaled — the scale is still OPEN with Circle); `valueExcludingFees` unset;
 /// * `remoteDomain` = `cfg.miden_domain` (Miden's Circle-assigned domain, itself still OPEN);
 /// * `remoteDepositor` = the `sender`'s [`EthEmbeddedAccountId::to_bytes32`] form as `0x`-hex 32B;
@@ -163,7 +163,7 @@ pub fn build_prepare_request(
     cfg: &ListenerConfig,
 ) -> Result<PrepareWithdrawalRequest, SchemaError> {
     let payload = burn.payload();
-    let value = DecimalAmount::new(payload.amount.as_u64().to_string())
+    let value = DecimalAmount::new(burn.amount().as_u64().to_string())
         .expect("a smallest-unit integer is a valid decimal amount");
 
     let input = PrepareBurnIntentInput::builder()

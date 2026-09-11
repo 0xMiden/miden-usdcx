@@ -38,11 +38,10 @@ fn hex32(s: &str) -> [u8; 32] {
     bytes.try_into().expect("exactly 32 bytes")
 }
 
-/// The burn payload that matches the fixture: net value 9999000 plus fee 1000,
+/// The burn payload's routing fields match the fixture:
 /// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`.
 fn matching_payload() -> BurnPayload {
     BurnPayload {
-        amount: AssetAmount::new(10_000_000).unwrap(),
         dest_domain: 0,
         dest_recipient: ForeignChainAddress::new(hex32(
             "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -66,13 +65,14 @@ fn matching_depositor() -> AccountId {
         .into_account_id()
 }
 
-fn discovered_burn(payload: BurnPayload) -> DiscoveredBurn {
+fn discovered_burn(payload: BurnPayload, amount: AssetAmount) -> DiscoveredBurn {
     let sender = matching_depositor();
     let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
             payload.encode(),
+            amount,
             prefix,
             suffix,
         )),
@@ -81,7 +81,7 @@ fn discovered_burn(payload: BurnPayload) -> DiscoveredBurn {
 }
 
 fn matching_burn() -> DiscoveredBurn {
-    discovered_burn(matching_payload())
+    discovered_burn(matching_payload(), AssetAmount::new(10_000_000).unwrap())
 }
 
 /// Parses a fixture into the response type. Panics if it does not deserialize — used only for
@@ -159,13 +159,11 @@ fn validate_returned_ok_on_full_match() {
     );
 }
 
-/// A returned `value` (amount) that does not match the burn payload rejects with the exact variant.
+/// A returned net value plus fee that does not match the burned asset rejects with the exact variant.
 #[test]
 fn validate_returned_rejects_amount_mismatch() {
     let resp = response("prepare_withdrawal_200");
-    let mut payload = matching_payload();
-    payload.amount = AssetAmount::new(9_999_999).unwrap();
-    let burn = discovered_burn(payload);
+    let burn = discovered_burn(matching_payload(), AssetAmount::new(9_999_999).unwrap());
 
     assert_matches!(
         validate_returned(&resp, &burn, &cfg()),
@@ -179,7 +177,7 @@ fn validate_returned_rejects_destination_domain_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
     payload.dest_domain = 7;
-    let burn = discovered_burn(payload);
+    let burn = discovered_burn(payload, matching_burn().amount());
 
     assert_matches!(
         validate_returned(&resp, &burn, &cfg()),
@@ -193,7 +191,7 @@ fn validate_returned_rejects_destination_recipient_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
     payload.dest_recipient = ForeignChainAddress::new([0x00; 32]);
-    let burn = discovered_burn(payload);
+    let burn = discovered_burn(payload, matching_burn().amount());
 
     assert_matches!(
         validate_returned(&resp, &burn, &cfg()),
@@ -331,7 +329,7 @@ fn validate_returned_fee_boundaries(
     if let Some(value) = fee
         .parse::<u64>()
         .ok()
-        .and_then(|fee| matching_payload().amount.as_u64().checked_sub(fee))
+        .and_then(|fee| matching_burn().amount().as_u64().checked_sub(fee))
     {
         set_intent_field(
             &mut body,
@@ -384,7 +382,7 @@ fn withdrawal_amount_accounting_gates_signing(
     let burn = matching_burn();
     let config = ListenerConfig::builder()
         .miden_domain(cfg().miden_domain())
-        .max_withdrawal_fee(burn.payload().amount)
+        .max_withdrawal_fee(burn.amount())
         .build()
         .unwrap();
     let result = attempt_sign_flow(&response, &burn, &config, &a_key());
@@ -403,7 +401,7 @@ fn withdrawal_amount_accounting_gates_signing(
 #[test]
 fn validate_returned_rejects_max_fee_above_the_burn_amount() {
     let mut v = base_200_json();
-    let amount = matching_payload().amount.as_u64();
+    let amount = matching_burn().amount().as_u64();
     set_intent_field(&mut v, &["maxFee"], Value::from((amount + 1).to_string()));
     let resp = response_from_value(&v).expect("a larger decimal maxFee still deserializes");
     let cfg = ListenerConfig::builder()
@@ -714,13 +712,15 @@ fn abort_is_idempotent_on_retry() {
 
 /// Builds a public discovery record whose items decode to `payload` and whose sender is a genuine
 /// account id (the config's faucet id, reused as a valid, canonical id).
-fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
+fn public_record(tag: u32, payload: &BurnPayload, amount: AssetAmount) -> DiscoveryRecord {
     let items: Vec<Felt> = payload.encode();
     let faucet_id = ListenerConfig::default().faucet_id();
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     DiscoveryRecord::new(
         tag,
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items, amount, prefix, suffix,
+        )),
     )
 }
 
@@ -729,7 +729,7 @@ fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
 #[test]
 fn discovery_ok_on_matching_public_note() {
     let payload = matching_payload();
-    let record = public_record(cfg().burn_tag(), &payload);
+    let record = public_record(cfg().burn_tag(), &payload, matching_burn().amount());
 
     let discovered = validate_discovery(&record, &cfg()).expect("a matching public note validates");
     assert_eq!(discovered.payload(), &payload);
@@ -753,7 +753,8 @@ fn discovery_rejects_a_wrong_tag() {
         .burn_tag(0xAABB_CCDD)
         .build()
         .unwrap();
-    let record = public_record(0x1234_5678, &matching_payload());
+    let burn = matching_burn();
+    let record = public_record(0x1234_5678, burn.payload(), burn.amount());
     assert_matches!(
         validate_discovery(&record, &cfg),
         Err(DiscoveryReject::TagMismatch { .. })
@@ -769,7 +770,8 @@ fn discovery_rejects_a_prefix_only_tag_match() {
         .build()
         .unwrap();
     // Same high 16 bits (0xAABB), different low 16 — a prefix scan would wrongly accept this.
-    let record = public_record(0xAABB_0000, &matching_payload());
+    let burn = matching_burn();
+    let record = public_record(0xAABB_0000, burn.payload(), burn.amount());
     assert_matches!(
         validate_discovery(&record, &cfg),
         Err(DiscoveryReject::TagMismatch { .. }),
@@ -788,7 +790,12 @@ fn discovery_rejects_malformed_items() {
         vec![Felt::from(0u32); xusdc_encoding::xreserve::encoding::BURN_NOTE_ITEMS_FELTS - 1];
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items,
+            matching_burn().amount(),
+            prefix,
+            suffix,
+        )),
     );
     assert_matches!(
         validate_discovery(&record, &cfg()),
@@ -807,6 +814,7 @@ fn discovery_rejects_a_zero_sender() {
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
             items,
+            matching_burn().amount(),
             Felt::from(0u32),
             Felt::from(0u32),
         )),

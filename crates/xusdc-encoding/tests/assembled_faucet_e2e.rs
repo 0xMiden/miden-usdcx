@@ -701,11 +701,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // consume with the EXACT stock MinBurnAmount error (the emit itself succeeds — the floor is a
     // burn-policy gate, not a transfer gate).
     let low_items = XReserveBurnItems {
-        amount: AssetAmount::new(BURN_LOW)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     };
-    let low_note = XReserveBurnNote::create(holder_id, faucet_id, low_items, &mut note_rng(41))?;
+    let low_note = XReserveBurnNote::create(
+        holder_id,
+        faucet_id,
+        AssetAmount::new(BURN_LOW)?,
+        low_items,
+        &mut note_rng(41),
+    )?;
     let low_asset = FungibleAsset::new(faucet_id, BURN_LOW)?;
     let emit = try_emit_burn_note(&pf.mock_chain, &low_note, &low_asset, faucet_id, holder_id)
         .await
@@ -724,12 +729,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // ── S9 — BURN: a real burn of the minted funds; burn-item schema asserted; two-block consume;
     // supply -= amount exactly (whole-arc conservation).
     let items = XReserveBurnItems {
-        amount: AssetAmount::new(BURN_OK)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xCDu8; 32]),
     };
-    let burn_note =
-        XReserveBurnNote::create(holder_id, faucet_id, items.clone(), &mut note_rng(42))?;
+    let burn_note = XReserveBurnNote::create(
+        holder_id,
+        faucet_id,
+        AssetAmount::new(BURN_OK)?,
+        items.clone(),
+        &mut note_rng(42),
+    )?;
     assert_eq!(
         burn_note.metadata().note_type(),
         NoteType::Public,
@@ -822,12 +831,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // freeze on xUSDC movement). This is the deliberate, ratified semantic.
     let paused_asset = FungibleAsset::new(faucet_id, BURN_PAUSED)?;
     let paused_items = XReserveBurnItems {
-        amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
     };
-    let paused_note =
-        XReserveBurnNote::create(holder_id, faucet_id, paused_items, &mut note_rng(43))?;
+    let paused_note = XReserveBurnNote::create(
+        holder_id,
+        faucet_id,
+        AssetAmount::new(BURN_PAUSED)?,
+        paused_items,
+        &mut note_rng(43),
+    )?;
     let result = try_emit_burn_note(
         &pf.mock_chain,
         &paused_note,
@@ -878,12 +891,16 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // (Under the policed pause semantics the S10b pause-era emit trapped at emit, so no note was
     // created then; this fresh burn proves the whole holder→note→faucet path is live again.)
     let resumed_items = XReserveBurnItems {
-        amount: AssetAmount::new(BURN_PAUSED)?,
         dest_domain: TEST_SOURCE_DOMAIN,
         dest_recipient: ForeignChainAddress::new([0xEFu8; 32]),
     };
-    let resumed_note =
-        XReserveBurnNote::create(holder_id, faucet_id, resumed_items, &mut note_rng(44))?;
+    let resumed_note = XReserveBurnNote::create(
+        holder_id,
+        faucet_id,
+        AssetAmount::new(BURN_PAUSED)?,
+        resumed_items,
+        &mut note_rng(44),
+    )?;
     let emit = try_emit_burn_note(
         &pf.mock_chain,
         &resumed_note,

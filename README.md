@@ -40,10 +40,10 @@ deposit and burns it on withdrawal.
   attestation policy is the only allowed mint policy, which makes it the gate **every** supply
   increase passes. **Do not deposit with `hookData` longer than 3,840 bytes.** The deposit cannot be
   claimed on Miden, and the USDC remains locked on the source chain.
-- **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
+- **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(destDomain,
   destRecipient)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
-  pause is checked, then the STOCK `MinBurnAmount` policy requires `amount ≥ minBurnSize` (the floor
+  pause is checked, then the burn policy requires both attachments and `amount ≥ minBurnSize` (the floor
   is always ≥ 1 — builder-rejected below one and note-guarded at the setter — so zero burns are
   unacceptable on every path), and consuming the note decrements `token_supply`. The note is always
   public and two-block so Circle can observe the withdrawal.

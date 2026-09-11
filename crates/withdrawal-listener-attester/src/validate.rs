@@ -32,6 +32,7 @@
 //!   partner never supplies it and the gate never compares it against the discovered burn.
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::Felt;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
@@ -81,44 +82,64 @@ impl DiscoveryRecord {
     }
 }
 
-/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts and its
-/// `metadata.sender`. Present exactly when `GetNotesById` returned `details = Some(..)`.
+/// The details a PUBLIC discovered note carries: its withdrawal-payload attachment felts, burned
+/// asset amount, and `metadata.sender`. Present when `GetNotesById` returned `details = Some(..)`.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDetails {
     items: Vec<Felt>,
+    amount: AssetAmount,
     sender: BurnNoteMetadata,
 }
 
 impl DiscoveredDetails {
-    /// From the raw withdrawal-payload attachment felts and an already-modelled sender.
-    pub fn new(items: Vec<Felt>, sender: BurnNoteMetadata) -> Self {
-        Self { items, sender }
+    /// From the raw withdrawal-payload attachment felts, the note's asset amount, and its sender.
+    pub fn new(items: Vec<Felt>, amount: AssetAmount, sender: BurnNoteMetadata) -> Self {
+        Self {
+            items,
+            amount,
+            sender,
+        }
     }
 
-    /// From the raw items and a public note's `NoteMetadata` (the happy-path discovery shape).
-    pub fn from_metadata(items: Vec<Felt>, meta: &NoteMetadata) -> Self {
-        Self::new(items, BurnNoteMetadata::from_metadata(meta))
+    /// From the raw items, the note's asset amount, and its `NoteMetadata`.
+    pub fn from_metadata(items: Vec<Felt>, amount: AssetAmount, meta: &NoteMetadata) -> Self {
+        Self::new(items, amount, BurnNoteMetadata::from_metadata(meta))
     }
 
-    /// From the raw items and the reported `(prefix, suffix)` sender felts — the shape a node hands
-    /// back before the sender is known to be an account id.
-    pub fn from_raw_sender(items: Vec<Felt>, prefix: Felt, suffix: Felt) -> Self {
-        Self::new(items, BurnNoteMetadata::from_raw_sender(prefix, suffix))
+    /// From the raw items, the note's asset amount, and the reported `(prefix, suffix)` sender
+    /// felts, before the sender is known to be an account id.
+    pub fn from_raw_sender(
+        items: Vec<Felt>,
+        amount: AssetAmount,
+        prefix: Felt,
+        suffix: Felt,
+    ) -> Self {
+        Self::new(
+            items,
+            amount,
+            BurnNoteMetadata::from_raw_sender(prefix, suffix),
+        )
     }
 }
 
-/// A burn that PASSED discovery — its decoded payload and the depositor (`metadata.sender`) that
-/// later becomes Circle's `remoteDepositor`. Only [`validate_discovery`] constructs it.
+/// A burn that PASSED discovery — its decoded payload, asset amount, and depositor
+/// (`metadata.sender`) that becomes Circle's `remoteDepositor`. Only [`validate_discovery`] constructs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredBurn {
     payload: BurnPayload,
+    amount: AssetAmount,
     depositor: AccountId,
 }
 
 impl DiscoveredBurn {
-    /// The decoded `(amount, destDomain, destRecipient)` payload.
+    /// The decoded `(destDomain, destRecipient)` payload.
     pub fn payload(&self) -> &BurnPayload {
         &self.payload
+    }
+
+    /// The burned asset amount supplied by discovery's caller from the note's asset.
+    pub fn amount(&self) -> AssetAmount {
+        self.amount
     }
 
     /// The Miden burner (`metadata.sender`) — a genuine, canonical account id, never a fabricated
@@ -134,7 +155,7 @@ impl DiscoveredBurn {
 ///    (`SyncNotes` does not prefix-scan — an exact match, never a prefix).
 /// 2. **Observability** — `details = Some(..)`; a `details = None` (private/erased) note is refused
 ///    as unobservable for Circle.
-/// 3. **Payload** — the `(amount, destDomain, destRecipient)` felts are decoded by the shared
+/// 3. **Payload** — the `(destDomain, destRecipient)` felts are decoded by the shared
 ///    encoding crate's codec (consumed by reference — no re-parse here).
 /// 4. **Sender** — `metadata.sender` is read as the Miden burner; an absent/zero/malformed sender
 ///    is refused, never defaulted.
@@ -162,14 +183,18 @@ pub fn validate_discovery(
         .as_ref()
         .ok_or(DiscoveryReject::PrivateNoteUnobservable)?;
 
-    // 3. decode the three-field payload through the shared encoding crate's codec (single-owner;
+    // 3. decode the two-field payload through the shared encoding crate's codec (single-owner;
     // no re-parse).
     let payload = decode_burn_payload(&details.items).map_err(DiscoveryReject::Decode)?;
 
     // 4. read metadata.sender as the Miden burner (refused, never defaulted).
     let depositor = read_sender(&details.sender).map_err(DiscoveryReject::Decode)?;
 
-    Ok(DiscoveredBurn { payload, depositor })
+    Ok(DiscoveredBurn {
+        payload,
+        amount: details.amount,
+        depositor,
+    })
 }
 
 // ================================================================================================
@@ -177,7 +202,7 @@ pub fn validate_discovery(
 // ================================================================================================
 
 /// Proof that a Circle `prepare-withdrawal` response passed the field-by-field gate against a
-/// burn payload — and, with it, the per-batch digests cleared to sign.
+/// discovered burn — and, with it, the per-batch digests cleared to sign.
 ///
 /// Its ONLY constructor is [`validate_returned`]'s full-match path, and its digests are private, so
 /// the sole way to feed the withdrawal signer a digest is to have passed validation. This is what
@@ -238,8 +263,7 @@ fn check_intent(
     burn: &DiscoveredBurn,
     cfg: &ListenerConfig,
 ) -> Result<(), ValidationMismatch> {
-    let payload = burn.payload();
-    let max_fee = check_max_fee(batch, intent.max_fee(), payload, cfg)?;
+    let max_fee = check_max_fee(batch, intent.max_fee(), burn, cfg)?;
     check_spec(batch, intent.spec(), max_fee, burn, cfg)
 }
 
@@ -252,7 +276,7 @@ fn check_spec(
 ) -> Result<(), ValidationMismatch> {
     let payload = burn.payload();
     // Circle returns the net value and fee separately, both in smallest token units.
-    let expected_amount = payload.amount.as_u64();
+    let expected_amount = burn.amount().as_u64();
     let amount_matches = spec.value().parse::<u128>().is_ok_and(|value| {
         value > 0 && value.checked_add(max_fee) == Some(u128::from(expected_amount))
     });
@@ -359,11 +383,11 @@ fn check_hook_data(
 fn check_max_fee(
     batch: usize,
     max_fee: &str,
-    payload: &BurnPayload,
+    burn: &DiscoveredBurn,
     cfg: &ListenerConfig,
 ) -> Result<u128, ValidationMismatch> {
     let ceiling = cfg.max_withdrawal_fee().as_u64();
-    let amount = payload.amount.as_u64();
+    let amount = burn.amount().as_u64();
     let limit = u128::from(ceiling.min(amount));
     max_fee
         .parse::<u128>()

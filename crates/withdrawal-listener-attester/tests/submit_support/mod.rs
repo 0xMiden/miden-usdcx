@@ -135,10 +135,7 @@ pub fn payload_matching_fixture() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let intent = &fixture["batches"][0]["burnIntents"][0];
     let spec = &intent["spec"];
-    let value: u64 = spec["value"].as_str().unwrap().parse().unwrap();
-    let fee: u64 = intent["maxFee"].as_str().unwrap().parse().unwrap();
     XReserveBurnItems {
-        amount: AssetAmount::new(value.checked_add(fee).unwrap()).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
@@ -162,12 +159,17 @@ pub fn depositor_matching_fixture() -> AccountId {
 }
 
 pub fn burn_matching_fixture() -> DiscoveredBurn {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    let value: u64 = intent["spec"]["value"].as_str().unwrap().parse().unwrap();
+    let fee: u64 = intent["maxFee"].as_str().unwrap().parse().unwrap();
     let depositor = depositor_matching_fixture();
     let (prefix, suffix) = (depositor.prefix().as_felt(), depositor.suffix());
     let record = DiscoveryRecord::new(
         ListenerConfig::default().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
             payload_matching_fixture().encode(),
+            AssetAmount::new(value.checked_add(fee).unwrap()).unwrap(),
             prefix,
             suffix,
         )),

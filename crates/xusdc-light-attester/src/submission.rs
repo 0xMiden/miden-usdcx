@@ -55,16 +55,6 @@ pub(crate) struct SavedSubmission {
     pub(crate) last_error: Option<String>,
 }
 
-/// Status updates cannot replace the saved request bytes or their matching fields.
-pub(crate) struct SubmissionOutcome<'a> {
-    pub(crate) status: SubmissionStatus,
-    pub(crate) withdrawal_id: Option<&'a str>,
-    pub(crate) hold_reason: Option<HoldReason>,
-    pub(crate) last_http_status: Option<u16>,
-    pub(crate) last_response: Option<&'a [u8]>,
-    pub(crate) last_error: Option<&'a str>,
-}
-
 impl Attester {
     pub(crate) async fn submit_signed_withdrawal(
         &mut self,
@@ -140,8 +130,7 @@ impl Attester {
     }
 
     fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {
-        self.store
-            .save_submission_outcome(saved.note_id, saved.outcome())?;
+        self.store.save_submission_outcome(saved)?;
         if saved.hold_reason.is_some() || saved.last_error.is_some() {
             eprintln!(
                 "withdrawal {}: {:?}, hold={:?}",
@@ -153,17 +142,6 @@ impl Attester {
 }
 
 impl SavedSubmission {
-    pub(crate) fn outcome(&self) -> SubmissionOutcome<'_> {
-        SubmissionOutcome {
-            status: self.status,
-            withdrawal_id: self.withdrawal_id.as_deref(),
-            hold_reason: self.hold_reason,
-            last_http_status: self.last_http_status,
-            last_response: self.last_response.as_deref(),
-            last_error: self.last_error.as_deref(),
-        }
-    }
-
     fn hold(&mut self, reason: HoldReason, message: &str) {
         self.status = SubmissionStatus::Held;
         self.hold_reason = Some(reason);

@@ -13,7 +13,7 @@ use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
-use crate::submission::{HoldReason, SavedSubmission, SubmissionOutcome, SubmissionStatus};
+use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
@@ -116,14 +116,6 @@ impl Store {
 
     pub(crate) fn save_submission(&self, record: &SavedSubmission) -> Result<(), StoreError> {
         validate_submission(record)?;
-        if record.status != SubmissionStatus::Submitting
-            || record.withdrawal_id.is_some()
-            || record.last_http_status.is_some()
-            || record.last_response.is_some()
-            || record.last_error.is_some()
-        {
-            return Err(StoreError::Conflict);
-        }
         // Only an explicitly supplied fresh authorization can replace a confirmed failure.
         let written = self
             .connection
@@ -167,10 +159,9 @@ impl Store {
 
     pub(crate) fn save_submission_outcome(
         &self,
-        note_id: NoteId,
-        outcome: SubmissionOutcome<'_>,
+        outcome: &SavedSubmission,
     ) -> Result<(), StoreError> {
-        validate_submission_outcome(&outcome)?;
+        validate_submission_outcome(outcome)?;
         // The sequential submitter changes only outcomes, never a request or a known ID.
         let updated = self
             .connection
@@ -186,7 +177,7 @@ impl Store {
                     outcome.last_http_status,
                     outcome.last_response,
                     outcome.last_error,
-                    note_id.to_bytes(),
+                    outcome.note_id.to_bytes(),
                 ],
             )
             .map_err(classify_error)?;
@@ -583,12 +574,15 @@ fn validate_submission(record: &SavedSubmission) -> Result<(), StoreError> {
     {
         return Err(StoreError::Invalid);
     }
-    validate_submission_outcome(&record.outcome())
+    validate_submission_outcome(record)
 }
 
-fn validate_submission_outcome(outcome: &SubmissionOutcome<'_>) -> Result<(), StoreError> {
+fn validate_submission_outcome(outcome: &SavedSubmission) -> Result<(), StoreError> {
     if (outcome.status == SubmissionStatus::Held) != outcome.hold_reason.is_some()
-        || outcome.withdrawal_id.is_some_and(|id| id.trim().is_empty())
+        || outcome
+            .withdrawal_id
+            .as_deref()
+            .is_some_and(|id| id.trim().is_empty())
         || (matches!(
             outcome.status,
             SubmissionStatus::Submitted
@@ -700,7 +694,7 @@ fn load_candidates(
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-    include_refused: bool,
+    include_all: bool,
 ) -> Result<Vec<DiscoveredBurn>, StoreError> {
     let mut statement = connection
         .prepare(
@@ -712,7 +706,7 @@ fn load_burns(
         )
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([include_refused], |row| {
+        .query_map([include_all], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

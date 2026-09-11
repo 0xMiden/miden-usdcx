@@ -1,15 +1,5 @@
-//! LNV-2 admin-suite + auth-boundary gate: the one-command rows-C/F run.
-//!
-//! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
-//! the mint vector, identifier_init as the first admin note),
-//! drives the whole rows-C (admin suite) + row-F (auth boundary) arc — admin state changes committed
-//! via the ntx-builder (path N); mint/burn + auth-boundary rejects proven by client-side kernel traps
-//! — applies the rows-C/F assertion suite, writes `evidence-cf.json`, and tears the stack down.
-//! Exit code 0 = every row PASSES.
-//!
-//! ```text
-//! cargo run -p xusdc-validation --bin lnv2_rows_cf [-- --keep-stack]
-//! ```
+//! Runs administration and authorization checks on a fresh local node.
+//! Writes evidence and stops the node unless `--keep-stack` is supplied.
 
 use anyhow::Result;
 use xusdc_validation::assertions_cf::{

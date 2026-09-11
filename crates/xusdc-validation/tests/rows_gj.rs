@@ -1,22 +1,5 @@
-//! LNV-4 test suite — matrix rows G (burn two-block), H (F7 same-block RIV), I (burn negatives),
-//! J (conservation), written TEST-FIRST against the rows-G/H/I/J assertion suite
-//! (`xusdc_validation::assertions_gj`) + driver API.
-//!
-//! Two layers, exactly the LNV-1/2/3 partition:
-//!
-//! 1. **Assertion negatives** (no node, sandbox-safe — the DEFAULT suite). Synthetic
-//!    [`RowsGjObservations`] built green, then each test breaks EXACTLY the one surface its row-check
-//!    exists to reject, and proves the assertion rejects it (a silently-weakened assertion — e.g. the
-//!    auditor's planted mutation — fails these). Plus one green-shape acceptance (guards against an
-//!    always-failing suite). Row H's checks verify the F7 evidence was CAPTURED and the erasure was
-//!    OBSERVED — never an acceptability decision (DEV-7 stays OPEN).
-//! 2. **The real-node E2E** (`lnv4_rows_gj_against_real_local_node`): boots a FRESH local v0.15.1
-//!    stack, deploys the production faucet, drives the whole G+H+I+J burn arc (Row-G/H/I via path N +
-//!    client-side, the F7 RIV, the conservation ledger), and judges the observations. `#[ignore]`d in
-//!    the default suite because it must bind loopback listener sockets (denied in hermetic audit
-//!    sandboxes); run it with `-- --include-ignored` or the `lnv4_rows_gj` binary. The full-matrix acceptance-gate
-//!    claim rides ONLY on real runs + the human gate — a green default suite proves the assertion
-//!    layer only.
+//! Tests burns, discovery, and conservation.
+//! Synthetic fixtures exercise the assertions offline. Ignored integration tests require a local node.
 
 use anyhow::{Context, Result};
 use xusdc_validation::assertions_gj::{

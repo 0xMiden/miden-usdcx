@@ -1,9 +1,5 @@
-# xreserve_set_attester_note
-#
-# Its main role is to call `attester_admin::set_attester` on the faucet account. The scheme-2
-# NetworkAccountTarget attachment binds the note to its target faucet, enforced as a consume gate.
-#
-# Note storage layout (5 felts): [pk_commitment(4), enabled]. `enabled` is 1 (allowlist) or 0 (remove).
+# updates an attester commitment on the faucet named by the routing attachment.
+# note storage: [pk_commitment(4), enabled], where enabled is 0 or 1.
 
 use miden::protocol::active_note
 use miden::standards::attachments::network_account_target

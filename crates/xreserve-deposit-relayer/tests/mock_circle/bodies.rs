@@ -13,14 +13,8 @@ use serde_json::{json, Value};
 
 use crate::fixtures::AttestationVector;
 
-/// The Miden remote domain used by the fixtures. **Placeholder — the Miden domain id is OPEN
-/// (`REQUIRES CIRCLE CONFIRMATION`)**: Circle has not assigned Miden a domain id. A fixture value,
-/// never a settled decision.
-///
-/// It is the domain the fixture payloads themselves are addressed to, not an independent one:
-/// `DC-14` makes the faucet stamp its configured domain into the message it rebuilds, so a mock
-/// that advertised a domain the payloads did not carry would serve attestations no relayer could
-/// ever mint.
+/// Fixture domain shared by mock responses and deposit payloads.
+/// Circle's assignment of a Miden domain remains OPEN.
 pub const FIXTURE_MIDEN_DOMAIN: u32 = crate::fixtures::TEST_REMOTE_DOMAIN;
 
 /// The xUSDC remote-token identifier used by the fixtures. **Placeholder — the identifier is OPEN

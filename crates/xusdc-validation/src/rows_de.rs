@@ -1,23 +1,5 @@
-//! The LNV-3 rows-D/E driver: one deterministic arc against a fresh local node, producing the
-//! [`RowsDeObservations`] the rows-D/E assertion suite judges.
-//!
-//! Execution model (LNV-1 posture, LNV-2-confirmed, reused verbatim):
-//! - **Row D happy-path mints commit via path N (the ntx-builder).** Each `XUsdcMintNote` (the
-//!   STOCK standards MintNote carrying the attested transport as attachments — Wave-1 S1) is
-//!   emitted from the owner/relayer wallet (a regular-account tx the user RPC accepts) carrying the
-//!   routing attachment; the running ntx-builder auto-executes the faucet's consumption. The driver
-//!   polls `GetAccount` until the committed `token_supply` rose, reads `usedNonces[nonce]` back,
-//!   discovers the emitted P2ID recipient note, and drives the RECIPIENT wallet's consume of it (a
-//!   second, strictly-later block — the two-block flow the matrix requires).
-//! - **Row E negatives run CLIENT-SIDE (`execute_transaction`, no submission).** Each malformed mint
-//!   is executed locally against the committed on-chain state: a trap is the reject proof, and
-//!   because nothing is submitted the committed `token_supply` / nonce registry cannot move — which
-//!   the driver reads back before/after to prove zero state change.
-//!
-//! The arc: deploy (identifier_init) → allowlist attester A (path N) → Row D variant 1 (empty-hookData,
-//! committed + recipient-consumed) → Row D variant 2 (hookData-bearing, committed + recipient-consumed)
-//! → Row E negatives (replay, forged signature, non-allowlisted attester, non-zero fee, tampered
-//! payload) each a client-side reject + read-back.
+//! Runs mint and recipient-consumption transactions through the local node.
+//! Rejection probes execute locally; node reads check supply and nonce state.
 
 use std::time::{Duration, Instant};
 
@@ -60,7 +42,7 @@ const D_EMPTY_UNITS: u64 = 100;
 const D_HOOK_UNITS: u64 = 150;
 /// The Row-E negatives' (rejected) mint amount (units) — small, within cap, ≥ maxFee.
 const E_UNITS: u64 = 40;
-/// The maxFee every mint carries (units); reduces to 1 ≤ every amount, so R-MINT-10 holds.
+/// Fee ceiling of one unit, at or below each minted amount.
 const MAX_FEE_UNITS: u64 = 1;
 /// The non-zero feeAmount the F2 negative injects (units, reduced ≥ 1 ⇒ the guard fires).
 const FEE_UNITS: u64 = 5;
@@ -652,8 +634,7 @@ async fn negative(
     })
 }
 
-/// Runs the full LNV-3 rows-D/E arc on its own fresh stack. See the module docs for the
-/// execution model + arc order.
+/// Runs these checks on a fresh local stack.
 pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
@@ -671,10 +652,7 @@ pub async fn run_rows_de(cfg: &RunConfig) -> Result<RowsDeObservations> {
     Ok(obs)
 }
 
-/// Runs the rows-D/E arc against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots ONE
-/// stack and drives every slice on it in matrix order). `client_label` namespaces this slice's
-/// client store, keystore, and actor secrets under `<run_root>/client-<label>/` so composed
-/// slices cannot collide. No stack lifecycle happens here.
+/// Runs these checks on an existing stack. `client_label` isolates the client store and keys.
 pub async fn run_rows_de_on(cfg: &RunConfig, client_label: &str) -> Result<RowsDeObservations> {
     let main_commit = git_head_commit();
 

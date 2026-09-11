@@ -17,7 +17,7 @@ directory (`ExtractDepositIntentGroundTruth.s.sol`).
   `abi.encodePacked`) — the same function `xReserve.encodeDepositIntent` (`src/xReserve.sol:154-155`)
   and Circle's `deploy-contracts/GenerateDepositIntentAttestation.s.sol` call. The input field
   values are the hardcoded constants in the script.
-- For each of the four intents it self-asserts every DC-1 byte offset and round-trips the bytes
+- For each of the four intents it self-asserts every deposit-header byte offset and round-trips the bytes
   back through Circle's own `DepositIntentLib.decodeDepositIntent`, then logs the encoded bytes
   and their keccak256.
 - Two of the four carry OPAQUE bytes32 identifiers and two carry Miden account ids in the

@@ -131,19 +131,6 @@ end
     Ok(())
 }
 
-// PARITY 3 — DepositIntent parsing: RUST-ONLY since DC-14
-// ================================================================================================
-// There is no MASM parser to compare against any more. The faucet no longer reads Circle's
-// DepositIntent off the wire — it WRITES the signed message from the note's carried payload plus
-// its own state (`NS-3`), so `TV-DUAL-3`'s on-chain leg moved to `TV-DUAL-6` in
-// `masm_mint_shell.rs`, where the writer's felts are compared against the Rust mirror's.
-//
-// The Rust half of `TV-DUAL-3` is unaffected and still runs: `DepositIntent::parse_header` remains
-// the compress-side entry and the relayer's pre-validate, covered by the unit tests in
-// `deposit_intent.rs`. The Circle differential (`TV-CIRCLE-DIFF`) likewise keeps its byte-level
-// leg there — what it can no longer do is push those bytes through an on-chain parser, because
-// none exists.
-
 // PARITY 4 — attester pubkey commitment: the Word the allowlist is keyed by
 // ================================================================================================
 // Each attestation vector is run through the MASM commitment routine and the result is checked
@@ -169,8 +156,6 @@ async fn tv_dual_5_pubkey_commitment() -> Result<()> {
         );
         let expected = vec.expected_commitment_word();
 
-        // recomputed off-chain commitment == the vector oracle: the third anti-drift leg,
-        // asserted in-process so a drift fails here too, not only in TV-ATT-2.
         assert_eq!(
             vec.public_key().to_commitment(),
             expected,
@@ -266,32 +251,14 @@ fn probe_p4_packing_util() {
     assert_eq!(felts.len(), 1);
 }
 
-// DIFFERENTIAL — bytes produced by Circle's own encoder, parsed by ours
-// ================================================================================================
-// Everything else in this file compares our MASM against our Rust over vectors we generated. That
-// cannot catch a shared misreading of Circle's wire format: if both halves place a field at the
-// wrong offset, both agree and both are wrong. This test closes that gap by parsing bytes that
-// Circle's encoder produced.
+// Circle encoder compatibility.
 //
-// Provenance of the fixture, stated precisely because it bounds what the test proves. It was
-// generated locally from Circle's contract source (evm-xreserve-contracts @ a571cbe12fa7cede)
-// by a Foundry script — kept alongside it under `tests/vectors/circle-extraction/` — that calls
-// Circle's own `DepositIntentLib.encodeDepositIntent` over fixed field values. It is not a blob
-// copied from Circle: their tracked tree at that commit ships neither golden hex nor an
-// extraction script. So the INPUT bytes are genuinely Circle's encoding; the expected field
-// values are derived from those raw bytes and checked against the field offsets declared in
-// Circle's `DepositIntent.sol`. Circle's decoder is never run here.
+// The fixture was generated from Circle's contract source at a571cbe12fa7cede by the Foundry
+// script in tests/vectors/circle-extraction. The test parses those bytes with our decoder;
+// it does not run Circle's decoder. This catches layout errors shared by our Rust and MASM.
 //
-// What this establishes is that the shared parser's envelope — field offsets, field sizes,
-// endianness, the magic and version constants, and the total-length rule — matches Circle's
-// encoder.
-//
-// The fixture carries the identifier fields both ways, because Circle's encoding permits both and
-// this decoder must answer differently: two rows hold opaque bytes32 (what Circle's own sample
-// values look like) and two hold Miden account ids in the packaging this crate reads. The envelope
-// is identical across the pair, so the difference isolates exactly the Miden-side reading — the
-// account-id rows must decode, the opaque ones must be refused rather than misread. How an account
-// id is registered into those fields remains Circle's to settle (`DEV-10`).
+// Rows with Miden account IDs must decode; rows with opaque identifiers must fail narrowing.
+// Circle's final account-ID encoding decision remains OPEN.
 
 const CIRCLE_FIXTURE: &str = include_str!("vectors/circle-depositintent-groundtruth.json");
 
@@ -449,9 +416,7 @@ async fn tv_circle_differential_real_bytes() -> Result<()> {
             v.id
         );
 
-        // (2) The Miden-side reading of the same bytes. There is no on-chain parser to run them
-        // through any more — the faucet writes the message rather than reading it — so the
-        // differential stops at the Rust decode, and the write side is covered by TV-DUAL-6.
+        // Check Miden-specific field validation against the same bytes.
         let decoded = xusdc_encoding::xreserve::encoding::DepositIntent::try_from(raw.as_slice());
         match v.identifier_shape.as_str() {
             "account_id" => {

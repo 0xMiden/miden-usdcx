@@ -41,9 +41,7 @@ fn dummy_id(seed: u8) -> AccountId {
     )
 }
 
-/// A real production faucet id (a valid public network account) built offline. The recomposed
-/// builder requires the three build-seeded domain-config fields, so the fixture seeds them from
-/// the same LNV-2 params the sanity deploy path uses.
+/// Builds a public faucet ID using the harness configuration.
 fn faucet_id(seed: u8) -> AccountId {
     crate::deploy::build_faucet_account(
         dummy_id(1),

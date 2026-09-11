@@ -1,16 +1,5 @@
-//! Off-chain `k256` signing (`attester::sign`).
-//!
-//! **Opaque-and-sign; the digest's derivation stays OPEN with Circle.** The burn path signs
-//! OFF-CHAIN: a single attester `k256`-ECDSA-signs Circle's `messageHashToSign`, which is consumed
-//! as an OPAQUE 32-byte digest — no local re-hashing, no EIP-712 re-derivation. There is NO
-//! on-chain Miden typed-data hashing on the burn path.
-//!
-//! The gating check is that the produced signature VERIFIES against the supplied attester pubkey —
-//! not merely that it is 65 bytes long. Every negative is exact-variant (`assert_matches!`), never
-//! `is_err()`.
-//!
-//! Single-key signing is a non-gating local primitive / unit-test only — NEVER submitted to Circle;
-//! the assembly gate  is what a `/v1/withdraw` submission must clear.
+//! Checks that signatures verify against the supplied digest and public key.
+//! The digest is signed without rehashing; its derivation remains OPEN with Circle.
 
 use assert_matches::assert_matches;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature};

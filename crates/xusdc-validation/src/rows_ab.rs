@@ -1,30 +1,5 @@
-//! The LNV-1 row-A/B driver: one deterministic flow against a fresh local node, producing the
-//! [`RowsAbObservations`] the assertion suite judges.
-//!
-//! Flow (path C — client-side build+prove+submit):
-//!
-//! 1. Bootstrap + start the fresh four-process stack ([`crate::stack`]).
-//! 2. Assemble the client ([`crate::client`]) and the actors ([`crate::actors`]).
-//! 3. Build the production faucet account locally ([`crate::deploy`]) — its id exists before any
-//!    chain contact. The three non-identifier domain-config fields are BUILD-SEEDED into it
-//!    (Wave-1 S1 / DEC-4); only the identifier awaits its admin note.
-//! 4. The OWNER emits `identifier_init` note #1 (the creator-committed identifier). This is the
-//!    owner wallet's first transaction, which also materializes the owner on-chain.
-//! 5. **Deploy = the faucet's first transaction consuming that note.** At v0.15.1 the user RPC
-//!    admits network-account transactions ONLY at first deployment, so `identifier_init` rides the
-//!    deploy transaction — this IS "the first admin note" realized against the real node. The
-//!    scriptless request consumes note #1 under `AuthNetworkAccount` (allowlisted note, new
-//!    account → nonce 0→1).
-//! 6. Fetch the account from the NODE (`GetAccount`) → row-A + row-B read-back observations.
-//! 7. The OWNER emits `identifier_init` note #2 (an everywhere-different identifier) and the
-//!    harness attempts the faucet-side consumption client-side: the kernel must trap the init-once
-//!    gate (`ERR_XRESERVE_IDENTIFIER_REINIT`) during execution — no provable second-init
-//!    transaction exists. The error text is captured verbatim.
-//! 8. Watch a bounded window: note #2 must stay unconsumed on-chain (checked against the NODE's
-//!    nullifier set — nothing, including the node's own ntx-builder, which sees an allowlisted
-//!    note routed at a network account, may execute it), and the re-fetched account state must be
-//!    unchanged on every asserted surface.
-//! 9. Tear the stack down (unless `keep_stack`), leaving logs + evidence under the run root.
+//! Runs deployment and configuration probes and returns [`RowsAbObservations`].
+//! The caller manages the node lifecycle when using an existing stack.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -122,11 +97,7 @@ async fn note_consumed_on_chain(hc: &HarnessClient, note: &Note) -> Result<bool>
     Ok(heights.get(&nullifier).copied().flatten().is_some())
 }
 
-/// Builds an `identifier_init` note (owner-sent, faucet-targeted). The seeded identifier is DERIVED
-/// from `faucet` — `identifier_for(faucet)` = `bytes32_to_storage_map_key(EthEmbeddedAccountId::from_account_id(faucet).to_bytes32())`, the
-/// own-id fixpoint — so it is BOUND to its target (the R2 identifier-binding fix; no caller-chosen
-/// identifier). The minimized DEC-4 admin note: the OTHER three domain-config fields are build-seeded
-/// and have no runtime writer.
+/// Builds the legacy identifier-initialization note for the target faucet.
 fn identifier_init_note(
     hc: &mut HarnessClient,
     owner: miden_protocol::account::AccountId,
@@ -136,8 +107,7 @@ fn identifier_init_note(
         .context("building an identifier_init note")
 }
 
-/// Runs the full LNV-1 row-A/B flow on its own fresh stack. See the module docs for the step
-/// list.
+/// Runs these checks on a fresh local stack.
 pub async fn run_rows_ab(cfg: &RunConfig) -> Result<RowsAbObservations> {
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
@@ -155,10 +125,7 @@ pub async fn run_rows_ab(cfg: &RunConfig) -> Result<RowsAbObservations> {
     Ok(obs)
 }
 
-/// Runs the row-A/B flow against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots ONE
-/// stack and drives every slice on it in matrix order). `client_label` namespaces this slice's
-/// client store, keystore, and actor secrets under `<run_root>/client-<label>/` so composed
-/// slices cannot collide. No stack lifecycle happens here.
+/// Runs these checks on an existing stack. `client_label` isolates the client store and keys.
 pub async fn run_rows_ab_on(cfg: &RunConfig, client_label: &str) -> Result<RowsAbObservations> {
     use miden_client::rpc::NodeRpcClient;
 

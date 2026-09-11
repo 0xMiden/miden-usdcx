@@ -1,21 +1,5 @@
-//! LNV-3 test suite — matrix rows D (mint happy path) and E (mint negatives), written TEST-FIRST
-//! against the rows-D/E assertion suite (`xusdc_validation::assertions_de`) + driver API.
-//!
-//! Two layers, exactly the LNV-1/2 partition:
-//!
-//! 1. **Assertion negatives** (no node, sandbox-safe — the DEFAULT suite). Synthetic
-//!    [`RowsDeObservations`] built green, then each test breaks EXACTLY the one surface its row-check
-//!    exists to reject, and proves the assertion rejects it (a silently-weakened assertion — e.g. the
-//!    auditor's planted mutation — fails these). Plus one green-shape acceptance per row (guards
-//!    against an always-failing suite).
-//! 2. **The real-node E2E** (`lnv3_rows_de_against_real_local_node`): boots a FRESH local v0.15.1
-//!    stack, deploys the production faucet, drives the whole D+E arc (the happy-path mints committed
-//!    via the ntx-builder / path N with the recipient consuming the emitted P2ID note; every negative
-//!    proven by a client-side kernel trap + committed-state read-back), and judges the observations.
-//!    `#[ignore]`d in the default suite because it must bind loopback listener sockets (denied in
-//!    hermetic audit sandboxes); run it with `-- --include-ignored` or the `lnv3_rows_de` binary. The
-//!    full-matrix gate claim rides ONLY on real runs + the human gate — a green default suite proves the
-//!    assertion layer only.
+//! Tests minting and rejection.
+//! Synthetic fixtures exercise the assertions offline. Ignored integration tests require a local node.
 
 use anyhow::{Context, Result};
 use xusdc_validation::assertions_de::{

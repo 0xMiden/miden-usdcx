@@ -45,11 +45,7 @@ use support::*;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent};
 
-/// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
-///
-/// There is no identifier counterpart, and under DC-14 there is no domain compare either — the
-/// faucet WRITES both into the preimage it rebuilds. The slot still has to hold the right value,
-/// because that is what the writer stamps.
+/// Domain configuration: the remote domain ID in element 0, zeros elsewhere.
 fn domain_word(domain: u32) -> Word {
     Word::new([
         Felt::from(domain),
@@ -428,7 +424,7 @@ fn probe_attestation_verify_exports() -> Result<()> {
     Ok(())
 }
 
-// D5F — DC-14 PREIMAGE RECONSTRUCTION (TV-DUAL-6, the MASM half)
+// PREIMAGE RECONSTRUCTION
 // ================================================================================================
 
 /// Looks up a canonical mint-payload vector by id (by-reference loading).
@@ -478,13 +474,6 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
     Ok(())
 }
 
-/// TV-DUAL-6 (happy path, written first): the MASM writer produces exactly the message the Rust
-/// mirror does, felt for felt.
-///
-/// This is the highest-value assertion in the mint suite. Everything the policy no longer compares,
-/// it enforces by rebuilding these felts and letting the attestation verify over them — so a writer
-/// that is off by one field, one limb, or one offset makes every mint fail, and nothing else in the
-/// suite would say why.
 #[rstest]
 #[case::empty_hookdata("mi-pos-empty-hookdata")]
 #[case::hookdata("mi-pos-hookdata")]
@@ -493,13 +482,7 @@ async fn rebuild_matches_the_canonical_deposit_intent(#[case] vector_id: &str) -
     run_rebuild(vector_id, false).await
 }
 
-/// `rebuild` owns every felt of the header, including the structural pads.
-///
-/// The region is global memory, which reads as zero from MASM — but that is not enough on its own:
-/// keccak's host-side byte reader fetches raw cells and fails on one that was never written, so
-/// the pads have to be materialized rather than assumed. Pre-filling with a recognizable pattern
-/// proves the writer covers all of them, and keeps the `dynexec`-context caveat recorded on
-/// `DEPOSIT_INTENT_PTR` from ever mattering.
+/// Pre-filled memory must not affect the rebuilt header or hook data.
 #[rstest]
 #[case::empty_hookdata("mi-pos-empty-hookdata")]
 #[case::hookdata("mi-pos-hookdata")]
@@ -578,7 +561,6 @@ async fn rebuild_rejects_a_non_u32_carried_limb() -> Result<()> {
     Ok(())
 }
 
-/// The assembled library exports the writer under its canonical path (`NS-3`).
 #[test]
 fn probe_deposit_intent_builder_exports() -> Result<()> {
     let lib = assemble_xreserve_lib()?;

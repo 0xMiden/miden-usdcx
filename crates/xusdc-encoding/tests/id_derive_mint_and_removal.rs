@@ -156,13 +156,8 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     Ok(())
 }
 
-/// The reject error text is the one pinned for the mint, character for character.
-///
-/// The string is part of what a relayer matches on, so a reworded message is a wire change dressed
-/// up as a comment fix. Under `DC-14` a foreign identifier has no error of its own — the faucet
-/// stamps its own id into the message, so the reject arrives as the signature failing over a
-/// preimage Circle never signed. Since the signature verdict moved into the core library's ECDSA
-/// verifier, which traps rather than returning a flag, the frozen string is that verifier's.
+/// An intent addressed to another faucet produces a different rebuilt message and fails
+/// signature verification with the core verifier's error.
 #[test]
 fn the_wrong_identifier_error_text_is_unchanged() {
     assert_eq!(

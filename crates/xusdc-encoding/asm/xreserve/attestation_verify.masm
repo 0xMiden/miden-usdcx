@@ -1,7 +1,4 @@
-# xreserve::attestation_verify
-#
-# The mint-time deposit-attestation check. Its contract is documented on `verify_attestation`
-# itself; this file ensures a mint proceeds only for a deposit Circle actually signed.
+# verifies deposit signatures against the enabled attester commitments.
 
 use miden::protocol::active_account
 use miden::core::crypto::dsa::ecdsa_k256_keccak
@@ -39,12 +36,9 @@ const ERR_XRESERVE_SIG_LIMB = "deposit attestation signature limb is not a valid
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Verifies the mint-time deposit attestation: gate the attester pubkey against the
-#! xReserveAttesters allowlist, then ECDSA-verify the signature over keccak256 of the payload.
-#!
-#! Reads from caller memory, hash-verified against the note's attachment commitment. The same
-#! pubkey pointer feeds both the allowlist commitment and the signature check, so an allowlisted
-#! commitment cannot be paired with a foreign key.
+#! Verifies a deposit signature over the message's Keccak-256 digest.
+#! The caller supplies the rebuilt message and commitment-verified public key and signature.
+#! The same key is used for the allowlist lookup and signature verification.
 #!
 #! Inputs:  [intent_ptr, intent_num_bytes, pubkey_ptr, signature_ptr]
 #! Outputs: []

@@ -1,25 +1,6 @@
-//! The LNV-2 rows-C/F driver: one deterministic arc against a fresh local node, producing the
-//! [`RowsCfObservations`] the rows-C/F assertion suite judges.
-//!
-//! Execution model (LNV-1 posture finding, empirically re-confirmed for LNV-2):
-//! - **Positive admin state changes commit via path N (the ntx-builder).** Every `set_attester` /
-//!   `set_max_supply` / `set_min_burn_size` / `pause` / `unpause` / role grant/revoke is emitted as a
-//!   routed, allowlisted admin note from its (kernel-forced) sender wallet — a regular-account tx the
-//!   user RPC accepts — and the running ntx-builder auto-executes the faucet's consumption. The
-//!   driver polls `GetAccount` until the committed effect appears (`Driver::commit_admin`). (User
-//!   RPC rejects post-deploy network-account txs, and the client cannot present the
-//!   `x-miden-network-tx-auth` header, so path N is the only commit path at v0.15.1.)
-//! - **Accept/reject PROBES run client-side (no submission).** A mint/burn/P2ID/tx-script
-//!   consumption is executed locally against the committed on-chain state
-//!   (`Driver::probe_consume` / `Driver::probe_tx_script`); executing Ok = ACCEPTED, a trap =
-//!   REJECTED with the captured error. This is the LNV-1 row-B kernel-trap technique — a reject needs
-//!   no submission path, and an accept proves the consumption is valid against the real chain state
-//!   without mutating it (so the arc stays deterministic: committed `token_supply` is fixed by the
-//!   single path-N supply mint).
-//!
-//! The arc (single evolving chain): deploy (identifier_init) → allowlist A → commit one supply mint
-//! (A) → C3 cap → C2 min-burn → C1 rotation A→B → C4 pause/unpause (+F6 owner-setters-while-paused)
-//! → C5 DOM_MANAGER role rotation → C6 non-authorized-sender negatives → row-F auth boundary.
+//! Runs administrative and authorization checks.
+//! Administrative changes commit through the network transaction builder; rejection probes
+//! execute locally against state fetched from the node.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -77,7 +58,7 @@ const WITHIN_CAP_UNITS: u64 = 100;
 const OVER_CAP_UNITS: u64 = 250;
 /// The small mint the C1/C4 probes use (100 + 50 = 150 <= 300).
 const PROBE_MINT_UNITS: u64 = 50;
-/// A maxFee that reduces to 1 unit (≤ every mint amount above, so R-MINT-10 holds).
+/// Fee ceiling of one unit, at or below each minted amount.
 const MAX_FEE_UNITS: u64 = 1;
 
 /// The raised minimum burn size (C2): a burn below it rejects.
@@ -472,8 +453,7 @@ impl Driver {
     }
 }
 
-/// Runs the full LNV-2 rows-C/F arc on its own fresh stack. See the module docs for the
-/// execution model + arc order.
+/// Runs these checks on a fresh local stack.
 pub async fn run_rows_cf(cfg: &RunConfig) -> Result<RowsCfObservations> {
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
@@ -491,10 +471,7 @@ pub async fn run_rows_cf(cfg: &RunConfig) -> Result<RowsCfObservations> {
     Ok(obs)
 }
 
-/// Runs the rows-C/F arc against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots ONE
-/// stack and drives every slice on it in matrix order). `client_label` namespaces this slice's
-/// client store, keystore, and actor secrets under `<run_root>/client-<label>/` so composed
-/// slices cannot collide. No stack lifecycle happens here.
+/// Runs these checks on an existing stack. `client_label` isolates the client store and keys.
 pub async fn run_rows_cf_on(cfg: &RunConfig, client_label: &str) -> Result<RowsCfObservations> {
     let main_commit = git_head_commit();
 

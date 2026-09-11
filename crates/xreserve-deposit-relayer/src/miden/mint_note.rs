@@ -1,29 +1,6 @@
-//! `build_mint_note` — the DepositIntent-attestation → mint-note translation, and the
-//! operator-configured attester key it needs.
-//!
-//! The builder is thin ON PURPOSE. It bundles the attestation the relayer VALIDATED (a
-//! `ValidatedAttestation` has passed the raw-keccak digest binding and the 65-byte shape check)
-//! with the attester pubkey the OPERATOR configured, and hands both — plus the DepositIntent payload
-//! (as the typed [`DepositIntent`](xusdc_encoding::xreserve::encoding::DepositIntent)) — to the shared encoding crate's typed [`XUsdcMintNote`] builder,
-//! which decides every byte of the note's form: the storage, the two attachments, the note type, and
-//! the script.
-//!
-//! **Why the pubkey is a parameter and the signature is not.** Circle's attestation object carries
-//! `payload`, `messageHash`, and `attestation` (the 65-byte `r‖s‖v`) — but NOT the attester's
-//! public key, which the faucet's on-chain check needs in the note. So the 33-byte compressed key
-//! comes from the relayer's own configuration: it is the key whose commitment (Poseidon2 over the
-//! 16 affine felts it decompresses to) the operator was told is enabled in the faucet's
-//! `xReserveAttesters` allowlist. The payload and the signature are Circle's, and they reach this
-//! module only through the validated boundary — there is no entry point that takes them as raw
-//! bytes, because a note built from bytes whose `messageHash == keccak256(payload)` binding was
-//! never checked is a transaction spent on an envelope the chain will reject.
-//!
-//! **What the builder can and cannot cause.** It is a liveness component: a bug here withholds a
-//! mint (a note the faucet refuses, an error where a note should have been) — it cannot authorize
-//! one. The nonce assert-then-set, the amount reduction, the attester-allowlist check and the ECDSA
-//! verification are all on-chain and faucet-owned. That is also why every failure path below
-//! is a typed, NON-retryable error: a payload the codec refuses does not become valid on a retry,
-//! and a relayer that looped on one would stop minting everything else.
+//! Builds mint notes from a validated attestation and the configured attester public key.
+//! Circle's response carries the signature but not the key, so the operator supplies the key.
+//! [`XUsdcMintNote`] owns the note layout; the faucet verifies authorization on-chain.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;

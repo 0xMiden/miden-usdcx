@@ -1,16 +1,5 @@
-//! LNV-3 mint-lifecycle gate: the one-command rows-D/E run.
-//!
-//! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
-//! the mint vector, identifier_init as the first admin note),
-//! allowlists attester A, drives the whole rows-D (mint happy path) + row-E (mint negatives) arc —
-//! the happy-path mints committed via the ntx-builder (path N) with the recipient consuming each
-//! emitted P2ID note; every negative proven by a client-side kernel trap + committed-state read-back
-//! — applies the rows-D/E assertion suite, writes `evidence-de.json`, and tears the stack down.
-//! Exit code 0 = every row PASSES.
-//!
-//! ```text
-//! cargo run -p xusdc-validation --bin lnv3_rows_de [-- --keep-stack]
-//! ```
+//! Runs minting and rejection checks on a fresh local node.
+//! Writes evidence and stops the node unless `--keep-stack` is supplied.
 
 use anyhow::Result;
 use xusdc_validation::assertions_de::{assert_d, assert_e};

@@ -1,38 +1,6 @@
-//! **Burn-evidence trust labeling** — the highest-risk Circle-owned open deviation.
-//!
-//! NON-GATING. The Miden-real half of the same assembler driven against a live node through the
-//! real v16 client — is parked on a `miden-client` that has no v0.16 release. What runs here is the
-//! assembler's LOGIC over a unit adapter standing in for the read port. That is a deliberate
-//! boundary, not a shortcut: what this file is testing is not whether the node answers, it is
-//! whether the answers are described to Circle honestly.
-//!
-//! # Why the labels are the product
-//!
-//! Circle releases native USDC against this package. Every element of it is a claim the partner
-//! makes, and the governing trust rule is one sentence: **retrievable ≠ cryptographically proved**.
-//! Two ways to lie, both of which release money that was never burned:
-//!
-//! 1. **Overclaiming strength.** `SyncTransactions` tx-linkage and the `SyncNullifiers`
-//!    spend observation carry NO inclusion proof — the node simply says so. Labelling either
-//!    CRYPTOGRAPHIC tells Circle the partner can prove what it can only repeat.
-//! 2. **Overclaiming SCOPE.** The subtler one, and the reason this file has a whole family for it:
-//!    a `GetNotesById` inclusion proof is cryptographic, and it proves the note was **CREATED**. It
-//!    says nothing about whether the note was ever consumed. "This note exists" is not "this burn
-//!    happened", and a CRYPTOGRAPHIC label sitting next to a creation fact must never be readable
-//!    as a confirmed burn.
-//!
-//! So a genuine burn record is `note_id` (**what**, creation, CRYPTOGRAPHIC) **plus** a consumption
-//! signal (**that it burned**, NODE-TRUSTED). `burnTxId` alone proves nothing at all —
-//! `GetTransactionById` does not exist on Miden, so there is no by-hash resolution to fall
-//! back on. That structural never a transaction id rule, and the other absences, are asserted in
-//! the sibling `evidence_structural_absence.rs`.
-//!
-//! # Fail-closed
-//!
-//! Uncertain, missing, or self-contradicting evidence is never rounded up to "confirmed". It
-//! becomes `reconciliation-required` — the same vocabulary and the same conservatism the
-//! idempotency ledger established for a `409` naming no withdrawal, deliberately reused rather than
-//! re-invented under a second name.
+//! Checks evidence claims against synthetic node responses.
+//! Creation proofs must not be reported as proof of consumption. Missing or contradictory
+//! observations must require reconciliation.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -52,13 +20,6 @@ mod evidence_support;
 
 use evidence_support::*;
 
-// THE LABELS — the per-element proof strengths, verbatim from Circle's documented evidence
-// table
-// ================================================================================================
-
-/// The four labels the evidence table pins (`MIDEN-RPC-BURN-EVIDENCE.md:69`-`:72`, quoted in
-/// Circle's documentation). Asserted as one table because the failure that matters is a SINGLE
-/// element drifting upward while the other three stay honest.
 #[test]
 fn the_package_carries_the_documented_per_element_proof_strengths() {
     let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
@@ -85,7 +46,6 @@ fn the_package_carries_the_documented_per_element_proof_strengths() {
     );
 }
 
-/// The package's contents are the reads, not a rewrite of them.
 #[test]
 fn the_package_carries_the_four_elements_it_read() {
     let package = assemble(&UnitPort::honest()).expect("the honest port assembles");
@@ -95,12 +55,7 @@ fn the_package_carries_the_four_elements_it_read() {
     assert_eq!(package.nullifier(), burn_nullifier().as_word().as_bytes());
 }
 
-/// `block_num` is the CREATION block, read out of the inclusion proof that makes it cryptographic —
-/// not the consuming transaction's block, which is node-trusted hearsay sitting right next to it.
-///
-/// The two differ by construction (creation and consumption are always in different blocks), so an
-/// implementation that took the block from the linkage would return `CONSUME_BLOCK` here and be
-/// labelling a node-trusted number CRYPTOGRAPHIC.
+/// The fixture uses different creation and consumption blocks to detect a swapped source.
 #[test]
 fn block_num_is_read_from_the_inclusion_proof_not_from_the_node_trusted_linkage() {
     let package = assemble(&UnitPort::honest()).expect("the honest port assembles");

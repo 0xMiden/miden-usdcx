@@ -44,9 +44,7 @@ const BURN_POLICY_MASM: &str = include_str!("../asm/xreserve/burn_policy.masm");
 /// The faucet set_attester admin module source, read test-side by reference.
 const ATTESTER_ADMIN_MASM: &str = include_str!("../asm/xreserve/attester_admin.masm");
 
-/// The packed-memory primitives the DC-14 preimage writer is built from, read test-side by
-/// reference. It owns the limb guard's error and one width constant; the wire layout stays with
-/// `deposit_intent.masm`.
+/// Packed-memory constants used by the deposit-intent writer.
 const PACKED_MEM_MASM: &str = include_str!("../asm/xreserve/packed_mem.masm");
 
 /// Expected `word("…")` slot-name constants of the shell module (MASM const name → label), pinned
@@ -90,16 +88,8 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &[
     "NATIVE_SCALARS_FELTS",
 ];
 
-/// Attestation mint-policy numeric consts: the merged transport's attachment scheme + the
-/// attestation section word count are parity-asserted against the `XUsdcMintNote` factory
-/// constants in `masm_rust_constant_parity` below (the constructor builds what the policy
-/// verifies; the DC-5 scale is asserted the same way but is parser-owned, see
-/// `SHELL_COVERED_NUMS`). `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 == the
-/// header felt count), and the intent sub-region's word offset carries a derived relation row of
-/// its own (== the attestation width on both sides). The `*_LOC` procedure-local offsets of
-/// `check_policy` (including the derived transport sub-region and shared-layout field offsets)
-/// and the `NONCE_USED_MARKER` Word array literal (not parity-parsed) are
-/// policy-owned with no Rust counterpart, covered here.
+/// Policy constants checked against the Rust note factory, or exempted because they describe
+/// procedure-local storage and have no Rust counterpart.
 const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_MINT_TRANSPORT_ATTACHMENT_SCHEME",
     "XUSDC_MINT_ATTESTATION_NUM_FELTS",
@@ -145,7 +135,6 @@ const MINT_INTENT_COVERED_NUMS: &[&str] = &[
     // carried-value widths: each carries a derived relation row below
     "BYTES32_PACKED_LIMBS",
     "ACCOUNT_ID_FELTS",
-    // DC-14 carried felt offsets, each pinned directly against its Rust twin
     "MINT_INTENT_NONCE_FELT_OFF",
     "MINT_INTENT_LOCAL_TOKEN_FELT_OFF",
     "MINT_INTENT_LOCAL_DEPOSITOR_FELT_OFF",
@@ -157,10 +146,7 @@ const MINT_INTENT_COVERED_NUMS: &[&str] = &[
     "MINT_INTENT_WORDS",
 ];
 
-/// The DepositIntent module's constants: the DC-1 wire offsets and packed compares (each with a
-/// parity row below), the right-alignment pads, the destination offsets `rebuild` derives from
-/// them (their operands carry the rows, and the derivation is one MASM line against one Rust
-/// line), and its `@locals` frame offsets, which have no Rust counterpart.
+/// Wire-layout constants and procedure-local offsets in the deposit-intent module.
 const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "MAGIC_FELT_OFF",
     "VERSION_FELT_OFF",
@@ -265,10 +251,7 @@ fn num(nums: &BTreeMap<String, u64>, name: &str, file: &str) -> u64 {
         .unwrap_or_else(|| panic!("{file} must define const {name}"))
 }
 
-/// DC-1 relation: every MASM felt offset × 4 equals the Rust byte offset, the packed
-/// magic/version equal the LE reinterpretation of the BE wire values, the header felt
-/// count matches both sides, and the extra rows pin the reducer's scale bound and
-/// limb base plus the merged transport's scheme / section-width / scale rows.
+/// Checks shared layouts, packed constants, and transport widths against their Rust definitions.
 #[test]
 fn masm_rust_constant_parity() {
     let (nums, _, _) = parse_masm_consts(DEPOSIT_INTENT_MASM);
@@ -334,10 +317,7 @@ fn masm_rust_constant_parity() {
         "header word count must be the felt count / 4"
     );
 
-    // DC-14 sub-field widths. The MASM side counts packed limbs because it writes felts; the Rust
-    // side counts bytes because it writes bytes. Pinning the DERIVED relation — a value sits at
-    // the end of its 32-byte field, so its pad is the field minus its own width — is what keeps
-    // the two writers producing the same preimage.
+    // The writer right-aligns each value in its 32-byte field; MASM counts limbs, Rust counts bytes.
     let limb_relations: [(&str, usize); 3] = [
         ("BYTES32_ACCOUNT_ID_LIMB_OFF", ACCOUNT_ID_BYTES),
         ("UINT256_ASSET_AMOUNT_LIMB_OFF", ASSET_AMOUNT_BYTES),
@@ -374,8 +354,6 @@ fn masm_rust_constant_parity() {
         "a u64 spans ASSET_AMOUNT_BYTES bytes of the packed wire region"
     );
 
-    // DC-14 carried-payload offsets. Both sides derive these from the widths above, so a width
-    // edit that lands on only one side moves the offsets apart and fails here.
     let payload_offsets: [(&str, usize); 8] = [
         ("MINT_INTENT_NONCE_FELT_OFF", MintIntent::NONCE_FELT_OFF),
         (
@@ -424,15 +402,6 @@ fn masm_rust_constant_parity() {
         "affine-pubkey felt count parity (qx||qy -> 16 u32-LE felts; ATT commitment input)"
     );
 
-    // The DOM_PAUSER / BLK_MANAGER role symbols no longer appear in any MASM constant. They used
-    // to be hard-coded felts in the custom pause and blocklist wrappers, which is what this suite
-    // pinned; the wrappers are gone and the symbols now live in the account's procedure-role map,
-    // written from the SAME Rust constants by `XReserveAdminAuthority`. There is nothing left to
-    // keep in step across languages, so the parity rows are gone with the wrappers. The role
-    // identity is pinned instead where it is now expressed: the felt encodings in
-    // `builder_api.rs` (`RoleSymbol::new(DOM_PAUSER_ROLE)` / `RoleSymbol::new(BLK_MANAGER_ROLE)`)
-    // and the materialized map in `w2admin_production_admin_effects.rs`.
-
     let (burn_nums, _, _) = parse_masm_consts(BURN_POLICY_MASM);
     assert_eq!(
         num(
@@ -453,10 +422,7 @@ fn masm_rust_constant_parity() {
         "withdrawal attachment word-count parity (MASM policy == Rust factory)"
     );
 
-    // The merged mint-note transport must match across languages — the XUsdcMintNote factory
-    // builds exactly what the attestation policy locates (find_attachment by scheme), sub-divides
-    // at the attestation offset, and reduces at (scale 0). A one-sided edit — the exact mutation
-    // check (e) — fails here.
+    // The note factory and policy must agree on the attachment scheme and field offsets.
     let (policy_nums, _, _) = parse_masm_consts(MINT_POLICY_MASM);
     assert_eq!(
         num(
@@ -476,9 +442,7 @@ fn masm_rust_constant_parity() {
         XUSDC_MINT_ATTESTATION_NUM_WORDS as u64,
         "attestation section word-count parity (MASM policy == Rust factory)"
     );
-    // derived relation, both sides: the intent sub-region starts past the attestation. The MASM
-    // constant is an expression over that same constant, so pinning the Rust derivation against
-    // the MASM operand is what keeps the two layouts one layout.
+    // The mint intent follows the attestation.
     assert_eq!(
         XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF as u64,
         num(
@@ -488,14 +452,7 @@ fn masm_rust_constant_parity() {
         ),
         "the carried payload's word offset must be the attestation width on BOTH sides"
     );
-    // DC-5 has no cross-language parity row left: the MASM side no longer HAS a scale, because the
-    // writer zero-extends the note's AssetAmount instead of verifying a witness against a staged
-    // uint256. The one thing left to pin is the value of the single Rust constant, and it is
-    // asserted where it is defined (`amount.rs`, `deposit_scale_exp_is_zero`) — the constant is
-    // module-private, so there is no second spelling that could drift from it.
-    // rider A8 (ratified): the xUSDC scheme sits at >= 4 — clear of the protocol-reserved
-    // "none" value 1 and the standard values 2 (NetworkAccountTarget, carried on this very
-    // note) and 3 (Pswap). Executable so a scheme regression cannot slip in one-sided.
+    // schemes 1 through 3 are reserved or assigned to standard attachments.
     assert!(
         num(
             &policy_nums,

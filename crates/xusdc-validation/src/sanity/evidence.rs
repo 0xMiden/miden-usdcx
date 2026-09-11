@@ -1,12 +1,6 @@
-//! The DC-8 burn-evidence readiness check — a LIVE `BurnEvidenceReads` adapter over the node RPC.
-//!
-//! The withdrawal attester assembles its DC-8 evidence packet (`note_id` / `nullifier` / `block_num`
-//! / `burnTxId`) from three node reads: `GetNotesById` (the note + its CRYPTOGRAPHIC inclusion
-//! proof), `SyncNullifiers` (the spend observation), and `SyncTransactions(faucet_id)` (the faucet
-//! transaction whose INPUT nullifiers contain the burn's — the `burnTxId` linkage). This module
-//! PRE-FETCHES those three reads asynchronously against the real committed+consumed burn note, then
-//! serves them through the (synchronous) [`BurnEvidenceReads`] port so the attester crate's OWN
-//! [`assemble_evidence`] runs unmodified and proves the packet is assemblable end-to-end.
+//! Adapts node reads to [`BurnEvidenceReads`] for [`assemble_evidence`].
+//! Fetches the note and inclusion proof, spend observation, and transaction linkage asynchronously
+//! before exposing them through the synchronous adapter.
 
 use anyhow::{Context, Result};
 use miden_client::rpc::domain::note::FetchedNote;
@@ -107,9 +101,7 @@ async fn fetch_faucet_txs(hc: &HarnessClient, faucet_id: AccountId) -> Result<Ve
         .collect())
 }
 
-/// Drives the attester's OWN `assemble_evidence` against the real committed+consumed burn note.
-/// `Ok(detail)` = the DC-8 packet assembled (note_id / nullifier / block_num / burnTxId resolved);
-/// `Err(reason)` = the reads were incomplete/inconsistent (a surfaced finding).
+/// Runs [`assemble_evidence`] against the committed burn and reports missing or inconsistent reads.
 pub(crate) async fn assert_burn_evidence(
     hc: &HarnessClient,
     burn: &Note,

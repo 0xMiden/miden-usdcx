@@ -1,15 +1,5 @@
-# xreserve::packed_mem
-#
-# The primitives for the u32-LE-packed memory region the DepositIntent preimage is staged in.
-#
-# The wire is big-endian and the region holds four wire bytes per felt, so a value arrives there
-# either copied limb for limb or split into u32 halves and byte-swapped on the way. Nothing here
-# knows the DepositIntent layout — `xreserve::deposit_intent` composes these into the writer that
-# does.
-#
-# The bytes32 copy guards the limbs it moves, because those fields identify the deposit and a bad
-# limb there is worth naming: keccak's host-side byte reader refuses a felt above u32 too, but as an
-# anonymous host failure rather than an assertion.
+# reads and writes packed memory with four wire bytes per felt.
+# numeric values are byte-swapped to match the big-endian deposit fields.
 
 use miden::standards::utils
 

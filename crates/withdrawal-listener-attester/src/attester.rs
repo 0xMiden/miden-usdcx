@@ -1,59 +1,8 @@
-//! `attester` — the PURE off-chain burn-signing core: [`sign`] (a single `k256` ECDSA over Circle's
-//! `messageHashToSign`) and [`assemble_quorum`] (the exactly-threshold, ascending-address,
-//! no-duplicate, all-signatures-verify `burnSignatures` bundle Circle verifies on the source
-//! chain).
+//! Signs Circle's 32-byte digest and assembles a verified signer quorum.
+//! Signatures use secp256k1 with Ethereum recovery bytes 27 or 28. [`assemble_quorum`] checks
+//! recovered addresses, threshold, strict ordering, and uniqueness.
 //!
-//! # Burn signing happens off-chain
-//!
-//! The burn path does its cryptography OFF-CHAIN. Partner attesters `k256`-ECDSA-sign the
-//! `messageHashToSign` Circle returns from `POST /v1/prepare-withdrawal`; there is **no on-chain
-//! Miden typed-data hashing on the burn path**. This module IS that leg — the off-chain signature
-//! it produces is the product (contrast the deposit relayer, where the attestation is Circle's and
-//! is verified ON-CHAIN by the faucet, so the relayer links `k256` only as a dev dependency).
-//!
-//! # The source-chain verifier is EVM `ECDSA.recover` — so the wire is Ethereum-shaped
-//!
-//! Unlike the mint side (where the Miden faucet verifies and the recovery byte is carried unused),
-//! the BURN side is verified by Circle on the **source chain** via OpenZeppelin-style
-//! `ECDSA.recover(digest, signature)` → 20-byte address → `require(attesters[addr])`
-//! (`CIRCLE-DATA-SCHEMAS.md:46`,`:183`,`:196`). That imposes two Ethereum conventions this module
-//! MUST honour or Circle rejects the signature at the fund-release boundary:
-//!
-//! * **`v` is exactly `27`/`28`.** [`sign`] encodes `v = 27 + recovery_id` ([`EVM_V_OFFSET`]) and
-//!   REFUSES to emit anything else — an x-reduced recovery id (`2`/`3` → `v = 29`/`30`) has no EVM
-//!   representation and is turned into [`SignError::UnrepresentableRecoveryId`] rather than an
-//!   invalid signature. On the way back in, [`recover_address`] accepts ONLY [`EVM_V_VALUES`]
-//!   (`27`/`28`), so a `v = 0`/`1` or `29`/`30` — each of which k256 could otherwise recover — can
-//!   never verify. This matters because a `29`/`30` signature recovers locally but the source-chain
-//!   OpenZeppelin verifier rejects it. k256 signing is low-`s`-normalized, so the malleability
-//!   check the same verifier applies also passes.
-//! * **A signature is only worth anything paired with the signer it recovers to.**
-//!   [`assemble_quorum`] therefore takes the digest and, for each `(claimed address, signature)`,
-//!   recovers the signer and REQUIRES it to equal the claimed address — the exact
-//!   `ECDSA.recover`-then-authorize step Circle performs — before any ordering/threshold check.
-//!   This is a deliberate widening of the `COMPONENT-SPEC.md:343` interface (which listed no
-//!   digest): `TEST-AND-VERIFICATION-HARNESS.md:157` requires a signature that does not verify
-//!   against its claimed signer to be excluded with an exact error, and that is impossible without
-//!   the digest.
-//!
-//! # The digest's derivation stays OPEN with Circle — treated as opaque-and-sign
-//!
-//! `messageHashToSign` is *strongly evidenced* to be the final EIP-712 digest (`keccak256(0x1901 ‖
-//! domainSeparator ‖ structHash)`), but the exact equivalence **REQUIRES CIRCLE CONFIRMATION**
-//! (still OPEN — this module parameterizes the question, it does not resolve it). Circle computes
-//! the digest server-side; [`sign`] therefore consumes it as an **opaque 32-byte value** and
-//! re-derives NOTHING locally — no EIP-712 struct hash, no personal-sign prefix, no Poseidon2. The
-//! only thing [`sign`] can reject about the digest is that it is the wrong length. The keccak this
-//! module DOES link is used only for address RECOVERY (pubkey → Ethereum address), never to
-//! re-derive the signing digest.
-//!
-//! # Single-key signing is a non-gating LOCAL PRIMITIVE — NEVER submitted
-//!
-//! [`sign`] produces ONE signature. A single signature is a unit-test-only primitive and is **never
-//! submitted to Circle**: any `/v1/withdraw` submission carries the exactly-threshold bundle
-//! [`assemble_quorum`] assembles (`MIN_SIGNATURE_THRESHOLD`; Circle's documentation). Key custody
-//! (KMS/HSM, ≥2 keys, rotation) is the operational concern owned by the monitoring/admin-ops unit;
-//! this module owns the signing INTERFACE only, and holds no real key material.
+//! The supplied digest is signed without rehashing. Its exact derivation remains OPEN with Circle.
 
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 pub use k256::SecretKey;
@@ -61,21 +10,16 @@ use sha3::{Digest, Keccak256};
 
 use crate::error::{QuorumError, SignError, SignatureError};
 
-/// The `messageHashToSign` digest length — Circle returns a 32-byte digest and [`sign`] consumes it
-/// opaquely, so this is the ONE shape the signing input must have.
+/// Required signing-digest length in bytes.
 pub const DIGEST_LEN: usize = 32;
 
-/// A burn signature on the Circle wire: secp256k1 ECDSA, 65 bytes `r‖s‖v` (`r` 32B, `s` 32B, `v`
-/// the 1-byte EVM recovery id) — `CIRCLE-DATA-SCHEMAS.md:184`.
+/// Signature length: 32-byte r, 32-byte s, and one recovery byte.
 pub const SIGNATURE_LEN: usize = 65;
 
-/// The Ethereum-style signer address length: `ECDSA.recover(digest, sig)` yields a 20-byte address
-/// (`CIRCLE-DATA-SCHEMAS.md:46`,`:193`), which is the key the quorum is ordered by.
+/// Ethereum signer-address length in bytes.
 pub const ADDRESS_LEN: usize = 20;
 
-/// The offset added to the k256 recovery id (`0`/`1`) to form the Ethereum `v` (`27`/`28`) that
-/// OpenZeppelin-style `ECDSA.recover` on the source chain requires (OpenZeppelin ECDSA: "libraries
-/// returning `0`/`1` must add 27"). A signature carrying a raw `0`/`1` would be rejected by Circle.
+/// Offset converting recovery IDs 0 and 1 to Ethereum values 27 and 28.
 pub const EVM_V_OFFSET: u8 = 27;
 
 /// The ONLY two `v` bytes OpenZeppelin `ECDSA.recover` on the source chain accepts. The x-reduced

@@ -1,34 +1,8 @@
-//! The v16 **E2E sanity gate** — the pre-deploy confidence suite for the xUSDC faucet.
-//!
-//! A cohesive driver that connects to an ALREADY-RUNNING Miden node at a caller-supplied RPC URL and
-//! asserts core on-chain functionality with fund-correctness front and centre. It has TWO modes:
-//!
-//! - **Local full gate** (`faucet_id = None`, loopback only): deploys a FRESH production faucet we own
-//!   and runs the WHOLE matrix, including the DESTRUCTIVE admin surface. This is the ONLY mode that
-//!   pauses / rotates the attester / mutates policy / transfers ownership — always against a fresh,
-//!   throwaway faucet, never a deployed one.
-//! - **Existing-faucet non-destructive re-check** (`faucet_id = Some`, local OR devnet): targets an
-//!   ALREADY-deployed faucet and re-proves ONLY the non-destructive fund-correctness subset — the
-//!   scale-0 mints, the attestation/replay/cap negatives, and the burn arc — with the operator's
-//!   allowlisted attester. It NEVER mutates the deployed faucet (no admin), so it is the intended,
-//!   COMPLETE devnet gate (exit 0 on pass), not a reduced run.
-//!
-//! Covered end-to-end:
-//! - **Mint** — a 6-decimal deposit of 100 xUSDC mints EXACTLY `100_000_000` units to the correct
-//!   recipient (scale-0 identity, [`DEPOSIT_SCALE_EXP = 0`], no 10^6 division); a NON-round
-//!   `123_456_789` re-proves the P0 fix.
-//! - **Burn** — 50 xUSDC decrements supply by exactly that; the produced `XReserveBurnNote` is a
-//!   correct public note (tag `0x4255_524E`, one `NetworkAccountTarget` → faucet, DC-7 payload),
-//!   proven attester-discoverable/decodable AND DC-8-evidence-assemblable (the attester's own
-//!   `assemble_evidence` over a live `BurnEvidenceReads` adapter).
-//! - **Negatives** — wrong-attester, forged signature, replay, over-cap rejected; supply unmoved.
-//! - **Admin** (LOCAL full gate ONLY) — pause (mint+burn rejected) → unpause, attester rotation,
-//!   `set_min_burn_size`, `set_max_supply` (mutate + enforce), owner-gating, 2-step ownership.
-//! - **Node logs** — scanned for unexpected ERROR/panic/untriaged-WARN lines (the clean-log gate).
-//!
-//! Positive faucet consumptions commit via path N (the node's ntx-builder auto-executes the routed,
-//! allowlisted note); negatives execute client-side (`execute_transaction`, no submission).
-//! **Validator-not-fixer:** a failing assertion BLOCKS the deploy — never a faucet hot-fix.
+//! Runs faucet checks against an existing node.
+//! With no faucet ID, deploys a disposable local faucet and includes administrative changes.
+//! With a supplied faucet ID, runs mint, burn, and rejection checks without administrative changes.
+//! Successful transactions commit through the network transaction builder; rejection probes
+//! execute locally.
 
 use std::path::{Path, PathBuf};
 
@@ -358,7 +332,6 @@ pub async fn run_sanity(cfg: &SanityConfig, node_version: &str) -> Result<Sanity
     )
     .await?;
 
-    // 3. Burn arc — structure + attester-consumability + DC-8 evidence.
     checks::burn_and_assert(&mut d, &mut led, mint_attester, relayer_id, holder_id).await?;
 
     // 4. Admin surface — DESTRUCTIVE (pause/unpause, attester rotation, min/max setters, owner-gating,
@@ -506,10 +479,7 @@ async fn register_existing_faucet(hc: &mut HarnessClient, id: AccountId) -> Resu
     Ok(())
 }
 
-/// Deploys the production faucet on the running node: the three non-identifier domain-config
-/// fields are BUILD-SEEDED from the mint vector's params (Wave-1 S1 / DEC-4), the owner emits
-/// `identifier_init` (the one post-deploy domain-config write), and the faucet's first tx consumes
-/// it (first-deploy exemption); registered w/ client.
+/// Deploys the harness faucet and registers it with the client.
 async fn deploy_fresh_faucet(hc: &mut HarnessClient, actors: &Actors) -> Result<AccountId> {
     let owner_id = actors.owner.id();
     let domain = mintburn::lnv2_domain_params();

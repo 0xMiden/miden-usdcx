@@ -1,6 +1,4 @@
-//! Loader for the ONE canonical golden-vector artifact
-//! (`tests/vectors/xreserve-encoding-vectors.json`). Both the Rust unit tests and the
-//! MASM execution tests load the same file by reference through this module.
+//! Loads the shared golden vectors for Rust and MASM execution tests.
 
 use std::sync::OnceLock;
 
@@ -31,7 +29,7 @@ pub struct Families {
     pub mi: Vec<MiVector>,
 }
 
-/// bytes32 → Word vectors. `lossless_error` marks the TV-B32-2 limb-ge-p entry.
+/// Nonce-hashing vectors; `lossless_error` identifies values outside the field.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct B32Vector {
@@ -143,14 +141,8 @@ pub struct PackedField {
     pub felts: Vec<String>,
 }
 
-/// Mint-payload (`DC-14`) vectors: a Circle DepositIntent, the faucet it is addressed to, the
-/// felts the mint note would carry for it, and the preimage the faucet rebuilds from those felts.
-/// `kind`: accept | reject.
-///
-/// The faucet id here is a fixed SYNTHETIC one. A real faucet's id is a hash over its own code, so
-/// the rebuilt preimage's identity fields are not knowable when this artifact is generated — the
-/// live-account tests check the MASM writer against the Rust mirror instead. The ownership map's
-/// anti-duplication section records that split.
+/// Mint-intent vectors with the signed message, transport felts, and rebuilt preimage.
+/// The faucet ID is synthetic; live-account tests substitute the actual account ID.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MiVector {
@@ -458,13 +450,9 @@ impl BnVector {
 mod tests {
     use super::*;
 
-    /// The artifact parses, every family is non-empty, every entry carries provenance
-    /// (`cite` + `derivation`), and every entry carries non-empty `tv` tags unless it is on the
-    /// explicit guard-vector allowlist.
     #[test]
     fn artifact_guard() {
-        // guard-only vectors that intentionally trace to no spec row; they pin harness and trap
-        // mechanics instead.
+        // These vectors test harness behavior and have no specification tags.
         const TV_TAG_ALLOWLIST: [&str; 3] = [
             "amt-guard-limb-not-u32",
             "amt-rej-witness-over",

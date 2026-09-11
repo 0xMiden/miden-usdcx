@@ -1,30 +1,7 @@
-//! The LNV-5 rows-K/L derivations + the consolidated full-matrix driver.
-//!
-//! **Row K (ntx-builder liveness / path N)** is derived, not re-driven: the LNV-2/3/4 sub-runs
-//! already commit every positive faucet consumption via path N (the routed allowlisted note is
-//! emitted from a wallet and the running ntx-builder auto-executes the faucet's consumption — the
-//! LNV-1 posture), so the consolidated run EXTRACTS that on-chain evidence from the sub-run
-//! observations ([`pathn_commits_from`]) and pairs it with the node-side execution markers from
-//! `ntx-builder.log` ([`ntx_execution_evidence`]). [`derive_row_k`] renders the verdict either
-//! way: YES needs mint AND burn commits plus node-side markers; anything less is NO with the
-//! exact missing-evidence cause and the spec's "relayer executes client-side (path C)" posture.
-//!
-//! **Row L (clean logs)** scans every archived `*.log` of the run ([`scan_logs`]). "Clean" means:
-//! zero ERROR-level lines and zero panic lines that match NO expected pattern, and every WARN
-//! triaged + explained. The expected-pattern table ([`EXPECTED_LOG_LINES`]) enumerates the
-//! COMPLETE ERROR/WARN vocabulary observed across the archived LNV-1..4 runs, each entry tied to
-//! the deliberate negative or stack lifecycle step that explains it. A deliberately-doomed routed
-//! note CANNOT mask a failing positive: every positive commit is guarded by its own row's bounded
-//! committed-effect poll, which times out loudly if the ntx-builder fails to execute it.
-//!
-//! Log lines are classified by their tracing level TOKEN after ANSI-stripping (the services write
-//! SGR color codes into the log files), never by substring — an `INFO` line mentioning
-//! `error=…`/`failed` classifies as nothing, and multi-line entry continuations carry no token.
-//!
-//! [`run_full_matrix`] is the consolidated full-matrix driver: ONE fresh stack, the four LNV-1..4
-//! drivers composed in matrix order against it (each namespaced under its own client store), then
-//! rows K + L derived from that single run. **Validator-not-fixer:** a failing sub-run or row is
-//! a SURFACED finding, never a hot-fix.
+//! Derives automatic-execution and log-check results from the full validation run.
+//! Execution evidence combines committed mint and burn observations with node-log markers.
+//! Log classification uses tracing levels after stripping ANSI codes; unexpected errors,
+//! panics, and unclassified warnings fail the check.
 
 use std::fs;
 use std::path::Path;
@@ -48,8 +25,7 @@ use crate::stack::NodeStack;
 // ROW-K EVIDENCE VOCABULARY
 // ================================================================================================
 
-/// The ntx-builder's node-side execution marker (the line it logs when it picks up routed notes
-/// and executes the network transaction; observed verbatim in every archived LNV-2/3/4 run).
+/// Log marker for network transaction execution.
 pub const NTX_EXECUTION_MARKER: &str = "executing network transaction";
 
 /// The row-K posture statement when the ntx-builder is LIVE (path N auto-executes).
@@ -78,9 +54,7 @@ pub struct ExpectedLogLine {
     pub explanation: &'static str,
 }
 
-/// The COMPLETE expected ERROR/WARN vocabulary of a gate run — every entry grounded in the
-/// archived LNV-1..4 logs and tied to a deliberate negative or a stack lifecycle step. Any
-/// ERROR/WARN line matching none of these fails row L.
+/// Expected errors and warnings from deliberate rejection tests and node lifecycle events.
 pub const EXPECTED_LOG_LINES: &[ExpectedLogLine] = &[
     ExpectedLogLine {
         level: "ERROR",
@@ -448,11 +422,8 @@ pub fn derive_row_k(commits: Vec<PathNCommit>, ntx_log_evidence: Vec<String>) ->
 // THE CONSOLIDATED FULL-MATRIX DRIVER
 // ================================================================================================
 
-/// Runs the WHOLE A–L matrix on ONE fresh local stack: boots the four-service stack once, drives
-/// the LNV-1..4 sub-runs in matrix order against it (each under its own client-store namespace),
-/// stops the stack (so the archived logs are complete), then derives rows K + L from that single
-/// run. With `keep_stack` the services stay up for supervised inspection and the logs are scanned
-/// live (partial by construction).
+/// Runs the full matrix on one stack, then checks execution evidence and logs.
+/// With `keep_stack`, services continue running and the log snapshot is incomplete.
 pub async fn run_full_matrix(cfg: &RunConfig) -> Result<FullMatrixObservations> {
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
         .context("bootstrapping + starting the local node stack")?;

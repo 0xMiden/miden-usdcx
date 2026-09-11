@@ -44,7 +44,7 @@ impl EthEmbeddedAccountIdExt for EthEmbeddedAccountId {
     }
 }
 
-// TESTS — TV-AID-1..3
+// TESTS
 // ================================================================================================
 
 #[cfg(test)]
@@ -55,7 +55,6 @@ mod tests {
     use super::*;
     use crate::vectors::{load, parse_hex32};
 
-    /// TV-AID-1 (happy path, written first): round-trip is lossless for valid ids.
     #[test]
     fn tv_aid_1_roundtrip_lossless() {
         let v = load();
@@ -72,8 +71,6 @@ mod tests {
         }
     }
 
-    /// TV-AID-2 (negative): out-of-range bytes and in-region non-canonical ids are
-    /// rejected with their specific variants.
     #[rstest]
     #[case::out_of_range("aid-rej-out-of-range")]
     #[case::non_canonical("aid-rej-non-canonical")]

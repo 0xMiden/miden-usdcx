@@ -87,23 +87,12 @@ pub fn verify_message_hash(
     Ok((payload, actual))
 }
 
-/// Validates the attestation envelope's shape: exactly 65 bytes (`r‖s‖v`), hex-valid.
-///
-/// Returns the raw 65 bytes verbatim (`r` = `[..32]`, `s` = `[32..64]`, `v` = `[64]`), ready for
-/// the mint-note builder to hand to the faucet, which packs them into 17 u32-LE felts (the shared
-/// encoding crate's [`Signature::to_felts`](xusdc_encoding::xreserve::encoding::Signature::to_felts))
-/// and verifies them on-chain.
-///
-/// SHAPE ONLY — this never verifies the signature, and never inspects `r`/`s`/`v` for
-/// well-formedness beyond the length (see the module docs: the relayer must not be able to withhold
-/// a mint the chain would accept). A 65-byte attestation that is cryptographic nonsense passes here
-/// and is rejected on-chain in the faucet's attestation check, which is the correct division of
-/// authority.
+/// Decodes a hex-encoded 65-byte signature (`r || s || v`).
+/// Checks encoding and length; the faucet performs cryptographic verification.
 ///
 /// # Errors
-/// * [`RelayerError::MalformedHex`] — not valid hex.
-/// * [`RelayerError::BadAttestationLength`] — not exactly 65 bytes (a 64-byte, `v`-less signature
-///   is rejected, not zero-extended).
+/// * [`RelayerError::MalformedHex`] if the input is not valid hex.
+/// * [`RelayerError::BadAttestationLength`] if it does not contain exactly 65 bytes.
 pub fn validate_attestation_envelope(
     attestation_hex: &str,
 ) -> Result<[u8; ATTESTATION_LEN], RelayerError> {

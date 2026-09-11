@@ -1,23 +1,5 @@
-//! LNV-5 test suite — matrix rows K (ntx-builder liveness / path N) + L (clean logs) and the
-//! consolidated full-matrix VALIDATION RECORD + evidence packets, written TEST-FIRST against the
-//! rows-K/L observation, derivation, assertion, and record APIs.
-//!
-//! Two layers, exactly the LNV-1/2/3/4 partition:
-//!
-//! 1. **Derivation + assertion + record negatives** (no node, sandbox-safe — the DEFAULT suite).
-//!    Synthetic observations/log fixtures built green (including VERBATIM ANSI-colored log-line
-//!    shapes captured from real archived runs), then each test breaks EXACTLY the one surface its
-//!    check exists to reject and proves the check rejects it (a silently-weakened check — e.g. the
-//!    auditor's planted mutation — fails these). Plus green-shape acceptances (guard against an
-//!    always-failing suite). The record tests pin the HUMAN-GATE invariant: the generated
-//!    VALIDATION RECORD never self-declares the acceptance gate passed — the per-row results are
-//!    machine verdicts; the GATE verdict is a human decision.
-//! 2. **The real-node E2E** (`lnv5_full_matrix_against_real_local_node`): boots ONE fresh local
-//!    v0.15.1 stack and drives the WHOLE A–L matrix on it (the LNV-1..4 drivers composed in order
-//!    on the same node, then rows K + L derived from that single run). `#[ignore]`d in the default
-//!    suite because it must bind loopback listener sockets (denied in hermetic audit sandboxes);
-//!    run it with `-- --include-ignored` or the `lnv5_full_matrix` binary. The full-matrix acceptance-gate claim
-//!    rides ONLY on real runs + the HUMAN gate — a green default suite proves the logic layer only.
+//! Tests automatic execution, logs, and report generation.
+//! Synthetic fixtures exercise the assertions offline. Ignored integration tests require a local node.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,11 +48,7 @@ use xusdc_validation::rows_kl::{
     REQUIRED_SERVICE_LOGS,
 };
 
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// VERBATIM log-line shapes from real archived runs (`local-node-data/lnv1/run-*/logs/*.log`).
-// The ERROR/WARN vocabulary below is the COMPLETE set observed across every archived LNV-1..4
-// run; the ANSI SGR escapes are exactly what the node services emit to a non-tty log file.
-// ════════════════════════════════════════════════════════════════════════════════════════════
+// Node-log samples, including the ANSI color codes present in captured files.
 
 /// The sequencer rejecting the Row-H deliberate user-RPC submission (ANSI-colored, verbatim shape).
 const REAL_SUBMIT_REJECT: &str = "\u{1b}[2m2026-07-10T19:46:25.559312Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[1mrpc\u{1b}[0m:\u{1b}[1msubmit_proven_tx\u{1b}[0m: \u{1b}[3merror\u{1b}[0m\u{1b}[2m=\u{1b}[0mcode: 'Client specified an invalid argument', message: \"Network transactions may not be submitted by users yet\" \u{1b}[2m\u{1b}[3mrpc.service\u{1b}[0m\u{1b}[2m=\u{1b}[0m\"rpc.Api\"";
@@ -268,9 +246,6 @@ fn error_scoped_pattern_must_not_triage_a_warn_line() {
 
 #[test]
 fn expected_patterns_cover_the_complete_real_archived_vocabulary() {
-    // The COMPLETE ERROR/WARN vocabulary observed across every archived LNV-1..4 run must be
-    // triaged by the shipped pattern table — zero unexpected, zero untriaged — while plain
-    // INFO/continuation lines classify as nothing.
     let text = [
         REAL_SUBMIT_REJECT,
         REAL_NTX_ALL_FAILED,
@@ -707,9 +682,7 @@ fn assert_k_rejects_an_empty_posture() {
     );
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// Green synthetic sub-run observations (the LNV-2/3/4 green shapes, reused as extraction input)
-// ════════════════════════════════════════════════════════════════════════════════════════════
+// Successful synthetic observations used by the extraction tests.
 
 fn rej(msg: &str) -> Verdict {
     Verdict::Rejected(msg.to_string())
@@ -1074,12 +1047,7 @@ fn wallet_id(seed: u8) -> AccountId {
     )
 }
 
-/// A production-shaped deployed faucet `Account` in the post-`identifier_init` shape: the three
-/// build-seeded fields supplied to the recomposed builder, and the identifier the OWN-ID fixpoint
-/// key `identifier_for(faucet_id)` written POST-BUILD. The identifier ships EMPTY at composition (the
-/// builder REJECTS a build-seeded identifier — the DEC-4 account-id fixpoint can never be
-/// build-seeded), so the id is fixed by the empty-identifier build, then the own-id key is written
-/// into the (immutable-id) account — the faithful twin of the post-deploy `identifier_init` write.
+/// Builds the legacy fixture and then writes its identifier using the final account ID.
 fn synthetic_deployed_faucet(domain: &DomainParams) -> Result<Account> {
     let xreserve = build_xreserve_component_seeded(None)?;
     let components = production_components(
@@ -1474,7 +1442,6 @@ fn fresh_under_roots_the_run_under_the_named_track() {
         Path::new("/repo/local-node-data/lnv5/run-1"),
         "LNV-5 runs live under their own gitignored track"
     );
-    // The LNV-1..4 single-run constructor keeps its historical layout.
     let legacy = RunConfig::fresh(Path::new("/repo"), "run-2");
     assert_eq!(
         legacy.stack.run_root,
@@ -1482,14 +1449,8 @@ fn fresh_under_roots_the_run_under_the_named_track() {
     );
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════════
-// Stack service invocations (round-2 row-L disposition: the sequencer's gRPC connection-age
-// override). The LNV-5 round-1 run surfaced sequencer panics at exactly the node's 30-minute
-// DEFAULT_MAX_CONNECTION_AGE (tonic-0.14.6 resumed-after-completion);
-// the HUMAN disposition is to extend that age at the STACK-BOOT CONFIG level (the v0.15.1
-// sequencer CLI exposes `--rpc.grpc.max-connection-age <DURATION>`) so no connection can reach
-// it within a gate run — while the row-L panic detector stays byte-for-byte as strict.
-// ════════════════════════════════════════════════════════════════════════════════════════════
+// The sequencer connection-age override prevents expiry during a validation run.
+// Log checks must still reject unexpected panics.
 
 use xusdc_validation::config::{StackConfig, DEFAULT_V16_NODE_DIR};
 use xusdc_validation::stack::{NodeStack, V16_SERVICES};

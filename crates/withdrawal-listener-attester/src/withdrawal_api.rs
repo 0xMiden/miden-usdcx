@@ -1,93 +1,13 @@
-//! `withdrawal_api` — the two request bodies the partner AUTHORS for Circle (the
-//! [`PrepareWithdrawalRequest`] and the `POST /v1/withdraw` [`WithdrawRequest`] wrapper),
-//! the READ-ONLY Circle drivers ([`prepare`] and [`poll_status`]), and the
-//! submission pieces the withdraw POST is assembled from — the pre-submit fund-safety gate
-//! ([`authorize_submission`]) and the `201` response contract (`decode_withdraw_created`).
+//! Builds withdrawal requests, prepares intents, authorizes signers, and polls status.
+//! Submission goes through [`submit_withdraw`](crate::submit::submit_withdraw), which claims
+//! the burn in the durable ledger before sending a request.
 //!
-//! # The drivers, and the shapes that are load-bearing
+//! [`build_prepare_request`] takes the amount and depositor from one validated burn. It encodes
+//! the sender as `remoteDepositor` and carries the unscaled amount in `valueIncludingFees`.
+//! Circle supplies the binary intent and `sourceDepositor`. Forwarding is disabled.
 //!
-//! Each driver builds a real [`reqwest::Request`] through the [`CircleClient`], executes it against
-//! the injected transport (the in-process schema-exact mock in the gate suite), applies the
-//! per-endpoint HTTP-status policy, and decodes — never coercing a malformed body:
-//!
-//! * [`prepare`] — `POST /v1/prepare-withdrawal`; `200` → the top-level `batches[]`
-//!   [`PrepareWithdrawalResponse`] wrapper.
-//! * [`poll_status`] — `GET /v1/withdrawal/{withdrawalId}`; polls until it stops, which happens on
-//!   a TERMINAL status (`finalized` success or `failed`) OR on the distinct RETRYABLE `expired`
-//!   outcome (resubmit a new withdrawal — `expired` is NOT terminal). A `404` is its own exact
-//!   [`ListenerError::WithdrawalNotFound`]; a `status` outside the six-member enum is a hard decode
-//!   error, never defaulted.
-//!
-//! # `POST /v1/withdraw` is NOT driven from here — deliberately
-//!
-//! The submission lives in [`submit`](crate::submit), whole: the `409` conflict-recovery, the
-//! bounded `5xx` retry, the rate ceilings, and — the reason it cannot be split — the **durable
-//! per-burn idempotency claim** that must be taken before a request is even built.
-//!
-//! A raw `withdraw` driver did sit here once, so the endpoint's shape could be tested one request
-//! at a time. It was a bypass: [`WithdrawRequest`] is `Clone` and [`authorize_submission`] is
-//! public, so a caller could mint two authorizations for ONE burn and submit it twice without the
-//! ledger ever hearing about it. It is gone rather than hidden, and what it proved — the
-//! `batches[]` wrapper on the wire, the `201` ARRAY (one [`WithdrawalStatus`] per submitted batch;
-//! modelling it as an object would fail to decode every real reply), the cardinality rule — is
-//! proved through [`submit_withdraw`](crate::submit::submit_withdraw), which builds with this
-//! module's [`CircleClient`] and decodes with this module's `decode_withdraw_created`.
-//!
-//! # Fund-safety: the pre-submit signer-allowlist gate ([`authorize_submission`])
-//!
-//! Circle verifies `ECDSA.recover(digest, sig) → addr` and `require(attesters[addr])` on the source
-//! chain — but that is the LAST line of defense, at the fund-release boundary. Before ANY
-//! `/v1/withdraw` submission, [`authorize_submission`] re-does that recovery OFF-chain against the
-//! same `messageHashToSign` digests and requires every recovered signer to be a configured,
-//! registered attester ([`AttesterAllowlist`](crate::attester::AttesterAllowlist)). It mints an
-//! [`AuthorizedWithdrawal`] only on a full pass;
-//! [`submit_withdraw`](crate::submit::submit_withdraw) takes that token and nothing else, so a
-//! submission whose signers are not all registered attesters — or one with no allowlist configured
-//! at all (fail-closed) — is **untypeable, not merely unreached**: the refusal happens before the
-//! client is touched, guaranteeing ZERO `/v1/withdraw` calls. This is the fund-safety
-//! carry-forward: [`assemble_quorum`](crate::attester::assemble_quorum) proves each signature
-//! recovers to its CLAIMED signer, and this gate proves that signer is one the operator registered.
-//!
-//! # What these build, and — load-bearing — what they do NOT
-//!
-//! The partner builds **only the API JSON request** ([`build_prepare_request`]). It never
-//! constructs the binary Gateway `TransferSpec`/`BurnIntent` — Circle encodes those server-side and
-//! RETURNS the canonical `burnIntents[]`/`encoded`/`messageHashToSign`, which the partner then
-//! validates (the pre-signing gate in `validate.rs`) and signs. A local binary reconstruction is
-//! optional validation only (and deliberately not a re-derivation), and none happens here: there is
-//! no binary encoder in this crate, and these builders emit JSON.
-//!
-//! # `remoteDepositor` is NOT `sourceDepositor`
-//!
-//! `remoteDepositor` is the Miden initiator — the burn note's `metadata.sender`, encoded through
-//! the protocol's own `AccountId ↔ bytes32` packaging ([`EthEmbeddedAccountId::to_bytes32`], consumed by
-//! reference, not re-implemented) and rendered as the OpenAPI's `^0x[a-fA-F0-9]{64}$`. It is a
-//! **partner-built** field. `sourceDepositor` is a Gateway `TransferSpec` field Circle ASSIGNS
-//! server-side; [`PrepareBurnIntentInput`] has no such field, so populating it partner-side is not
-//! merely avoided here — it is untypeable (an exact match, never a prefix). Swapping the two would
-//! name the wrong debtor.
-//!
-//! # Circle-owned questions this module touches — all still OPEN (parameterized, never resolved)
-//!
-//! * The `AccountId → bytes32` layout behind `remoteDepositor` is the shared encoding crate's, a
-//!   DRAFT that `REQUIRES CIRCLE CONFIRMATION`; this module consumes it and asserts nothing about
-//!   its approval.
-//! * The forwarding scope (xReserve-only vs Gateway/CCTP). This builder does not invent a
-//!   forwarding flow: `useCircleForwarding` is set to `false` and `forwardingOptions` is omitted.
-//! * `sourceDepositor` is Circle-filled; the partner never populates it (above).
-//! * The smallest-unit⇄decimal `value` scale (and dust/cap) is Circle-owned. The burn payload's
-//!   `amount` is in the smallest token unit; this builder passes it through **unscaled** as a
-//!   decimal-integer string, applying no `10^n` factor, so the scale stays Circle's to settle. It
-//!   is placed in `valueIncludingFees` (the burned amount is the total debited on Miden, out of
-//!   which Circle takes its fee), leaving `valueExcludingFees` unset — the value XOR is satisfied
-//!   by exactly one field. The exact fee/scale semantics `REQUIRE CIRCLE CONFIRMATION`.
-//! * **The credential scheme** — the OpenAPI declares NO security scheme, so the drivers invent none: the auth
-//!   header is injected only when the operator configures an out-of-band key AND its header name
-//!   (via the [`CircleClient`]'s [`AuthPosture`](crate::circle::auth::AuthPosture)), and no
-//!   credential is hardcoded. Parameterized here, never resolved.
-//! * Whether a Miden transaction id is an acceptable `burnTxId` is Circle's to confirm; the
-//!   `withdraw` body carries whatever `burnTxId` the batch was built with, imposing no pattern the
-//!   OpenAPI does not (the request-side field has none).
+//! Circle decisions on account-ID encoding, amount and fee semantics, forwarding, authentication,
+//! and Miden transaction IDs as `burnTxId` remain OPEN.
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use serde::de::DeserializeOwned;

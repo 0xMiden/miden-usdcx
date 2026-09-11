@@ -1,28 +1,5 @@
-//! Builds the `PrepareWithdrawalRequest` — the API JSON the partner authors — and pins the
-//! `remoteDepositor` vs `sourceDepositor` distinctness (an exact match, never a prefix).
-//!
-//! Every assertion here is about the REQUEST the partner SENDS — never the binary
-//! `TransferSpec`/`BurnIntent` (Circle encodes those server-side) and never Circle's returned data
-//! (that is the pre-signing gate in `validate.rs`). The oracle is deliberately non-vacuous: the
-//! serialized JSON is asserted at the STRING level (the `sourceDepositor` key is absent as text,
-//! not merely absent from the struct), and `remoteDepositor` is pinned to the `0x`-hex of the
-//! shared encoding crate's `EthEmbeddedAccountId::from_account_id(sender).to_bytes32()` on a golden pair.
-//!
-//! The builder takes ONE `DiscoveredBurn` — the discovery gate's own output — rather than a payload
-//! and a sender as independent arguments, so "burn A's payload under burn B's depositor" is not a
-//! pairing this API can express. Every case below therefore mints its burn through the real
-//! `validate_discovery` gate (`discovered_burn`), which also means the fixtures here are burns a
-//! real discovery pass could have produced rather than hand-assembled structs.
-//!
-//! What is enforced:
-//! * the top-level `{ batches: [..] }` wrapper is real (never a bare batch);
-//! * `remoteDepositor` == `encode(metadata.sender)` via the shared `AccountId↔bytes32` helper,
-//!   `^0x[a-fA-F0-9]{64}$`;
-//! * `sourceDepositor` is structurally AND textually absent;
-//! * exactly one of `valueExcludingFees`/`valueIncludingFees` is set (the value XOR);
-//! * `remoteDomain >= 1` and `remoteDomain != finalDestinationDomain` — else an exact `Err`;
-//! * `salt` is omitted so Circle generates it on the source-domain side;
-//! * no binary/response-only artifact (`encoded`, `messageHashToSign`, `spec`, …) is ever emitted.
+//! Checks serialized prepare requests against the discovered burn.
+//! The sender becomes `remoteDepositor`; Circle's response-only fields must be absent.
 
 use assert_matches::assert_matches;
 

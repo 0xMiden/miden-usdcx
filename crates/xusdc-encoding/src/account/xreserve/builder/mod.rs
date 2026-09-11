@@ -1,30 +1,8 @@
-//! `XReserveStablecoinBuilder` — the faucet account composition for the xUSDC faucet.
-//! The mint path is the STOCK
-//! `FungibleFaucet::mint_and_send` gated by the custom **attestation mint policy**
-//! (`xreserve::mint_policy::check_policy` — the ENTIRE attestation pipeline lives in
-//! the policy dispatch), so every supply increase passes the attestation gate — the
-//! faucet's core mint-security invariant.
+//! Composes the faucet from standard token, policy, fee, and access-control components.
+//! The custom mint policy verifies deposit attestations and records used nonces.
 //!
-//! Composes the `FungibleFaucet`, the attestation mint policy and `set_attester` extension,
-//! a `TokenPolicyManager` whose burn policy checks required attachments and the minimum amount
-//! stored by [`MinBurnAmount`], plus the stock [`PausableManager`], [`BlocklistManager`] and
-//! [`ConstantFeeManager`].
-//! The RBAC seed holds five roles: `ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`, `DOM_UNPAUSER` and
-//! `BLK_MANAGER`. Every role is administered directly by `ADMIN`; there is no ownership component.
-//! The standard role-action note rotates membership and can change role administration at runtime.
-//!
-//! [`XReserveAdminAuthority`] maps `pause` to `DOM_PAUSER`, `unpause` to `DOM_UNPAUSER`,
-//! `set_attester` to `ATTEST_ADMIN`, and block/unblock to `BLK_MANAGER`. Other authority-gated
-//! procedures, including `set_note_fee`, resolve to `ADMIN`. Pause and blocklist storage belong
-//! to the base `Pausable` and `BasicBlocklist` companions; their managers add no storage.
-//!
-//! Fee administration uses a standard
-//! [`BasicConstantFeePolicy`](miden_standards::account::fees::BasicConstantFeePolicy) constructed
-//! from the network fee parameters and the xUSDC note-cost table.
-//!
-//! Domain config is entirely BUILD-SEEDED: `domain` is a required builder input written into its
-//! declared slot at composition time. The faucet identifier has no slot — it is the account's own
-//! id, which the mint path derives on chain, so the composed faucet is mint-ready when it exists.
+//! The builder seeds domain configuration and role membership. Authorized role changes can
+//! change membership and role administrators after deployment.
 
 use bon::bon;
 use miden_protocol::account::{AccountComponent, AccountId, RoleSymbol};
@@ -49,27 +27,18 @@ use construction::build_usdcx_faucet;
 pub use construction::{build_faucet_account, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
 
-/// Dedicated role symbols mapped to attester administration, pause and unpause by
-/// [`XReserveAdminAuthority`]. All role administration resolves directly to `ADMIN`.
+/// Role that authorizes pause through [`XReserveAdminAuthority`].
 pub const DOM_PAUSER_ROLE: &str = "DOM_PAUSER";
+/// Role that authorizes attester administration.
 pub const ATTEST_ADMIN_ROLE: &str = "ATTEST_ADMIN";
+/// Role that authorizes unpause.
 pub const DOM_UNPAUSER_ROLE: &str = "DOM_UNPAUSER";
 
-/// The dedicated blocklist-administration RoleSymbol this faucet seeds under the ratified
-/// transfer-blocklist decision: `BLK_MANAGER` is held by an EXTERNAL entity that
-/// manages the transfer blocklist for Miden and has NO other admin capability (capability isolation
-/// is two-way — the holder can ONLY block/unblock, and the administrator, lacking the role, cannot). The
-/// stock `BlocklistManager`'s `block_account` / `unblock_account` roots are assigned this symbol by
-/// [`XReserveAdminAuthority`], which is what keeps the capability off the administrator — the
-/// owner-gated `BlocklistOwnerControlled` variant is the wrong identity and is not installed. Its
-/// admin is left unset → resolves to the built-in `ADMIN`, so Miden rotates
-/// or revokes the external entity through the allowlisted standard role-action note —
-/// no new rotation machinery. `BLK_MANAGER` is seeded role id 4.
+/// Role that authorizes [`BlocklistManager`] operations through [`XReserveAdminAuthority`].
+/// The built-in `ADMIN` role manages its membership.
 pub const BLK_MANAGER_ROLE: &str = "BLK_MANAGER";
 
-/// Path of the attestation mint policy's `check_policy` procedure as the faucet component EXPORTS
-/// it. The procedure is defined in the library's `mint_policy` module; the component re-exports it
-/// under its own namespace, and it is that re-export the account installs and resolves by.
+/// Exported path of the attestation mint policy installed on the faucet.
 pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_extension::check_policy";
 
@@ -81,21 +50,15 @@ pub const XRESERVE_SET_ATTESTER_PROC_PATH: &str =
 pub const XRESERVE_BURN_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_burn_policy::check_burn_policy";
 
-/// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
-/// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
-/// zero-burn reject is enforced at note-building time: the builder rejects a floor below this at
-/// construction, and the [`XReserveMinBurnAmountNote`](crate::note::xreserve_admin::XReserveMinBurnAmountNote)
-/// factory refuses a sub-floor value before assembling the standard config note.
+/// Minimum burn floor accepted by this builder and
+/// [`XReserveMinBurnAmountNote`](crate::note::xreserve_admin::XReserveMinBurnAmountNote).
+/// The standard policy setter itself accepts zero.
 pub const MIN_BURN_SIZE_FLOOR: u64 = 1;
 
-/// The shipped on-chain `TokenSymbol` guard constant (token config). The token's identity is
-/// **USDCx** — a DISTINCT identity from the "xUSDC" working label;
-/// the two must not be confused.
+/// On-chain token symbol.
 pub const USDCX_TOKEN_SYMBOL: &str = "USDCX";
 
-/// The spec-mandated token decimals (`token_config` decimals = 6; a Circle requirement of six
-/// decimal places — the amount reducer scales to 6dp, so a mismatched faucet would silently
-/// mis-scale every minted amount).
+/// Token decimals, matching the source USDC denomination.
 pub const USDCX_DECIMALS: u8 = 6;
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
@@ -113,22 +76,15 @@ pub const USDCX_DECIMALS: u8 = 6;
 #[derive(Debug)]
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
-    /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
-    /// gates every unmapped authority-gated procedure (the
-    /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
-    /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating it is a
-    /// grant and a revoke of `ADMIN` through the standard role-action note.
+    /// Initial member of the built-in `ADMIN` role.
     owner: AccountId,
-    /// The seeded `ATTEST_ADMIN` role member, authorized to call `set_attester`.
+    /// Initial member of the attester administration role.
     attest_admin_holder: AccountId,
-    /// The seeded `DOM_PAUSER` role member, authorized to pause the faucet.
+    /// Initial pauser; must differ from the other role holders.
     pauser_holder: AccountId,
-    /// The seeded `DOM_UNPAUSER` role member, authorized to unpause the faucet.
+    /// Initial member of the unpause role.
     unpauser_holder: AccountId,
-    /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
-    /// blocklist (block/unblock) and holds NO other admin capability. Its concrete
-    /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
-    /// the standard role-action note.
+    /// Initial blocklist manager; must differ from the other role holders.
     blocklist_manager_holder: AccountId,
     /// Parameters used to price notes and identify the network fee asset.
     ///
@@ -314,7 +270,6 @@ impl XReserveStablecoinBuilder {
 }
 
 /// Seeds all five roles with one member each and direct `ADMIN` administration.
-/// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
     owner: AccountId,
     attest_admin_holder: AccountId,

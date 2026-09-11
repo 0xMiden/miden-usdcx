@@ -55,7 +55,7 @@ impl Signature {
     }
 }
 
-// TESTS — TV-ATT-1..3
+// TESTS
 // ================================================================================================
 
 #[cfg(test)]
@@ -75,8 +75,6 @@ mod tests {
             .expect("32 bytes always pack to exactly 8 u32 felts")
     }
 
-    /// TV-ATT-1 (felt shapes): the three packers yield exactly 8 / 16 / 17 felts and match
-    /// the canonical packing of every vector's digest / pubkey / signature.
     #[test]
     fn tv_att_1_felt_shapes() {
         for v in &load().families.att {
@@ -109,8 +107,6 @@ mod tests {
         }
     }
 
-    /// TV-ATT-2 (commitment): the golden vectors pin miden-crypto `PublicKey::to_commitment`, the
-    /// attester-allowlist keying primitive the faucet's attestation verify looks up.
     #[test]
     fn tv_att_2_commitment() {
         for v in &load().families.att {
@@ -124,10 +120,7 @@ mod tests {
         }
     }
 
-    /// TV-ATT-3 (raw keccak, not EIP-712): the digest helper packs the raw keccak digest
-    /// VERBATIM — it prepends no EIP-712 `\x19\x01` domain / personal-sign prefix and hashes
-    /// no `depositAttestation` struct; the digest is over a FULL DepositIntent payload; the
-    /// input is the RAW 65-byte `r‖s‖v` signature (`v` carried in felt 16).
+    /// The digest is packed without rehashing or adding a signing prefix.
     #[test]
     fn tv_att_3_raw_keccak_not_eip712() {
         for v in &load().families.att {

@@ -45,10 +45,6 @@ fn signature_type_matches_golden() {
     }
 }
 
-// The attester key is not a typed API of this crate at all: it is the protocol's own
-// `ecdsa_k256_keccak::PublicKey`, whose affine packing and commitment are locked to the same golden
-// vectors by TV-ATT-1 / TV-ATT-2 in `xreserve::encoding::attestation`.
-
 // DepositIntent owns its codec
 // ================================================================================================
 

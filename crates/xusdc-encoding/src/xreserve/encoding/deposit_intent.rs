@@ -1,36 +1,12 @@
-//! Circle's DepositIntent: the message that authorizes one mint, and the bytes it travels in.
+//! Circle's signed deposit message: a 240-byte big-endian header followed by hook data.
+//! [`Serializable`] and [`Deserializable`] define the byte encoding. The mint-intent module
+//! converts it to the fields carried by the note.
 //!
-//! The wire form is a fixed 240-byte big-endian header followed by variable-length hookData. On
-//! Miden it is carried as u32-little-endian-packed field elements, four wire bytes per element, so
-//! the header occupies exactly 60 of them. Every field sits at a fixed offset, which is what lets
-//! the MASM writer address fields directly instead of encoding sequentially.
+//! Decoding checks the header and narrows identifiers and amounts to Miden types.
+//! Circle's final account-ID encoding decision remains OPEN.
 //!
-//! This module owns the BYTE format, in both directions: [`Serializable`] writes it and
-//! [`Deserializable`] reads it. Its sibling `mint_intent` owns the felt format, and the two
-//! conversions between the types. Nothing outside this module reads a wire offset — every access
-//! goes through [`DepositIntentField::offset`].
-//!
-//! Decoding owns the STRUCTURAL checks — the ones answering "is this a well-formed DepositIntent
-//! at all": the magic sentinel, the version, that the payload is not truncated, that the declared
-//! total length equals 240 plus the declared hookData length, and that the amount, `localToken`
-//! and `localDepositor` fields are non-zero.
-//!
-//! Validation order matters and is fixed, because the faucet's checks run in the same order and the
-//! two must reject identically — a payload that fails here must fail on-chain for the same reason,
-//! or off-chain pre-validation would pass work to the chain that then fails.
-//!
-//! Decoding also NARROWS every field to the domain type it has to hold for the deposit to be
-//! mintable at all: the bytes32 identifiers to account ids, and the two uint256 amounts to the
-//! units the faucet mints in. Circle's encoding leaves the identifier fields open — `remoteToken`
-//! and `remoteRecipient` are opaque bytes32 there, and how a Miden AccountId packs into one is
-//! still an open decision (`DEV-10`). That stays open as a LAYOUT question. What is not open is
-//! that a deposit whose identifiers do not read as account ids under the shipped layout cannot be
-//! minted under any of them: the faucet mints to an account id or not at all. Refusing it here
-//! costs nothing and gives the rejection a name, while a later layout decision changes only the
-//! packaging these conversions apply.
-//!
-//! WARNING: Do not deposit with more than 3,840 bytes of `hookData`. The deposit cannot be claimed
-//! on Miden, and the USDC remains locked on the source chain.
+//! Do not deposit with more than 3,840 bytes of hook data: the deposit cannot be claimed on
+//! Miden and the USDC remains locked on the source chain. The final cap remains OPEN with Circle.
 
 use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;
@@ -101,11 +77,7 @@ impl DepositIntentField {
 // DEPOSIT NONCE
 // ================================================================================================
 
-/// Circle's unique per-deposit nonce.
-///
-/// It drives two derived values and nothing else: the `usedNonces` replay-guard key and the
-/// attested output note's serial number, which are the same Word. Both go through the shared
-/// `DC-4` hashing routine, so this type only names the value and delegates.
+/// Deposit nonce whose hash serves as both the replay key and output-note serial number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DepositNonce([u8; BYTES32_LEN]);
 
@@ -125,12 +97,12 @@ impl DepositNonce {
         bytes32_to_packed_felts(&self.0)
     }
 
-    /// The replay-guard key and output-note serial (`DC-4`).
+    /// The replay key and output-note serial number.
     pub fn to_word(&self) -> Word {
         self.to_storage_map_key().as_word()
     }
 
-    /// The replay-guard key and output-note serial (`DC-4`).
+    /// The replay key and output-note serial number.
     pub fn to_storage_map_key(&self) -> StorageMapKey {
         bytes32_to_storage_map_key(&self.0)
     }
@@ -544,8 +516,7 @@ fn widen(amount: AssetAmount) -> [u8; BYTES32_LEN] {
     bytes
 }
 
-/// Decodes a bytes32 identifier as the packaged Miden account id it has to be for the deposit to be
-/// mintable at all (`DEV-10`).
+/// Decodes the 32-byte representation of a Miden account ID.
 fn account_id(
     bytes: &[u8; DepositIntentHeader::SERIALIZED_SIZE],
     field: DepositIntentField,
@@ -575,7 +546,7 @@ fn write_bytes32(
     out[start..start + value.len()].copy_from_slice(value);
 }
 
-// TESTS — TV-DI-1..9
+// TESTS
 // ================================================================================================
 
 #[cfg(test)]
@@ -586,13 +557,7 @@ mod tests {
     use super::*;
     use crate::vectors::load;
 
-    /// TV-DI-1 (happy path, written first): a full header + hookData decodes to the exact per-field
-    /// values at the frozen wire offsets.
-    ///
-    /// The bytes32 fields are checked through the re-encoding rather than by comparing the decoded
-    /// domain types against the vector's hex: the wire bytes are the contract, and asserting them
-    /// at their offsets pins placement and value at once without re-deriving the packaging the
-    /// decoder just applied.
+    /// Re-encoding checks field placement and values against the original wire bytes.
     #[test]
     fn tv_di_1_positive_parse() {
         let v = load();
@@ -674,8 +639,6 @@ mod tests {
         }
     }
 
-    /// TV-DI-2..6 (negative, parametrized): each structural violation rejects with its
-    /// SPECIFIC variant (one named case per frozen harness row).
     #[rstest]
     #[case::tv_di_2_bad_magic("di-rej-bad-magic")]
     #[case::tv_di_3_bad_version("di-rej-bad-version")]
@@ -777,9 +740,6 @@ mod tests {
         );
     }
 
-    /// TV-DI-7 (boundary): the packed header is exactly 60 felts, equals the committed preimage,
-    /// stays within the 1024-felt bound, and the overflow vector rejects with `HookDataTooLarge`
-    /// (the hookData cap stays OPEN with Circle).
     #[test]
     fn tv_di_7_sixty_felts_and_1024_bound() {
         let v = load();
@@ -826,8 +786,6 @@ mod tests {
         );
     }
 
-    /// TV-DI-8 (determinism/immutability): decoding borrows the input immutably and the
-    /// bytes are unchanged afterwards (note-input immutability analogue).
     #[test]
     fn tv_di_8_input_immutable() {
         let v = load();
@@ -843,7 +801,6 @@ mod tests {
         assert_eq!(bytes, before, "input must be unchanged by parsing");
     }
 
-    /// TV-DI-9 (layout table): every field offset equals the wire-format byte offset.
     #[test]
     fn tv_di_9_offsets_table() {
         let expected: [(DepositIntentField, usize); 12] = [

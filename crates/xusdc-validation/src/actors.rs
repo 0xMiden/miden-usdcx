@@ -1,12 +1,4 @@
-//! Local test identities (actor keygen).
-//!
-//! Five keyed PUBLIC wallets — owner, DOM_PAUSER holder, DOM_MANAGER holder, recipient, holder
-//! (burner) — each `AuthSingleSig` (Falcon512) + `BasicWallet`, keys in the run's filesystem
-//! keystore; plus ONE locally generated secp256k1 attester keypair (the `gen_vectors` pattern:
-//! k256 keypair, `PublicKey::to_commitment` allowlist key). These are all throwaway local test
-//! identities — NEVER Circle's keys, endpoints, or anything derived from them. The attester is
-//! GENERATED and RECORDED here (harness foundation); its first on-chain use (`set_attester`) is
-//! LNV-2 scope.
+//! Generates disposable wallet and attester keys for local validation.
 
 use std::path::{Path, PathBuf};
 
@@ -168,8 +160,6 @@ impl AttesterKey {
             .map_err(|_| anyhow::anyhow!("compressed secp256k1 pubkey must be 33 bytes"))?;
         let pubkey_sec1_hex = hex_lower(&pubkey_sec1);
 
-        // The canonical allowlist keying primitive (the gen_vectors / TV-DUAL-5 oracle):
-        // miden-crypto's PublicKey parsed from the SEC1 bytes, then its commitment word.
         let public_key = PublicKey::read_from_bytes(&pubkey_sec1)
             .map_err(|e| anyhow::anyhow!("parsing the SEC1 pubkey into miden-crypto: {e}"))?;
         let commitment: Word = public_key.to_commitment();

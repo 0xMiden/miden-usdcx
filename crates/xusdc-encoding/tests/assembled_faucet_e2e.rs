@@ -87,8 +87,7 @@ fn stranger() -> AccountId {
 // the build-seeded TEST_DOMAIN comes from support)
 // ================================================================================================
 
-// the DC-14 rows are the ones the mint transport can carry; their localToken / localDepositor are
-// deliberately NOT address-shaped, so every mint below is a non-EVM source chain's deposit
+// The source token and depositor use all 32 bytes to cover non-EVM deposits.
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The attested wire amount of BOTH lifecycle mints. Under the provisional identity scale

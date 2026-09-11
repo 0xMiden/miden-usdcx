@@ -1,8 +1,4 @@
-//! Machine-readable rows-C/F run evidence (`evidence-cf.json` under the gitignored run root).
-//!
-//! Mirrors the LNV-1 [`crate::evidence`] shape: the pins, the full [`RowsCfObservations`] (every
-//! verdict + committed read-back — it is `Serialize`), the per-row PASS/FAIL verdicts, and the
-//! archived-node-log manifest. The validation record quotes from this file; full logs stay on disk.
+//! Serializes transaction observations, check results, and the node-log manifest.
 
 use std::fs;
 use std::path::PathBuf;

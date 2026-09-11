@@ -1,11 +1,4 @@
-//! Machine-readable rows-G/H/I/J run evidence (`evidence-gj.json` under the gitignored run root).
-//!
-//! Mirrors the LNV-1/2/3 evidence shape ([`crate::evidence`], [`crate::evidence_cf`],
-//! [`crate::evidence_de`]): the pins, the full [`RowsGjObservations`] (every burn read-back + the F7
-//! same-block RIV evidence — it is `Serialize`), the per-row PASS/FAIL verdicts, and the
-//! archived-node-log manifest. The validation record + the Circle/DEV-7 evidence packet quote from
-//! this file; full logs stay on disk. The byte-exact `GetNotesById` capture (the examples-repo /
-//! Njord deliverable) rides inside the observations (`g.getnotesbyid_note_bytes_hex`).
+//! Serializes transaction observations, check results, and the node-log manifest.
 
 use std::fs;
 use std::path::PathBuf;

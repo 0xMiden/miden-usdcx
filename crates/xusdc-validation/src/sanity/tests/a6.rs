@@ -1,17 +1,4 @@
-//! A6 offline tests — the `--faucet-id` (existing-faucet) mint must carry the DEPLOYED faucet's domain
-//! config, not the fixed BASE_VECTOR's. The mint gate (structural validation `deposit_intent_parser::validate`)
-//! compares a mint's `remoteDomain` against the faucet's stored `domain`, and `bytes32_to_storage_map_key(remoteToken)`
-//! against the stored identifier key. A production faucet was deployed with domain 10007 and an
-//! identifier = EthEmbeddedAccountId::from_account_id(faucet.id()).to_bytes32(); the fixed BASE_VECTOR carries domain 7, so structural validation
-//! rejected every mint (the A6 300s path-N timeout). These node-free tests inject a synthetic deployed
-//! config (a domain D != 7 and a faucet id F) and prove the produced payload carries D + the F-derived
-//! identifier. sourceDomain is NOT asserted on the payload: it is NOT a DepositIntent field and the
-//! mint proc never reads one — the mint gate compares ONLY remoteDomain + remoteToken (verified against
-//! `asm/standards/xreserve/deposit_intent_parser.masm::validate`).
-//!
-//! Split out of `sanity/tests.rs` (BUILDER-GATES G3 file-size ceiling) into this `tests::a6` submodule;
-//! the shared offline fixtures (`dummy_id`, `faucet_id`, `rng`) are reused from the parent `tests`
-//! module.
+//! Checks that mint payloads use the deployed faucet's domain and account ID.
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use xusdc_encoding::xreserve::encoding::{

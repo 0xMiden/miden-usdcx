@@ -1,18 +1,5 @@
-//! LNV-4 burn-lifecycle gate: the one-command rows-G/H/I/J run.
-//!
-//! Boots a FRESH local stack, deploys the production faucet (domain config build-seeded to match
-//! the mint vector, identifier_init as the first admin note),
-//! allowlists attester A, sets a minimum burn size, mints to the holder, then drives the whole
-//! burn arc — the Row-G two-block burn committed via the ntx-builder (path N) with the holder
-//! creating the production `XReserveBurnNote`; the Row-H F7 same-block-erasure RIV captured
-//! client-side (evidence only, no acceptability decision); the Row-I negatives proven by client-side
-//! kernel traps + committed-state read-backs; the Row-J conservation ledger — applies the
-//! rows-G/H/I/J assertion suite, writes `evidence-gj.json` (incl. the byte-exact `GetNotesById`
-//! capture), and tears the stack down. Exit code 0 = every row PASSES.
-//!
-//! ```text
-//! cargo run -p xusdc-validation --bin lnv4_rows_gj [-- --keep-stack]
-//! ```
+//! Runs burns, discovery, and conservation checks on a fresh local node.
+//! Writes evidence and stops the node unless `--keep-stack` is supplied.
 
 use anyhow::Result;
 use xusdc_validation::assertions_gj::{assert_g, assert_h, assert_i, assert_j};

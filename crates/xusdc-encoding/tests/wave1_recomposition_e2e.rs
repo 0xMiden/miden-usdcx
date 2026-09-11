@@ -132,10 +132,7 @@ async fn stock_mint_note_rejects_a_recipient_mismatch() -> Result<()> {
     .await
 }
 
-// The keep-zero fee gate has no e2e negative any more, and that is the stronger position: under
-// DC-14 the operator `feeAmount` does not travel on the wire at all, so a non-zero fee is
-// inexpressible rather than rejected. Reintroducing the relayer-fee split (DEV-8) is therefore a
-// transport change, not a policy change — see the faucet spec's fee-handling note.
+// The transport carries no relayer fee amount. Circle's relayer-fee decision remains OPEN.
 
 /// E2E NEGATIVE (nonce replay): replaying an attested nonce through the transport trips the
 /// frozen `ERR_XRESERVE_NONCE_REPLAY` — the policy's nonce-ledger write is load-bearing.

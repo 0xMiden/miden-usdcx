@@ -1,67 +1,10 @@
-//! **The `POST /v1/withdraw` submission path** — the `409` conflict-recovery, the bounded
-//! retry/backoff under the documented rate ceilings, and the per-burn idempotency claim that gates
-//! all of it.
+//! Submits authorized withdrawals after acquiring durable burn claims.
+//! Retries are bounded and restricted by the HTTP retry policy. A conflict ends submission:
+//! a matching withdrawal ID permits status polling; ambiguous or inconsistent responses require
+//! reconciliation. A conflict alone is never reported as a successful submission.
 //!
-//! This is the money path. Everything here follows from one sentence in Circle's documentation,
-//! quoted in full because every clause of it is load-bearing:
-//!
-//! > a `POST /v1/withdraw` 409 ("burnTxId already tied to an active withdrawal") is a **duplicate
-//! > conflict requiring recovery/reconciliation, NOT success**, and never a blind re-send. If
-//! > `conflict.withdrawalId` is present → recover by polling `GET /v1/withdrawal/{withdrawalId}`; if
-//! > only `conflict.burnTxId` is present → stop resubmission and mark reconciliation required; never
-//! > report withdrawal success from a 409 alone.
-//!
-//! (`CIRCLE-API-SURFACE.md:74`; `CIRCLE-DATA-SCHEMAS.md:271` — "**Idempotency:** none documented;
-//! `409`-on-duplicate-`burnTxId` provides withdrawal dedup"; `CIRCLE-API-SURFACE.md:20` — "no
-//! idempotency-key header documented in the OpenAPI or any API page".)
-//!
-//! # The 409 contract, made structural rather than remembered
-//!
-//! [`SubmitOutcome`] is a CLOSED type, and the `409` arms of this module can only construct
-//! [`SubmitOutcome::ConflictRecovered`], [`SubmitOutcome::ReconciliationRequired`] or
-//! [`SubmitOutcome::ConflictEchoMismatch`] — never [`SubmitOutcome::Submitted`], which is built on
-//! exactly one line, under a `201`. "A 409 reported as success" is therefore not a bug this code
-//! avoids; it is a value this code cannot produce.
-//!
-//! The same is true of the re-send. There is exactly one `POST /v1/withdraw` call site in this
-//! module (`attempt_withdraw`), it runs inside one backoff loop, and that loop retries only what
-//! [`is_retryable`](crate::circle::retry::is_retryable) approves — which a `409` never reaches,
-//! because a `409` is not an error here at all: it is an `Attempt::Conflict`, returned `Ok`, ending
-//! the loop.
-//!
-//! # Fail-closed, everywhere, on purpose
-//!
-//! Circle's `409` is the ONLY other guard against a double withdrawal, and there is no on-chain
-//! backstop behind it (contrast the deposit relayer, whose `usedNonces` assert makes a double mint
-//! impossible whatever the off-chain code does). So every ambiguous answer — an exhausted `5xx`
-//! budget, a `201` body that will not decode, a conflict that names no withdrawal, a status that
-//! echoes another burn — lands in [`SubmissionStatus::ReconciliationRequired`]: the burn is BLOCKED
-//! and an operator is told, rather than retried into a possible second release. Only a genuinely
-//! terminal `finalized` settles a burn as done; `failed`, `expired` and every pending status do
-//! not.
-//!
-//! # This is the ONLY entry point, because the alternative was a bypass
-//!
-//! [`submit_withdraw`] takes the [`SubmitLedger`] as an argument and claims every burn BEFORE it
-//! builds a request, so "submit without an idempotency claim" is not something a caller can express
-//! by forgetting to.
-//!
-//! `withdrawal_api` deliberately exposes no raw `withdraw` driver beside it — one POST,
-//! `201`-or-`Err`, no ledger — not even for the endpoint's shape to be tested against. Such a
-//! driver would be a hole, not a convenience: `WithdrawRequest` is `Clone` and
-//! `authorize_submission` is public, so a caller could mint two authorizations for ONE burn and
-//! submit it twice, entirely around the ledger. Calling this function "the production entry point"
-//! in prose would not close that; the driver's absence does — and the withdraw wire contract (the
-//! `batches[]` wrapper, the `201` array, the cardinality rule) is asserted through this path, which
-//! builds and decodes through the same code.
-//!
-//! # Still OPEN, and left that way
-//!
-//! Whether a Miden transaction id is an acceptable `burnTxId` is Circle's to confirm. This module
-//! keys the ledger, the echo check, and the conflict binding on whatever `burnTxId` the batch
-//! carries, and asserts nothing about that question. the credential question is likewise untouched:
-//! the retry
-//! loop re-sends whatever header the client's posture injects, and invents none.
+//! Only `finalized` completes a withdrawal. Uncertain outcomes retain the claim to prevent
+//! blind resubmission. Circle's acceptance of Miden transaction IDs remains OPEN.
 
 use crate::circle::client::CircleClient;
 use crate::circle::retry::with_backoff;

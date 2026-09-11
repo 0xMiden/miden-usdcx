@@ -1,3 +1,7 @@
+> This harness is currently excluded from the workspace. Its client and protocol dependencies
+> require migration before the commands below can run against the current encoding crate.
+> The notes below describe earlier validation runs.
+
 # xusdc-validation
 
 The Phase-4 §11.2 **local-node validation harness** (LNV track): deploys the PRODUCTION xUSDC

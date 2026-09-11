@@ -64,8 +64,7 @@ pub const ATTESTATION_WORDS: usize = 9;
 pub const TRANSPORT_PAYLOAD_WORD_OFF: usize = ATTESTATION_WORDS;
 pub const ATTESTATION_FELTS: usize = ATTESTATION_WORDS * 4;
 
-/// Felt offsets INSIDE the attestation section. The operator `feeAmount` is gone with `DC-14` —
-/// the faucet writes a zero fee into the preimage, so there is no wire field to corrupt.
+/// Felt offsets within the attestation section.
 pub const ATTESTATION_PUBKEY_FELT_OFF: usize = 0;
 pub const ATTESTATION_SIGNATURE_FELT_OFF: usize = 16;
 
@@ -83,9 +82,7 @@ pub fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
 
-/// Looks up a mint-payload vector by id in the canonical artifact — the same file the Rust codec
-/// tests read, so both sides exercise identical bytes. The `DC-14` rows are the ones whose
-/// `localToken` / `localDepositor` are address-shaped, which the transport requires.
+/// Looks up a mint-intent vector in the shared artifact.
 pub fn mi(id: &str) -> &'static MiVector {
     load()
         .families

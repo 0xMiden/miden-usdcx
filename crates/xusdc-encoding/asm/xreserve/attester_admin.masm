@@ -1,12 +1,5 @@
-# xreserve::attester_admin
-#
-# The authority-gated deposit-attester allowlist setter (`set_attester`): writes the
-# xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
-# reads at mint time. Under the account's role-based authority this procedure carries no
-# role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
-# seeded member is the bootstrap administrator's account. The setter is NOT pause-gated,
-# matching Circle's onlyOwner model, so the administrator can disable a compromised
-# attester while the faucet is paused.
+# updates the deposit-attester allowlist. Authorization uses the built-in ADMIN role.
+# the setter remains available while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority

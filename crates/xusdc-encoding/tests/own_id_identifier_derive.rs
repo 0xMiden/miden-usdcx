@@ -1,35 +1,5 @@
-//! The faucet checks a deposit intent against its own account id instead of a stored identifier —
-//! proven against the Rust encoding, over a spread of ids.
-//!
-//! The mint path stamps its own account id into every deposit intent's `remoteToken`, read on
-//! chain from `native_account::get_id` rather than from a slot somebody had to seed (`DC-14`).
-//! There is no compare any more — a deposit addressed elsewhere rebuilds a different message and
-//! dies at the signature — but the PACKAGING is now something the faucet emits, so it has to be
-//! exactly the packaging Circle reads. This suite runs the standards decode
-//! (`eth::bytes32_to_account_id`) over the bytes the Rust encoder produces, in account context,
-//! and requires the result to be the emitting account.
-//!
-//! The whole design rests on one claim: the bytes `EthEmbeddedAccountId::to_bytes32` produces off chain
-//! decode, on chain, back to exactly the account they were produced for — for every account id, not
-//! just the one a fixture happened to pick. If the two ever disagreed, the faucet would reject
-//! deposits Circle addressed to it, or — worse — accept deposits addressed elsewhere.
-//!
-//! So every assertion here is made on the result of EXECUTING the MASM inside a transaction, over
-//! bytes the RUST encoder produced and the caller pushes across the `call` boundary. The comparison
-//! itself happens in MASM (`account_id::eq` + `assert`), so a disagreement traps and the test fails
-//! with the driver's own error message; nothing is ever compared against itself.
-//!
-//! The spread is deliberate. One account id proves little about the byte swapping: an id whose
-//! limbs happened to be palindromic, or whose prefix and suffix happened to coincide, would pass a
-//! broken implementation. The suite therefore runs the decode over a dozen freshly generated ids
-//! spanning both account types, and then over the account id of a faucet composed by the production
-//! builder — the id that actually ships.
-//!
-//! Three controls keep the assertions honest: the same driver run against a DIFFERENT account's
-//! encoding must trap (so the compare really discriminates), a corrupted zero pad must trap (so the
-//! pad is asserted rather than ignored, which is what stops a `remoteToken` carrying the right id
-//! inside the wrong packaging), and two accounts must encode differently (so the encoding really
-//! reads the id).
+//! Checks that Rust account-ID encoding decodes to the same account in MASM.
+//! The cases cover generated accounts, the production faucet, a foreign account, and invalid padding.
 
 mod support;
 
@@ -111,12 +81,6 @@ pub proc assert_native_id
 end
 
 #! Asserts the caller's staged bytes32 decodes to the native account's own id.
-#!
-#! Under DC-14 the faucet WRITES `remoteToken` rather than decoding it, so this is no longer a
-#! compare the mint path performs — it is the inverse of the packaging the mint path now EMITS.
-#! The claim is unchanged and still load-bearing: the bytes the Rust encoder produces for an
-#! account id must decode back to that account, or a third party could not verify a mint note and
-#! the faucet's own emitted identifier would name someone else.
 #!
 #! Inputs:  [pad(16)]
 #! Outputs: [pad(16)]

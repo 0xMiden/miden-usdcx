@@ -1,16 +1,5 @@
-# xreserve::deposit_intent
-#
-# Circle's DepositIntent: its wire layout, and the faucet's on-chain realization of it.
-#
-# The mint note does not carry the full deposit intent — only the fields the
-# faucet has no other way to learn. Everything else is written here.
-#
-# Whether the intent is ADMISSIBLE is a separate question, and one that does not need the message:
-# `xreserve::mint_intent::validate` answers it over the carried fields, before anything here runs.
-#
-# The wire form is a fixed 240-byte big-endian header followed by variable-length hookData, staged
-# as u32-LE-packed felts (four wire bytes per felt). Several fields are wider than the value they
-# hold and carry it right-aligned behind a zero pad.
+# reconstructs the deposit message from the mint intent and faucet state.
+# the 240-byte big-endian header and hook data use four wire bytes per felt.
 
 use miden::core::mem
 use miden::protocol::account_id
@@ -93,11 +82,7 @@ const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Rebuilds the DepositIntent the attestation signed.
-#!
-#! On return the caller holds a message that is byte-for-byte what Circle signed if and only if the
-#! note was honest. Everything left for the caller is the attestation itself and the binding of the
-#! note's own output values.
+#! Rebuilds the signed deposit message from the mint intent and faucet state.
 #!
 #! Inputs:  [deposit_intent_ptr, mint_intent_ptr, mint_intent_num_words, amount]
 #! Outputs: [intent_num_bytes]
@@ -133,7 +118,6 @@ pub proc rebuild
     swap loc_store.AMOUNT_LOC
     # => [mint_intent_num_words]
 
-    # ---- bind the committed word count BEFORE reading past the fixed prefix ----
     # the hookData length picks both the keccak extent and the copy length, so nothing may read it
     # until the note has committed to a region big enough to hold what it claims.
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_HOOK_DATA_LEN_FELT_OFF mem_load
@@ -149,14 +133,10 @@ pub proc rebuild
     assert_eq.err=ERR_XRESERVE_MINT_NOTE_INTENT_WORDS
     # => []
 
-    # ---- every felt of the header gets a writer, before any field lands on top of it ----
-    # Global memory reads as zero from MASM, so we wouldn't technically need to zeroize the header,
-    # but keccak's host-side byte reader fails on one that was never written.
-    # See https://github.com/0xMiden/miden-vm/issues/3537.
+    # initialize every header cell; the Keccak host reader requires explicitly written memory.
     loc_load.DEPOSIT_INTENT_PTR_LOC exec.zero_header
     # => []
 
-    # ---- the scheme's own two fields. both constants are already in packed form ----
     push.0.0
     push.DEPOSIT_INTENT_VERSION_PACKED push.DEPOSIT_INTENT_MAGIC_PACKED
     # => [magic, version, 0, 0]
@@ -164,14 +144,12 @@ pub proc rebuild
     loc_load.DEPOSIT_INTENT_PTR_LOC add.MAGIC_FELT_OFF mem_storew_le dropw
     # => []
 
-    # ---- the amount, from the note's own asset value ----
     loc_load.AMOUNT_LOC loc_load.DEPOSIT_INTENT_PTR_LOC add.WRITE_AMOUNT_FELT_OFF
     # => [dst_ptr, amount]
 
     exec.packed_mem::store_byte_swapped
     # => []
 
-    # ---- the configured destination domain, read here so no caller can influence it ----
     exec.get_configured_domain
     # => [remote_domain]
 
@@ -182,7 +160,6 @@ pub proc rebuild
     loc_load.DEPOSIT_INTENT_PTR_LOC add.REMOTE_DOMAIN_FELT_OFF mem_store
     # => []
 
-    # ---- the token identifier: this account's own id, read from the kernel ----
     exec.native_account::get_id
     # => [own_id_suffix, own_id_prefix]
 
@@ -192,7 +169,6 @@ pub proc rebuild
     exec.packed_mem::store_account_id
     # => []
 
-    # ---- the carried recipient ----
     # validated because a structurally invalid id would rebuild a perfectly
     # consistent message and then mint a note nobody can consume.
     loc_load.MINT_INTENT_PTR_LOC exec.load_carried_recipient
@@ -207,7 +183,6 @@ pub proc rebuild
     exec.packed_mem::store_account_id
     # => []
 
-    # ---- the two source-chain addresses ----
     # each fills its whole field, so the copy is the same verbatim bytes32 move the nonce takes.
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_LOCAL_TOKEN_FELT_OFF
     loc_load.DEPOSIT_INTENT_PTR_LOC add.LOCAL_TOKEN_FELT_OFF
@@ -223,7 +198,6 @@ pub proc rebuild
     exec.packed_mem::memcopy_bytes32
     # => []
 
-    # ---- the depositor's fee ceiling ----
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_MAX_FEE_FELT_OFF mem_load
     loc_load.DEPOSIT_INTENT_PTR_LOC add.WRITE_MAX_FEE_FELT_OFF
     # => [dst_ptr, max_fee]
@@ -231,7 +205,6 @@ pub proc rebuild
     exec.packed_mem::store_byte_swapped
     # => []
 
-    # ---- the nonce ----
     loc_load.MINT_INTENT_PTR_LOC add.MINT_INTENT_NONCE_FELT_OFF
     loc_load.DEPOSIT_INTENT_PTR_LOC add.NONCE_FELT_OFF
     # => [dst_ptr, src_ptr]
@@ -239,7 +212,6 @@ pub proc rebuild
     exec.packed_mem::memcopy_bytes32
     # => []
 
-    # ---- the hookData length, and the hookData itself ----
     loc_load.HOOK_DATA_LEN_LOC exec.utils::swap_u32_bytes
     # => [packed_hook_data_len]
 
@@ -320,4 +292,3 @@ proc load_carried_recipient
     swap add.MINT_INTENT_REMOTE_RECIPIENT_SUFFIX_FELT_OFF mem_load
     # => [recipient_suffix, recipient_prefix]
 end
-

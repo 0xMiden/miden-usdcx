@@ -32,12 +32,7 @@ pub const TX_PROVER_PORT: u16 = 50051;
 /// operational (row K exercises it; rows A/B do not depend on it).
 pub const NETWORK_TX_AUTH_TOKEN: &str = "lnv-local-network-tx-auth";
 
-/// The domain-config parameters of a run. Since the Wave-1 S1 recomposition the three fields
-/// `domain`/`source_domain`/`xreserve_contract` are BUILD-SEEDED via the builder's required
-/// `with_domain_config` (DEC-4), and ONLY the `identifier` is committed post-deploy by the owner's
-/// `identifier_init` note (the minimized replacement of the former four-field `domain_init`).
-/// LOCAL TEST values (Circle's real domain assignment is DEV-gated and stays OPEN — these exist to
-/// prove the seed/write/read-back path, not to bind a real domain).
+/// Local test configuration. Circle's domain assignment remains OPEN.
 #[derive(Debug, Clone)]
 pub struct DomainParams {
     /// `domain` (u32) — the Miden-side domain id, element 0 of the domain slot.
@@ -63,8 +58,7 @@ impl DomainParams {
         bytes32_to_storage_map_key(&self.identifier_bytes).into()
     }
 
-    /// The fixed LNV-1 test parameters (recorded in the evidence; values are arbitrary non-zero
-    /// patterns chosen to make read-back mismatches loud).
+    /// Distinct test values recorded with each run.
     pub fn lnv1() -> Self {
         Self {
             domain: 1313,
@@ -148,7 +142,7 @@ impl StackConfig {
     }
 }
 
-/// Full LNV-1 run configuration.
+/// Local-node run configuration.
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub stack: StackConfig,
@@ -166,14 +160,12 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
-    /// A fresh run rooted under `local-node-data/lnv1/<label>` in the repo (gitignored) — the
-    /// historical single-slice layout the LNV-1..4 binaries use.
+    /// Creates a run under `local-node-data/lnv1/<label>`.
     pub fn fresh(repo_root: &Path, label: &str) -> Self {
         Self::fresh_under(repo_root, "lnv1", label)
     }
 
-    /// A fresh run rooted under `local-node-data/<track>/<label>` (gitignored). The LNV-5
-    /// consolidated gate runs under the `lnv5` track.
+    /// Creates a run under `local-node-data/<track>/<label>`.
     pub fn fresh_under(repo_root: &Path, track: &str, label: &str) -> Self {
         let run_root = repo_root.join("local-node-data").join(track).join(label);
         Self {

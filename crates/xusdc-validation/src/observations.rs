@@ -8,8 +8,7 @@ use miden_protocol::account::{Account, AccountId};
 
 use crate::config::DomainParams;
 
-/// Everything the LNV-1 row-A/B run observed on the real node. All `Account` values are the
-/// NODE's answers (`GetAccount` via RPC), never the client's local store state.
+/// Deployment and configuration observations. Account values come from node responses.
 #[derive(Debug)]
 pub struct RowsAbObservations {
     /// The `main` commit the run was built from (toolchain ledger; recorded, not asserted).

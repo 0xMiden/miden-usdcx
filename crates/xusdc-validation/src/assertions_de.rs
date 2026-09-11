@@ -19,21 +19,13 @@ use crate::observations_de::{
     MintHappy, MintNegative, RowsDeObservations, Verdict, MARKER_CLEAR, MARKER_SET,
 };
 
-// EXACT on-chain error substrings the Row-E rejects must carry (single source of truth in the
-// shipped MASM: `deposit_intent_parser.masm`, `attestation_verify.masm`, `mint_policy.masm` — the
-// Wave-1 S1 home of the attestation pipeline the former `xreserve_mint.masm` drove). A reject that
-// does not carry ITS error is not the gate the negative proves — the assertion rejects it. All
-// four are xreserve-OWNED gates and carry the message on a client-side trap (LNV-2 posture: only
-// STOCK miden-standards gates surface code-only); the matcher still also accepts the derived
-// `err_code` for robustness against a future protocol string/pin drift.
-// ================================================================================================
+// Match the expected error text or its derived error code.
 
-/// R-MINT-12 (replay protection): the deposit intent's nonce is already in `usedNonces` (replay).
+/// The deposit nonce has already been used.
 pub const ERR_XRESERVE_NONCE_REPLAY: &str = "deposit intent nonce has already been used";
-/// R-MINT-14 (attestation verification): the ECDSA signature does not verify over `keccak256(payload)` for the candidate
-/// pubkey (a forged signature or a payload tampered after signing).
+/// The signature does not verify over the deposit message.
 pub const ERR_XRESERVE_SIG_INVALID: &str = "deposit attestation signature verification failed";
-/// R-MINT-13 (attestation verification): the candidate attester pubkey's commitment is not in the on-chain allowlist.
+/// The attester commitment is not enabled.
 pub const ERR_XRESERVE_DISALLOWED_PUB_KEY: &str =
     "deposit attester pubkey commitment is not allowlisted";
 /// F2 (amount validation): the operator `feeAmount` must be zero (fail-loud MVP).

@@ -1,13 +1,11 @@
-//! Committed generator of the ONE canonical golden-vector artifact
-//! (`tests/vectors/xreserve-encoding-vectors.json`).
+//! Generates `tests/vectors/xreserve-encoding-vectors.json`.
 //!
 //! Arithmetic and layout expectations are derived here with exact integer math (the formula is
 //! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
 //! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
-//! `AccountIdBuilder::build_with_seed`. Every family is derived independently of the code it
-//! checks, except the `mi` carried and rebuilt felts, which are recorded from the Rust mirror and
-//! pinned against the MASM writer. Regeneration is an explicit, reviewed act:
-//! `cargo run --bin gen_vectors`.
+//! `AccountIdBuilder::build_with_seed`. Mint-intent transport and rebuilt felts come from the
+//! Rust mirror and are checked against MASM execution. Regenerate with:
+//! `cargo run --locked -p xusdc-encoding --bin gen_vectors --features vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
@@ -582,15 +580,8 @@ fn main() {
             "hookDataLen = 3860 => 60 + 965 = 1025 felts > 1024 NoteStorage bound",
         ));
     }
-    // ---- mp family (DC-14 carried payload + preimage reconstruction) -------------------
-    // The faucet id is SYNTHETIC and fixed: a real one hashes over the account's own code, so the
-    // rebuilt preimage's identity fields could not be baked here at all. It is a different id from
-    // the recipient's, so a row that confused the two would not pass.
-    //
-    // These intents are DC-14-shaped, which the older `di` rows are not: `remoteToken` carries the
-    // faucet's account id in its bytes32 packaging. That narrowing is the point of the reject rows
-    // below. `localToken` / `localDepositor` fill their whole bytes32 and are deliberately not
-    // address-shaped, so the accept rows exercise a source chain that is not EVM-based.
+    // Mint-intent vectors use a fixed faucet ID distinct from the recipient.
+    // The source token and depositor fill all 32 bytes to exercise non-EVM deposits.
     let faucet_id = &ids[1];
     let faucet_b32 = r_b_bytes32(faucet_id);
     let mi_domain = 7u32;

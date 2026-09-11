@@ -1,45 +1,8 @@
-//! The burn-evidence assembler — and the honesty of what it tells Circle.
+//! Assembles burn evidence from [`BurnEvidenceReads`], keyed by note ID.
+//! Note inclusion proves creation; transaction linkage and spend observations are node-trusted.
+//! Missing, ambiguous, or conflicting reads return [`EvidenceError::ReconciliationRequired`].
 //!
-//! The governing rule is one sentence: **retrievable ≠ cryptographically proved.** Circle releases
-//! native USDC against the package built here, so every label on it is a claim about what Miden can
-//! prove. A label that is generous in the wrong direction releases money against a burn that did
-//! not happen. The format is the highest-risk deviation in the integration and is still OPEN with
-//! Circle: whether a Miden transaction id is acceptable as a `burnTxId` at all is Circle's to say.
-//!
-//! # The two overclaims this module makes impossible
-//!
-//! **Strength.** `SyncTransactions` linkage and the `SyncNullifiers` spend observation carry no
-//! inclusion proof — the node asserts them. Labelling either CRYPTOGRAPHIC would tell Circle the
-//! partner can prove what it can only repeat.
-//!
-//! **Scope**, which is subtler. A `GetNotesById` inclusion proof IS cryptographic, but what it
-//! proves is that the note was **created** — it is silent on consumption. So no element may be
-//! both cryptographic and a consumption claim, and `EvidencePackage::consumption_trust` answers
-//! the question Circle actually cares about, which today is always NODE-TRUSTED. A genuine record
-//! is the note id PLUS a consumption signal; neither half suffices, and only Circle's terminal
-//! `finalized` settles a withdrawal.
-//!
-//! # A `burnTxId`-only path is structurally absent
-//!
-//! Miden has no `GetTransactionById`, so resolving a burn from a transaction id is not merely
-//! discouraged — it is impossible. That is encoded as an absence rather than a rule to remember:
-//! [`BurnEvidenceReads`] has no by-hash method and [`assemble_evidence`] keys on a `NoteId`, so no
-//! such call exists to be written.
-//!
-//! # Fail-closed
-//!
-//! Evidence that is missing, ambiguous, or self-contradicting yields
-//! [`EvidenceError::ReconciliationRequired`], never a package — the same name the idempotency store
-//! uses for a `409` it cannot attribute, because "the safe answer when we cannot tell" should have
-//! exactly one name in this service.
-//!
-//! # Boundary
-//!
-//! [`BurnEvidenceReads`] is a port; the real reads are PARKED until `miden-client` has a v0.16
-//! release. It is shaped as a 1:1 image of the three RPCs that client will expose, so those reads
-//! map onto it without reshaping the assembler. **If node evidence ever contradicts a label —
-//! stronger OR weaker — stop and surface it. Labels change through a deliberate Circle-facing
-//! decision, never silently.**
+//! Circle's acceptance of Miden transaction IDs and additional burn evidence remains OPEN.
 
 use core::fmt;
 

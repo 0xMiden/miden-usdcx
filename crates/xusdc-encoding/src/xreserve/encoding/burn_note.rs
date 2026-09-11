@@ -63,7 +63,7 @@ impl XReserveBurnItems {
     }
 }
 
-// TESTS — TV-BN-1..4
+// TESTS
 // ================================================================================================
 
 #[cfg(test)]
@@ -74,8 +74,6 @@ mod tests {
     use super::*;
     use crate::vectors::load;
 
-    /// TV-BN-1 (round-trip + golden layout): `encode` matches the golden felts and
-    /// `decode(encode(x)) == x` across the accept vectors (incl. boundary values).
     #[test]
     fn tv_bn_1_round_trip() {
         let v = load();
@@ -111,10 +109,6 @@ mod tests {
         }
     }
 
-    /// TV-BN-2 (destination-in-items): the destination fields land in the
-    /// payload felt layout (`destDomain` at `[0]`, `destRecipient` at `[1..9]`). `encode` has no
-    /// metadata path — its only output is `Vec<Felt>`, so `metadata.sender` is structurally reserved
-    /// for the depositor.
     #[test]
     fn tv_bn_2_destination_in_items() {
         let v = load();
@@ -131,8 +125,6 @@ mod tests {
         }
     }
 
-    /// TV-BN-3 (note-model placement): the payload fits the note-model felt bound
-    /// (≤ 1024 felts), not `NoteInputs`/`aux`.
     #[test]
     fn tv_bn_3_note_storage_placement() {
         let v = load();
@@ -143,8 +135,6 @@ mod tests {
         }
     }
 
-    /// TV-BN-4 (malformed → exact error): every malformed-items vector decodes to the exact
-    /// `BurnItemsMalformed` (wrong length, out-of-range domain, or a non-u32 limb).
     #[rstest]
     #[case("bn-rej-len-short")]
     #[case("bn-rej-len-long")]

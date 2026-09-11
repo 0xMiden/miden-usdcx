@@ -1,23 +1,5 @@
-//! Rows-G (two-block burn) + H (F7 same-block RIV) + I (burn negatives) + J (conservation)
-//! assertion suite — written test-first, before the real-node driver (`crate::rows_gj`), judging the
-//! [`RowsGjObservations`] it produces.
-//!
-//! Matrix rows:
-//! - **G burn two-block (the Circle read-path proof)** — a holder creates the production
-//!   `XReserveBurnNote` (block N committed) → the faucet consumes it (block N+1) ⇒
-//!   `token_supply -= amount`; the committed note + nullifier PERSIST; `SyncNotes` filtered by tag
-//!   `0x4255524E` discovers it; `GetNotesById` returns the full note + inclusion proof.
-//! - **H burn same-block (the F7 RIV — EVIDENCE, not policy)** — create + consume the production
-//!   `XReserveBurnNote` within one block; record precisely what survives. This is the DEV-7 evidence
-//!   packet; the assertion verifies the evidence was CAPTURED and the erasure was OBSERVED, and does
-//!   NOT decide acceptability (DEV-7 stays OPEN).
-//! - **I burn negatives** — each REJECTED AND zero state change: below `min_burn_size`; while paused;
-//!   wrong-asset (asset not this faucet's).
-//! - **J conservation ledger** — `token_supply == Σ(minted) − Σ(burned)` exactly; per-step supply
-//!   reads recorded; holder balance consistent.
-//!
-//! Every check reads the NODE-fetched verdicts/read-backs carried by [`RowsGjObservations`] — a green
-//! here is a statement about the real chain, not about the client's local store.
+//! Checks burn execution, discovery, rejection, and supply conservation.
+//! Same-block observations record evidence; Circle's burn-evidence decision remains OPEN.
 
 use anyhow::{bail, ensure, Result};
 
@@ -25,26 +7,15 @@ use crate::observations_gj::{
     BurnNegative, BurnSameBlock, BurnTwoBlock, ConservationLedger, RowsGjObservations, Verdict,
 };
 
-/// The fixed, enumerated xUSDC burn-event note tag (DC-7): a FULL 32-bit exact-match value, ASCII
-/// `"BURN"`. Single-sourced from the production note factory so a tag drift there fails the row.
+/// Burn-note tag from the production note factory.
 pub use xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 
-// EXACT on-chain error substrings the Row-I rejects must carry (single source of truth in the
-// shipped MASM — since the Wave-1 S1 recomposition ALL THREE are STOCK/KERNEL gates: the stock
-// `min_burn_amount.masm` floor policy for below-min, the stock `pausable` primitive for pause, and
-// the stock kernel `asset::validate_origin` for the wrong-asset origin gate). A reject that does
-// not carry ITS error is not the gate the negative proves — the assertion rejects it. Stock gates
-// surface a client-side trap CODE-only (LNV-2 posture), so the matcher also accepts the derived
-// `err_code`.
-// ================================================================================================
+// Match standard-policy and asset-origin errors by text or derived code.
 
-/// R-BURN-2 — the STOCK `MinBurnAmount::check_policy` floor gate (Wave-1 S1: the custom
-/// `burn_policy.masm` is deleted; the stock policy asserts `min <= amount` against the
-/// `MinBurnAmount::slot_name()` floor slot).
+/// The burn amount is below the configured minimum.
 pub const ERR_BURN_BELOW_MIN: &str =
     "amount to be burned must exceed specified minimum burn amount";
-/// R-BURN-3 / the stock pause gate (`pausable::assert_not_paused`, `ERR_PAUSABLE_IS_PAUSED`): the
-/// faucet is paused, so `execute_burn_policy` halts the burn before the policy runs.
+/// The faucet is paused.
 pub const ERR_PAUSED: &str = "the contract is paused";
 /// The stock kernel asset origin gate (`asset::validate_origin`, `ERR_FAUCET_IS_NOT_ASSET_ORIGIN`;
 /// v16 faucet.masm:72 — v15 routed through `fungible_asset::validate_origin` instead): the burned
@@ -206,22 +177,9 @@ pub fn assert_g(o: &BurnTwoBlock) -> Result<()> {
     Ok(())
 }
 
-/// **Row H — burn same-block (the F7 RIV, EVIDENCE not policy).**
-///
-/// This assertion verifies the DEV-7 evidence packet is COMPLETE and the RIV was exercised on the
-/// REAL node — it makes **no acceptability decision** (DEV-7 stays OPEN). It is NOT a mere
-/// "fields non-empty" check: it pins the substantive real-node observations.
-/// - the production burn note IS a valid burn (consume ACCEPTED) carrying the fixed xUSDC burn tag;
-/// - the executed consume applies a supply delta of EXACTLY the burned amount — the "supply delta
-///   behavior" the RIV must record (not just that a never-committed note is absent);
-/// - the REAL-NODE round-trip: SUBMITTING the faucet's consume via user RPC was REJECTED (a
-///   committed same-block create+consume is unreachable on this network-account stack), with the
-///   node rejection captured — this is what makes the row a real-node test rather than an unsubmitted
-///   local execute;
-/// - on-chain `token_supply` is UNCHANGED (neither the execute nor the rejected submit committed);
-/// - the note never commits: NO committed note, NO on-chain nullifier, `SyncNotes` does NOT discover
-///   it — the discovery-starvation the RIV records;
-/// - the raw `GetNotesById` evidence + the mechanism description were captured.
+/// Checks the same-block probe's execution result, rejected submission, unchanged committed
+/// supply, and absent note and nullifier. Requires the raw discovery response and explanation.
+/// Circle's acceptance decision remains OPEN.
 pub fn assert_h(o: &BurnSameBlock) -> Result<()> {
     let ctx = format!("H[{}]", o.label);
     ensure!(
@@ -296,10 +254,7 @@ pub fn assert_h(o: &BurnSameBlock) -> Result<()> {
     Ok(())
 }
 
-/// The three DISTINCT Row-I burn-negative vectors the matrix requires, by canonical label. Coverage
-/// is keyed on the LABEL (never the gate error alone), the LNV-3 audit lesson: distinct attack
-/// surfaces that could collide on a shared error string must each be required independently, so a
-/// driver cannot silently drop one.
+/// Required burn-rejection cases, identified by label so a shared error cannot hide a missing case.
 const REQUIRED_NEGATIVES: [&str; 3] = ["below-min", "while-paused", "wrong-asset"];
 
 /// **Row I — burn negatives.**

@@ -1,26 +1,4 @@
-//! The structural half: **the things the orchestration must not be able
-//! to do.**
-//!
-//! Its companion `listener_orchestration.rs` drives the flow and counts what happened. This file
-//! asserts what nothing can do, which needs a different kind of test: no test can call a function
-//! that must not be callable, or observe a route that does not exist. So these read the SOURCE, the
-//! way `evidence_structural_absence.rs` and `submit_idempotency.rs`'s
-//! `no_public_api_can_post_a_withdrawal_without_the_ledger` do — a decision the compiler cannot
-//! hold is pinned mechanically, so it cannot quietly revert.
-//!
-//! Four absences, each of which would be a fund-safety defect:
-//!
-//! * **The orchestration cannot reach the raw signer.** `attester::sign` signs any 32 bytes by
-//!   design, and it stays public because the structural test is its subject — but the withdrawal
-//!   flow routes through `validate::sign_validated`, which consumes the validation token, and
-//!   through nothing else.
-//! * **The orchestration cannot build a batch beside the quorum.** `WithdrawBatch::new` accepts any
-//!   `burnSignatures.len() >= 2` — the wire schema's rule, not Circle's verifier's. Only
-//!   `build_withdraw_batch`, which takes a `QuorumBundle`, may assemble the submission.
-//! * **A `QuorumBundle` cannot be manufactured.** Every shape check lives in `assemble_quorum`; a
-//!   second construction site would be a bundle built beside them.
-//! * **The payload and the depositor cannot come from different notes.** There is no
-//!   independent-argument prepare-request builder to reach past `DiscoveredBurn`.
+//! Checks that orchestration uses validated signing, quorum assembly, and discovery outputs.
 
 use withdrawal_listener_attester::attester::assemble_quorum;
 use withdrawal_listener_attester::circle::schema::WithdrawBatch;

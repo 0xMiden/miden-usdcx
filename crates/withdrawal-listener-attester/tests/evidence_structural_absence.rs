@@ -1,23 +1,4 @@
-//! The structural half: **the things that must NOT exist.**
-//!
-//! Its companion `evidence_trust_labeling.rs` asserts what the assembler DOES. This file asserts
-//! what nothing can do, which needs a different kind of test: no test can call a function that must
-//! not be callable, so these read the source and the wire instead. That is the crate's established
-//! idiom for a property that is an ABSENCE (`submit_idempotency.rs`'s
-//! `no_public_api_can_post_a_withdrawal_without_the_ledger`; `crate_posture.rs`'s manifest reads) —
-//! a decision the compiler cannot hold is pinned mechanically, so it cannot quietly revert.
-//!
-//! Three absences, each of which would be a fund-safety defect:
-//!
-//! * **No `burnTxId`-only resolution** (never a transaction id). `GetTransactionById` does not
-//!   exist on Miden, so there is nothing to resolve a burn from a transaction id with.
-//! * **No way to manufacture an `EvidencePackage`.** Every fail-closed check lives inside
-//!   `assemble_evidence`; a public constructor would be a door around all of them.
-//! * **No invented wire transport.** `burnTxId` is the only evidence field `POST /v1/withdraw`
-//!   documents, and whether Circle would take more is OPEN with Circle, and not this crate's to
-//!   assume.
-//!
-//! Split from `evidence_trust_labeling.rs` to stay within the ~700-line Rust file ceiling.
+//! Checks that evidence construction and lookup cannot bypass the assembler.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
@@ -35,13 +16,6 @@ mod evidence_support;
 use evidence_support::support;
 use evidence_support::*;
 
-// ANTI-the evidence-labelling trap — there is no `burnTxId`-only path, and it is absent rather than
-// merely unused
-// ================================================================================================
-
-/// `GetTransactionById` / tx-by-hash **DOES NOT EXIST** on Miden. A path that resolved a burn
-/// from a `burnTxId` alone therefore could not exist either — so the port's own source is read
-/// here for the method names that must be absent from it.
 #[test]
 fn no_port_method_resolves_a_transaction_by_its_hash() {
     let source = evidence_source();
@@ -61,19 +35,6 @@ fn no_port_method_resolves_a_transaction_by_its_hash() {
     }
 }
 
-/// **An `EvidencePackage` cannot be manufactured — the assembler is the only way to get one.**
-///
-/// This is the load-bearing half of every other assertion in this file. All the fail-closed checks
-/// — the observed spend, the linkage, the block agreement — live inside `assemble_evidence`, and a
-/// public `EvidencePackage::new` would let a caller skip every one of them and hand Circle a
-/// package whose `burnTxId`, nullifier and block are literals nobody read from a node. The value
-/// would be indistinguishable from an assembled one: same type, same labels, same
-/// `consumption_trust()` reporting NODE-TRUSTED for consumption evidence that was never observed at
-/// all.
-///
-/// So the constructor is `pub(crate)`: a package outside this crate is proof the checks ran. The
-/// honest limit is the same as the ledger's — in-crate code can still call it, and in-crate the one
-/// caller is `assemble_evidence`, which is what the sweep below pins.
 #[test]
 fn an_evidence_package_cannot_be_constructed_outside_the_crate() {
     let types = std::fs::read_to_string(
@@ -97,8 +58,6 @@ fn an_evidence_package_cannot_be_constructed_outside_the_crate() {
     );
 }
 
-/// …and in-crate, `assemble_evidence` is the only thing that mints one. `evidence.rs` is where the
-/// checks are, so a second construction site anywhere else would be a package built beside them.
 #[test]
 fn the_assembler_is_the_only_construction_site_for_a_package() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

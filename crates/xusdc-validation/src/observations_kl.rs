@@ -1,25 +1,5 @@
-//! The observation records for matrix rows K (ntx-builder liveness / path N) and L (clean logs),
-//! plus the consolidated full-matrix observation bundle the LNV-5 gate run produces.
-//!
-//! Same OBSERVE-vs-JUDGE split as the LNV-1..4 observation modules ([`crate::observations`],
-//! [`crate::observations_cf`], [`crate::observations_de`], [`crate::observations_gj`]): the
-//! derivations OBSERVE (extract the path-N commits the sub-runs already proved on-chain, quote the
-//! ntx-builder's node-side execution markers, and classify every archived log line); the row-K/L
-//! assertions JUDGE. Keeping the two apart makes every check unit-testable against synthetic
-//! observations (the default suite) and keeps the derivations free of pass/fail policy.
-//!
-//! Row K settles the F5-deferred liveness question — *does the node's ntx-builder AUTO-execute the
-//! mint (and burn) consumption when the note carries the routing attachment + exec hint?* — with a
-//! verdict + evidence **either way**: a YES needs observed path-N mint AND burn commits plus
-//! node-side log markers; a NO needs the exact cause (version/config) plus the deployment-posture
-//! statement "relayer executes client-side (path C)". Path N is a liveness scenario, not a gate
-//! blocker — the core matrix passes on path C regardless.
-//!
-//! Row L defines "clean": ZERO unexplained ERROR/panic lines across every archived service log for
-//! the whole run, with every warning triaged + explained. Lines produced BY our deliberate
-//! negatives (the node-side rejections that ARE the negatives' evidence) are triaged against an
-//! explicit expected-pattern table ([`crate::rows_kl::EXPECTED_LOG_LINES`]); anything else fails
-//! the row.
+//! Observations for automatic note execution and node-log checks.
+//! The full run combines these with deployment, administration, mint, and burn observations.
 
 use serde::Serialize;
 
@@ -120,8 +100,7 @@ pub struct RowLObservations {
     pub untriaged_warnings: Vec<FlaggedLine>,
 }
 
-/// Everything the LNV-5 consolidated gate run observed: the four sub-run observation records
-/// (rows A–J, each driven on the SAME fresh node in matrix order) plus the derived rows K and L.
+/// Combined observations from a single node run.
 #[derive(Debug)]
 pub struct FullMatrixObservations {
     /// Rows A/B (deploy + recognize; `identifier_init` init-once).

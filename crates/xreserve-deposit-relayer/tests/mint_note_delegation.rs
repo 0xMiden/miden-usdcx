@@ -197,9 +197,7 @@ fn t_routing_attachment_binds_the_faucet_network_account() {
 /// different routing bind and a different tag. (Guards against a builder that hardcoded either.)
 #[test]
 fn t_the_faucet_argument_drives_the_route_and_the_tag() {
-    // the intent has to be ADDRESSED to the second faucet: under `DC-14` a note whose payload names
-    // a different `remoteToken` is refused at build time, so this test cannot reuse the standard
-    // vector to prove what the faucet argument drives.
+    // Retarget the intent along with the note; otherwise the builder rejects it first.
     let attestation = validated_over(&fixtures::canonical_payload_addressed_to(
         fixtures::TEST_VECTOR_PAYLOAD_ID,
         other_faucet_id(),
@@ -324,14 +322,7 @@ fn t_storage_embeds_the_attested_output() {
     );
 }
 
-/// The validated DepositIntent is COMPRESSED into the transport's payload sub-region — at the FIXED
-/// word offset the policy reads it from. Its elements are the shared encoding crate's OWNED carried
-/// form (`MintIntent::to_felts`, consumed here BY REFERENCE — the test does not restate the 24-felt
-/// shape or the ⌈hookDataLen/4⌉ tail, it calls the owner), zero-padded to the word boundary. And
-/// the sub-region really tracks the VALIDATED payload that was handed in: attestations over two
-/// DIFFERENT canonical payloads produce different transports.
-///
-/// The DepositIntent itself does NOT travel (`DC-14`); the faucet rebuilds it from these felts.
+/// The attachment must contain the shared codec's mint-intent felts, padded to a word boundary.
 #[test]
 fn t_the_transport_payload_sub_region_is_the_compressed_intent() {
     let attester = attester_pubkey();

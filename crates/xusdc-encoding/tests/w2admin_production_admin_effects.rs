@@ -41,8 +41,6 @@ use xusdc_encoding::xreserve::encoding::Signature;
 const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
-// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
-// which the mint transport requires
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 const REMOTE_TOKEN_BYTE_OFF: usize = 11 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;

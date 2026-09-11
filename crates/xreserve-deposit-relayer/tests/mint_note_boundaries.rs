@@ -1,27 +1,5 @@
-//! The mint-note builder — the FAIL-CLOSED boundary: every input the builder can be handed that
-//! the shared encoding crate's factory refuses, and the operator-configured attester key.
-//!
-//! Why these paths are real, not hypothetical: the relayer's envelope validation
-//! ([`ValidatedAttestation`]) binds `messageHash == keccak256(payload)` and shape-checks the
-//! 65-byte signature — it does NOT parse the DepositIntent. So a payload Circle really signed,
-//! whose digest really binds it, can still be structurally invalid (bad magic, a zero amount,
-//! hookData past the 1024-felt NoteStorage bound). Those reach the ingest path, which must surface
-//! them as a typed, NON-retryable error — never as a panic, never as a malformed note, and never as
-//! an infinite retry loop that wedges the relayer on one bad attestation.
-//!
-//! The path has two steps and each owns its own rejects: the shared codec's DECODE refuses a
-//! payload that is not a well-formed DepositIntent, and the BUILDER refuses one that is well-formed
-//! but not carryable by this faucet's mint transport.
-//!
-//! The reject payloads are the canonical golden-artifact vectors — the `di-rej-*` rows for the
-//! structural parse and the `mi-rej-*` rows for the `DC-14` addressing and carriability checks —
-//! consumed BY REFERENCE from the ONE artifact that drives the shared encoding crate's own MASM and
-//! Rust suites, never a blob hand-rolled here (which would be a second, drifting definition of the
-//! DepositIntent layout).
-//!
-//! Errors are asserted by EXACT variant AND by their preserved source chain: an operator must be
-//! able to `downcast_ref` back to the shared encoding crate's `EncodingError` and read WHICH
-//! structural rule the payload broke. A flattened string would have thrown that away.
+//! Checks mint-note rejection of malformed or unsupported deposit intents.
+//! Uses the shared golden vectors and checks both error variants and their source errors.
 
 mod fixtures;
 mod mint_support;
@@ -58,10 +36,7 @@ fn t_a_payload_unit04_refuses_is_a_typed_decode_error(
     assert_decode_error(&validated_over_vector_id(vector_id), expected);
 }
 
-/// The hookData bound is the one structural reject that survives the PARSE: a payload can be a
-/// well-formed, correctly-addressed DepositIntent and still carry more hookData than a
-/// `NoteStorage` can hold. It therefore needs a `DC-14`-shaped payload — one that reaches the
-/// bound instead of tripping an addressing check first.
+/// Use a correctly addressed payload so the builder reaches the hook-data limit.
 #[test]
 fn t_an_oversized_hookdata_is_a_typed_decode_error() {
     let attestation = validated_over(&fixtures::oversized_hook_data_payload());
@@ -69,15 +44,8 @@ fn t_an_oversized_hookdata_is_a_typed_decode_error() {
     assert_decode_error(&attestation, EncodingError::HookDataTooLarge);
 }
 
-/// The addressing rejects `DC-14` added: an intent for another faucet, or one carrying a field
-/// the mint transport cannot express, is refused HERE, with a name — never submitted to surface
-/// on-chain as an unexplained bad signature.
-///
-/// WHICH step refuses is part of the contract, so each row names it. Everything that is a property
-/// of the payload alone — an identifier that is not an account id, an amount past what the asset
-/// can hold — is settled by the decode, which is the first place the bytes are read as a Miden
-/// mint. Only the compare against the faucet the note is being built FOR needs the build, because
-/// only there is that faucet known.
+/// Malformed fields fail during decoding. A well-formed intent for another faucet fails
+/// when the note builder compares its target.
 #[rstest]
 #[case::remote_token_mismatch("mi-rej-remote-token-mismatch", Step::Build)]
 #[case::remote_token_malformed("mi-rej-remote-token-malformed", Step::Decode)]
@@ -195,8 +163,7 @@ fn t_the_reject_payloads_pass_the_envelope_boundary(#[case] vector_id: &str) {
 /// would ever pick up.
 #[test]
 fn t_a_private_faucet_id_is_refused() {
-    // addressed to the private faucet, so the build gets past `DC-14`'s remoteToken check and
-    // actually reaches the routing bind this test is about
+    // Match the intent target so the test reaches the private-account routing check.
     let attestation = validated_over(&fixtures::canonical_payload_addressed_to(
         fixtures::TEST_VECTOR_PAYLOAD_ID,
         private_faucet_id(),

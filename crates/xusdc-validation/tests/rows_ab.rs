@@ -1,22 +1,5 @@
-//! LNV-1 test suite — matrix rows A (deploy + recognize) and B (`identifier_init` init-once —
-//! the Wave-1 S1 retarget of the former `domain_init` row), written TEST-FIRST against the
-//! assertion suite + driver API.
-//!
-//! Two layers:
-//! 1. **The real-node E2E** (`lnv1_rows_ab_against_real_local_node`): boots a FRESH local
-//!    v0.15.1 stack, deploys the production faucet via path C, drives `identifier_init` #1/#2, and
-//!    judges the observations with the row-A/B assertion suite. This is the gate run for this
-//!    slice; it needs the pinned node binaries installed (`miden-node`/`miden-validator`/
-//!    `miden-ntx-builder`/`miden-remote-prover`) and free loopback ports 57291–57294. It is
-//!    `#[ignore]`d in the DEFAULT suite because it requires loopback LISTENER binds, which
-//!    hermetic audit sandboxes deny (`Operation not permitted` on bind) — run it explicitly:
-//!    `cargo test -p xusdc-validation --locked -- --include-ignored` (or the `lnv1_rows_ab`
-//!    binary). The full-matrix gate claim ("rows A/B pass on a REAL node") rides ONLY on such real
-//!    runs plus the LNV-1 human supervision gate — a green DEFAULT suite is NEVER the gate.
-//! 2. **Assertion negatives** (no node, sandbox-safe — the default suite): synthetic
-//!    observations built from REAL production-composition accounts, each proving one row-check
-//!    actually rejects the state it exists to reject — a silently-weakened assertion suite
-//!    fails these.
+//! Tests deployment and configuration.
+//! Synthetic fixtures exercise the assertions offline. Ignored integration tests require a local node.
 
 use anyhow::Result;
 use miden_protocol::account::{

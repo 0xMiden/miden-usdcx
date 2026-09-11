@@ -1,27 +1,4 @@
-//! The production faucet composition + the account the harness deploys.
-//!
-//! EXACTLY the production shape, consumed by reference (single-owner rule — nothing here
-//! re-implements the shared-encoding crate's encoding or the faucet component's composition):
-//! - the `xreserve` MASM library assembled from the shipped `asm/standards/xreserve` tree
-//!   (`xusdc_encoding::xreserve_asm_dir()`), all seven caller-declared slots EMPTY at declaration —
-//!   the builder BUILD-SEEDS `domain`/`source_domain`/`xreserve_contract_{hi,lo}` from the required
-//!   `with_domain_config` input (Wave-1 S1, DEC-4), and the `identifier` slot's ONLY production
-//!   writer is the post-deploy `identifier_init` admin note (the minimized replacement of the
-//!   former four-field `domain_init`);
-//! - `FungibleFaucet` with the shipped token config (USDCx / on-chain `USDCX`, 6 decimals,
-//!   mutable max supply, zero initial supply);
-//! - `XReserveStablecoinBuilder::build_components()` (the ATTESTATION mint policy active on the
-//!   stock mint path, the stock `MinBurnAmount` burn policy, Ownable2Step owner, seeded DOM roles,
-//!   OwnerControlled authority);
-//! - finalized for deploy with `AccountBuilder::with_auth_component(auth_component())` — the
-//!   stock `AuthNetworkAccount` under the frozen 12-root note allowlist + the single-root tx-script
-//!   allowlist (the `ExpirationTransactionScript` root; v16 no longer ships an empty tx-script
-//!   allowlist).
-//!
-//! MockChain finalizes the same composition via `Auth::NetworkAccount` in the repo's F5 suite;
-//! this is the REAL-deploy twin of that fixture. The `_seeded` variant exists for SYNTHETIC
-//! assertion fixtures only (a pre-initialized identifier slot — the builder validates slot
-//! PRESENCE, not emptiness); the deploy path always ships the identifier EMPTY.
+//! Builds accounts and components for the legacy local-node harness.
 
 use std::sync::Arc;
 
@@ -45,14 +22,7 @@ use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 use crate::config::DomainParams;
 
-/// Assembles the shipped `xreserve` library and binds it with the seven caller-declared storage
-/// slots. With `domain: None` (the deploy path) all slots are EMPTY; with `Some(params)` the
-/// `domain`/`source_domain`/`xreserve_contract` slots are pre-seeded at the params' values (the
-/// builder overwrites them from `with_domain_config` either way). The IDENTIFIER slot ALWAYS ships
-/// EMPTY: the recomposed builder REJECTS a build-seeded identifier (the DEC-4 account-id fixpoint can
-/// never be build-seeded — the `identifier_init` note is its only writer, post-deploy). Synthetic
-/// fixtures that need the post-init shape write the own-id key into the built account (whose id is
-/// then immutable), mirroring the real deploy.
+/// Creates the harness component with optional test configuration.
 pub fn build_xreserve_component_seeded(domain: Option<&DomainParams>) -> Result<AccountComponent> {
     // The same assembler shape as the repo's F5 fixtures: kernel assembler + StandardsLib (the
     // admin procs call stock authority/pausable/ownable2step procs living there).
@@ -120,12 +90,7 @@ pub fn build_xreserve_component() -> Result<AccountComponent> {
     build_xreserve_component_seeded(None)
 }
 
-/// Runs the supplied `xreserve` component through `XReserveStablecoinBuilder` with the shipped
-/// token config and the given admin ids, returning the full production component list. `domain`
-/// supplies the three BUILD-SEEDED domain-config fields the recomposed builder REQUIRES
-/// (`with_domain_config`: `domain`, `source_domain`, `xreserve_contract` — DEC-4); its
-/// `identifier_bytes` are NOT consumed here — the identifier is seeded post-deploy by the
-/// `identifier_init` admin note.
+/// Builds faucet components with the supplied configuration and role holders.
 pub fn production_components(
     xreserve_component: AccountComponent,
     owner: AccountId,

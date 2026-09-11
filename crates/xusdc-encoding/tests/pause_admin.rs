@@ -74,8 +74,6 @@ fn err_paused() -> MasmError {
 // MINT-SEAM FIXTURES (the recomposed REAL stock-MintNote transport — mirrors mint_policy_e2e.rs)
 // ================================================================================================
 
-// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
-// which the mint transport requires
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;

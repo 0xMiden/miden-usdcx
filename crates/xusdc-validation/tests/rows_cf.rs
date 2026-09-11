@@ -1,20 +1,5 @@
-//! LNV-2 test suite — matrix rows C (admin suite) and F (auth boundary), written TEST-FIRST
-//! against the rows-C/F assertion suite (`xusdc_validation::assertions_cf`) + driver API.
-//!
-//! Two layers, exactly the LNV-1 partition:
-//!
-//! 1. **Assertion negatives** (no node, sandbox-safe — the DEFAULT suite). Synthetic
-//!    [`RowsCfObservations`] built green, then each test breaks EXACTLY the one surface its row-check
-//!    exists to reject and proves the assertion rejects it (a silently-weakened assertion — e.g. the
-//!    auditor's planted mutation — fails these). Plus one green-shape acceptance per row (guards
-//!    against an always-failing suite).
-//! 2. **The real-node E2E** (`lnv2_rows_cf_against_real_local_node`): boots a FRESH local v0.15.1
-//!    stack, deploys the production faucet, drives the whole C+F arc (admin state changes committed
-//!    via the ntx-builder / path N; mint/burn + auth-boundary rejects proven by client-side kernel
-//!    traps), and judges the observations. `#[ignore]`d in the default suite because it must bind
-//!    loopback listener sockets (denied in hermetic audit sandboxes); run it with
-//!    `-- --include-ignored` or the `lnv2_rows_cf` binary. The full-matrix gate claim rides ONLY on real
-//!    runs + the human gate — a green default suite proves the assertion layer only.
+//! Tests administration and authorization.
+//! Synthetic fixtures exercise the assertions offline. Ignored integration tests require a local node.
 
 use anyhow::{Context, Result};
 use xusdc_validation::assertions_cf::{

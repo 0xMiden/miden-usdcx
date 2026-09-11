@@ -1,16 +1,5 @@
-//! The consolidated LNV-5 gate artifacts: the per-row A–L verdict map, the generated
-//! **VALIDATION RECORD**, the three evidence packets (F7 / ntx-builder liveness / the byte-exact
-//! `GetNotesById` capture), and the machine-readable run evidence.
-//!
-//! Everything here is DETERMINISTIC RENDERING over the run's observations + verdicts — the one
-//! command (`cargo run -p xusdc-validation --bin lnv5_full_matrix`) produces every artifact, so a
-//! human can reproduce the whole packet from a fresh node and diff it.
-//!
-//! **The acceptance-gate invariant (pinned by tests): the generated record NEVER self-declares the gate.**
-//! Per-row PASS/FAIL lines are machine verdicts; the GATE verdict line is either
-//! `PENDING HUMAN ACCEPTANCE` (all rows green — a human reproduces, inspects, and declares) or
-//! `GATE CANNOT PASS` (a row failed — a surfaced finding; validator-not-fixer: the fix is a
-//! separate gated slice, then a re-run).
+//! Renders validation results and evidence artifacts.
+//! Individual checks report pass or fail; final acceptance requires human review.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -522,9 +511,7 @@ pub fn render_validation_record(
     s
 }
 
-/// Renders the **F7 evidence packet** (Circle/DEV-7 input): the two-block read-path proof vs the
-/// same-block-erasure RIV, raw node evidence quoted, NO acceptability decision — DEV-7 stays
-/// OPEN.
+/// Renders burn-discovery evidence for Circle. The acceptance decision remains OPEN.
 pub fn render_f7_packet(gj: &RowsGjObservations, main_commit: &str) -> String {
     let g = &gj.g;
     let h = &gj.h;
@@ -660,9 +647,7 @@ pub fn render_ntx_verdict(k: &RowKObservations, main_commit: &str) -> String {
     s
 }
 
-/// Renders the **byte-exact `GetNotesById` capture** (row G deliverable, the LNV-4 file format):
-/// self-describing comment header + the two hex payloads verbatim (note bytes, then the
-/// inclusion-proof bytes).
+/// Renders the note and inclusion-proof bytes as hex with a descriptive header.
 pub fn render_getnotesbyid_capture(g: &BurnTwoBlock) -> String {
     format!(
         "# Byte-exact GetNotesById response for the committed production XReserveBurnNote (LNV-5 Row G).\n\
@@ -721,7 +706,7 @@ struct Lnv5RunEvidence<'a> {
     logs: Vec<LogManifestEntry>,
 }
 
-/// Where the generated LNV-5 artifacts landed.
+/// Paths of the generated artifacts.
 pub struct Lnv5Artifacts {
     pub record: PathBuf,
     pub f7_packet: PathBuf,
@@ -730,9 +715,7 @@ pub struct Lnv5Artifacts {
     pub evidence_json: PathBuf,
 }
 
-/// Writes every LNV-5 artifact: the VALIDATION RECORD + the three evidence packets into
-/// `crate_dir` (committed deliverables), and the machine evidence JSON under the gitignored run
-/// root (next to the archived logs).
+/// Writes reports to `crate_dir` and machine-readable evidence to the run directory.
 pub fn write_lnv5_artifacts(
     crate_dir: &Path,
     cfg: &RunConfig,

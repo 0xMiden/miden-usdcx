@@ -1,7 +1,6 @@
-//! The check families: mint (scale-0 identity), attestation + fund-safety negatives, the burn arc
-//! (structure + attester-consumability + DC-8 evidence), and the full admin surface (pause/unpause,
-//! attester rotation, min-burn accept/reject, max-supply mutate + enforce, owner-gating, 2-step
-//! ownership). Positive faucet consumptions commit via path N; negatives execute client-side.
+//! Checks minting, burns, attestation failures, and administration.
+//! Successful faucet transactions commit through the network transaction builder;
+//! rejection probes execute locally.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
@@ -60,7 +59,6 @@ pub(crate) fn mint_note_for(
     config: Option<MintDomainConfig>,
     rng: &mut impl miden_protocol::crypto::rand::FeltRng,
 ) -> Result<(Note, Vec<u8>)> {
-    // maxFee = 0 (R-MINT-10: maxFee ≤ amount trivially holds); scale-0 ⇒ raw amount == minted units.
     let payload = mint_payload_opt(config.as_ref(), recipient, amount_units, 0, nonce_salt);
     let attestation = attester.attestation_for(&payload);
     let note = XUsdcMintNote::create(sender, faucet_id, &payload, &attestation, rng)
@@ -114,10 +112,7 @@ fn withdrawal_payload_items(note: &Note) -> Result<Vec<miden_protocol::Felt>, St
 // PUBLIC ASSERTION HELPERS (also unit-tested offline)
 // ================================================================================================
 
-/// Structural assertions on a produced `XReserveBurnNote`: the scheme-2 `NetworkAccountTarget`
-/// routing to `faucet_id`, the scheme-6 withdrawal-payload attachment, tag `0x4255_524E`, and the
-/// DC-7 payload fields (amount/destDomain/destRecipient) decoding to the expected values.
-/// `Ok(detail)` on a correct note; `Err(specific reason)` naming the exact structural mismatch.
+/// Checks the burn note's routing, tag, and decoded withdrawal fields.
 pub fn assert_burn_note_structure(
     note: &Note,
     faucet_id: AccountId,
@@ -415,9 +410,7 @@ pub(crate) async fn negatives_suite(
         ERR_XRESERVE_NONCE_REPLAY,
     );
 
-    // Over-cap: read the faucet's ACTUAL cap + supply (a fresh local deploy OR a deployment-specific
-    // devnet cap — DEV-5 stays OPEN) and mint the MINIMAL amount that pushes token_supply past it, so
-    // the probe is genuinely parameterized to whatever faucet is under test (never a hardcoded 2e12).
+    // Use the deployed cap and supply to choose the smallest amount that exceeds the cap.
     let faucet_now = d.fetch_faucet().await?;
     let cap_now = max_supply(&faucet_now)?;
     let supply_now = token_supply(&faucet_now)?;
@@ -458,9 +451,7 @@ pub(crate) async fn negatives_suite(
 // BURN ARC
 // ================================================================================================
 
-/// Funds `holder` with `amount` (mint → holder → consume P2ID), builds a production burn note, and
-/// commits the faucet's burn via path N. Returns the burn note (committed + consumed) for the DC-8
-/// evidence read.
+/// Funds the holder, commits a burn, and returns the consumed note for evidence checks.
 pub(crate) async fn fund_and_burn(
     d: &mut SanityDriver,
     led: &mut Ledger,
@@ -533,9 +524,7 @@ pub(crate) async fn fund_and_burn(
     Ok(burn)
 }
 
-/// The mandated burn (50 xUSDC): fund + burn + supply decrement, plus the readiness checks on the
-/// produced note — structure, attester-consumability, and the DC-8 evidence assembly against the
-/// real committed+consumed note.
+/// Checks a 50-token burn, its supply change, discovery, and withdrawal evidence.
 pub(crate) async fn burn_and_assert(
     d: &mut SanityDriver,
     led: &mut Ledger,
@@ -557,7 +546,6 @@ pub(crate) async fn burn_and_assert(
     )
     .await?;
 
-    // Structure: tag, single NetworkAccountTarget → faucet, DC-7 payload fields.
     match assert_burn_note_structure(&burn, d.faucet_id, &expected_items) {
         Ok(detail) => led.record(
             "BURN-STRUCT",
@@ -622,7 +610,7 @@ pub(crate) async fn burn_and_assert(
         ),
     }
 
-    // DC-8 evidence: the attester's OWN assemble_evidence over the real committed+consumed note.
+    // Assemble withdrawal evidence from the committed burn.
     match super::evidence::assert_burn_evidence(&d.hc, &burn, d.faucet_id).await {
         Ok(detail) => led.record(
             "BURN-EVIDENCE",

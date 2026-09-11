@@ -51,11 +51,7 @@ pub const PARTNER_KEY_SEED: u64 = 0x7852_5356_5f52_4459; // "xRSV_RDY"
 /// seed, therefore a different pubkey and a different allowlist commitment.
 pub const FOREIGN_KEY_SEED: u64 = 0x464f_5245_4947_4e00; // "FOREIGN\0"
 
-/// The partner key's 33-byte compressed SEC1 pubkey, PINNED. This is a determinism pin, not a
-/// correctness oracle: it fails the moment the seed, the curve, or the key-derivation path changes,
-/// so every later slice (and the local-node allowlist it seeds) is guaranteed the same attester.
-/// Correctness of the commitment derived from it is anchored by the shared encoding crate's
-/// `PublicKey::to_commitment` (pinned == miden-crypto `PublicKey::to_commitment` by TV-ATT-2).
+/// Expected compressed public key for the deterministic test attester.
 pub const PARTNER_PUBKEY_HEX: &str =
     "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
 
@@ -66,12 +62,7 @@ pub const PARTNER_PUBKEY_HEX: &str =
 /// bad signature.
 pub const TEST_REMOTE_DOMAIN: u32 = 10001;
 
-/// The xUSDC faucet every relayer slice mints at — a PUBLIC (network) account, because the mint
-/// note's scheme-2 routing attachment can bind nothing else.
-///
-/// It lives here rather than beside the other test account ids because the fixture PAYLOADS are
-/// addressed to it: `DC-14` binds `remoteToken` to the faucet, so the id and the payload have to
-/// come from one place or the compress step refuses every vector.
+/// Public faucet targeted by the fixture payloads and routing attachments.
 pub fn faucet_id() -> AccountId {
     AccountId::dummy(
         [0x22; 15],
@@ -115,12 +106,8 @@ pub fn keccak256(msg: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Fetches a canonical DepositIntent payload from the golden artifact by vector id.
-///
-/// A `mi-*` id is a `DC-14`-shaped payload and comes back re-addressed to [`faucet_id`] and
-/// [`TEST_REMOTE_DOMAIN`] (see [`mint_payload_for`]). A `di-*` id is the older, unshaped form and
-/// comes back verbatim — those vectors exist to exercise the structural parse, which runs before
-/// the compress step ever looks at the addressing.
+/// Loads a deposit-intent vector. Mint vectors are retargeted with [`mint_payload_for`];
+/// decode-only vectors retain their original bytes.
 pub fn canonical_payload(id: &str) -> Vec<u8> {
     if let Some(vector) = mi_vector(id) {
         return mint_payload_for(vector, faucet_id(), TEST_REMOTE_DOMAIN);
@@ -321,13 +308,8 @@ pub fn test_vector() -> AttestationVector {
     PartnerAttester::new().attest(&canonical_payload(TEST_VECTOR_PAYLOAD_ID))
 }
 
-/// The canonical payload with a hookData tail past the `NoteStorage` felt bound — `DC-14`-shaped
-/// and correctly addressed in every other respect, so a build over it reaches the hookData bound
-/// rather than tripping an addressing check first.
-///
-/// The tail is grown on the canonical payload rather than composed from scratch: `MintIntent`
-/// refuses to hold an over-long hookData at all, so the owned writer cannot produce this shape and
-/// only the declared length plus the appended bytes are touched here.
+/// Extends a valid payload past the hook-data limit without changing its addressing.
+/// The length and bytes are modified directly because the mint-intent constructor rejects them.
 pub fn oversized_hook_data_payload() -> Vec<u8> {
     // 60 header felts + ⌈len/4⌉ hookData felts must exceed the 1024-felt NoteStorage bound
     let hook_data_len = (1024 - 60) * 4 + 4;

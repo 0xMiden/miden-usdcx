@@ -1,28 +1,6 @@
-//! DEPOSIT-SCALE CONFORMANCE: the Circle-anchored amount pin on the PRODUCTION mint path.
-//!
-//! The coverage hole this closes: every other amount assertion in the suite round-trips its OWN
-//! scale — the golden vectors compute the expected quotient with the same `scale_exp` they encode,
-//! and the composition/e2e drivers inject a TEST-SIDE `scale_exp` straight into
-//! `mint_composition_driver_src(...)`. Both are green for ANY value of the faucet's
-//! `DEPOSIT_SCALE_EXP`, which is how an incorrect scale stayed deploy-reachable.
-//!
-//! Everything here instead rides the REAL stock `MintNote` (built by the `XUsdcMintNote`
-//! factory) consumed by the production faucet, so the only scale in play is the
-//! `DEPOSIT_SCALE_EXP` the shipped `deposit_intent_parser.masm` amount/fee stage applies.
-//! NOTHING in this file injects,
-//! derives, or even names a test-side scale — grep-provable, and deliberately so: the assertions
-//! below are only meaningful because they depend on the production constant.
-//!
-//! THE INVARIANT (the PROVISIONAL scale-0 position — the cap/scale/dust decision stays OPEN,
-//! pending Circle confirmation):
-//! Circle's on-wire deposit `amount` is denominated in xUSDC smallest units (6 decimals) and the
-//! Miden xUSDC asset is 6-decimal, so the faucet mints `y = x` — `DEPOSIT_SCALE_EXP = 0`,
-//! `y = floor(x / 10^0)`, an identity with no rescale and no dust. Just-inside/just-outside intuition: at `DEPOSIT_SCALE_EXP = 0` a wire amount of
-//! `100_000_000` (= 100.000000 USDC) mints `100_000_000` smallest units (GREEN); at the former
-//! placeholder `= 6` the same deposit would mint `100_000_000 / 10^6 = 100` smallest units — a
-//! 100-USDC deposit landing as 0.000100 xUSDC, 10^6 too small (RED). The non-round amounts below
-//! sharpen it further: any nonzero scale floors the low digits away, so `123_456_789` mints
-//! `123` at `= 6` and `12_345_678` at `= 1`; only `= 0` returns the input verbatim.
+//! Checks that signed deposit amounts are minted unchanged through the production mint path.
+//! The cases include one smallest unit and amounts with nonzero low decimal digits.
+//! Circle's final cap and scaling decision remains OPEN.
 
 mod support;
 
@@ -46,8 +24,6 @@ use xusdc_encoding::xreserve::encoding::{bytes32_to_storage_map_key, Signature};
 // CIRCLE-FORMAT FIXTURE VALUES
 // ================================================================================================
 
-// the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
-// which the mint transport requires
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
 
 /// The headline Circle deposit: 100.000000 USDC expressed in 6-decimal smallest units. Written as
@@ -93,7 +69,7 @@ fn administrator() -> AccountId {
     test_account_id(1)
 }
 
-/// The BLK_MANAGER holder seeded by the production builder (role id 4).
+/// Initial blocklist manager.
 fn blk_manager() -> AccountId {
     test_account_id(4)
 }
@@ -463,15 +439,7 @@ async fn production_mint_leaves_no_fractional_remainder() -> Result<()> {
 // 4 — THE SOURCE PIN: the shipped faucet writes the amount at the identity scale
 // ================================================================================================
 
-/// The behavioural tests above are the real gate; this reads the shipped MASM so a regression that
-/// re-introduces a rescale names itself in the failure output instead of surfacing only as an
-/// arithmetic mismatch three tests up.
-///
-/// Under `DC-14` the scale is no longer a constant the faucet applies — it is structural. The
-/// writer stores the note's `AssetAmount` as two byte-swapped limbs at its uint256 field's low
-/// eight bytes, which IS `y = x` zero-extended. Anything other than the identity would have to
-/// reconstruct the dropped remainder, which the note does not carry, so a rescale cannot be
-/// introduced here without changing the transport (`DEV-5` stays OPEN).
+/// The writer must store the amount unchanged in the uint256 field.
 #[test]
 fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
     let src = include_str!("../asm/xreserve/deposit_intent.masm");
@@ -482,8 +450,6 @@ fn shipped_faucet_writes_the_amount_at_the_identity_scale() -> Result<()> {
         "the writer must place the amount at the uint256's low eight bytes — the zero-extension \
          that makes the identity scale structural"
     );
-    // scoped to `rebuild`'s own body: the module still HOSTS the DC-5 reducer for DEV-5's sake,
-    // and its signature names a scale exponent. What must stay scale-free is the write path.
     let body = src
         .split_once("pub proc rebuild")
         .and_then(|(_, rest)| rest.split_once("\nend\n"))

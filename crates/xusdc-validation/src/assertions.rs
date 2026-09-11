@@ -1,17 +1,4 @@
-//! Row-A + row-B assertion suite (written test-first, before the drivers).
-//!
-//! Matrix rows:
-//! - **A. Deploy + recognize** — the production faucet (post-F5 composition) deploys to the local
-//!   node; `GetAccount` returns it; the network-account allowlist slot is present + non-empty
-//!   on-chain; the account is PUBLIC.
-//! - **B. identifier_init** (the Wave-1 S1 retarget of the former `domain_init` row — same
-//!   init-once semantics, minimized subject per DEC-4) — the owner-sent first admin note
-//!   initializes the IDENTIFIER (the other three domain-config fields are BUILD-SEEDED); a SECOND
-//!   `identifier_init` is REJECTED (init-once); all five domain-config slots read back from
-//!   on-chain storage.
-//!
-//! Every check reads the NODE-fetched state carried by [`RowsAbObservations`] — a green here is a
-//! statement about the real chain, not about the client's local store.
+//! Checks deployment and configuration observations fetched from the node.
 
 use std::collections::BTreeSet;
 

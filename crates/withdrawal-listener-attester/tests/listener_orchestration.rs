@@ -1,29 +1,5 @@
-//! The **happy path**, the **DO-NOT-SIGN abort**, and the **batch↔burn cardinality**, driven end
-//! to end against the schema-exact Circle mock and the unit evidence adapter. **NON-GATING** (the
-//! real-node leg is parked; see `listener_support/mod.rs`).
-//!
-//! Its siblings: `listener_quorum_and_conflict.rs` (the quorum shape, the allowlist gate, the
-//! discovery gate's refusals, the `409` contract, idempotency, fail-closed evidence, observability)
-//! and `listener_structural_absence.rs` (what the orchestration must not be able to do). Split to
-//! stay within the ~700-line Rust ceiling, over one `listener_support` fixture module.
-//!
-//! # What is actually being proven here, and why the oracle is not the return value
-//!
-//! Every case in this file is about an ORDER, and an order is not observable in an outcome. A run
-//! that signed a mismatching response and then discarded the signature returns the same `Err` as a
-//! run that never signed at all. So the assertions land on two things the return value cannot fake:
-//!
-//! * **the mock's CALL LOG** — how many `POST /v1/prepare-withdrawal`, `POST /v1/withdraw` and
-//!   `GET /v1/withdrawal/{id}` requests were actually built and sent;
-//! * **a COUNTING signer** — how many times the orchestration reached the signing step.
-//!
-//! `signer.calls() == 0` on every do-not-sign path, and `withdraw_posts == 0` on every
-//! stage-refusal, are the whole point of the file.
-//!
-//! # The invariants this half maps to
-//!
-//! * Circle's returned spec must match the burn note before signing — the mismatch family.
-//! * The batch↔burn cardinality (one prepared batch, one submitted batch: one burn, one payload, one batch) — the cardinality family.
+//! Checks withdrawal ordering with a mock Circle API and synthetic evidence.
+//! Signer and HTTP call counts establish that failed validation prevents signing and submission.
 use assert_matches::assert_matches;
 use rstest::rstest;
 use serde_json::{json, Value};

@@ -1,20 +1,5 @@
-//! LNV-5 — THE consolidated full-matrix gate run: rows A–L, one command, one fresh node.
-//!
-//! Boots ONE fresh local stack and composes the LNV-1..4 drivers on it in matrix order (deploy →
-//! admin → mint → burn → conservation), then settles row K (ntx-builder liveness / path N) and
-//! row L (clean logs) from that single run. Writes the generated **VALIDATION RECORD**
-//! (`VALIDATION-RECORD-LNV5.md`), the three evidence packets (`LNV5-F7-EVIDENCE-PACKET.md`,
-//! `LNV5-NTX-LIVENESS-VERDICT.md`, `LNV5-BURN-GETNOTESBYID-CAPTURE.hex`) into the crate dir, and
-//! the machine evidence (`evidence-lnv5.json`) + archived logs under the gitignored run root —
-//! then tears the stack down. Exit code 0 = every row's assertion suite PASSED.
-//!
-//! **The gate itself is a HUMAN decision: this binary never declares it.** A human
-//! reproduces from a fresh node, inspects the record + logs + packets, and declares GATE PASS /
-//! GATE FAILED. **Validator-not-fixer:** a failing row is a SURFACED finding, never a hot-fix.
-//!
-//! ```text
-//! cargo run -p xusdc-validation --bin lnv5_full_matrix [-- --keep-stack]
-//! ```
+//! Runs the full validation matrix on one fresh node and writes results and evidence.
+//! A zero exit status means all assertions passed; final acceptance requires human review.
 
 use std::path::Path;
 

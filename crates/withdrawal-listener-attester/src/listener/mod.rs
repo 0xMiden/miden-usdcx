@@ -1,78 +1,9 @@
-//! `listener` — the **B3→B10 orchestration**: the one place the units this crate ships are composed
-//! into the flow that releases a user's money.
+//! Coordinates discovery validation, preparation, signing, evidence, submission, and status polling.
+//! Each stage consumes the validated output of the previous stage. A run accepts one prepared
+//! batch per burn, requires a valid quorum and authorized signers, and submits through the ledger.
 //!
-//! It re-implements none of them. B3 is [`validate::validate_discovery`](crate::validate::validate_discovery), B4 is
-//! [`withdrawal_api::build_prepare_request`](crate::withdrawal_api::build_prepare_request), B5 is [`withdrawal_api::prepare`](crate::withdrawal_api::prepare) +
-//! [`validate::validate_returned`](crate::validate::validate_returned), B6 is the [`QuorumSigner`] port over
-//! [`validate::sign_validated`](crate::validate::sign_validated) + [`attester::assemble_quorum`](crate::attester::assemble_quorum), B7 is
-//! [`evidence::assemble_evidence`](crate::evidence::assemble_evidence) + [`withdrawal_api::build_withdraw_batch`](crate::withdrawal_api::build_withdraw_batch) +
-//! [`withdrawal_api::authorize_submission`](crate::withdrawal_api::authorize_submission) + [`submit::submit_withdraw`](crate::submit::submit_withdraw), and B10 is
-//! [`withdrawal_api::poll_status`](crate::withdrawal_api::poll_status). What this module owns is the ORDER, and the order is the
-//! product.
-//!
-//! # B5 gates B6, and it is a type, not a line number
-//!
-//! [`run_once`] reads top to bottom as validate → sign → authorize → submit, but reading is not
-//! evidence. What makes the order hold is that each stage's output is the next stage's only
-//! possible input:
-//!
-//! * [`validate_returned`] mints a
-//!   [`ValidatedWithdrawal`], and [`QuorumSigner`] — the
-//!   orchestration's only signing entry — takes one. A mismatching Circle response produces no
-//!   token, so on the mismatch branch the signer is not merely un-called: it is **uncallable**, and
-//!   there is no second constructor to reach for.
-//! * [`assemble_quorum`] mints a
-//!   [`QuorumBundle`](crate::attester::QuorumBundle), and
-//!   [`build_withdraw_batch`] takes one. A
-//!   below-threshold, over-threshold, descending or duplicate-signer set produces no bundle, so it
-//!   cannot become a batch, so it cannot reach `POST /v1/withdraw`.
-//! * [`authorize_submission`] mints an
-//!   [`AuthorizedWithdrawal`](crate::withdrawal_api::AuthorizedWithdrawal), and
-//!   [`submit_withdraw`] consumes one by value. An unregistered
-//!   signer, or no configured allowlist at all, produces no authorization — zero `/v1/withdraw`
-//!   calls.
-//! * [`submit_withdraw`] claims the burn durably before it builds a
-//!   request, so a re-discovered burn makes zero calls rather than a second release.
-//!
-//! Each `?` below is therefore fail-closed for THAT burn and for that burn only: a stage that did
-//! not run leaves the next stage without the value it needs, rather than with a default.
-//!
-//! # One burn ↔ one payload ↔ one batch
-//!
-//! `POST /v1/withdraw` carries 1–5 batches, and this orchestration submits exactly one, for exactly
-//! one burn. That is not a simplification — it is the cardinality rule ([`ONE_BATCH_PER_BURN`])
-//! that keeps the flow's evidence attributable. Fan-in (two burns behind one batch) would sign one
-//! canonical intent and claim two burns against it; fan-out (one burn across two batches) would
-//! hand Circle the same `burnTxId` twice inside one body, and its own second batch would be what
-//! triggers the `409`. Circle answering the prepare with anything but one batch is refused BEFORE
-//! the signer ([`RunError::BatchCardinality`]), because a signature over the extra batch's digest
-//! is exactly the artifact that must not exist.
-//!
-//! # What is a SEAM here, and is deliberately left one
-//!
-//! The Miden reads are not in this crate. `miden-client` has no v0.16 release, so B3's exact-tag
-//! `SyncNotes` scan / `GetNotesById` retrieval and the [`BurnEvidenceReads`] evidence reads are
-//! **PARKED** for the node-backed slice. This module takes them as PORTS — a [`DiscoveredNote`]
-//! handed in, and a `&dyn BurnEvidenceReads` on the context — and nothing here fakes,
-//! stubs-as-real, or simulates a node. The suite that drives this module runs against the
-//! in-process Circle mock and unit read adapters, and is **NON-GATING** accordingly; the GATING
-//! real-node leg is the node-backed slice's.
-//!
-//! # Circle-owned questions this module touches — all still OPEN
-//!
-//! The `value` scale / fee semantics (carried unscaled through
-//! [`build_prepare_request`], never guessed here) and
-//! whether a Miden tx id is an acceptable `burnTxId` (this module keys the batch, the ledger and
-//! the echo checks on whatever the evidence assembler resolved, and asserts nothing about Circle's
-//! answer). Both block the LIVE leg. Neither blocks this code, and neither is resolved by it.
-//!
-//! # No secret ever reaches an event
-//!
-//! [`ListenerEvent`] carries a B-step, an outcome slug, the note id and — once B7's evidence has
-//! resolved one — the `burnTxId`. It has nowhere to put a key or a credential, which is the point:
-//! the attester keys live behind the [`QuorumSigner`] port and the API token lives behind
-//! [`SecretString`](crate::config::SecretString), and neither is a field of anything this module
-//! emits.
+//! Node discovery and evidence arrive through adapters. Events contain identifiers and outcomes;
+//! keys remain behind [`QuorumSigner`] and credentials remain in the client configuration.
 
 mod error;
 

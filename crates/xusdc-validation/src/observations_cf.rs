@@ -1,22 +1,5 @@
-//! The observation record the rows-C/F driver produces and the rows-C/F assertion suite consumes.
-//!
-//! Same split as the LNV-1 [`crate::observations`]: drivers OBSERVE (execute probes client-side,
-//! commit admin state via the ntx-builder, capture errors + committed read-backs); assertions
-//! JUDGE. Every field here is either a *verdict* — the result of a real transaction against the
-//! deployed faucet — or a *committed read-back Word/scalar* fetched from the NODE (`GetAccount`)
-//! after an admin note committed. Keeping the two apart makes every rows-C/F assertion unit-testable
-//! against synthetic observations (the default suite) and keeps the driver free of pass/fail policy.
-//!
-//! The two real-node execution modes the verdicts come from (LNV-1 posture finding):
-//! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
-//!   v0.15.1 (user RPC rejects post-deploy network-account txs; the client cannot present the
-//!   `x-miden-network-tx-auth` header). Every positive admin op (`set_attester`, `set_max_supply`,
-//!   `pause`, role grant/revoke, …) is emitted as a routed allowlisted note and the running
-//!   ntx-builder auto-executes the faucet's consumption; the driver reads the committed effect.
-//! - **client-side execute** — for the accept/reject *probes* (mint/burn) and the negatives the
-//!   driver executes the faucet's consumption locally (`execute_transaction`, no submission) and
-//!   records [`Verdict::Accepted`] (executed Ok) or [`Verdict::Rejected`] (the exact trap error).
-//!   This is the LNV-1 row-B kernel-trap technique; a reject needs no submission path.
+//! Administrative transaction results and state fetched from the node.
+//! Committed changes and local execution results are recorded separately.
 
 use serde::Serialize;
 
@@ -177,9 +160,7 @@ pub struct RowF {
     pub tx_script: Verdict,
 }
 
-/// Everything the LNV-2 rows-C/F run observed on the real node. `Verdict`s are real faucet
-/// consumptions (path-N-committed positives or client-side-executed probes/negatives); `Word4`
-/// read-backs are the NODE's `GetAccount` answers after an admin note committed.
+/// Administrative execution results and committed state read from the node.
 #[derive(Debug, Clone, Serialize)]
 pub struct RowsCfObservations {
     /// The `main` commit the run was built from (ledger metadata; recorded, not asserted).

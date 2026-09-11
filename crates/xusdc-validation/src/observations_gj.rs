@@ -1,20 +1,5 @@
-//! The observation record the LNV-4 rows-G/H/I/J driver produces and the rows-G/H/I/J assertion
-//! suite consumes.
-//!
-//! Same OBSERVE-vs-JUDGE split as the LNV-1/2/3 observation modules ([`crate::observations`],
-//! [`crate::observations_cf`], [`crate::observations_de`]): the driver OBSERVES (commits the
-//! two-block burn via the ntx-builder / path N, captures the raw `GetNotesById` / `SyncNotes` /
-//! nullifier RPC evidence, executes the same-block RIV + the burn negatives client-side, and reads
-//! committed `token_supply` back from the NODE via `GetAccount`); the assertions JUDGE. Keeping the
-//! two apart makes every rows-G/H/I/J check unit-testable against synthetic observations (the
-//! default suite) and keeps the driver free of pass/fail policy.
-//!
-//! The Circle-evidence framing (HEAVIEST AUDIT): row G is the two-block Circle read-path (the burn
-//! event PERSISTS and is discoverable); row H is the **F7 same-block-erasure RIV** — an EVIDENCE
-//! packet for Circle/DEV-7, recording precisely what survives when the production `XReserveBurnNote`
-//! is created + consumed within one block, **without deciding acceptability** (DEV-7 stays OPEN).
-//! Row I is the burn negatives (each rejected, zero state change); row J is the per-arc conservation
-//! ledger (`token_supply == Σ minted − Σ burned`).
+//! Burn execution, discovery, and supply observations.
+//! Same-block evidence records what the node exposes; Circle's acceptance decision remains OPEN.
 
 use serde::Serialize;
 
@@ -88,23 +73,8 @@ pub struct BurnTwoBlock {
     pub getnotesbyid_inclusion_block: u32,
 }
 
-/// **Row H** — the F7 same-block-erasure RIV (Circle/DEV-7 EVIDENCE, NOT a policy decision).
-///
-/// The RIV question: can the production `XReserveBurnNote` be created + consumed within one block so
-/// its burn event is erased (starving Circle's `SyncNotes` / `GetNotesById` discovery) while the
-/// supply delta still applies? This record captures the real-node answer + what survives, so Circle
-/// can decide DEV-7 — it does not decide acceptability here.
-///
-/// The real-node finding (see the driver): a COMMITTED same-block faucet consume is UNREACHABLE on
-/// this v0.15.1 stack — the faucet is a network account, user RPC rejects post-deploy network-account
-/// submissions (captured here as a real-node rejection), the stock client cannot present the
-/// `x-miden-network-tx-auth` header, and the ntx-builder (the only commit path) consumes only
-/// COMMITTED notes → the burn note is ALWAYS committed + discoverable before consumption (Row G's
-/// strictly-later-block flow). So the same-block-erasure risk does not materialize through any
-/// available path. The client-side unauthenticated consume records what WOULD survive if it could:
-/// the burn is valid and applies a supply delta, but leaves NO committed note and NO on-chain
-/// nullifier — the exact discovery-starvation the canary `c2_same_block_erasure_...` shows against
-/// the PRODUCTION note.
+/// Records local same-block burn execution, submission results, and node discovery responses.
+/// Circle's burn-evidence acceptance decision remains OPEN.
 #[derive(Debug, Clone, Serialize)]
 pub struct BurnSameBlock {
     /// A human label for the RIV (`same-block-erasure`).
@@ -204,11 +174,7 @@ pub struct ConservationLedger {
     pub holder_final_balance: u64,
 }
 
-/// Everything the LNV-4 rows-G/H/I/J run observed on the real node.
-///
-/// `g` is the two-block Circle read-path proof; `h` is the F7 same-block-erasure RIV evidence packet
-/// (no acceptability decision); `i` is every burn negative (below-min, while-paused, wrong-asset),
-/// each a client-side reject with a committed-state read-back; `j` is the conservation ledger.
+/// Burn discovery, rejection probes, and the supply-conservation ledger.
 #[derive(Debug, Clone, Serialize)]
 pub struct RowsGjObservations {
     /// The `main` commit the run was built from (ledger metadata; recorded, not asserted).

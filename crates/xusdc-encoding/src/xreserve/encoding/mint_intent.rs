@@ -1,16 +1,5 @@
-//! The mint note's carried payload, and its relationship to Circle's DepositIntent (`DC-14`).
-//!
-//! Circle's DepositIntent does not travel on the mint note. The note carries only the fields the
-//! faucet has no other way to learn, and the faucet rebuilds the canonical message itself before
-//! hashing it — so a field the faucet writes cannot disagree with the attestation, because a
-//! divergent value changes the digest and the signature stops verifying.
-//!
-//! This module owns the FELT format — what the note actually carries — and the two conversions to
-//! and from the byte format its sibling `deposit_intent` owns. [`MintIntent::from_deposit_intent`]
-//! compresses a real Circle payload and refuses anything this faucet could not rebuild
-//! byte-for-byte; [`MintIntent::to_deposit_intent`] is the mirror of the MASM writer
-//! `xreserve::deposit_intent::rebuild`. What binds the two is the round trip, not a
-//! field-by-field comparison.
+//! Fields carried by a mint note and conversions to and from [`DepositIntent`].
+//! [`MintIntent::to_deposit_intent`] mirrors the MASM `deposit_intent::rebuild` procedure.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
@@ -250,7 +239,7 @@ fn bytes32_at_felts(felts: &[Felt], offset: usize) -> Result<[u8; BYTES32_LEN], 
     packed_felts_to_bytes32(&limbs)
 }
 
-// TESTS — TV-DUAL-6 (the Rust half; the MASM half is in tests/masm_mint_shell.rs)
+// TESTS
 // ================================================================================================
 
 #[cfg(test)]
@@ -277,11 +266,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("vector {}: compress failed: {e}", vec.id))
     }
 
-    /// TV-DUAL-6 (happy path, written first): the reconstruction is exact.
-    ///
-    /// This is the law the whole transport rests on. Everything the faucet no longer checks, it
-    /// checks by rebuilding these bytes and letting the signature verify over them — so if the
-    /// round trip is not byte-exact, no mint can ever succeed.
     #[test]
     fn tv_dual_6_round_trip_is_byte_exact() {
         for vec in accepts() {
@@ -334,10 +318,7 @@ mod tests {
         }
     }
 
-    /// Every narrowing DC-14 applies, one vector each, asserting the exact variant. These are the
-    /// deposits the transport cannot express — the relayer has to reject them here, because
-    /// on-chain they would all fail identically as an invalid signature. The narrowing itself
-    /// happens in the byte decode, so a reject vector fails at whichever of the two steps owns it.
+    /// Each malformed vector must fail at the appropriate decode or conversion step.
     #[test]
     fn tv_dual_6_rejects_what_the_transport_cannot_carry() {
         let rejects = load().families.mi.iter().filter(|v| v.kind == "reject");

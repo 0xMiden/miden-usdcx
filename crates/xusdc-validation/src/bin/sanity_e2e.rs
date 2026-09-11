@@ -1,29 +1,6 @@
-//! `sanity_e2e` — the v16 E2E sanity gate binary.
-//!
-//! Drives core faucet functionality against a REAL running Miden node and asserts fund-correctness
-//! end-to-end (the P0 scale-0 identity, mint/burn amounts + destinations, replay, supply-cap,
-//! attestation gates, DC-8 burn-evidence, clean node logs).
-//!
-//! **Two modes.** A FRESH local deploy (no `--faucet-id`, loopback only) runs the WHOLE matrix
-//! including the DESTRUCTIVE admin surface, always against a faucet we own and throw away with the
-//! test node. Targeting an ALREADY-deployed faucet (`--faucet-id`, LOCAL or DEVNET) runs ONLY the
-//! non-destructive fund-correctness subset (scale-0 mints, the attestation/replay/cap negatives, the
-//! burn arc) with the operator's allowlisted attester secret — it NEVER mutates the deployed faucet
-//! (no pause / policy change / ownership transfer). That subset is the INTENDED, COMPLETE devnet gate.
-//!
-//! ```text
-//! # LOCAL full gate — deploys a fresh faucet on the LOCAL node + runs admin; scans the node logs:
-//! #   in the v16 client repo: ./scripts/start-test-node.sh --background   (RPC 127.0.0.1:57291)
-//! cargo run --release --locked -p xusdc-validation --bin sanity_e2e -- --rpc-url http://127.0.0.1:57291
-//!
-//! # DEVNET (or local existing-faucet) — non-destructive re-check against a deployed faucet
-//! # (the allowlisted attester secret is read from a FILE / env, NEVER argv):
-//! SANITY_ATTESTER_SECRET=$(cat allowlisted-attester.hex) cargo run --release --locked \
-//!     -p xusdc-validation --bin sanity_e2e -- --rpc-url https://rpc.devnet.miden.io --faucet-id <ID>
-//! ```
-//!
-//! Exit 0 = every core assertion PASSED (record PENDING HUMAN ACCEPTANCE). Exit non-zero = at least
-//! one assertion FAILED — a surfaced finding that BLOCKS the deploy.
+//! Runs faucet checks against an existing node; see [`xusdc_validation::sanity`].
+//! A fresh local deployment includes administrative tests. An existing faucet requires an
+//! allowlisted attester and runs mint, burn, and rejection checks without administrative changes.
 
 use std::path::{Path, PathBuf};
 

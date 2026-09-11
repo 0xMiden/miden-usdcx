@@ -879,34 +879,23 @@ fn validate_driver_src_inner(
     src
 }
 
-/// Generates the nonce-guard driver: push a `usedNonces` key and run the replay guard.
-///
-/// Under DC-14 the guard takes the key the caller already derived — the policy needs the same Word
-/// for the output note's serial — so the driver no longer has to stage a whole intent to reach it.
+/// Generates a driver that checks whether the supplied nonce hash is unused.
 pub fn nonce_guard_driver_src(key: Word) -> String {
     format!(
         "use xreserve::mint_intent\n\n         #! Test driver: runs the faucet's nonce replay guard over a caller-derived key.\n         #!\n         #! Inputs:  [pad(16)]\n         #! Outputs: [pad(16)]\n         #!\n         #! Invocation: call\n         @account_procedure\n         pub proc drive\n         \x20   push.{key}\n         \x20   exec.mint_intent::assert_nonce_unused\n         end\n"
     )
 }
 
-// DC-14 PREIMAGE-WRITER DRIVER
+// PREIMAGE RECONSTRUCTION DRIVER
 // ================================================================================================
 
-/// Staging addresses for the `rebuild` driver. Both word-aligned and clear of the other drivers'
-/// regions. The deposit-intent region is GLOBAL memory, mirroring the policy: `rebuild` writes only
-/// the fields the message carries and relies on the rest reading zero.
+/// Word-aligned global addresses used by the rebuild driver.
 pub const MINT_INTENT_PTR: u64 = 2048;
 pub const DEPOSIT_INTENT_PTR: u64 = 3072;
 
-/// Generates the DC-14 writer driver: stage the mint intent, run `deposit_intent::rebuild`, then
-/// compare every felt of the message it built against the Rust mirror's.
-///
-/// The expected felts arrive on the ADVICE STACK rather than baked into this source, because the
-/// message embeds the account's own id and an account id is a hash over the account's code — which
-/// is this driver. Baking them would change the id they are trying to describe.
-///
-/// `poison` pre-fills the region with a recognizable pattern. `rebuild` does NOT zero it — that is
-/// the caller's contract — so poisoning is how the dependency is made visible rather than assumed.
+/// Rebuilds a deposit intent and compares each felt with the Rust encoding.
+/// Expected values arrive through advice because embedding the account ID would change the
+/// account's code and therefore its ID. `poison` pre-fills memory to check that rebuild overwrites it.
 pub fn rebuild_driver_src(
     mint_intent_felts: &[Felt],
     mint_intent_num_words: u64,

@@ -1,19 +1,4 @@
-//! `note_decode` — the PURE parts of the burn-note decode path: the burn-payload decode and the
-//! sender read.
-//!
-//! **NON-GATING.** The GATING versions of these are the real-local-node runs
-//! (`tests/local_node/tag_scan_retrieval.rs`, `tests/local_node/sender_exposure.rs`): a real public
-//! `XReserveBurnNote`, discovered by an exact-tag `SyncNotes` scan and retrieved by `GetNotesById`.
-//! Those need `miden-client`, which has no v0.16 release — they are PARKED
-//! (`PHASE4-VERIFICATION-HARNESS.md:28`,`:65`-`68`: a non-node leg is NON-GATING and must be paired
-//! with a real-node run). What is testable purely, and is tested here, is the decode itself: given
-//! the felts and the sender a node WILL hand over, the module must produce the exact `BurnPayload`
-//! and the exact burner — or refuse.
-//!
-//! The inputs are the ONE canonical golden-vector artifact
-//! (`crates/xusdc-encoding/tests/vectors/xreserve-encoding-vectors.json`, families `bn` and `aid`),
-//! never a table re-typed here: the burn-note payload is the shared encoding crate's format, and a
-//! second copy of its vectors would be a second source of truth for how much USDC a burn releases.
+//! Checks burn-payload decoding and sender extraction using the shared golden vectors.
 
 use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;

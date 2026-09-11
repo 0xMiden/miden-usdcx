@@ -263,10 +263,7 @@ async fn the_honest_note_carries_the_merged_transport_and_the_routing_target() -
         "the 17 signature felts sit at the documented offset"
     );
 
-    // the intent itself does NOT travel. What follows the attestation is the carried payload —
-    // only the fields the faucet cannot derive — and the faucet rebuilds the signed message from
-    // it. That the two agree is TV-DUAL-6's job; here we only pin that the note carries exactly
-    // what the codec says it should.
+    // Compare the transported fields with the shared mint-intent codec.
     let carried = MintIntent::from_deposit_intent(
         &DepositIntent::try_from(payload.as_slice())?,
         pf.faucet_id,

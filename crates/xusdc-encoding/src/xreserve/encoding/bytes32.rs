@@ -84,7 +84,6 @@ mod tests {
     use super::*;
     use crate::vectors::{load, word_from_hex};
 
-    /// TV-B32-1 (happy path, written first): known bytes32 → expected Poseidon2 Word.
     #[test]
     fn tv_b32_1_hash_to_word_positive() {
         let v = load();
@@ -99,8 +98,6 @@ mod tests {
         }
     }
 
-    /// TV-B32-2 (negative + bypass-positive): the lossless path rejects a limb >= p, while
-    /// `bytes32_to_storage_map_key` succeeds on the same input.
     #[test]
     fn tv_b32_2_lossless_rejects_option_b_succeeds() {
         let v = load();
@@ -125,7 +122,6 @@ mod tests {
         );
     }
 
-    /// TV-B32-3 (replay/determinism): same input → identical key twice.
     #[test]
     fn tv_b32_3_determinism() {
         let v = load();
@@ -136,8 +132,6 @@ mod tests {
         }
     }
 
-    /// TV-B32-4 (boundary/width): the packing yields exactly 8 felts (2 Words — too wide
-    /// for one key, which is why the hash-to-Word step exists).
     #[test]
     fn tv_b32_4_packing_is_8_felts_two_words() {
         let v = load();
@@ -154,8 +148,6 @@ mod tests {
         }
     }
 
-    /// TV-B32-INV-1 (inverse round-trip): `packed_felts_to_bytes32` is the exact inverse of
-    /// `bytes32_to_packed_felts` over every committed b32 vector (every limb is a valid u32).
     #[test]
     fn tv_b32_inverse_round_trip() {
         let v = load();
@@ -173,7 +165,6 @@ mod tests {
         }
     }
 
-    /// TV-B32-INV-2 (fail-closed): a packed felt `> u32::MAX` is rejected, never truncated.
     #[test]
     fn tv_b32_inverse_rejects_non_u32() {
         let mut felts = [Felt::from(0u32); 8];

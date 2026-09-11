@@ -1,7 +1,4 @@
-# xreserve::mint_intent
-#
-# The mint intent: a stripped-down DepositIntent with only the fields the faucet
-# cannot derive, which the mint note has to carry.
+# defines and validates the fields carried by a mint note.
 
 use miden::protocol::active_account
 use miden::standards::utils
@@ -59,11 +56,7 @@ const ERR_XRESERVE_NONCE_REPLAY = "deposit intent nonce has already been used"
 # PUBLIC INTERFACE
 # =================================================================================================
 
-#! Asserts a carried mint intent is admissible, and returns its hashed nonce.
-#!
-#! Both checks are about the carried fields rather than the message contents:
-#! - the fee ceiling relates the carried maxFee to the note's own asset value.
-#! - the replay guard relates the carried nonce to this faucet's own history.
+#! Checks the fee ceiling and nonce replay state, then returns the nonce hash.
 #!
 #! Inputs:  [mint_intent_ptr, amount]
 #! Outputs: [HASHED_NONCE]

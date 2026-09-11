@@ -1,16 +1,5 @@
-//! Mint/burn note builders — the C-row PROBES.
-//!
-//! Rows C1/C3/C4 use real `XUsdcMintNote`s and C2/C4 use real `XReserveBurnNote`s as instruments
-//! to prove an admin change took effect (a rotated-out attester can no longer mint, an over-cap mint
-//! rejects, a paused faucet halts both, a raised minimum rejects a small burn). These are NOT the
-//! mint/burn matrix rows (D/E/G/H — LNV-3/4); they are the smallest real notes that exercise the
-//! gate each C row changes.
-//!
-//! The mint note carries a Circle DepositIntent whose `remoteDomain` + `remoteToken` must match the
-//! faucet's domain config, so LNV-2's build seed + `identifier_init` come from the SAME canonical
-//! accept vector the payload is built from ([`lnv2_domain_params`]). Amount/maxFee/recipient/nonce
-//! are spliced into the vector payload (the `assembled_faucet_e2e` recipe); the attestation is
-//! signed by a local test attester (`crate::actors::AttesterKey`), never Circle's key.
+//! Builds mint and burn probes for the local-node harness.
+//! Payloads use the shared vectors and a locally generated attester key.
 
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
@@ -42,9 +31,7 @@ use xusdc_encoding::xreserve::encoding::{
 use crate::actors::AttesterKey;
 use crate::config::DomainParams;
 
-/// The canonical accept vector every LNV-2 mint payload is built from (empty hookData: the 60-felt
-/// header, no hookData tail — the minimal valid mint). Its `remoteDomain` is 7 and its `remoteToken`
-/// keys the faucet identifier.
+/// Base deposit vector with an empty hook-data field.
 pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 
 /// The canonical accept vector carrying a NON-empty hookData tail (`hook_data_len == 10`; a 250-byte
@@ -53,32 +40,19 @@ pub const BASE_VECTOR: &str = "di-pos-empty-hookdata";
 /// hookData-bearing Row-D mints — the second variant (bounded hookData) the mint matrix requires.
 pub const HOOKDATA_VECTOR: &str = "di-pos-hookdata";
 
-/// The vector's `remoteDomain` (Q-DOM-1 OPEN; `TEST_DOMAIN` in the MockChain suite). The build
-/// seed must carry this so the structural validation domain compare passes.
+/// Fixture destination domain. Circle's domain assignment remains OPEN.
 pub const MINT_DOMAIN: u32 = 7;
 
-/// The scale exponent the amount validation reducer applies — pinned BY REFERENCE to the factory-side
-/// [`XUSDC_DEPOSIT_SCALE_EXP`], which is itself parity-pinned against the shipped
-/// `deposit_intent_parser.masm`'s `DEPOSIT_SCALE_EXP`. Set to **0** by the P0 fix (commit 75ece89): Circle
-/// sends a 6-decimal deposit amount and Miden xUSDC is ALSO 6 decimals, so the EVM-minus-Miden
-/// decimal delta is 0. The reducer therefore computes `floor(x / 10^0) = x`: the on-chain minted
-/// asset amount EQUALS the raw uint256 deposit amount (scale-0 identity, NO 10^6 division).
+/// Scale exponent used by the legacy mint fixture.
 pub const SCALE_EXP: u32 = XUSDC_DEPOSIT_SCALE_EXP;
 const SCALE: u64 = 1; // 10^SCALE_EXP
 
-// DC-1 field byte offsets (felt offset × 4): the layout the shared-encoding codec packs. Mirrors the MockChain
-// support constants (`AMOUNT_FELT_OFF` = 2, `REMOTE_RECIPIENT_FELT_OFF` = 19, `MAX_FEE_FELT_OFF` =
-// 43, nonce at felt 51).
+// Byte offsets used to modify the deposit fixture.
 const AMOUNT_BYTE_OFF: usize = 2 * 4;
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 const MAX_FEE_BYTE_OFF: usize = 43 * 4;
 const NONCE_BYTE_OFF: usize = 51 * 4;
-// The two fields the mint gate (structural validation `deposit_intent_parser::validate`) compares against
-// the faucet's stored domain config are `remoteDomain` (felt 10, a big-endian u32) and `remoteToken`
-// (felt 11..18, a bytes32). Their wire offsets are NOT restated here: the DepositIntent layout owner
-// is `xusdc-encoding`, so `mint_payload_for` reads them from `deposit_intent_field_offset(...)` (the
-// single source of truth, pinned by reference). There is deliberately NO `sourceDomain`: it is not a
-// DepositIntent field and the mint proc never reads it — the gate compares ONLY those two fields.
+// The payload uses the deployed domain and faucet ID; field offsets come from the shared codec.
 
 fn vector(id: &str) -> &'static DiVector {
     load()
@@ -109,15 +83,7 @@ pub fn hook_data_len(vector_id: &str) -> u32 {
         .hook_data_len
 }
 
-/// The BUILD-SEEDED domain-config parameters LNV-2 deploys with: `domain` MATCHES the mint vector's
-/// `remoteDomain` (so the structural validation domain compare passes), `source_domain`/`xreserve_contract` are
-/// arbitrary distinct local test values (the mint path does not read them — they are off-chain
-/// withdrawal identity). The `identifier` is NO LONGER build-seeded from these params: the fresh
-/// faucet's identifier is derived at init from its OWN id
-/// (`XReserveIdentifierInitNote::identifier_for(faucet_id)`), so a fresh mint carries `remoteToken =
-/// EthEmbeddedAccountId::from_account_id(faucet_id).to_bytes32()` ([`mint_payload_own_id`] / [`MintDomainConfig::for_deployed_faucet`]),
-/// NOT the vector token. `identifier_bytes` is retained only as the legacy synthetic-fixture value
-/// (`DomainParams::identifier_word`); the fresh-init assertions compute the own-id key directly.
+/// Domain configuration for the mint fixture.
 pub fn lnv2_domain_params() -> DomainParams {
     DomainParams {
         domain: MINT_DOMAIN,
@@ -268,9 +234,7 @@ pub(crate) fn mint_payload_for(
 ) -> Vec<u8> {
     let mut payload =
         mint_payload_from(BASE_VECTOR, recipient, amount_raw, max_fee_raw, nonce_salt);
-    // The two gated fields' wire offsets come from the DepositIntent layout owner (xusdc-encoding),
-    // never a local restatement of DC-1: remoteDomain (felt 10, a 4-byte big-endian u32) and
-    // remoteToken (felt 11..18, a 32-byte bytes32).
+    // Read field offsets from the shared deposit-intent codec.
     let remote_domain_off = deposit_intent_field_offset(DepositIntentField::RemoteDomain);
     let remote_token_off = deposit_intent_field_offset(DepositIntentField::RemoteToken);
     payload[remote_domain_off..remote_domain_off + 4].copy_from_slice(&config.domain.to_be_bytes());
@@ -318,11 +282,7 @@ pub fn raw_for_units(units: u64) -> u64 {
     units * SCALE
 }
 
-/// Builds a production `XUsdcMintNote` (the STOCK standards `MintNote` carrying the attested
-/// transport as attachments — Wave-1 S1): `sender` the producer/relayer, `faucet` the target,
-/// `attester` the local key that signs `keccak256(payload)`, and a payload minting `reduced(amount_raw)`
-/// units to `recipient`. `max_fee_raw` must reduce to ≤ the reduced amount (R-MINT-10); `feeAmount`
-/// stays MVP-zero. `nonce_salt` distinguishes otherwise-identical mints.
+/// Builds a mint note signed by the local attester. `nonce_salt` distinguishes deposits.
 #[allow(clippy::too_many_arguments)]
 pub fn mint_note<R: FeltRng>(
     sender: AccountId,
@@ -340,13 +300,7 @@ pub fn mint_note<R: FeltRng>(
         .context("building the XUsdcMintNote probe")
 }
 
-/// The 8 u32-LE `feeAmount` attachment limbs encoding a raw uint256 `fee_raw` — extracted from the
-/// `amount` field position of a freshly-packed DepositIntent, so the on-chain amount/fee staging
-/// (the same uint256 limb layout for the `amount` field and the advice `feeAmount`) evaluates them
-/// as EXACTLY `fee_raw / 10^SCALE_EXP`. Deriving the limbs from the trusted amount-field packing avoids
-/// re-deriving the wire-byte→limb layout by hand — the F2 negative needs a reduced fee ≥ 1, i.e.
-/// `fee_raw ≥ SCALE`. The production attestation attachment hardcodes these eight limbs to zero
-/// (DEV-8 MVP); only a harness-crafted note can carry a non-zero fee.
+/// Packs a fee amount into eight limbs for the legacy fee-rejection probe.
 pub fn fee_limbs_for(fee_raw: u64) -> [Felt; 8] {
     // Splice `fee_raw` into the base vector's amount field (leaving its own valid recipient), pack,
     // and read the amount-field limbs back — the reducer treats those limbs identically to the
@@ -416,11 +370,7 @@ pub fn mint_note_with_fee<R: FeltRng>(
     )
     .context("building the scheme-4 DepositIntent attachment")?;
 
-    // The scheme-5 attestation content: [feeAmount(8), pubkey(16 affine), signature(17), pad(3)] =
-    // 44 felts = 11 words — the exact advice order the policy's amount validation/attestation verification stages consume. Identical
-    // to the production `attestation_attachment` (v16: the 33-byte compressed wire pubkey is
-    // decompressed to its 16 affine-coordinate felts), save
-    // the caller-chosen fee limbs (production hardcodes eight zeros — DEV-8).
+    // Legacy attestation layout: fee(8), public key(16), signature(17), padding(3).
     let mut felts: Vec<Felt> = Vec::with_capacity(44);
     felts.extend(fee_limbs);
     felts.extend(attestation.pubkey().to_elements());
@@ -472,17 +422,7 @@ pub fn burn_note<R: FeltRng>(
         .context("building the XReserveBurnNote probe")
 }
 
-/// Builds an `XReserveBurnNote`-shaped note whose VAULT ASSET is issued by `asset_faucet` (a
-/// DIFFERENT faucet) while the note is still routed at `target_faucet` — the Row-I wrong-asset
-/// negative. It is the production burn transport (the reused stock `BurnNote` consume script, the
-/// fixed xUSDC burn tag, the stock asset storage, the scheme-2 `NetworkAccountTarget` routing bind
-/// at `target_faucet`, and the scheme-6 withdrawal payload) with ONLY the vault asset's issuer
-/// swapped to `asset_faucet`, so the faucet's `receive_and_burn` → `faucet::burn` →
-/// `fungible_asset::validate_origin` trap fires
-/// (`ERR_FUNGIBLE_ASSET_FAUCET_IS_NOT_ORIGIN`: a faucet can only burn its OWN token). It never
-/// re-implements a faucet gate — it is the harness's adversarial burn builder, the twin of
-/// [`mint_note_with_fee`], staging a negative the production factory (which single-sources the asset
-/// issuer from `target_faucet`) cannot.
+/// Builds a burn probe routed to one faucet with an asset issued by another.
 pub fn burn_note_wrong_asset<R: FeltRng>(
     sender: AccountId,
     target_faucet: AccountId,
@@ -501,8 +441,6 @@ pub fn burn_note_wrong_asset<R: FeltRng>(
     };
     let asset = FungibleAsset::new(asset_faucet, amount)
         .map_err(|e| anyhow::anyhow!("building the wrong-asset fungible asset: {e}"))?;
-    // NoteStorage carries the same stock 8-felt asset layout as production. The issuer is wrong
-    // because the carried asset is wrong, not because the storage was manually malformed.
     let storage = NoteStorage::new(Asset::from(asset).as_elements().to_vec())
         .context("wrong-asset burn storage")?;
     // Reuse the STOCK burn consume script (→ faucet::receive_and_burn → the burn security policy,

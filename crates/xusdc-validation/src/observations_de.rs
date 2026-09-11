@@ -1,22 +1,5 @@
-//! The observation record the LNV-3 rows-D/E driver produces and the rows-D/E assertion suite
-//! consumes.
-//!
-//! Same OBSERVE-vs-JUDGE split as the LNV-1/2 observation modules ([`crate::observations`],
-//! [`crate::observations_cf`]): the driver OBSERVES (commits the happy-path mints via the
-//! ntx-builder / path N, drives the recipient's P2ID consume, executes every negative client-side,
-//! and reads committed state back from the NODE via `GetAccount`); the assertions JUDGE. Keeping the
-//! two apart makes every rows-D/E check unit-testable against synthetic observations (the default
-//! suite) and keeps the driver free of pass/fail policy.
-//!
-//! The two real-node execution modes the values come from (LNV-1 / LNV-2 posture, reused):
-//! - **path N (ntx-builder)** — the ONLY way to *commit* a post-deploy faucet state change at
-//!   v0.15.1. Row D's happy-path mints are emitted as routed, allowlisted `XUsdcMintNote`s and
-//!   the running ntx-builder auto-executes the faucet's consumption; the driver reads the committed
-//!   `token_supply` + `usedNonces[nonce]` back and captures the emitted P2ID recipient note.
-//! - **client-side execute** — Row E's negatives (and the recipient's committed P2ID consume). Each
-//!   negative is executed locally against the deployed on-chain state (`execute_transaction`, no
-//!   submission): a trap is the reject proof, and because nothing is submitted the committed
-//!   `token_supply` / nonce registry cannot move — which the driver also reads back to prove.
+//! Mint transaction results and state fetched from the node.
+//! Successful mints are committed; rejection probes execute locally without submission.
 
 use serde::Serialize;
 
@@ -104,12 +87,7 @@ pub struct MintNegative {
     pub expects_nonce_set: bool,
 }
 
-/// Everything the LNV-3 rows-D/E run observed on the real node.
-///
-/// `d` carries the happy-path variants (empty-hookData + hookData-bearing), each committed via
-/// path N with the recipient consuming the emitted note; `e` carries every negative (replay, forged
-/// signature, non-allowlisted attester, non-zero fee, tampered payload), each a client-side reject
-/// with a committed-state read-back proving zero state change.
+/// Successful mints, rejected probes, and committed state read from the node.
 #[derive(Debug, Clone, Serialize)]
 pub struct RowsDeObservations {
     /// The `main` commit the run was built from (ledger metadata; recorded, not asserted).

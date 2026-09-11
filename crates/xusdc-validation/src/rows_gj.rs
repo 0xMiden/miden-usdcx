@@ -1,33 +1,6 @@
-//! The LNV-4 rows-G/H/I/J driver: one deterministic burn-lifecycle arc against a fresh local node,
-//! producing the [`RowsGjObservations`] the rows-G/H/I/J assertion suite judges.
-//!
-//! Execution model (LNV-1 posture, LNV-2/3-confirmed, reused):
-//! - **The committed mint (to the holder) and the Row-G two-block burn commit via path N (the
-//!   ntx-builder).** The mint note is emitted from the owner/relayer wallet; the Row-G burn note is
-//!   emitted from the HOLDER wallet (a regular-account tx the user RPC accepts) carrying the burned
-//!   xUSDC and the `NetworkAccountTarget(faucet)` routing attachment; the running ntx-builder
-//!   auto-executes the faucet's consumption (network notes are identified by the routing ATTACHMENT,
-//!   not the tag, so the fixed `0x4255524E` burn tag does not impede routing). The driver polls
-//!   `GetAccount` for the committed effect and captures the raw `GetNotesById` / `SyncNotes` /
-//!   nullifier evidence.
-//! - **The Row-H F7 RIV both executes CLIENT-SIDE and SUBMITS to the node; the Row-I negatives run
-//!   CLIENT-SIDE (`execute_transaction`, no submission).** Row H (1) consumes a freshly-built
-//!   (never-committed) production `XReserveBurnNote` as an UNAUTHENTICATED input to record what a
-//!   same-block/never-committed consume would apply (accepted; supply delta == amount), (2) SUBMITS
-//!   the faucet's consume via user RPC and records the node's REJECTION (a real-node round-trip
-//!   proving a COMMITTED same-block create+consume is unreachable — the network-account faucet + the
-//!   stock client's missing `x-miden-network-tx-auth` header + the ntx-builder's committed-only
-//!   consumption), and (3) queries the node to confirm nothing discoverable persists (the
-//!   canary `c2_same_block_erasure_...` starvation, against the PRODUCTION note). Each Row-I negative
-//!   is a client-side trap + committed read-back proving zero state change.
-//!
-//! The arc: deploy (identifier_init) → allowlist attester A (path N) → set_min_burn_size (path N) →
-//! mint to the holder (path N, holder consumes the P2ID) → Row-I negatives (below-min, wrong-asset,
-//! while-paused — the last pauses + unpauses via path N) → Row-H RIV (client-side execute + user-RPC
-//! submit-rejection) → Row-G two-block burn (path N) → Row-J conservation ledger.
-//!
-//! **Validator-not-fixer:** a failing row is a SURFACED finding, never a faucet hot-fix; row H is an
-//! EVIDENCE packet (DEV-7 stays OPEN), not an acceptability decision.
+//! Runs burn, discovery, and supply-conservation checks.
+//! The same-block probe records local execution, the node's submission response, and subsequent
+//! note and nullifier reads. Circle's burn-evidence decision remains OPEN.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -79,7 +52,7 @@ use crate::stack::NodeStack;
 /// The amount minted to the holder (units) — the whole committed supply of this arc, later burned in
 /// full by the Row-G two-block burn.
 const MINT_UNITS: u64 = 100;
-/// The maxFee every mint carries (units); reduces to 1 ≤ the mint amount, so R-MINT-10 holds.
+/// Fee ceiling of one unit, at or below each minted amount.
 const MAX_FEE_UNITS: u64 = 1;
 /// The configured minimum burn size committed via `set_min_burn_size` (units).
 const MIN_BURN: u64 = 10;
@@ -214,10 +187,7 @@ impl Driver {
             .with_context(|| format!("the node does not recognize the faucet {id}"))
     }
 
-    /// A wallet's committed faucet-asset balance from the client's synced store (0 before the wallet
-    /// has materialized on-chain — the LNV-3 `balance_of` posture: the raw `GetAccount` RPC rejects
-    /// an account the node has never seen, so the pre-materialization balance is read from the
-    /// client's own synced view).
+    /// Reads the synced wallet balance, including zero before its first on-chain transaction.
     async fn balance_of(&mut self, account_id: AccountId) -> Result<u64> {
         let faucet_id = self.faucet_id;
         self.hc
@@ -557,8 +527,7 @@ impl Driver {
     }
 }
 
-/// Runs the full LNV-4 rows-G/H/I/J arc on its own fresh stack. See the module docs for the
-/// execution model + arc order.
+/// Runs these checks on a fresh local stack.
 pub async fn run_rows_gj(cfg: &RunConfig) -> Result<RowsGjObservations> {
     // 1. Fresh stack.
     let mut stack = NodeStack::bootstrap_and_start(&cfg.stack)
@@ -576,10 +545,7 @@ pub async fn run_rows_gj(cfg: &RunConfig) -> Result<RowsGjObservations> {
     Ok(obs)
 }
 
-/// Runs the rows-G/H/I/J arc against an ALREADY-RUNNING stack (the LNV-5 consolidated run boots
-/// ONE stack and drives every slice on it in matrix order). `client_label` namespaces this
-/// slice's client store, keystore, and actor secrets under `<run_root>/client-<label>/` so
-/// composed slices cannot collide. No stack lifecycle happens here.
+/// Runs these checks on an existing stack. `client_label` isolates the client store and keys.
 pub async fn run_rows_gj_on(cfg: &RunConfig, client_label: &str) -> Result<RowsGjObservations> {
     let main_commit = git_head_commit();
 

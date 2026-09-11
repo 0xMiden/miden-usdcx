@@ -1,12 +1,5 @@
-//! LNV-1 deploy smoke + rows A/B: the one-command gate run for this slice.
-//!
-//! Boots a FRESH local stack, deploys the production faucet, drives `identifier_init` (init +
-//! init-once reject), applies the row-A/B assertion suite, writes `evidence.json`, and tears the
-//! stack down. Exit code 0 = both rows PASS.
-//!
-//! ```text
-//! cargo run -p xusdc-validation --bin lnv1_rows_ab [-- --keep-stack]
-//! ```
+//! Runs deployment and configuration checks on a fresh local node.
+//! Writes evidence and stops the node unless `--keep-stack` is supplied.
 
 use anyhow::Result;
 use xusdc_validation::assertions::{assert_row_a, assert_row_b};

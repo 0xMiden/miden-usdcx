@@ -129,7 +129,8 @@ impl From<XReserveFaucetExtension> for AccountComponent {
 }
 
 impl XReserveStablecoinBuilder {
-    /// Builds the burn-policy component; its floor slot belongs to the `MinBurnAmount` companion.
+    /// Builds the burn policy component. It reads the minimum burn amount from the storage slot
+    /// owned by `MinBurnAmount` and has no storage slots of its own.
     pub fn burn_policy_component() -> AccountComponent {
         AccountComponent::new(
             BURN_POLICY_CODE.clone(),

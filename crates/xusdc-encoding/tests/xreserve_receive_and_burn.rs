@@ -1,7 +1,7 @@
 //! Audit of the burn-consume path: how a burn note is destroyed and supply is lowered.
 //!
 //! Consuming a burn note runs the standard `receive_and_burn` path, gated by the faucet's
-//! custom withdrawal-shape and minimum-amount burn policy.
+//! burn policy, which checks the required attachments and minimum burn amount.
 //!
 //! The property it protects is that the faucet has exactly one way to lower `token_supply`. A
 //! second, ungated decrement path would let tokens be destroyed without a public burn note, and
@@ -115,10 +115,6 @@ async fn burn_rejects_a_missing_withdrawal_attachment() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert!(
-        result.is_err(),
-        "burn accepted without a withdrawal attachment"
-    );
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING")
@@ -150,10 +146,6 @@ async fn burn_rejects_a_wrong_withdrawal_word_count() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert!(
-        result.is_err(),
-        "burn accepted a four-word withdrawal attachment"
-    );
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS")
@@ -185,7 +177,6 @@ async fn burn_rejects_an_extra_attachment() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert!(result.is_err(), "burn accepted three attachments");
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT")
@@ -210,10 +201,6 @@ async fn burn_rejects_a_missing_routing_attachment() -> Result<()> {
         .build()?
         .execute()
         .await;
-    assert!(
-        result.is_err(),
-        "burn accepted without a routing attachment"
-    );
     assert_transaction_executor_error!(
         result,
         shell_error_by_name("ERR_XRESERVE_BURN_NOTE_TARGET_MISSING")
@@ -247,7 +234,7 @@ async fn only_receive_and_burn_lowers_supply() -> Result<()> {
     Ok(())
 }
 
-/// A code-identical faucet with `BurnAllowAll` active must fail the custom-root audit.
+/// The account check rejects a faucet that selects `BurnAllowAll` as its active burn policy.
 #[tokio::test]
 async fn allow_all_active_burn_policy_fails_sole_decrement_audit() -> Result<()> {
     let h = setup_burn_policy_account(
@@ -315,8 +302,7 @@ async fn run_set_min_burn_then_consume(
     let mut evolved = account.clone();
     evolved.apply_patch(set.account_patch())?;
 
-    // The faucet consumes the committed note against the updated account. The custom policy reads
-    // the same MinBurnAmount floor slot the standard setter wrote.
+    // The burn policy reads the minimum amount updated by the standard setter.
     let result = chain
         .build_transaction(evolved)
         .authenticated_input_note(note.id())

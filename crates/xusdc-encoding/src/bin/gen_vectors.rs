@@ -809,7 +809,7 @@ fn main() {
             "upper boundary: destDomain=u32::MAX, recipient all-0xff",
         ),
     ];
-    // reject entries: one perturbation each off a valid 9-felt base → BurnItemsMalformed.
+    // each rejection vector changes one field or the length of a valid 9-felt payload
     let bn_base = bn_items(6, &pattern32(0x55));
     let over_u32 = felt_hex(Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p"));
     let bn_reject = |id: &str, items: Vec<String>, derivation: &str| {

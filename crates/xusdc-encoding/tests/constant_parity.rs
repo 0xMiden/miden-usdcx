@@ -129,11 +129,11 @@ const MINT_POLICY_COVERED_NUMS: &[&str] = &[
     "MINT_INTENT_HOOK_DATA_LEN_LOC",
 ];
 
-/// Scheme and word count have Rust parity rows; the procedure-local offsets have no Rust twin.
+/// Constants used by the burn policy. Scheme and word count are compared with the Rust factory.
 const BURN_POLICY_COVERED_NUMS: &[&str] = &[
     "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME",
-    "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS",
-    "CHECK_BURN_POLICY_AMOUNT_LOC",
+    "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS",
+    "BURN_NOTE_NUM_ATTACHMENTS",
     "CHECK_BURN_POLICY_COMMITMENTS_LOC",
     "CHECK_BURN_POLICY_WITHDRAWAL_LOC",
 ];
@@ -446,7 +446,7 @@ fn masm_rust_constant_parity() {
     assert_eq!(
         num(
             &burn_nums,
-            "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS",
+            "XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS",
             "burn_policy.masm"
         ),
         XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS as u64,

@@ -201,7 +201,7 @@ pub struct AttVector {
 }
 
 /// Burn-note item (BN) vectors. `kind`: accept | reject. Accept entries carry
-/// the two semantic inputs plus the 9-felt golden `items` layout; reject entries carry the
+/// the two destination fields plus the 9-felt expected `items` layout; reject entries carry the
 /// malformed `items` felts plus `expected_variant` (`BurnItemsMalformed`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

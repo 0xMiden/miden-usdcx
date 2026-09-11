@@ -33,7 +33,7 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
-    /// The burn-policy component does not export its expected procedure (assembly/path drift).
+    /// The burn policy component does not export the expected procedure.
     BurnPolicyProcNotFound,
     /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter

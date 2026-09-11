@@ -255,8 +255,7 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
 // 3 — POSTURE: one allowed burn policy with the zero floor preserved
 // ================================================================================================
 
-/// TRIPWIRE: exactly one burn policy is allowed and its floor slot ships seeded `>= 1` — the zero-burn reject preserved by
-/// construction (`amount >= min >= 1`).
+/// The faucet allows exactly one burn policy and stores a minimum burn amount of at least one.
 #[test]
 fn burn_policy_has_one_allowed_root_and_a_positive_floor() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();

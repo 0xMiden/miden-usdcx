@@ -1,6 +1,6 @@
 # xreserve::burn_policy
 #
-# Requires the withdrawal attachment shape and the configured minimum burn amount.
+# Checks the required note attachments and enforces the minimum burn amount.
 
 use miden::protocol::active_account
 use miden::protocol::active_note
@@ -12,13 +12,13 @@ use {MIN_BURN_AMOUNT_SLOT} from miden::standards::faucets::policies::burn::min_b
 # =================================================================================================
 
 const XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME = 6
-const XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS = 3
+const XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS = 3
+const BURN_NOTE_NUM_ATTACHMENTS = 2
 
-# check_burn_policy locals: one word for the amount, then four attachment commitments.
-const CHECK_BURN_POLICY_AMOUNT_LOC = 0
-const CHECK_BURN_POLICY_COMMITMENTS_LOC = 4
-# reserve the full 256-word ceiling: content is written before its word count is returned.
-const CHECK_BURN_POLICY_WITHDRAWAL_LOC = 20
+# check_burn_policy locals: space for up to four attachment commitments, then attachment data.
+const CHECK_BURN_POLICY_COMMITMENTS_LOC = 0
+# reserve 256 words: the attachment is written before its word count can be checked.
+const CHECK_BURN_POLICY_WITHDRAWAL_LOC = 16
 
 # ERRORS
 # =================================================================================================
@@ -32,8 +32,7 @@ const ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN = "amount to be burned must meet or exc
 # POLICY PROCEDURE
 # =================================================================================================
 
-#! Verifies the withdrawal attachment shape and enforces the minimum burn amount.
-#! No withdrawal payload field is decoded or compared.
+#! Checks the required note attachments and enforces the minimum burn amount.
 #!
 #! Inputs:  [ASSET_ID, ASSET_VALUE, pad(8)]
 #! Outputs: [pad(16)]
@@ -44,17 +43,22 @@ const ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN = "amount to be burned must meet or exc
 #!
 #! Panics if:
 #! - no note is active, or either the routing or withdrawal attachment is missing.
-#! - the note has other than two attachments, or the withdrawal has other than three words.
-#! - attachment content does not match its note-committed commitment.
+#! - the note does not have exactly two attachments.
+#! - the withdrawal attachment does not contain exactly three words.
+#! - the attachment content does not match the commitment in the note.
 #! - the burn amount is below the configured minimum.
 #!
 #! Invocation: call
-@locals(1044)
+@locals(1040)
 @account_procedure
 pub proc check_burn_policy
     dropw
     exec.fungible_asset::value_into_amount
-    loc_store.CHECK_BURN_POLICY_AMOUNT_LOC
+    push.MIN_BURN_AMOUNT_SLOT[0..2] exec.active_account::get_item
+    # => [min_burn_amount, 0, 0, 0, amount, pad(15)]
+
+    movdn.4 drop drop drop
+    lte assert.err=ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN
     # => [pad(16)]
 
     push.XUSDC_BURN_WITHDRAWAL_ATTACHMENT_SCHEME exec.active_note::find_attachment
@@ -66,19 +70,13 @@ pub proc check_burn_policy
     drop
     # => [withdrawal_idx, pad(16)]
 
+    # check the number of attachments on the note
     locaddr.CHECK_BURN_POLICY_COMMITMENTS_LOC exec.active_note::write_attachment_commitments_to_memory
-    eq.2 assert.err=ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT
+    eq.BURN_NOTE_NUM_ATTACHMENTS assert.err=ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT
     # => [withdrawal_idx, pad(16)]
 
+    # check the number of words inside the withdrawal attachment
     locaddr.CHECK_BURN_POLICY_WITHDRAWAL_LOC exec.active_note::write_attachment_to_memory
-    eq.XUSDC_BURN_WITHDRAWAL_ATTACHMENT_WORDS assert.err=ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS
-    # => [pad(16)]
-
-    loc_load.CHECK_BURN_POLICY_AMOUNT_LOC
-    push.MIN_BURN_AMOUNT_SLOT[0..2] exec.active_account::get_item
-    # => [min_burn_amount, 0, 0, 0, amount, pad(16)]
-
-    movdn.4 drop drop drop
-    lte assert.err=ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN
+    eq.XUSDC_BURN_WITHDRAWAL_ATTACHMENT_NUM_WORDS assert.err=ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS
     # => [pad(16)]
 end

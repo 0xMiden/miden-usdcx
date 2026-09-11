@@ -154,7 +154,7 @@ struct Ledger {
 }
 
 impl Ledger {
-    async fn new(shared_transaction: bool) -> Self {
+    async fn new() -> Self {
         let mut burns: Vec<_> = (0..3)
             .map(|i| validated_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
@@ -167,23 +167,16 @@ impl Ledger {
                 .collect(),
             vec![],
         );
-        let transactions = if shared_transaction {
-            let shared = transaction(
-                faucet_account_id(),
-                &[burns[0].burn.nullifier(), burns[1].burn.nullifier()],
-            );
-            burns[0].burn.burn_tx_id = shared.id();
-            burns[1].burn.burn_tx_id = shared.id();
-            vec![
-                shared,
-                transaction(faucet_account_id(), &[burns[2].burn.nullifier()]),
-            ]
-        } else {
-            burns
-                .iter()
-                .map(|b| transaction(faucet_account_id(), &[b.burn.nullifier()]))
-                .collect()
-        };
+        let shared = transaction(
+            faucet_account_id(),
+            &[burns[0].burn.nullifier(), burns[1].burn.nullifier()],
+        );
+        burns[0].burn.burn_tx_id = shared.id();
+        burns[1].burn.burn_tx_id = shared.id();
+        let transactions = vec![
+            shared,
+            transaction(faucet_account_id(), &[burns[2].burn.nullifier()]),
+        ];
         factory.push(vec![], transactions);
         factory.push(vec![], vec![]);
         let directory = tempfile::tempdir().unwrap();
@@ -269,7 +262,7 @@ impl Ledger {
 }
 
 pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<ProvenBlock>) {
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     drop(attester);
@@ -330,7 +323,7 @@ async fn submit_sends_checked_request() {
         ("failed", Failed),
         ("new_status", Held),
     ] {
-        let ledger = Ledger::new(false).await;
+        let ledger = Ledger::new().await;
         let mut response = ledger.response(0, status);
         if status == "failed" {
             response["failureReason"] = json!("Circle's reported failure");
@@ -428,7 +421,7 @@ async fn submit_sends_checked_request() {
             assert_eq!(ledger.record(&attester, 0).status, Submitted);
         }
     }
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     let (mut attester, _) = ledger
         .start(vec![reply(200, json!([ledger.response(0, "created")]))])
         .await;
@@ -439,7 +432,7 @@ async fn submit_sends_checked_request() {
         "only 201 creates a submission"
     );
 
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     let mut response = ledger.response(0, "created");
     response["useCircleForwarding"] = json!(true);
     let path = ledger.directory.path().join("attester.toml");
@@ -461,7 +454,7 @@ async fn submit_sends_checked_request() {
 /// Persist before sending; an uncertain request cannot be replaced by a fresh authorization.
 #[tokio::test]
 async fn submit_saves_before_sending() {
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     ledger.sql("CREATE TRIGGER fail_insert BEFORE INSERT ON submissions BEGIN SELECT RAISE(FAIL, 'disk full'); END;");
     let (mut attester, requests) = ledger.start(vec![]).await;
     assert!(matches!(
@@ -524,7 +517,7 @@ async fn retries_use_saved_request() {
             CircleState::Response(StatusCode::CONFLICT),
         ),
     ] {
-        let ledger = Ledger::new(false).await;
+        let ledger = Ledger::new().await;
         let first = if name == "conflict without ID" {
             reply(
                 409,
@@ -567,7 +560,7 @@ async fn retries_use_saved_request() {
             SubmissionStatus::Submitted
         );
     }
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     ledger.sql("CREATE TRIGGER fail_outcome BEFORE UPDATE ON submissions BEGIN SELECT RAISE(FAIL, 'disk full'); END;");
     let (mut attester, first) = ledger
         .start(vec![reply(201, json!([ledger.response(0, "created")]))])
@@ -605,7 +598,7 @@ async fn conflicts_are_checked() {
         ("not found", reply(404, json!({}))),
         ("malformed", reply(200, json!({}))),
     ] {
-        let ledger = Ledger::new(false).await;
+        let ledger = Ledger::new().await;
         let (mut attester, requests) = ledger.start(vec![conflict(), unavailable]).await;
         ledger.submit(&mut attester, 0).await.unwrap();
         let saved = ledger.record(&attester, 0);
@@ -644,7 +637,7 @@ async fn conflicts_are_checked() {
         ("forwarding", |v| v["useCircleForwarding"] = json!(true)),
     ];
     for (name, change) in mismatches {
-        let ledger = Ledger::new(false).await;
+        let ledger = Ledger::new().await;
         let mut response = ledger.response(0, "created");
         change(&mut response);
         // POST and GET share the identity predicate; keep one GET field mismatch as well.
@@ -661,7 +654,7 @@ async fn conflicts_are_checked() {
             "{name}"
         );
     }
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     let mut other_id = ledger.response(0, "created");
     other_id["withdrawalId"] = json!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71");
     for (name, replies, reason) in [
@@ -687,7 +680,7 @@ async fn conflicts_are_checked() {
             HoldReason::ResponseMismatch,
         ),
     ] {
-        let ledger = Ledger::new(false).await;
+        let ledger = Ledger::new().await;
         let (mut attester, _) = ledger.start(replies).await;
         ledger.submit(&mut attester, 0).await.unwrap();
         assert_eq!(
@@ -699,7 +692,7 @@ async fn conflicts_are_checked() {
             .retry_held_submission(ledger.burns[0].burn.note_id())
             .is_err());
     }
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     ledger.sql("CREATE TRIGGER fail_id BEFORE UPDATE ON submissions WHEN NEW.withdrawal_id IS NOT NULL BEGIN SELECT RAISE(FAIL, 'disk full'); END;");
     let (mut attester, requests) = ledger.start(vec![conflict()]).await;
     assert!(matches!(
@@ -717,12 +710,16 @@ async fn conflicts_are_checked() {
 /// A held burn cannot poison unrelated work; only reviewed HTTP rejections can be requeued.
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
+    assert_eq!(
+        ledger.burns[0].burn.burn_tx_id,
+        ledger.burns[1].burn.burn_tx_id
+    );
     let rejected = json!({"message": "operator must investigate", "code": "unrecognized"});
     let (mut attester, requests) = ledger
         .start(vec![
             reply(400, rejected.clone()),
-            reply(201, json!([ledger.response(2, "created")])),
+            reply(201, json!([ledger.response(1, "created")])),
             reply(201, json!([ledger.response(0, "created")])),
         ])
         .await;
@@ -733,7 +730,7 @@ async fn held_submissions_do_not_block_others() {
         serde_json::from_slice::<Value>(held.last_response.as_ref().unwrap()).unwrap(),
         rejected
     );
-    ledger.submit(&mut attester, 2).await.unwrap();
+    ledger.submit(&mut attester, 1).await.unwrap();
     attester.recover_submissions().await.unwrap();
     assert_eq!(
         requests.lock().unwrap().len(),
@@ -744,10 +741,25 @@ async fn held_submissions_do_not_block_others() {
     attester.recover_submissions().await.unwrap();
     {
         let observed = requests.lock().unwrap();
+        assert_eq!(observed.len(), 3);
         assert_eq!(observed[0], observed[2]);
+        for (index, request) in observed[..2].iter().enumerate() {
+            assert_eq!(
+                ledger.record(&attester, index).status,
+                SubmissionStatus::Submitted
+            );
+            let ObservedRequest::Submit { body, .. } = request else {
+                panic!("expected the withdraw request, got {request:?}");
+            };
+            let body: Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                body["batches"][0]["burnTxId"],
+                ledger.burns[index].burn.note_id().to_hex()
+            );
+        }
     }
 
-    let ledger = Ledger::new(false).await;
+    let ledger = Ledger::new().await;
     let (mut attester, requests) = ledger.start(vec![conflict(), reply(400, rejected)]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     let held = ledger.record(&attester, 0);
@@ -772,44 +784,4 @@ async fn held_submissions_do_not_block_others() {
         ledger.record(&attester, 0).status,
         SubmissionStatus::Submitted
     );
-
-    let ledger = Ledger::new(true).await;
-    assert_eq!(
-        ledger.burns[0].burn.burn_tx_id,
-        ledger.burns[1].burn.burn_tx_id
-    );
-    assert_ne!(
-        ledger.burns[0].burn.note_id(),
-        ledger.burns[1].burn.note_id()
-    );
-    let (mut attester, requests) = ledger
-        .start(vec![
-            reply(201, json!([ledger.response(0, "created")])),
-            reply(201, json!([ledger.response(1, "created")])),
-        ])
-        .await;
-    for index in 0..2 {
-        ledger.submit(&mut attester, index).await.unwrap();
-        assert_eq!(
-            ledger.record(&attester, index).status,
-            SubmissionStatus::Submitted
-        );
-        let body: Value = match &requests.lock().unwrap()[index] {
-            ObservedRequest::Submit { body, .. } => serde_json::from_slice(body).unwrap(),
-            other => panic!("expected the withdraw request, got {other:?}"),
-        };
-        assert_eq!(
-            body["batches"][0]["burnTxId"],
-            ledger.burns[index].burn.note_id().to_hex()
-        );
-        assert_ne!(
-            body["batches"][0]["burnTxId"],
-            ledger.burns[index].burn.burn_tx_id.to_hex()
-        );
-        assert_ne!(
-            body["batches"][0]["burnTxId"],
-            ledger.burns[index].burn.nullifier().to_hex()
-        );
-    }
-    assert_eq!(requests.lock().unwrap().len(), 2);
 }

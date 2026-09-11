@@ -7,6 +7,8 @@ pub mod circle;
 pub mod config;
 pub mod signer;
 pub(crate) mod store;
+#[allow(dead_code)]
+pub(crate) mod submission;
 // The submission stage will call this gate before anything can be signed.
 #[allow(dead_code)]
 pub(crate) mod verify;

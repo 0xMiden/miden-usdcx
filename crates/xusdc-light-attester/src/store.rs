@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use alloy_primitives::B256;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, Nullifier};
@@ -12,6 +13,8 @@ use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
+use crate::submission::{HoldReason, SavedSubmission, SubmissionOutcome, SubmissionStatus};
+use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
@@ -111,6 +114,98 @@ impl Store {
         load_candidates(&self.connection, self.faucet_account_id)
     }
 
+    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> Result<(), StoreError> {
+        validate_submission(record)?;
+        if record.status != SubmissionStatus::Submitting
+            || record.withdrawal_id.is_some()
+            || record.last_http_status.is_some()
+            || record.last_response.is_some()
+            || record.last_error.is_some()
+        {
+            return Err(StoreError::Conflict);
+        }
+        // Only an explicitly supplied fresh authorization can replace a confirmed failure.
+        let written = self
+            .connection
+            .execute(
+                "INSERT INTO submissions (
+                note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
+             ) SELECT ?1, ?2, ?3, ?4, ?5, 'SUBMITTING'
+             WHERE EXISTS (SELECT 1 FROM burns
+                 WHERE note_id = ?1 AND status = 'DISCOVERED')
+             ON CONFLICT (note_id) DO UPDATE SET
+                endpoint = excluded.endpoint, body = excluded.body,
+                transfer_spec_hash = excluded.transfer_spec_hash,
+                use_circle_forwarding = excluded.use_circle_forwarding,
+                status = 'SUBMITTING', withdrawal_id = NULL, hold_reason = NULL,
+                last_http_status = NULL, last_response = NULL, last_error = NULL
+             WHERE submissions.status IN ('FAILED', 'EXPIRED')
+                AND submissions.withdrawal_id IS NOT NULL",
+                params![
+                    record.note_id.to_bytes(),
+                    record.endpoint,
+                    record.body,
+                    record.transfer_spec_hash.as_slice(),
+                    record.use_circle_forwarding
+                ],
+            )
+            .map_err(classify_write_error)?;
+        (written == 1).then_some(()).ok_or(StoreError::Conflict)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submission(
+        &self,
+        note_id: NoteId,
+    ) -> Result<Option<SavedSubmission>, StoreError> {
+        Ok(load_submissions(&self.connection, Some(note_id), false)?.pop())
+    }
+
+    pub(crate) fn submissions_to_recover(&self) -> Result<Vec<SavedSubmission>, StoreError> {
+        load_submissions(&self.connection, None, true)
+    }
+
+    pub(crate) fn save_submission_outcome(
+        &self,
+        note_id: NoteId,
+        outcome: SubmissionOutcome<'_>,
+    ) -> Result<(), StoreError> {
+        validate_submission_outcome(&outcome)?;
+        // The sequential submitter changes only outcomes, never a request or a known ID.
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
+                last_http_status = ?4, last_response = ?5, last_error = ?6
+             WHERE note_id = ?7 AND status = 'SUBMITTING'
+                AND (withdrawal_id IS NULL OR withdrawal_id = ?2)",
+                params![
+                    outcome.status.as_str(),
+                    outcome.withdrawal_id,
+                    outcome.hold_reason.map(HoldReason::as_str),
+                    outcome.last_http_status,
+                    outcome.last_response,
+                    outcome.last_error,
+                    note_id.to_bytes(),
+                ],
+            )
+            .map_err(classify_error)?;
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+    }
+
+    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> Result<(), StoreError> {
+        // Keep the saved ID and bytes: recovery resumes GET if an ID is already known.
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE submissions SET status = 'SUBMITTING', hold_reason = NULL
+             WHERE note_id = ?1 AND status = 'HELD' AND hold_reason = 'http_rejected'",
+                [note_id.to_bytes()],
+            )
+            .map_err(classify_error)?;
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+    }
+
     /// Records a proven-invalid burn without changing its evidence or scan progress.
     #[allow(dead_code)]
     pub(crate) fn refuse_burn(
@@ -122,7 +217,8 @@ impl Store {
             .connection
             .execute(
                 "UPDATE burns SET status = ?1, refusal_reason = ?2
-             WHERE note_id = ?3 AND status = ?4 AND refusal_reason IS NULL",
+             WHERE note_id = ?3 AND status = ?4 AND refusal_reason IS NULL
+                AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?3)",
                 params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
             )
             .map_err(classify_error)?;
@@ -242,6 +338,27 @@ fn initialize_store(
         .map_err(classify_error)?;
     create_burns_table(&transaction)?;
     transaction
+        .execute_batch(
+            "CREATE TABLE submissions (
+            note_id BLOB PRIMARY KEY,
+            endpoint TEXT NOT NULL,
+            body BLOB NOT NULL,
+            transfer_spec_hash BLOB NOT NULL,
+            use_circle_forwarding INTEGER NOT NULL CHECK (use_circle_forwarding IN (0, 1)),
+            status TEXT NOT NULL CHECK (status IN (
+                'SUBMITTING', 'SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED', 'HELD'
+            )),
+            withdrawal_id TEXT,
+            hold_reason TEXT CHECK (hold_reason IN (
+                'http_rejected', 'response_mismatch', 'unknown_status'
+            )),
+            last_http_status INTEGER,
+            last_response BLOB,
+            last_error TEXT
+        ) STRICT;",
+        )
+        .map_err(classify_error)?;
+    transaction
         .execute(
             "INSERT INTO attester_state (
                 singleton,
@@ -348,17 +465,143 @@ fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreE
     if quick_check != "ok" {
         return Err(StoreError::Invalid);
     }
-
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block FROM burn_candidates LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
             refusal_reason FROM burns LIMIT 0",
+        "SELECT note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status,
+            withdrawal_id, hold_reason, last_http_status, last_response, last_error
+            FROM submissions LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }
 
+    Ok(())
+}
+
+impl SubmissionStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Submitting => "SUBMITTING",
+            Self::Submitted => "SUBMITTED",
+            Self::Finalized => "FINALIZED",
+            Self::Expired => "EXPIRED",
+            Self::Failed => "FAILED",
+            Self::Held => "HELD",
+        }
+    }
+}
+
+impl HoldReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpRejected => "http_rejected",
+            Self::ResponseMismatch => "response_mismatch",
+            Self::UnknownStatus => "unknown_status",
+        }
+    }
+}
+
+fn load_submissions(
+    connection: &rusqlite::Connection,
+    note_id: Option<NoteId>,
+    recoverable_only: bool,
+) -> Result<Vec<SavedSubmission>, StoreError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT note_id, endpoint, body, transfer_spec_hash,
+            use_circle_forwarding, status, withdrawal_id, hold_reason,
+            last_http_status, last_response, last_error FROM submissions
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = 'SUBMITTING')
+         ORDER BY note_id",
+        )
+        .map_err(classify_error)?;
+    let mut rows = statement
+        .query(params![note_id.map(|id| id.to_bytes()), recoverable_only])
+        .map_err(classify_error)?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().map_err(classify_error)? {
+        let status = match row.get::<_, String>(5).map_err(classify_error)?.as_str() {
+            "SUBMITTING" => SubmissionStatus::Submitting,
+            "SUBMITTED" => SubmissionStatus::Submitted,
+            "FINALIZED" => SubmissionStatus::Finalized,
+            "EXPIRED" => SubmissionStatus::Expired,
+            "FAILED" => SubmissionStatus::Failed,
+            "HELD" => SubmissionStatus::Held,
+            _ => return Err(StoreError::Invalid),
+        };
+        let hold_reason = match row
+            .get::<_, Option<String>>(7)
+            .map_err(classify_error)?
+            .as_deref()
+        {
+            None => None,
+            Some("http_rejected") => Some(HoldReason::HttpRejected),
+            Some("response_mismatch") => Some(HoldReason::ResponseMismatch),
+            Some("unknown_status") => Some(HoldReason::UnknownStatus),
+            _ => return Err(StoreError::Invalid),
+        };
+        let record = SavedSubmission {
+            note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
+            endpoint: row.get(1).map_err(classify_error)?,
+            body: row.get(2).map_err(classify_error)?,
+            transfer_spec_hash: B256::from(row.get::<_, [u8; 32]>(3).map_err(classify_error)?),
+            use_circle_forwarding: match row.get::<_, i64>(4).map_err(classify_error)? {
+                0 => false,
+                1 => true,
+                _ => return Err(StoreError::Invalid),
+            },
+            status,
+            withdrawal_id: row.get(6).map_err(classify_error)?,
+            hold_reason,
+            last_http_status: row.get(8).map_err(classify_error)?,
+            last_response: row.get(9).map_err(classify_error)?,
+            last_error: row.get(10).map_err(classify_error)?,
+        };
+        validate_submission(&record)?;
+        if !exists(
+            connection,
+            "SELECT EXISTS (SELECT 1 FROM burns
+             WHERE note_id = ?1 AND status = 'DISCOVERED')",
+            [record.note_id.to_bytes()],
+        )? {
+            return Err(StoreError::Invalid);
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn validate_submission(record: &SavedSubmission) -> Result<(), StoreError> {
+    let endpoint = reqwest::Url::parse(&record.endpoint).map_err(|_| StoreError::Invalid)?;
+    if endpoint.scheme() != "https"
+        || endpoint.host_str().is_none()
+        || endpoint.path() != "/v1/withdraw"
+        || !validate_saved_request(record)
+    {
+        return Err(StoreError::Invalid);
+    }
+    validate_submission_outcome(&record.outcome())
+}
+
+fn validate_submission_outcome(outcome: &SubmissionOutcome<'_>) -> Result<(), StoreError> {
+    if (outcome.status == SubmissionStatus::Held) != outcome.hold_reason.is_some()
+        || outcome.withdrawal_id.is_some_and(|id| id.trim().is_empty())
+        || (matches!(
+            outcome.status,
+            SubmissionStatus::Submitted
+                | SubmissionStatus::Finalized
+                | SubmissionStatus::Expired
+                | SubmissionStatus::Failed
+        ) && outcome.withdrawal_id.is_none())
+        || outcome
+            .last_http_status
+            .is_some_and(|code| reqwest::StatusCode::from_u16(code).is_err())
+    {
+        return Err(StoreError::Invalid);
+    }
     Ok(())
 }
 
@@ -463,7 +706,9 @@ fn load_burns(
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
-             WHERE ?1 OR status != 'REFUSED'",
+             WHERE ?1 OR (status != 'REFUSED' AND NOT EXISTS (
+                  SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+             ))",
         )
         .map_err(classify_error)?;
     let rows = statement
@@ -630,7 +875,11 @@ fn exists<P: Params>(
 fn classify_write_error(error: rusqlite::Error) -> StoreError {
     match error {
         rusqlite::Error::SqliteFailure(sqlite_error, _)
-            if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            if matches!(
+                sqlite_error.extended_code,
+                rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                    | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            ) =>
         {
             StoreError::Conflict
         }

@@ -40,8 +40,7 @@ impl From<StoreError> for DiscoverError {
     }
 }
 
-#[derive(Debug)]
-pub struct SubmitError;
+pub use crate::submission::SubmitError;
 
 #[derive(Debug)]
 pub struct PollError;
@@ -59,7 +58,7 @@ pub struct Attester {
     config: Config,
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
-    circle: CircleClient,
+    pub(crate) circle: CircleClient,
     trusted_anchor_block: Option<ProvenBlock>,
 }
 

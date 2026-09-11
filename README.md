@@ -38,7 +38,8 @@ deposit and burns it on withdrawal.
   enforces the supply cap, emits the P2ID note, and raises `token_supply`. Any check that fails
   aborts the whole transaction with no writes, so a failed mint never consumes its nonce. The
   attestation policy is the only allowed mint policy, which makes it the gate **every** supply
-  increase passes.
+  increase passes. **Do not deposit with `hookData` longer than 3,840 bytes.** The deposit cannot be
+  claimed on Miden, and the USDC remains locked on the source chain.
 - **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(destDomain,
   destRecipient)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
@@ -72,6 +73,14 @@ deposit and burns it on withdrawal.
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline.
 
 ## Start here
+
+Audit note for OpenZeppelin: the existing `withdrawal-listener-attester` is being replaced by the
+lightweight attester introduced in [PR #194](https://github.com/0xMiden/miden-usdcx/pull/194).
+[PR #195](https://github.com/0xMiden/miden-usdcx/pull/195) fixes withdrawal-term validation in the
+existing implementation; [PR #217](https://github.com/0xMiden/miden-usdcx/pull/217) carries those
+checks into the replacement and verifies the encoded bytes and signing hash. As of September 10,
+2026, both replacement PRs are open; #217 leaves signing and submission out of scope and awaits a
+captured Circle response for its two reference tests.
 
 - **What the faucet does and how it's built:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **The encoding contracts:** the codecs in `crates/xusdc-encoding/src/xreserve/encoding/`, each of

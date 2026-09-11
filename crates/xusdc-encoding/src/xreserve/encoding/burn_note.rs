@@ -1,10 +1,8 @@
 //! Burn-note item codec: the burn-note withdrawal payload
 //! `(destDomain, destRecipient)`.
 //!
-//! This codec is Rust-only and has no MASM counterpart: the burn policy checks attachment shape
-//! without decoding the payload, and the destination fields exist for the off-chain
-//! withdrawal attester to act on. The burn note encodes and the attester decodes, so the encoding
-//! has to be exactly reversible between them.
+//! The burn note factory uses this codec to encode the destination fields. The off-chain
+//! withdrawal attester uses the same codec to decode them.
 //!
 //! The `destRecipient` field is packed and unpacked with the shared bytes32 codec in both
 //! directions, so there is one definition of how 32 bytes become field elements.
@@ -19,11 +17,7 @@ use super::error::EncodingError;
 /// (8 u32-LE), totalling 9 felts (≤ 1024, the note-model felt bound).
 pub const BURN_NOTE_ITEMS_FELTS: usize = 9;
 
-/// The burn-note public payload `(destDomain, destRecipient)` — the burn note's
-/// dedicated payload type. Destination fields live in the withdrawal-payload attachment, never note
-/// metadata (`metadata.sender` carries the burner and nothing else). Built either as a struct
-/// literal or with a `bon` builder (`XReserveBurnItems::builder().dest_domain(..)…build()`),
-/// the standards note-payload-type pattern.
+/// The destination domain and recipient carried in the burn note's withdrawal attachment.
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct XReserveBurnItems {
     pub dest_domain: u32,
@@ -41,10 +35,7 @@ impl XReserveBurnItems {
         out
     }
 
-    /// Decodes a burn-payload felt slice back into the typed struct — the inverse of
-    /// [`encode`](Self::encode). Fail-closed: a wrong length, an out-of-range `destDomain`,
-    /// or a non-u32 bytes32 limb all return [`EncodingError::BurnItemsMalformed`]
-    /// (never a panic, never a generic error).
+    /// Decodes the withdrawal payload, reversing [`encode`](Self::encode).
     ///
     /// # Errors
     ///

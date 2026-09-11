@@ -6,8 +6,9 @@
 //! faucet's core mint-security invariant.
 //!
 //! Composes the `FungibleFaucet`, the attestation mint policy and `set_attester` extension,
-//! a `TokenPolicyManager` with the withdrawal-shape burn policy and stock [`MinBurnAmount`]
-//! floor, plus the stock [`PausableManager`], [`BlocklistManager`] and [`ConstantFeeManager`].
+//! a `TokenPolicyManager` whose burn policy checks required attachments and the minimum amount
+//! stored by [`MinBurnAmount`], plus the stock [`PausableManager`], [`BlocklistManager`] and
+//! [`ConstantFeeManager`].
 //! The RBAC seed holds five roles: `ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`, `DOM_UNPAUSER` and
 //! `BLK_MANAGER`. Every role is administered directly by `ADMIN`; there is no ownership component.
 //! The standard role-action note rotates membership and can change role administration at runtime.
@@ -76,7 +77,7 @@ pub const ATTESTATION_MINT_POLICY_PROC_PATH: &str =
 pub const XRESERVE_SET_ATTESTER_PROC_PATH: &str =
     "xreserve::components::faucet_extension::set_attester";
 
-/// Path exported by the separate zero-slot burn-policy component.
+/// Path of the procedure exported by the burn policy component.
 pub const XRESERVE_BURN_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_burn_policy::check_burn_policy";
 
@@ -99,8 +100,8 @@ pub const USDCX_DECIMALS: u8 = 6;
 
 /// Composes the xUSDC faucet account: `FungibleFaucet` + the assembled `xreserve` library
 /// component (attestation mint policy, admin procs) + a `TokenPolicyManager`
-/// with the attestation policy active on the mint side and the withdrawal-shape policy active on
-/// the burn side, using the stock [`MinBurnAmount`] floor slot, plus [`PausableManager`], [`BlocklistManager`], and
+/// with the attestation mint policy and a burn policy that checks the required attachments
+/// and the minimum amount stored by [`MinBurnAmount`], plus [`PausableManager`], [`BlocklistManager`], and
 /// [`ConstantFeeManager`] components + a seeded `RoleBasedAccessControl` governed by
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`.
 ///
@@ -133,9 +134,8 @@ pub struct XReserveStablecoinBuilder {
     ///
     /// TODO: Use native fee faucet account construction when it is available.
     fee_parameters: FeeParameters,
-    /// The minimum burn amount (the burn-floor threshold) seeded into the stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount)
-    /// companion's floor slot. Defaults to [`MIN_BURN_SIZE_FLOOR`] and is validated at
-    /// construction.
+    /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
+    /// and is validated at construction.
     min_burn_amount: AssetAmount,
     /// The faucet's own Circle domain id.
     domain: u32,
@@ -161,10 +161,9 @@ impl XReserveStablecoinBuilder {
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
-    /// via [`XReserveFaucetExtension`]. The active mint policy is always the attestation policy,
-    /// hard-wired at composition, and so is the stock
-    /// [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) on the burn side; only
-    /// its floor, `min_burn_amount`, is a builder input, defaulting to [`MIN_BURN_SIZE_FLOOR`].
+    /// via [`XReserveFaucetExtension`]. The active mint and burn policies are fixed by the
+    /// composition. The burn policy reads `min_burn_amount` from [`MinBurnAmount`]; this builder
+    /// input defaults to [`MIN_BURN_SIZE_FLOOR`].
     ///
     /// # Errors
     ///

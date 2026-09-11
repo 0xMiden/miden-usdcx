@@ -1753,10 +1753,9 @@ fn seeded_dom_roles_rbac_component(
         .into()
 }
 
-/// TEST-ONLY burn-oracle composition: registers the attestation mint policy and both the custom
-/// burn policy and stock `BurnAllowAll`, one active and one reserved per `burn_real_active`.
-/// Both variants install the same components and floor seed, differing only in the active burn
-/// root. Production installs only the custom burn policy, with no reserved allow-all policy.
+/// Builds test components with either the custom burn policy or `BurnAllowAll` active.
+/// Both versions use the same components and minimum burn amount so tests can compare the policies.
+/// Production allows only the custom burn policy.
 fn oracle_burn_components(
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
@@ -1823,7 +1822,7 @@ fn oracle_burn_components(
         xreserve_component,
     ];
     components.push(manager_component);
-    components.extend(keep); // custom burn policy, MinBurnAmount (floor slot), BurnAllowAll
+    components.extend(keep); // custom burn policy, MinBurnAmount, BurnAllowAll
     components.push(PausableManager.into());
     components.push(seeded_dom_roles_rbac_component(
         administrator,
@@ -1861,8 +1860,7 @@ pub fn setup_burn_policy_account(
             ),
             StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
             StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),
-            // NOTE: the floor slot rides the STOCK MinBurnAmount policy companion
-            // (seeded by `oracle_burn_components`), not the xreserve component.
+            // oracle_burn_components stores the minimum burn amount in the MinBurnAmount component.
         ],
         AccountComponentMetadata::new("xusdc-burn-policy-harness"),
     )

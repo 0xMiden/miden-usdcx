@@ -4,8 +4,10 @@
 //! Arithmetic and layout expectations are derived here with exact integer math (the formula is
 //! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
 //! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
-//! `AccountIdBuilder::build_with_seed`. The vectors are derived independently of the code they
-//! check. Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
+//! `AccountIdBuilder::build_with_seed`. Every family is derived independently of the code it
+//! checks, except the `mi` carried and rebuilt felts, which are recorded from the Rust mirror and
+//! pinned against the MASM writer. Regeneration is an explicit, reviewed act:
+//! `cargo run --bin gen_vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
@@ -807,7 +809,7 @@ fn main() {
             "upper boundary: destDomain=u32::MAX, recipient all-0xff",
         ),
     ];
-    // reject entries: one perturbation each off a valid 9-felt base → BurnItemsMalformed.
+    // each rejection vector changes one field or the length of a valid 9-felt payload
     let bn_base = bn_items(6, &pattern32(0x55));
     let over_u32 = felt_hex(Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p"));
     let bn_reject = |id: &str, items: Vec<String>, derivation: &str| {

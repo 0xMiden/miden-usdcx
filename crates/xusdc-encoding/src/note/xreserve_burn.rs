@@ -13,9 +13,9 @@
 //! ATTACHMENT instead. The note is forced public, carries the fixed xUSDC burn tag, and packs the
 //! payload with the shared codec so the listener decodes precisely what was encoded.
 //!
-//! The burn policy requires the routing attachment and a three-word withdrawal attachment,
-//! whose content is bound to the note id. It decodes no destination field; those remain for the
-//! off-chain withdrawal attester to validate.
+//! The burn policy requires exactly two attachments: the routing target and a withdrawal payload
+//! of three words. It checks the withdrawal content against the commitment in the note.
+//! The off-chain withdrawal attester validates the destination fields.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};

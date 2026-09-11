@@ -29,9 +29,8 @@
 //! costs nothing and gives the rejection a name, while a later layout decision changes only the
 //! packaging these conversions apply.
 //!
-//! How large hookData may be is still Circle's to decide. The bound applied here is the protocol's
-//! own note-storage limit (`MAX_NOTE_STORAGE_ITEMS`, 1024 field elements — each storage "item" is
-//! a single field element), which is the documented default rather than an answer.
+//! WARNING: Do not deposit with more than 3,840 bytes of `hookData`. The deposit cannot be claimed
+//! on Miden, and the USDC remains locked on the source chain.
 
 use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::asset::AssetAmount;
@@ -175,11 +174,7 @@ impl ForeignChainAddress {
 pub struct HookData(Vec<u8>);
 
 impl HookData {
-    /// The hookData bound: whatever the mint transport that delivers the deposit can carry. That is
-    /// the tighter of the two ceilings hookData has to pass through — the other being the rebuilt
-    /// preimage's own staging region, which the assertion below keeps in range. A payload that
-    /// passes here therefore fits on-chain at both ends. The exact cap Circle wants is still OPEN
-    /// (`DEV-6`).
+    /// Maximum hookData length supported by the mint note, in bytes.
     pub const MAX_LEN: usize = XUSDC_MINT_TRANSPORT_HOOK_DATA_MAX_LEN;
 
     /// Wraps hookData bytes.

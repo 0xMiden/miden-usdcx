@@ -13,6 +13,7 @@
 //! each invalid state, the builder and serde must BOTH refuse it.
 
 use assert_matches::assert_matches;
+use miden_protocol::asset::AssetAmount;
 use rstest::rstest;
 use serde_json::{json, Value};
 use withdrawal_listener_attester::config::{ListenerConfig, SecretString};
@@ -27,6 +28,7 @@ fn valid_config_json() -> Value {
         "faucet_id": FAUCET_ID_HEX,
         "burn_tag": 3_735_928_559u32,
         "miden_domain": 10_001,
+        "max_withdrawal_fee": 1_000u64,
         "circle_base_url": "https://xreserve-api-testnet.circle.com",
         "attester_key_handles": ["kms://attester-a", "kms://attester-b"],
     })
@@ -38,7 +40,33 @@ fn the_baseline_config_file_loads_so_every_negative_below_isolates_one_rule() {
         serde_json::from_value(valid_config_json()).expect("the baseline must load");
 
     assert_eq!(config.miden_domain(), 10_001);
+    assert_eq!(config.max_withdrawal_fee().as_u64(), 1_000);
     assert!(config.api_auth_token().is_none());
+}
+
+#[test]
+fn the_package_default_refuses_fee_bearing_withdrawals_until_configured() {
+    let config = ListenerConfig::default();
+    assert_eq!(
+        config.max_withdrawal_fee(),
+        AssetAmount::ZERO,
+        "the default withdrawal fee ceiling is zero"
+    );
+}
+
+#[test]
+fn a_config_file_with_an_unrepresentable_withdrawal_fee_ceiling_is_refused() {
+    let mut config = valid_config_json();
+    config["max_withdrawal_fee"] = json!(AssetAmount::MAX.as_u64() + 1);
+
+    let error = serde_json::from_value::<ListenerConfig>(config)
+        .expect_err("a fee ceiling above AssetAmount::MAX must not load");
+
+    assert_eq!(error.classify(), serde_json::error::Category::Data);
+    assert!(
+        error.to_string().contains("amount"),
+        "the rejection must name the amount bound; got: {error}"
+    );
 }
 
 // THE HOLE THE AUDIT FOUND: serde must not be a back door around the credential invariant

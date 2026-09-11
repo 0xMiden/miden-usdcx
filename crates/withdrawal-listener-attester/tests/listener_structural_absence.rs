@@ -258,6 +258,10 @@ fn the_orchestration_passes_the_discovered_burn_whole() {
         "B4 is built from the one DiscoveredBurn B3 minted"
     );
     assert!(
+        source.contains("validate_returned(&response, &burn,"),
+        "B5 validates the same DiscoveredBurn B4 used to build the request"
+    );
+    assert!(
         !source.contains("burn.depositor()"),
         "the orchestration never unpacks the depositor — doing so is how it gets re-paired with \
          another burn's payload"

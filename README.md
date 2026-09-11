@@ -103,15 +103,15 @@ than a test. The primary gate (`cargo test -p xusdc-encoding --release`) links t
 packages into the faucet account and runs the mint/burn/admin behaviour — including the Rust↔MASM
 cross-implementation vectors — against a mock chain.
 
-### Real-local-node validation — **un-parked to v16 (offline); live-node rows operator-run**
+### Real-local-node validation — **parked; live-node rows operator-run**
 
 `crates/xusdc-validation` deploys the production faucet to a **real Miden node** and drives the
-mint/burn/admin acceptance matrix (rows `A`–`L`). Since the v16-alpha `miden-client`
-(`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) shipped, the crate is a
-**workspace member again** and builds against this tree. The **offline** half runs
-in the normal workspace gate — `cargo build --workspace --locked` compiles the lib, the `lnv*`
-binaries, and the row test files, and `cargo test --workspace --locked` runs the crate's
-non-ignored (sandbox-safe, no-node) tests.
+mint/burn/admin acceptance matrix (rows `A`–`L`). The crate is currently **parked outside the
+workspace** (`exclude` in the root `Cargo.toml`): it still carries the v16-alpha
+`miden-client` pins (`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) and
+predates the current encoding API, so it does not build against this tree. It un-parks with a
+deliberate migration onto the workspace's `=0.16.1` protocol pin plus the released
+`miden-client 0.16.0`.
 
 The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
 `PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are

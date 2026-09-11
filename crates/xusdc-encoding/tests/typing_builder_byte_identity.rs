@@ -29,12 +29,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([16509777361630469288, 229038349820898471, 2143915472240274036, 13306707353858942409])";
+    "Word([3005832111520743915, 14282067336565458914, 18232552546617082519, 6408725502290805047])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([1693898141629290850, 3486605369382239683, 15811355070471926110, 582180616080670137])";
+    "Word([13357473302286435772, 12964754821843061091, 7335471169754126652, 6002128766200328329])";
 const GOLDEN_STORAGE_DIGEST: &str =
     "Word([11866194280076609367, 16665019112898950860, 7731240504137810335, 13244847863466113741])";
-const GOLDEN_ACCOUNT_ID: &str = "0xca8c89d08f9e59317248bfa132ecdb";
+const GOLDEN_ACCOUNT_ID: &str = "0xfff39cb2c1e17fb1456343da6ecfa2";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.

@@ -38,7 +38,8 @@ deposit and burns it on withdrawal.
   enforces the supply cap, emits the P2ID note, and raises `token_supply`. Any check that fails
   aborts the whole transaction with no writes, so a failed mint never consumes its nonce. The
   attestation policy is the only allowed mint policy, which makes it the gate **every** supply
-  increase passes.
+  increase passes. **Do not deposit with `hookData` longer than 3,840 bytes.** The deposit cannot be
+  claimed on Miden, and the USDC remains locked on the source chain.
 - **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
   destRecipient)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):

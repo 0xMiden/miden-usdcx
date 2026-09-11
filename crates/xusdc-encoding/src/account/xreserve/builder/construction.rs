@@ -20,7 +20,6 @@ use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
-use crate::xreserve::encoding::ForeignChainAddress;
 
 // CONSTANTS
 // ================================================================================================
@@ -47,18 +46,6 @@ static DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
     StorageSlotName::new("xusdc::xreserve::domain_config::domain")
         .expect("storage slot name should be valid")
 });
-static SOURCE_DOMAIN_CONFIG_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
-    StorageSlotName::new("xusdc::xreserve::domain_config::source_domain")
-        .expect("storage slot name should be valid")
-});
-static XRESERVE_CONTRACT_HI_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
-    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_hi")
-        .expect("storage slot name should be valid")
-});
-static XRESERVE_CONTRACT_LO_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
-    StorageSlotName::new("xusdc::xreserve::domain_config::xreserve_contract_lo")
-        .expect("storage slot name should be valid")
-});
 
 /// The nonce registry the replay guard reads and the mint path writes.
 static USED_NONCES_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|| {
@@ -78,18 +65,12 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
 /// - the attester administration
 pub struct XReserveFaucetExtension {
     domain: u32,
-    source_domain: u32,
-    xreserve_contract: ForeignChainAddress,
 }
 
 impl XReserveFaucetExtension {
     /// Instantiates a new [`XReserveFaucetExtension`].
-    pub fn new(domain: u32, source_domain: u32, xreserve_contract: ForeignChainAddress) -> Self {
-        Self {
-            domain,
-            source_domain,
-            xreserve_contract,
-        }
+    pub fn new(domain: u32) -> Self {
+        Self { domain }
     }
 
     // PUBLIC ACCESSORS
@@ -105,21 +86,6 @@ impl XReserveFaucetExtension {
         &DOMAIN_CONFIG_SLOT_NAME
     }
 
-    /// Returns the [`StorageSlotName`] holding the source domain deposits are accepted from.
-    pub fn source_domain_config_slot() -> &'static StorageSlotName {
-        &SOURCE_DOMAIN_CONFIG_SLOT_NAME
-    }
-
-    /// Returns the [`StorageSlotName`] holding the high half of the xReserve contract address.
-    pub fn xreserve_contract_hi_slot() -> &'static StorageSlotName {
-        &XRESERVE_CONTRACT_HI_SLOT_NAME
-    }
-
-    /// Returns the [`StorageSlotName`] holding the low half of the xReserve contract address.
-    pub fn xreserve_contract_lo_slot() -> &'static StorageSlotName {
-        &XRESERVE_CONTRACT_LO_SLOT_NAME
-    }
-
     /// Returns the [`StorageSlotName`] of the consumed-nonce registry map.
     pub fn used_nonces_slot() -> &'static StorageSlotName {
         &USED_NONCES_SLOT_NAME
@@ -133,28 +99,12 @@ impl XReserveFaucetExtension {
 
 impl From<XReserveFaucetExtension> for AccountComponent {
     fn from(faucet_ext: XReserveFaucetExtension) -> Self {
-        let contract_addr = faucet_ext.xreserve_contract.to_packed_felts();
-        let contract_addr_hi = Word::new(contract_addr[0..4].try_into().expect("4 felts sliced"));
-        let contract_addr_lo = Word::new(contract_addr[4..8].try_into().expect("4 felts sliced"));
-
         AccountComponent::new(
             FAUCET_EXTENSION_CODE.clone(),
             vec![
                 StorageSlot::with_value(
                     XReserveFaucetExtension::domain_config_slot().clone(),
                     Word::from([faucet_ext.domain, 0, 0, 0]),
-                ),
-                StorageSlot::with_value(
-                    XReserveFaucetExtension::source_domain_config_slot().clone(),
-                    Word::from([faucet_ext.source_domain, 0, 0, 0]),
-                ),
-                StorageSlot::with_value(
-                    XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
-                    contract_addr_hi,
-                ),
-                StorageSlot::with_value(
-                    XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
-                    contract_addr_lo,
                 ),
                 StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
                 StorageSlot::with_empty_map(
@@ -163,7 +113,7 @@ impl From<XReserveFaucetExtension> for AccountComponent {
             ],
             AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
         )
-        .expect("the faucet extension binds with its six declared slots")
+        .expect("the faucet extension binds with its three declared slots")
     }
 }
 
@@ -226,8 +176,6 @@ pub fn build_faucet_account(
     blocklist_manager_holder: AccountId,
     fee_parameters: FeeParameters,
     domain: u32,
-    source_domain: u32,
-    xreserve_contract: ForeignChainAddress,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
         .max_supply(max_supply)
@@ -238,8 +186,6 @@ pub fn build_faucet_account(
         .blocklist_manager_holder(blocklist_manager_holder)
         .fee_parameters(fee_parameters)
         .domain(domain)
-        .source_domain(source_domain)
-        .xreserve_contract(xreserve_contract)
         .build()?
         .build_account(init_seed)
 }

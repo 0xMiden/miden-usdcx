@@ -50,7 +50,7 @@ The account is composed from the `miden-standards` components (`FungibleFaucet`,
 
 State, grouped by writer posture:
 
-- **Fixed by construction:** decimals, symbol, token metadata, destination domain, source domain and external-contract identifier words, active policy roots, note & tx script allowlists, Authority mode, and the network sponsorship policy.
+- **Fixed by construction:** decimals, symbol, token metadata, destination domain, active policy roots, note & tx script allowlists, Authority mode, and the network sponsorship policy.
 - **Runtime-mutable through admitted authorized paths:** pause state, enabled attester commitments, `max_supply`, minimum burn amount, blocked accounts, the RBAC membership and role-admin graph, and the per-note-root fee schedule.
 - **Append-only on accepted mints:** the used-nonce map, keyed by a deterministic hash of the 32-byte deposit nonce.
 

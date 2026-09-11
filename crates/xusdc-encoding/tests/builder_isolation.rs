@@ -49,8 +49,6 @@ fn build_rejects_blk_manager_colliding_with_a_privileged_role(
         .blocklist_manager_holder(blk_manager)
         .fee_parameters(test_fee_parameters())
         .domain(TEST_DOMAIN)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()
@@ -80,8 +78,6 @@ fn build_accepts_isolated_blk_manager() -> Result<()> {
         .blocklist_manager_holder(test_account_id(4)) // distinct external BLK_MANAGER
         .fee_parameters(test_fee_parameters())
         .domain(TEST_DOMAIN)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .build()
         .context("the fixed-identity USDCx faucet builds")?
         .build_components()

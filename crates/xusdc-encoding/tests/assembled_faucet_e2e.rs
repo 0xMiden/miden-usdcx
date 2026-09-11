@@ -1,8 +1,8 @@
 //! FULL FAUCET ASSEMBLY E2E: the single-instance, sequential, full-lifecycle dress rehearsal for
 //! local-node validation, on the production faucet composition.
 //!
-//! ONE faucet composed by the PRODUCTION `XReserveStablecoinBuilder` — domain / source_domain /
-//! xreserve_contract BUILD-SEEDED, attester allowlist EMPTY, the stock
+//! ONE faucet composed by the PRODUCTION `XReserveStablecoinBuilder` — domain
+//! BUILD-SEEDED, attester allowlist EMPTY, the stock
 //! `MinBurnAmount` floor at the builder default — is driven through the whole lifecycle IN ORDER
 //! on ONE evolving MockChain. The stages, in the order the S-labels below number them:
 //!
@@ -59,8 +59,7 @@ use xusdc_encoding::note::xreserve_burn::{
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::vectors::{load, MiVector};
 use xusdc_encoding::xreserve::encoding::{
-    bytes32_to_packed_felts, bytes32_to_storage_map_key, DepositIntent, ForeignChainAddress,
-    Signature, XReserveBurnItems,
+    bytes32_to_storage_map_key, DepositIntent, ForeignChainAddress, Signature, XReserveBurnItems,
 };
 
 // ACTORS (the builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
@@ -85,7 +84,7 @@ fn stranger() -> AccountId {
 
 // FIXTURE VALUES (all Circle-owned values are test parameters — the domain id, the identifier
 // encoding, and the attester scheme stay OPEN with Circle;
-// the build-seeded TEST_DOMAIN / TEST_SOURCE_DOMAIN / test_xreserve_contract() come from support)
+// the build-seeded TEST_DOMAIN comes from support)
 // ================================================================================================
 
 // the DC-14 rows are the ones the mint transport can carry; their localToken / localDepositor are
@@ -344,8 +343,8 @@ fn marker() -> Word {
 /// The single-instance, sequential, full-lifecycle E2E on ONE production-composed faucet.
 #[tokio::test]
 async fn assembled_faucet_full_lifecycle() -> Result<()> {
-    // ── S0 — ASSEMBLY: the production builder composes the faucet; domain / source_domain /
-    // xreserve_contract BUILD-SEEDED, attester allowlist EMPTY. The admin notes are
+    // ── S0 — ASSEMBLY: the production builder composes the faucet; domain
+    // BUILD-SEEDED, attester allowlist EMPTY. The admin notes are
     // seeded here in the order the indices below list, per the header's mechanics. `route` is the
     // routing-only faucet target the factories stamp into tags/attachments; consume-by-id never
     // reads it, so the pre-build dummy id is sound.
@@ -441,46 +440,13 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // S0 read-backs: the BUILD-SEEDED domain config, supply 0, the
     // seeded role delegation, the stock MinBurnAmount builder-default floor.
     let faucet0 = committed(&pf.mock_chain, faucet_id)?;
-    let words0 = read_domain_config_words(&faucet0)?;
-    let xrc_felts = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
+    let domain0 = faucet0
+        .storage()
+        .get_item(XReserveFaucetExtension::domain_config_slot())?;
     assert_eq!(
-        words0[0],
+        domain0,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
         "S0: domain ships BUILD-SEEDED (DEC-4)"
-    );
-    assert_eq!(
-        words0[1],
-        Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
-        "S0: source_domain ships BUILD-SEEDED (DEC-4)"
-    );
-    assert_eq!(
-        words0[2],
-        Word::new([xrc_felts[0], xrc_felts[1], xrc_felts[2], xrc_felts[3]]),
-        "S0: xreserve_contract_hi ships BUILD-SEEDED (DEC-4)"
-    );
-    assert_eq!(
-        words0[3],
-        Word::new([xrc_felts[4], xrc_felts[5], xrc_felts[6], xrc_felts[7]]),
-        "S0: xreserve_contract_lo ships BUILD-SEEDED (DEC-4)"
-    );
-    // lossless round-trip: the build-seeded container round-trips through the FAIL-CLOSED inverse
-    // and the stock address decode back to the input — the GetAccount-readable public identity.
-    let stored_xrc: [Felt; 8] = [
-        words0[2][0],
-        words0[2][1],
-        words0[2][2],
-        words0[2][3],
-        words0[3][0],
-        words0[3][1],
-        words0[3][2],
-        words0[3][3],
-    ];
-    let stored_container = xusdc_encoding::xreserve::encoding::packed_felts_to_bytes32(&stored_xrc)
-        .expect("S0: build-seeded xreserve_contract limbs are valid u32s (fail-closed inverse)");
-    assert_eq!(
-        ForeignChainAddress::new(stored_container),
-        test_xreserve_contract(),
-        "S0: fail-closed bytes32 round-trip == the input xreserve_contract"
     );
     assert_supply(&pf.mock_chain, faucet_id, 0, "S0 assembly")?;
     assert_eq!(
@@ -996,9 +962,11 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         "S13 final: 100 + 100 - 20 - 10 = 170",
     )?;
     assert_eq!(
-        read_domain_config_words(&faucet)?,
-        words0,
-        "S13: the config words are byte-identical to their build-seed"
+        faucet
+            .storage()
+            .get_item(XReserveFaucetExtension::domain_config_slot())?,
+        domain0,
+        "S13: the domain word is byte-identical to its build-seed"
     );
     assert_eq!(
         read_token_config(&faucet)?[1],

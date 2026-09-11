@@ -33,10 +33,9 @@
 //! of their own: `is_paused` comes from the base `Pausable` component and `blocked_accounts` from
 //! the `BasicBlocklist` companion, both of which were already installed.
 //!
-//! Domain config is entirely BUILD-SEEDED: `domain`, `source_domain`, and `xreserve_contract` are
-//! required builder inputs written into the declared slots at composition time. The faucet
-//! identifier is not among them and has no slot at all — it is the account's own id, which the
-//! mint path derives on chain, so the composed faucet is mint-ready the moment it exists.
+//! Domain config is entirely BUILD-SEEDED: `domain` is a required builder input written into its
+//! declared slot at composition time. The faucet identifier has no slot — it is the account's own
+//! id, which the mint path derives on chain, so the composed faucet is mint-ready when it exists.
 
 use bon::bon;
 use miden_protocol::account::{AccountComponent, AccountId, RoleSymbol};
@@ -52,7 +51,6 @@ use miden_standards::account::policies::{
 };
 
 use crate::account::xreserve::XReserveAdminAuthority;
-use crate::xreserve::encoding::ForeignChainAddress;
 
 mod construction;
 mod error;
@@ -115,7 +113,7 @@ pub const USDCX_DECIMALS: u8 = 6;
 /// [`XReserveAdminAuthority`]'s `Authority::RbacControlled`.
 ///
 /// Construct with the generated [`Self::builder`] (the faucet supply parameters, the `owner` and
-/// role holders, the network fee parameters, and the three build-seeded domain-config fields; the
+/// role holders, the network fee parameters, and the build-seeded domain; the
 /// min-burn floor is the one optional input), then call
 /// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
 /// [`Self::build_account`] for the finished `Account`).
@@ -148,11 +146,6 @@ pub struct XReserveStablecoinBuilder {
     min_burn_amount: AssetAmount,
     /// The faucet's own Circle domain id.
     domain: u32,
-    /// The Circle domain deposits are accepted from, written into the declared `source_domain` slot
-    /// at composition time as `[source_domain, 0, 0, 0]`.
-    source_domain: u32,
-    /// The xReserve contract's source-chain address.
-    xreserve_contract: ForeignChainAddress,
 }
 
 #[bon]
@@ -165,12 +158,9 @@ impl XReserveStablecoinBuilder {
     /// `pauser_holder` / `manager_holder`
     /// seeded as the sole members of `DOM_PAUSER` / `DOM_MANAGER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
-    /// transfer-blocklist administrator), the network `fee_parameters`, plus the three BUILD-SEEDED
-    /// domain-config fields: the u32 `domain` and
-    /// `source_domain` ids and the `xreserve_contract` remote address. The
-    /// domain-config fields are required because a
-    /// faucet without them would ship a domain compare that reads an empty slot — there is no way to
-    /// leave them out.
+    /// transfer-blocklist administrator), the network `fee_parameters`, plus the BUILD-SEEDED
+    /// u32 `domain`. The domain is required because a faucet without it would ship a domain
+    /// compare that reads an empty slot.
     ///
     /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
     /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` — so the
@@ -199,8 +189,6 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holder: AccountId,
         fee_parameters: FeeParameters,
         domain: u32,
-        source_domain: u32,
-        xreserve_contract: ForeignChainAddress,
         min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         let min_burn_amount = min_burn_amount.unwrap_or(
@@ -221,8 +209,6 @@ impl XReserveStablecoinBuilder {
             fee_parameters,
             min_burn_amount,
             domain,
-            source_domain,
-            xreserve_contract,
         })
     }
 }
@@ -231,8 +217,8 @@ impl XReserveStablecoinBuilder {
     // BUILD / COMPOSE
     // --------------------------------------------------------------------------------------------
 
-    /// Production composition: seeds the three build-time
-    /// domain-config fields, then composes the account components. The
+    /// Production composition: seeds the build-time domain,
+    /// then composes the account components. The
     /// faucet's `max_supply` mutability is guaranteed by construction (the crate-root
     /// [`Self::build_account`] path builds the faucet `is_max_supply_mutable(true)`), so there is no
     /// runtime mutability reject. Public for the integration suite, which composes
@@ -264,11 +250,7 @@ impl XReserveStablecoinBuilder {
         }
         // Seed domain config before the mint policy takes the component, so the manager
         // emits the installable copy.
-        let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(
-            self.domain,
-            self.source_domain,
-            self.xreserve_contract,
-        ));
+        let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(self.domain));
 
         let manager = TokenPolicyManager::builder()
             .active_mint_policy(

@@ -22,7 +22,6 @@ use xusdc_encoding::account::xreserve::{
     XReserveStablecoinBuilderError, ATTESTATION_MINT_POLICY_PROC_PATH, BLK_MANAGER_ROLE,
     DOM_PAUSER_ROLE,
 };
-use xusdc_encoding::xreserve::encoding::bytes32_to_packed_felts;
 
 /// The standard production builder: the fixed test supplies through the ONE production-shape
 /// definition in `support` (owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3), BLK_MANAGER =
@@ -168,11 +167,9 @@ fn build_rejects_zero_min_burn_amount() -> Result<()> {
 // DOMAIN-CONFIG SEEDING — required input + build-time slot writes
 // ================================================================================================
 
-/// The build SEEDS the three build-time domain-config fields into the declared xreserve slots —
-/// `[domain, 0, 0, 0]`, `[source_domain, 0, 0, 0]`, and the packed `xreserve_contract` hi/lo words
-/// (hi = packed felts 0..4 / wire bytes 0..16, lo = felts 4..8).
+/// The build seeds the domain slot as `[domain, 0, 0, 0]`.
 #[test]
-fn build_seeds_the_domain_config_slots() -> Result<()> {
+fn build_seeds_the_domain_slot() -> Result<()> {
     let components = production_builder()
         .build_components()
         .context("production build_components must compose")?;
@@ -185,22 +182,6 @@ fn build_seeds_the_domain_config_slots() -> Result<()> {
         slot(XReserveFaucetExtension::domain_config_slot())?,
         Word::from([TEST_DOMAIN, 0, 0, 0]),
         "the domain slot must hold the build-seeded [domain, 0, 0, 0]"
-    );
-    assert_eq!(
-        slot(XReserveFaucetExtension::source_domain_config_slot())?,
-        Word::from([TEST_SOURCE_DOMAIN, 0, 0, 0]),
-        "the source_domain slot must hold the build-seeded [source_domain, 0, 0, 0]"
-    );
-    let xrc = bytes32_to_packed_felts(test_xreserve_contract().as_bytes());
-    assert_eq!(
-        slot(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
-        Word::from([xrc[0], xrc[1], xrc[2], xrc[3]]),
-        "the xreserve_contract_hi slot must hold the packed address bytes 0..16"
-    );
-    assert_eq!(
-        slot(XReserveFaucetExtension::xreserve_contract_lo_slot())?,
-        Word::from([xrc[4], xrc[5], xrc[6], xrc[7]]),
-        "the xreserve_contract_lo slot must hold the packed container bytes 16..32"
     );
     Ok(())
 }

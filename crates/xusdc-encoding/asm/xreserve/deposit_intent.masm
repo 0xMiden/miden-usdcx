@@ -116,7 +116,7 @@ const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 #! Panics if:
 #! - the committed word count disagrees with the carried hookData length.
 #! - a carried limb, or the configured domain, is not a valid u32.
-#! - the carried recipient is not a structurally valid account id.
+#! - the carried recipient is not a valid account id.
 #!
 #! Locals:
 #! - 0: deposit_intent_ptr
@@ -193,12 +193,11 @@ pub proc rebuild
     # => []
 
     # ---- the carried recipient ----
-    # validated because a structurally invalid id would rebuild a perfectly
-    # consistent message and then mint a note nobody can consume.
+    # validated here because the output note is addressed with it.
     loc_load.MINT_INTENT_PTR_LOC exec.load_carried_recipient
     # => [recipient_suffix, recipient_prefix]
 
-    dup.1 dup.1 exec.account_id::validate_structure
+    dup.1 dup.1 exec.account_id::validate
     # => [recipient_suffix, recipient_prefix]
 
     loc_load.DEPOSIT_INTENT_PTR_LOC add.WRITE_REMOTE_RECIPIENT_FELT_OFF

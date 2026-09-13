@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use miden_protocol::note::Note;
-use tracing::field::Empty;
+use tracing::field::{display, Empty};
 use tracing::{info, instrument, warn, Span};
 
 pub mod circle;
@@ -36,6 +36,13 @@ pub struct Relayer {
     store: Store,
     miden_client: Box<dyn MidenClient>,
     minter: Minter,
+}
+
+/// Renders the identifiers of a page's items as one tracing field, so a page's trace names every
+/// deposit it carried rather than only counting them. The traffic this service handles is low
+/// enough that the whole list fits in the trace.
+fn identifiers(ids: impl IntoIterator<Item = String>) -> String {
+    format!("[{}]", ids.into_iter().collect::<Vec<_>>().join(", "))
 }
 
 /// What one page left for the scan to do next, once that page is on chain.
@@ -158,9 +165,11 @@ impl Relayer {
         fields(
             remote_domain = %self.config.remote_domain,
             cursor = Empty,
-            attestations = Empty,
-            notes = Empty,
-            tx = Empty,
+            attestations.count = Empty,
+            attestations.message_hashes = Empty,
+            notes.count = Empty,
+            notes.ids = Empty,
+            transaction.id = Empty,
         ),
     )]
     fn process_page(
@@ -169,12 +178,19 @@ impl Relayer {
         watermark: Option<&MessageHash>,
     ) -> Result<PageOutcome> {
         let span = Span::current();
-        if let Some(resume) = resume {
-            span.record("cursor", resume.as_str());
-        }
+        span.record("cursor", resume.map(CircleCursor::as_str).unwrap_or("None"));
 
         let page = self.circle.fetch_page(self.config.remote_domain, resume)?;
-        span.record("attestations", page.attestations.len());
+        span.record("attestations.count", page.attestations.len());
+        span.record(
+            "attestations.message_hashes",
+            identifiers(
+                page.attestations
+                    .iter()
+                    .map(|attestation| attestation.message_hash.to_string()),
+            )
+            .as_str(),
+        );
 
         // The page runs newest to oldest, so the watermark — if it is on this page at all — ends
         // the scan, and everything above it arrived since the last scan.
@@ -195,15 +211,19 @@ impl Relayer {
             .into_iter()
             .map(Note::from)
             .collect();
-        span.record("notes", notes.len());
+        span.record("notes.count", notes.len());
+        span.record(
+            "notes.ids",
+            identifiers(notes.iter().map(|note| note.id().to_string())).as_str(),
+        );
 
         if notes.is_empty() && !fresh.is_empty() {
-            warn!(attestations = fresh.len(), "page produced no mint notes");
+            warn!(fresh.count = fresh.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
             let tx = self
                 .miden_client
                 .submit_notes(self.minter.mint_account(), notes)?;
-            span.record("tx", tx.to_string().as_str());
+            span.record("transaction.id", display(tx));
             info!("page minted and on chain");
         }
 

@@ -27,7 +27,10 @@
 mod support;
 
 use anyhow::{Context, Result};
-use miden_protocol::errors::tx_kernel::ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO;
+use miden_protocol::account::AccountId;
+use miden_protocol::errors::tx_kernel::{
+    ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO, ERR_ACCOUNT_ID_UNKNOWN_VERSION,
+};
 use miden_protocol::errors::MasmError;
 use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
 use miden_standards::note::{NetworkAccountTarget, P2idNote, P2idNoteStorage};
@@ -151,30 +154,47 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
 // `NonCanonicalAccountId`; the `mp-rej-remote-token-malformed` and `mp-rej-recipient-non-canonical`
 // vectors drive them in `mint_intent.rs`.
 //
-// What DOES remain on-chain is the structural validation of the two carried felts, because those
-// are attacker-supplied and the policy uses them to address the output note.
+// What DOES remain on-chain is the validation of the two carried felts, because those are
+// attacker-supplied and the policy uses them to address the output note.
 
-/// A carried recipient that is not a structurally valid account id is refused before the faucet
-/// writes it into the preimage.
-///
-/// This one cannot be left to the signature. A structurally invalid id would rebuild a perfectly
-/// consistent message — Circle could have signed exactly that recipient — and the mint would then
-/// create a P2ID note nobody can consume. Funds destroyed rather than a transaction rejected, so
-/// the guard has to run here.
+/// A carried recipient that is not a valid account id is refused before the faucet writes it into
+/// the preimage.
+#[rstest]
+// the low byte of an account id's suffix is reserved and must be zero
+#[case::reserved_suffix_byte(
+    MintIntent::REMOTE_RECIPIENT_SUFFIX_FELT_OFF,
+    |id: AccountId| id.suffix().as_canonical_u64() | 1,
+    ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO,
+    38,
+    107
+)]
+// the prefix's low nibble is the account id version, and only version one is supported
+#[case::unsupported_version(
+    MintIntent::REMOTE_RECIPIENT_FELT_OFF,
+    |id: AccountId| (id.prefix().as_felt().as_canonical_u64() & !0xf) | 2,
+    ERR_ACCOUNT_ID_UNKNOWN_VERSION,
+    39,
+    108
+)]
 #[tokio::test]
-async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
+async fn mint_rejects_an_invalid_carried_recipient(
+    #[case] felt_off: usize,
+    #[case] corrupt: fn(AccountId) -> u64,
+    #[case] expected_err: MasmError,
+    #[case] nonce_variant: u8,
+    #[case] rng_seed: u64,
+) -> Result<()> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
-    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 38);
+    let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
     let carried = MintIntent::from_deposit_intent(
         &DepositIntent::try_from(payload.as_slice())?,
         pf.faucet_id,
         TEST_DOMAIN,
     )
     .map_err(|e| anyhow::anyhow!("the base payload compresses: {e}"))?;
-    // the low byte of an account id's suffix is reserved and must be zero
-    let dirty_suffix = Felt::new(carried.remote_recipient().suffix().as_canonical_u64() | 1)
-        .expect("setting the reserved low bit stays inside the field");
+    let dirty_half = Felt::new(corrupt(carried.remote_recipient()))
+        .expect("corrupting the half stays inside the field");
     let note = tampered_mint_note(
         &pf,
         &payload,
@@ -182,18 +202,12 @@ async fn mint_rejects_a_structurally_invalid_carried_recipient() -> Result<()> {
         1,
         None,
         &AttachmentPlan {
-            payload_felt_tamper: Some((MintIntent::REMOTE_RECIPIENT_SUFFIX_FELT_OFF, dirty_suffix)),
+            payload_felt_tamper: Some((felt_off, dirty_half)),
             ..AttachmentPlan::default()
         },
-        107,
+        rng_seed,
     )?;
-    expect_reject(
-        &mut pf,
-        note,
-        &payload,
-        &ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO,
-    )
-    .await
+    expect_reject(&mut pf, note, &payload, &expected_err).await
 }
 
 // TRANSPORT SHAPE — what happens when the note's two attachments are wrong

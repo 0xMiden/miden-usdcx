@@ -147,7 +147,7 @@ pub(crate) fn verify_prepared_response(
         if hook.remote_token != remote_token {
             return Err(VerifyError::WrongBurnField("remoteToken"));
         }
-        let burned_amount = U256::from(burn.items.amount.as_u64());
+        let burned_amount = U256::from(burn.amount);
         // Circle deducts the fee from the burn; the payout alone is smaller than the burn.
         if spec.value.is_zero() || spec.value.checked_add(intent.maxFee) != Some(burned_amount) {
             return Err(VerifyError::BadAmount);

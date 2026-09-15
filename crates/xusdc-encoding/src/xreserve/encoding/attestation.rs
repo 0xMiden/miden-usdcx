@@ -167,7 +167,7 @@ mod tests {
 
     /// TV-ATT-4: each vector's full payload, digest, signature, public key, and recovery id agree.
     #[test]
-    fn tv_att_4_self_consistency() {
+    fn attestation_vectors_are_self_consistent() {
         for v in &load().families.att {
             let digest = v.digest();
             let actual: [u8; 32] = Keccak256::digest(v.payload()).into();

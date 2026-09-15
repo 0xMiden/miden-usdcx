@@ -738,13 +738,13 @@ fn main() {
     // nonce is varied per seed so digests, sigs, and pubkeys all differ.
     // The fourth entry has a ten-byte hookData tail so the digest covers bytes past the header.
     let mut att: Vec<Value> = Vec::new();
-    let att_cases: [(u64, Vec<u8>); 4] = [
+    let attestation_cases: [(u64, Vec<u8>); 4] = [
         (1, vec![]),
         (2, vec![]),
         (3, vec![]),
         (4, (0..10u8).map(|i| 0xe0 + i).collect()),
     ];
-    for (seed, hook_data) in att_cases {
+    for (seed, hook_data) in attestation_cases {
         let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(0xd0u8.wrapping_add(seed as u8));
         spec.hook_data = hook_data;

@@ -18,6 +18,8 @@ use reqwest::Url;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 
+use xusdc_encoding::xreserve::encoding::Signature;
+
 use crate::store::CircleCursor;
 
 /// The number of attestations requested per page, within Circle's documented `pageSize` range of
@@ -71,9 +73,9 @@ pub struct Attestation {
     /// recomputes and verifies it.
     #[serde(deserialize_with = "hex_array")]
     pub message_hash: [u8; 32],
-    /// The 65-byte `r‖s‖v` secp256k1 signature, published under the `attestation` key.
-    #[serde(rename = "attestation", deserialize_with = "hex_array")]
-    pub signature: [u8; 65],
+    /// The attester's signature over the payload, published under the `attestation` key.
+    #[serde(rename = "attestation", deserialize_with = "hex_signature")]
+    pub signature: Signature,
 }
 
 /// The list response body. Pagination is in the `Link` header rather than this body.
@@ -255,11 +257,16 @@ fn hex_array<'de, D: Deserializer<'de>, const N: usize>(
         .map_err(|_| de::Error::invalid_length(bytes.len(), &format!("{N} bytes of hex").as_str()))
 }
 
+/// Deserializes Circle wire hex into the signature type the mint note is built from.
+fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature, D::Error> {
+    hex_array(deserializer).map(Signature::new)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::{Attestation, CircleClient, Page, PageSize};
+    use super::{Attestation, CircleClient, Page, PageSize, Signature};
     use crate::store::CircleCursor;
 
     /// A page size within the documented range.
@@ -282,7 +289,7 @@ mod tests {
         Attestation {
             payload: vec![seed; 8],
             message_hash: [seed; 32],
-            signature: [seed; 65],
+            signature: Signature::new([seed; 65]),
         }
     }
 
@@ -294,7 +301,7 @@ mod tests {
                 serde_json::json!({
                     "payload": format!("0x{}", hex::encode(&attestation.payload)),
                     "messageHash": format!("0x{}", hex::encode(attestation.message_hash)),
-                    "attestation": format!("0x{}", hex::encode(attestation.signature)),
+                    "attestation": format!("0x{}", hex::encode(attestation.signature.as_bytes())),
                 })
             })
             .collect();

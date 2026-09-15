@@ -6,6 +6,9 @@ publish = false
 description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 
 [dependencies]
+xusdc-encoding = { path = "../xusdc-encoding" }
+miden-protocol = { version = "=0.16.0-rc.6" }
+
 anyhow = { workspace = true }
 clap = { workspace = true }
 miden-protocol = { version = "=0.17.0-rc.6" }

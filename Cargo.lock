@@ -6108,6 +6108,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "xusdc-encoding",
 ]
 
 [[package]]

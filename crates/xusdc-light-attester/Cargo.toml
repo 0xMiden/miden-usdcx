@@ -19,5 +19,5 @@ toml = "1"
 
 [dev-dependencies]
 hex = { workspace = true }
-miden-protocol = { version = "=0.16.0-rc.6", features = ["testing"] }
+miden-protocol = { version = "=0.16.1", features = ["testing"] }
 tempfile = { workspace = true }

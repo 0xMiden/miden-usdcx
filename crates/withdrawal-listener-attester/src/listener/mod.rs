@@ -471,7 +471,7 @@ pub async fn run_once(
 
     // ---- B5 — ask Circle, then VALIDATE. This is the gate. -------------------------------------
     let response = prepare(ctx.circle, &request).await?;
-    let validated = validate_returned(&response, burn.payload(), ctx.config).inspect_err(|_| {
+    let validated = validate_returned(&response, &burn, ctx.config).inspect_err(|_| {
         // The DO-NOT-SIGN abort. No ValidatedWithdrawal exists past this point on this
         // branch, so the signer below is not reachable — this event RECORDS the refusal, it does not
         // cause it.

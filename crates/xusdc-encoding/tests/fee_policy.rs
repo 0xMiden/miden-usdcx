@@ -84,13 +84,12 @@ fn production_builder_with_supply(token_supply: AssetAmount) -> Result<XReserveS
         .max_supply(AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"))
         .token_supply(token_supply)
         .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(1))
         .pauser_holder(test_account_id(2))
-        .manager_holder(test_account_id(3))
+        .unpauser_holder(test_account_id(3))
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(fee_parameters())
         .domain(TEST_DOMAIN)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .build()?)
 }
 
@@ -323,13 +322,13 @@ fn setup_sponsored_burn() -> Result<SponsoredBurnFixture> {
     let burn_asset = FungibleAsset::new(account.id(), amount.as_u64())?;
     let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [burn_asset.into()])?;
     let burn_items = XReserveBurnItems::builder()
-        .amount(amount)
         .dest_domain(TEST_SOURCE_DOMAIN)
         .dest_recipient(ForeignChainAddress::new([0xAB; 32]))
         .build();
     let burn_note = XReserveBurnNote::create(
         user.id(),
         account.id(),
+        amount,
         burn_items.clone(),
         builder.rng_mut(),
     )?;

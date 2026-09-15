@@ -38,11 +38,12 @@ deposit and burns it on withdrawal.
   enforces the supply cap, emits the P2ID note, and raises `token_supply`. Any check that fails
   aborts the whole transaction with no writes, so a failed mint never consumes its nonce. The
   attestation policy is the only allowed mint policy, which makes it the gate **every** supply
-  increase passes.
-- **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(amount, destDomain,
+  increase passes. **Do not deposit with `hookData` longer than 3,840 bytes.** The deposit cannot be
+  claimed on Miden, and the USDC remains locked on the source chain.
+- **Burn.** A holder creates a **Public** `XReserveBurnNote` carrying `(destDomain,
   destRecipient)`; creating the note moves the assets out of the holder's vault (so the balance
   is checked at creation). In a **later block** the faucet consumes the note (`receive_and_burn`):
-  pause is checked, then the STOCK `MinBurnAmount` policy requires `amount ≥ minBurnSize` (the floor
+  pause is checked, then the burn policy requires both attachments and `amount ≥ minBurnSize` (the floor
   is always ≥ 1 — builder-rejected below one and note-guarded at the setter — so zero burns are
   unacceptable on every path), and consuming the note decrements `token_supply`. The note is always
   public and two-block so Circle can observe the withdrawal.
@@ -62,17 +63,24 @@ deposit and burns it on withdrawal.
 - **Identity.** The faucet's identifier — the value every deposit intent's `remoteToken` is checked
   against — is the faucet's OWN account id in the frozen bytes32 packaging, derived on chain by the
   mint path rather than stored. Nothing seeds it, so the faucet mints from the moment it exists.
-- **Admin.** Pure role-based: there is no ownership component and no owner slot, so the built-in
-  `ADMIN` role is the account's only authority handle, and rotating it is a grant then a revoke of
-  that role. `ADMIN` gates the setters (`set_attester`, the stock `set_min_burn_amount` — a
-  zero floor is refused at note-building time — and `set_max_supply`); a separate `DOM_PAUSER`
-  gates pause/unpause, which halts both mint and burn-consume. Role management runs on the stock
-  `RbacConfigNote`, whose one script root also exposes re-pointing a role's administrator and
-  self-renounce — both accepted, both pinned by test.
+- **Admin.** Pure role-based: `ADMIN` administers every seeded role directly and gates
+  `set_min_burn_amount` (a zero floor is refused at note-building time), `set_max_supply`
+  and note fees. `ATTEST_ADMIN` gates `set_attester`; `DOM_PAUSER` pauses and `DOM_UNPAUSER`
+  unpauses the flag that halts mint and burn-consume. There is no ownership component or owner slot.
+  Rotation is a grant then a revoke through the stock `RbacConfigNote`, whose root also exposes
+  re-pointing a role's administrator and self-renounce, both accepted and pinned by tests.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full pipeline.
 
 ## Start here
+
+Audit note for OpenZeppelin: the existing `withdrawal-listener-attester` is being replaced by the
+lightweight attester introduced in [PR #194](https://github.com/0xMiden/miden-usdcx/pull/194).
+[PR #195](https://github.com/0xMiden/miden-usdcx/pull/195) fixes withdrawal-term validation in the
+existing implementation; [PR #217](https://github.com/0xMiden/miden-usdcx/pull/217) carries those
+checks into the replacement and verifies the encoded bytes and signing hash. As of September 10,
+2026, both replacement PRs are open; #217 leaves signing and submission out of scope and awaits a
+captured Circle response for its two reference tests.
 
 - **What the faucet does and how it's built:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **The encoding contracts:** the codecs in `crates/xusdc-encoding/src/xreserve/encoding/`, each of

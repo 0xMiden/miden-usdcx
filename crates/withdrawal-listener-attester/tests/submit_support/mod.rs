@@ -25,7 +25,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::attester::{
     recover_address, sign, Address, AttesterAllowlist, SecretKey, Signature65,
 };
@@ -42,7 +44,10 @@ use withdrawal_listener_attester::circle::CircleClient;
 use withdrawal_listener_attester::config::ListenerConfig;
 use withdrawal_listener_attester::idempotency::{BurnKey, SubmissionStatus, SubmitLedger};
 use withdrawal_listener_attester::types::BurnPayload;
-use withdrawal_listener_attester::validate::{validate_returned, ValidatedWithdrawal};
+use withdrawal_listener_attester::validate::{
+    validate_discovery, validate_returned, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
+    ValidatedWithdrawal,
+};
 use withdrawal_listener_attester::withdrawal_api::{
     authorize_submission, build_withdraw_request, AuthorizedWithdrawal,
 };
@@ -128,15 +133,60 @@ pub fn batch_for(burn_tx_id: &str, signatures: Vec<HexBytes>) -> WithdrawBatch {
 /// the fixture response.
 pub fn payload_matching_fixture() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
-    let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
-    let value: u64 = spec["value"].as_str().unwrap().parse().unwrap();
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    let spec = &intent["spec"];
     XReserveBurnItems {
-        amount: AssetAmount::new(value).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
     }
+}
+
+pub fn depositor_matching_fixture() -> AccountId {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let remote_depositor = decode_hex32(
+        fixture["batches"][0]["burnIntents"][0]["spec"]["hookData"]["remoteDepositor"]
+            .as_str()
+            .unwrap(),
+    );
+    let eth_address = remote_depositor[12..]
+        .try_into()
+        .expect("bytes32-embedded Ethereum address is 20 bytes");
+    EthEmbeddedAccountId::new(eth_address)
+        .expect("fixture remoteDepositor is an embedded account id")
+        .into_account_id()
+}
+
+pub fn burn_matching_fixture() -> DiscoveredBurn {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    let value: u64 = intent["spec"]["value"].as_str().unwrap().parse().unwrap();
+    let fee: u64 = intent["maxFee"].as_str().unwrap().parse().unwrap();
+    let depositor = depositor_matching_fixture();
+    let (prefix, suffix) = (depositor.prefix().as_felt(), depositor.suffix());
+    let record = DiscoveryRecord::new(
+        ListenerConfig::default().burn_tag(),
+        Some(DiscoveredDetails::from_raw_sender(
+            payload_matching_fixture().encode(),
+            AssetAmount::new(value.checked_add(fee).unwrap()).unwrap(),
+            prefix,
+            suffix,
+        )),
+    );
+    validate_discovery(&record, &ListenerConfig::default()).expect("fixture burn passes discovery")
+}
+
+pub fn config_matching_fixture() -> ListenerConfig {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    ListenerConfig::builder()
+        .miden_domain(intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .max_withdrawal_fee(
+            AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
+        )
+        .build()
+        .expect("fixture config is valid")
 }
 
 /// A `ValidatedWithdrawal` carrying exactly `digests`, minted through the REAL validation gate
@@ -154,17 +204,19 @@ pub fn validated(digests: &[[u8; 32]]) -> ValidatedWithdrawal {
         .collect();
     let resp: PrepareWithdrawalResponse =
         serde_json::from_value(json!({ "batches": batches })).expect("a valid prepare response");
-    validate_returned(
-        &resp,
-        &payload_matching_fixture(),
-        &ListenerConfig::default(),
-    )
-    .expect("the fixture response passes B5")
+    validate_returned(&resp, &burn_matching_fixture(), &config_matching_fixture())
+        .expect("the fixture response passes B5")
 }
 
 /// A `ListenerConfig` whose attester allowlist is exactly `addrs`.
 pub fn config_with_allowlist(addrs: impl IntoIterator<Item = Address>) -> ListenerConfig {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let intent = &fixture["batches"][0]["burnIntents"][0];
     ListenerConfig::builder()
+        .miden_domain(intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .max_withdrawal_fee(
+            AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
+        )
         .attester_allowlist(AttesterAllowlist::new(addrs))
         .build()
         .expect("a valid config")

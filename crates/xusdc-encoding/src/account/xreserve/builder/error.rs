@@ -11,7 +11,9 @@ use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
 use miden_tx::NotePricingError;
 
-use super::{ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR};
+use super::{
+    ATTESTATION_MINT_POLICY_PROC_PATH, MIN_BURN_SIZE_FLOOR, XRESERVE_BURN_POLICY_PROC_PATH,
+};
 
 /// Errors returned while composing the xUSDC faucet account.
 #[derive(Debug)]
@@ -31,19 +33,23 @@ pub enum XReserveStablecoinBuilderError {
     /// The supplied `xreserve` component does not export the attestation mint policy procedure
     /// (assembly/path drift). Carries the expected path for diagnosis.
     AttestationPolicyProcNotFound,
+    /// The burn policy component does not export the expected procedure.
+    BurnPolicyProcNotFound,
     /// The requested `min_burn_amount` is below [`MIN_BURN_SIZE_FLOOR`]
     /// (= 1). The stock `MinBurnAmount` policy asserts only `min <= amount` and its stock setter
     /// accepts `0`, so a sub-floor seed would silently allow zero-amount burns;
     /// rejected at construction (the post-deploy twin is the `XReserveMinBurnAmountNote`
     /// factory's floor refusal). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
-    /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with a privileged
-    /// identity — the administrator, the `DOM_PAUSER` holder, or the `DOM_MANAGER` holder. The
-    /// transfer-blocklist administrator must be an external entity with no other faucet-admin
-    /// capability, so that neither `ADMIN` gains a direct block/unblock path nor the pause and
-    /// blocklist roles fuse. `collides_with` names the offending role (`"ADMIN"` / `"DOM_PAUSER"` /
-    /// `"DOM_MANAGER"`).
+    /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with `ADMIN`,
+    /// `ATTEST_ADMIN`, `DOM_PAUSER` or `DOM_UNPAUSER`. The transfer-blocklist administrator must
+    /// be an external entity with no other faucet-admin capability. `collides_with` names the
+    /// offending role.
     BlocklistManagerNotIsolated { collides_with: &'static str },
+    /// The `pauser_holder` collides with another role holder. The 1-of-N pause holder must hold
+    /// no other role, or a single signer gains a high-consequence power. `collides_with` names
+    /// the offending role.
+    PauserNotIsolated { collides_with: &'static str },
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).
     MintPolicy(MintPolicyError),
@@ -71,6 +77,11 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the xreserve component does not export the attestation mint policy procedure \
                  '{ATTESTATION_MINT_POLICY_PROC_PATH}'"
             ),
+            Self::BurnPolicyProcNotFound => write!(
+                f,
+                "the burn-policy component does not export the burn policy procedure \
+                 '{XRESERVE_BURN_POLICY_PROC_PATH}'"
+            ),
             Self::MinBurnSizeBelowFloor(value) => write!(
                 f,
                 "min_burn_amount {value} is below the construction floor \
@@ -81,6 +92,10 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 "the BLK_MANAGER holder (transfer-blocklist administrator) must be an external entity \
                  with no other faucet-admin capability, but it collides with the {collides_with} — \
                  F4-reversal two-way capability isolation is violated"
+            ),
+            Self::PauserNotIsolated { collides_with } => write!(
+                f,
+                "the DOM_PAUSER holder must hold no other role, but it collides with {collides_with}"
             ),
             Self::MintPolicy(_) => write!(f, "mint policy descriptor construction failed"),
             Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),

@@ -40,7 +40,7 @@ use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
     Account, AccountComponent, AccountId, AccountIdVersion, AccountProcedureRoot, AccountType,
-    AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+    AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
 };
 use miden_protocol::assembly::Package;
 use miden_protocol::asset::{Asset, AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
@@ -52,7 +52,7 @@ use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{
-    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl,
+    Pausable, PausableManager, PausableStorage, RoleBasedAccessControl, RoleConfig,
 };
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::account::faucets::{FungibleFaucet, TokenName};
@@ -70,14 +70,17 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
+use xusdc_encoding::account::xreserve::builder::XRESERVE_BURN_POLICY_PROC_PATH;
 use xusdc_encoding::account::xreserve::{
     XReserveAdminAuthority, XReserveFaucetExtension, XReserveStablecoinBuilder,
-    XReserveStablecoinBuilderError, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveStablecoinBuilderError, ATTEST_ADMIN_ROLE, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    DOM_UNPAUSER_ROLE,
 };
 use xusdc_encoding::errors;
 use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
+use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress};
+use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress, XReserveBurnItems};
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
@@ -104,16 +107,8 @@ use sha3::{Digest, Keccak256};
 pub const TEST_DOMAIN: u32 = 7;
 /// Any value != the vectors' remote_domain, for the wrong-domain reject.
 pub const TEST_WRONG_DOMAIN: u32 = 8;
-/// Test `source_domain` (config-only; nonzero so read-backs are distinguishable). Build-seeded
-/// by the production fixtures (there is no runtime writer).
+/// Test destination domain for burn fixtures.
 pub const TEST_SOURCE_DOMAIN: u32 = 3;
-
-/// Test `xreserve_contract` source-chain address (sequential distinct bytes) — the third
-/// build-seeded domain-config field the production fixtures seed through the builder. Its leading
-/// bytes are non-zero, so the fixture is a source-chain address no EVM chain could produce.
-pub fn test_xreserve_contract() -> ForeignChainAddress {
-    ForeignChainAddress::new(core::array::from_fn(|i| 0x10 + i as u8))
-}
 
 /// The production mint note over a RAW Circle payload, built exactly the way the relayer builds
 /// one: decode the payload, then drive the typed [`XUsdcMintNote`] builder at [`TEST_DOMAIN`].
@@ -154,7 +149,7 @@ pub fn mint_note_from_payload_at_domain(
     Ok(Note::from(note))
 }
 
-// NOTE: the tests do not bind slot names of their own. The six xreserve slots come from
+// NOTE: the tests do not bind slot names of their own. The three xreserve slots come from
 // `XReserveFaucetExtension::*_slot()` and the stock ones from their owning standards component
 // (`FungibleFaucet::token_config_slot()`, `MinBurnAmount::slot_name()` — the latter read via
 // [`read_min_burn_size`]), so a test and the shipped faucet can never key different slots.
@@ -167,7 +162,27 @@ pub fn mint_note_from_payload_at_domain(
 /// generated from the MASM that raises it, so a message can only be changed in the MASM. What this
 /// table still carries is the NAME set — an error the faucet raises but no test names fails the
 /// bidirectional constant sweep until it gets a row.
-pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
+pub static SHELL_ERR_TABLE: [(&str, MasmError); 23] = [
+    (
+        "ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING",
+        errors::ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_MISSING,
+    ),
+    (
+        "ERR_XRESERVE_BURN_NOTE_TARGET_MISSING",
+        errors::ERR_XRESERVE_BURN_NOTE_TARGET_MISSING,
+    ),
+    (
+        "ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT",
+        errors::ERR_XRESERVE_BURN_NOTE_ATTACHMENT_COUNT,
+    ),
+    (
+        "ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS",
+        errors::ERR_XRESERVE_BURN_NOTE_WITHDRAWAL_WORDS,
+    ),
+    (
+        "ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN",
+        errors::ERR_XRESERVE_BURN_AMOUNT_BELOW_MIN,
+    ),
     (
         "ERR_XRESERVE_MINT_INTENT_LIMB",
         errors::ERR_XRESERVE_MINT_INTENT_LIMB,
@@ -239,8 +254,7 @@ pub static SHELL_ERR_TABLE: [(&str, MasmError); 18] = [
     ),
 ];
 
-/// The stock `MinBurnAmount::check_policy` reject (min_burn_amount.masm) — the burn-side floor
-/// error. There are no custom burn errors.
+/// The stock minimum-burn error, preserved by the custom burn policy.
 pub fn err_burn_below_min_burn_amount() -> MasmError {
     MasmError::from_static_str(
         "amount to be burned must meet or exceed specified minimum burn amount",
@@ -540,13 +554,12 @@ pub fn production_builder_verdict(
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
         .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(1))
         .pauser_holder(test_account_id(2))
-        .manager_holder(test_account_id(3))
+        .unpauser_holder(test_account_id(3))
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(test_fee_parameters())
         .domain(domain)
-        .source_domain(TEST_SOURCE_DOMAIN)
-        .xreserve_contract(test_xreserve_contract())
         .maybe_min_burn_amount(min_burn_amount)
         .build())
 }
@@ -1437,24 +1450,6 @@ pub fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }
 
-/// Reads the FOUR domain-config words `[domain, source_domain, xrc_hi, xrc_lo]` from a
-/// committed/evolved account — the build-seeded read-back (+ the no-write assert of the guard
-/// tests). Missing-slot reads propagate as errors (the slots are always declared on the fixtures).
-pub fn read_domain_config_words(account: &Account) -> Result<[Word; 4]> {
-    let read = |name: &StorageSlotName| -> Result<Word> {
-        account
-            .storage()
-            .get_item(name)
-            .map_err(|e| anyhow::anyhow!("reading domain-config slot {name}: {e}"))
-    };
-    Ok([
-        read(XReserveFaucetExtension::domain_config_slot())?,
-        read(XReserveFaucetExtension::source_domain_config_slot())?,
-        read(XReserveFaucetExtension::xreserve_contract_hi_slot())?,
-        read(XReserveFaucetExtension::xreserve_contract_lo_slot())?,
-    ])
-}
-
 // Minimum-burn configuration note and slot read-back
 // ================================================================================================
 
@@ -1542,8 +1537,7 @@ pub struct GuardedMint {
 /// attestation policy or allow-all per `selection`) via [`XReserveStablecoinBuilder`]. The
 /// attestation policy rides the same `xreserve` library component (its
 /// `mint_policy::check_policy` proc). The production arm build-seeds the caller's `domain` word
-/// (element 0) plus the canonical test `source_domain`/`xreserve_contract` through
-/// the generated `XReserveStablecoinBuilder::builder()`.
+/// (element 0) through the generated `XReserveStablecoinBuilder::builder()`.
 ///
 /// `is_max_supply_mutable` configures the built faucet's stock max-supply mutability flag (threaded
 /// into the `FungibleFaucet::builder()` chain). The production builder REJECTS an immutable
@@ -1578,17 +1572,6 @@ pub fn setup_guarded_mint_account(
             StorageSlot::with_value(
                 XReserveFaucetExtension::domain_config_slot().clone(),
                 domain,
-            ),
-            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; the fixtures never read them).
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::source_domain_config_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
             ),
             StorageSlot::with_map(
                 XReserveFaucetExtension::used_nonces_slot().clone(),
@@ -1741,158 +1724,59 @@ pub struct BurnPolicyHarness {
     pub burn_amount: u64,
 }
 
-/// Hand-builds the seeded `RoleBasedAccessControl` `AccountComponent` for the burn oracle — a faithful
-/// replica of the production builder's private `seeded_dom_roles_rbac` (both stock RBAC maps
-/// direct-seeded with the two Circle Domain role members `DOM_PAUSER`→`pauser_holder` and
-/// `DOM_MANAGER`→`manager_holder`; `DOM_PAUSER` administration delegated to `DOM_MANAGER` — the
-/// seed `role_config[DOM_PAUSER] = [1, DOM_MANAGER, 0, 0]`). The burn oracle needs the RBAC foundation
-/// so the DOM_PAUSER-sent stock `PausableManager::pause` clears its role gate (the pause gate
-/// `burn_paused_rejects` exercises). Reuses the stock RBAC code + slot names + metadata verbatim.
-/// Replica fidelity to the production seed is pinned by
-/// `set_min_burn.rs::support_replica_carries_delegation_seed` (the production twin is
-/// `role_admin.rs::shipped_delegation_reads_back`).
+/// Seeds the burn oracle through the stock RBAC builder with the same five roles as production.
+/// `support_replica_matches_the_production_role_seed` pins both maps to the production seed.
 fn seeded_dom_roles_rbac_component(
     owner: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
 ) -> AccountComponent {
     let pauser = RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol");
-    let manager =
-        RoleSymbol::new(DOM_MANAGER_ROLE).expect("DOM_MANAGER is a fixed valid role symbol");
+    let attest_admin =
+        RoleSymbol::new(ATTEST_ADMIN_ROLE).expect("ATTEST_ADMIN is a fixed valid role symbol");
+    let unpauser =
+        RoleSymbol::new(DOM_UNPAUSER_ROLE).expect("DOM_UNPAUSER is a fixed valid role symbol");
     let blk_manager =
         RoleSymbol::new(BLK_MANAGER_ROLE).expect("BLK_MANAGER is a fixed valid role symbol");
-    // v16 (#3215): the administrator has no implicit super-admin standing — the stock ADMIN role is
-    // seeded on the administrator's account, mirroring the production seed.
     let admin = RoleBasedAccessControl::admin_role();
-    let member_word = Word::from([Felt::from(1u32), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    // [1, DOM_MANAGER, 0, 0]: member_count = 1 with administration delegated to DOM_MANAGER.
-    let delegated_config_word = Word::from([
-        Felt::from(1u32),
-        Felt::from(&manager),
-        Felt::ZERO,
-        Felt::ZERO,
-    ]);
 
-    let role_config = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&pauser),
-            ])),
-            delegated_config_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&manager),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&admin),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::from(&blk_manager),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the four-role role_config seed is valid");
-
-    let role_membership = StorageMap::with_entries([
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&pauser),
-                pauser_holder.suffix(),
-                pauser_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&manager),
-                manager_holder.suffix(),
-                manager_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&admin),
-                owner.suffix(),
-                owner.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-        (
-            StorageMapKey::new(Word::from([
-                Felt::ZERO,
-                Felt::from(&blk_manager),
-                blocklist_manager_holder.suffix(),
-                blocklist_manager_holder.prefix().as_felt(),
-            ])),
-            member_word,
-        ),
-    ])
-    .expect("the four-role role_membership seed is valid");
-
-    AccountComponent::new(
-        RoleBasedAccessControl::code().clone(),
-        vec![
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_config_slot().clone(),
-                role_config,
-            ),
-            StorageSlot::with_map(
-                RoleBasedAccessControl::role_membership_slot().clone(),
-                role_membership,
-            ),
-        ],
-        RoleBasedAccessControl::component_metadata(),
-    )
-    .expect("the seeded RBAC component mirrors the stock From impl and is valid")
+    RoleBasedAccessControl::builder()
+        .role(RoleConfig::new(pauser).with_member(pauser_holder))
+        .role(RoleConfig::new(attest_admin).with_member(attest_admin_holder))
+        .role(RoleConfig::new(unpauser).with_member(unpauser_holder))
+        .role(RoleConfig::new(admin).with_member(owner))
+        .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
+        .build()
+        .expect("the seeded RBAC component mirrors production and is valid")
+        .into()
 }
 
-/// TEST-ONLY burn-oracle composition: registers the attestation mint policy ACTIVE (the
-/// production mint slot) AND BOTH burn policies (the STOCK [`MinBurnAmount`] floor policy — the
-/// production burn gate — + stock `BurnAllowAll`), one `Active` and one `Reserved` per
-/// `burn_real_active`, so the real-vs-allow-all pair is CODE-IDENTICAL (both stock burn
-/// companions present in both variants, the SAME floor seed) and differs ONLY in
-/// `active_burn_policy_proc_root`. Mirrors the production
-/// `XReserveStablecoinBuilder::build_components` RBAC foundation, but is
-/// the TEST harness — production composition installs the MinBurnAmount policy ONLY (no reserved
-/// allow-all), so no shipped API can construct an allow-all-active burn faucet.
+/// Builds test components with either the custom burn policy or `BurnAllowAll` active.
+/// Both versions use the same components and minimum burn amount so tests can compare the policies.
+/// Production allows only the custom burn policy.
 fn oracle_burn_components(
     faucet: FungibleFaucet,
     xreserve_component: AccountComponent,
     min_burn_size: u64,
     burn_real_active: bool,
     administrator: AccountId,
+    attest_admin_holder: AccountId,
     pauser_holder: AccountId,
-    manager_holder: AccountId,
+    unpauser_holder: AccountId,
     blocklist_manager_holder: AccountId,
 ) -> Result<Vec<AccountComponent>> {
     let min_burn =
         AssetAmount::new(min_burn_size).map_err(|e| anyhow::anyhow!("oracle floor: {e}"))?;
-    let real_burn = BurnPolicy::min_burn_amount(min_burn);
+    let burn_policy_component = XReserveStablecoinBuilder::burn_policy_component();
+    let burn_root = burn_policy_component
+        .get_procedure_root_by_path(XRESERVE_BURN_POLICY_PROC_PATH)
+        .context("burn-policy component exports its check procedure")?;
+    let real_burn = BurnPolicy::custom(
+        burn_root,
+        [burn_policy_component, MinBurnAmount::new(min_burn).into()],
+    )?;
     let allow_burn = BurnPolicy::allow_all();
     let (active_burn, reserved_burn) = if burn_real_active {
         (real_burn, allow_burn)
@@ -1913,8 +1797,8 @@ fn oracle_burn_components(
         .build();
 
     // Production build_components extends the manager iterator (the mint policy already
-    // carries the seeded xreserve). This oracle still partitions the remainder: it keeps BOTH
-    // stock burn companions (MinBurnAmount + BurnAllowAll) and drops the xreserve copy because
+    // carries the seeded xreserve). This oracle keeps the custom burn policy, MinBurnAmount,
+    // and BurnAllowAll companions, and drops the xreserve copy because
     // it also installs `xreserve_component` separately below. The base Pausable component
     // installs the is_paused slot (v16 — #2944 moved it out of FungibleFaucet) and the stock
     // PausableManager writes it, gated on the Domain pauser role by the procedure-role map.
@@ -1926,8 +1810,8 @@ fn oracle_burn_components(
         .into_iter()
         .partition(|c| c.component_code().as_package() == xreserve_code.as_package());
     anyhow::ensure!(
-        dup.len() == 1 && keep.len() == 2,
-        "burn-oracle seam: expected 1 xreserve companion copy + 2 stock burn companions, got \
+        dup.len() == 1 && keep.len() == 3,
+        "burn-oracle seam: expected 1 xreserve companion copy + 3 burn companions, got \
          {} + {}",
         dup.len(),
         keep.len()
@@ -1938,12 +1822,13 @@ fn oracle_burn_components(
         xreserve_component,
     ];
     components.push(manager_component);
-    components.extend(keep); // [MinBurnAmount (floor slot), BurnAllowAll]
+    components.extend(keep); // custom burn policy, MinBurnAmount, BurnAllowAll
     components.push(PausableManager.into());
     components.push(seeded_dom_roles_rbac_component(
         administrator,
+        attest_admin_holder,
         pauser_holder,
-        manager_holder,
+        unpauser_holder,
         blocklist_manager_holder,
     ));
     components.push(XReserveAdminAuthority::new().into());
@@ -1953,8 +1838,9 @@ fn oracle_burn_components(
 /// Builds the burn-policy harness: assembles the `xreserve` component with the full production slot set
 /// (the domain-config value slots, usedNonces/xReserveAttesters map slots, AND the NET-NEW minBurnSize
 /// value slot seeded `[min_burn_size, 0, 0, 0]`), composes the faucet via [`oracle_burn_components`]
-/// (`administrator` = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3)), adds a user wallet seeded with the single burn asset, and
-/// creates the canonical [`BurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
+/// (`ADMIN` = `ATTEST_ADMIN` = id(1), `DOM_PAUSER` = id(2), `DOM_UNPAUSER` = id(3),
+/// `BLK_MANAGER` = id(4)), adds a user wallet seeded with the single burn asset, and
+/// creates the canonical [`XReserveBurnNote`]. The faucet is built with `is_max_supply_mutable(true)` + decimals
 /// 6, mirroring the mint composition fixtures.
 pub fn setup_burn_policy_account(
     selection: BurnGuardSelection,
@@ -1972,27 +1858,19 @@ pub fn setup_burn_policy_account(
                 XReserveFaucetExtension::domain_config_slot().clone(),
                 Word::from([TEST_DOMAIN, 0, 0, 0]),
             ),
-            // 4-field domain-config closure: the two new scalar/bytes32 config slots, EMPTY at assembly
-            // (domain_init is the sole writer; the burn fixtures never read them).
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::source_domain_config_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_hi_slot().clone(),
-            ),
-            StorageSlot::with_empty_value(
-                XReserveFaucetExtension::xreserve_contract_lo_slot().clone(),
-            ),
             StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
             StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),
-            // NOTE: the floor slot rides the STOCK MinBurnAmount policy companion
-            // (seeded by `oracle_burn_components`), not the xreserve component.
+            // oracle_burn_components stores the minimum burn amount in the MinBurnAmount component.
         ],
         AccountComponentMetadata::new("xusdc-burn-policy-harness"),
     )
     .context("binding the xreserve library + all composition slots as a component")?;
 
-    let burn_root = Word::from(MinBurnAmount::root());
+    let burn_root = Word::from(
+        XReserveStablecoinBuilder::burn_policy_component()
+            .get_procedure_root_by_path(XRESERVE_BURN_POLICY_PROC_PATH)
+            .context("burn-policy component exports its check procedure")?,
+    );
 
     let faucet = FungibleFaucet::builder()
         .name(TokenName::new("USDCx")?)
@@ -2011,6 +1889,7 @@ pub fn setup_burn_policy_account(
         min_burn_size,
         burn_real_active,
         test_account_id(1),
+        test_account_id(1),
         test_account_id(2),
         test_account_id(3),
         test_account_id(4),
@@ -2028,17 +1907,18 @@ pub fn setup_burn_policy_account(
         .context("adding the burn user wallet")?;
     let user_id = user.id();
 
-    // The canonical burn note (random serial) — created while the builder rng is live.
-    // v16 (#2283): the stock BurnNote is a bon builder; the faucet id is derived from the
-    // asset itself and the builder yields a BurnNote that converts into the Note the harness
-    // threads around.
-    let burn_note: Note = BurnNote::builder()
-        .sender(user_id)
-        .asset(asset)
-        .generate_serial_number(builder.rng_mut())
-        .build()
-        .context("creating the canonical burn note")?
-        .into();
+    // The burn note carries the withdrawal attachment required by the production policy.
+    let burn_note = XReserveBurnNote::create(
+        user_id,
+        faucet_id,
+        asset.amount(),
+        XReserveBurnItems {
+            dest_domain: TEST_SOURCE_DOMAIN,
+            dest_recipient: ForeignChainAddress::new([0xAB; 32]),
+        },
+        builder.rng_mut(),
+    )
+    .context("creating the canonical burn note")?;
 
     let chain = builder
         .build()
@@ -2400,7 +2280,7 @@ pub fn dom_pauser_pause_note(sender: AccountId, seed: u64) -> Result<Note> {
     dom_pauser_manager_note(sender, seed, "pause", 21, 22)
 }
 
-/// A `PausableManager::unpause` note sent by `sender` (the Domain pauser, for success).
+/// A `PausableManager::unpause` note sent by `sender` (the Domain unpauser, for success).
 pub fn dom_pauser_unpause_note(sender: AccountId, seed: u64) -> Result<Note> {
     dom_pauser_manager_note(sender, seed, "unpause", 23, 24)
 }
@@ -2725,7 +2605,7 @@ pub const BURN_POLICY_DRIVER_PATH: &str = "xusdc::test_fixtures::burn_policy_dri
 
 /// Generates a direct-policy driver: a CALL-entered account proc that pushes a crafted
 /// `[ASSET_ID, ASSET_VALUE]` burn-policy stack (`ASSET_VALUE = [amount, 0, 0, 0]`) and `exec`s
-/// the STOCK `min_burn_amount::check_policy` (the production burn gate). The policy
+/// the STOCK `min_burn_amount::check_policy` (the floor comparison the custom policy preserves). The policy
 /// consumes the 8 cells and returns `[]`, restoring the 16-depth `call` boundary. Drives the
 /// floor boundary DIRECTLY as a SUPPLEMENTARY, belt-and-suspenders proof beside the
 /// note-reachable rejects.

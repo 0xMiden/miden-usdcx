@@ -1,36 +1,21 @@
-//! The discovery checklist, the `validate_returned` field-by-field gate, and the **DO-NOT-SIGN**
-//! abort.
-//!
-//! **Validation gates signing.** This service releases real USDC, and this
-//! is the last check before an attester signature is produced. The gate is proven two ways here:
-//!
-//! * **Field-by-field.** Circle's returned `burnIntents[].spec` (`value`,
-//!   `destinationDomain`, `destinationRecipient`) is compared against the burn-note payload for
-//!   EVERY batch — a mismatch in ANY batch (not just `batches[0]`) rejects; a missing
-//!   `messageHashToSign` rejects.
-//! * **Control-flow (the non-vacuity oracle).** The mismatch is driven through the REAL
-//!   gate: on `Err`, NO signature is produced and NO withdraw call is reachable. The proof is
-//!   structural — the flow-level signer takes a [`ValidatedWithdrawal`], which ONLY a full-match
-//!   [`validate_returned`] can mint, so "signed anyway" is untypeable, not merely unreached.
-//!
-//! These are PURE tests (no node, no Circle): the mock `PrepareWithdrawalResponse` is parsed from
-//! the schema-frozen fixtures, the burn payload is constructed locally, and the abort is exercised
-//! through `validate_returned` + `sign_validated`. The `messageHashToSign` digest derivation and
-//! the Circle-assigned `sourceDepositor` stay OPEN — parameterized, never resolved.
+//! Tests for discovery, returned-withdrawal validation, and the do-not-sign gate.
 
 use assert_matches::assert_matches;
 use rstest::rstest;
 use serde_json::Value;
 
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::Felt;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::attester::{SecretKey, Signature65};
 use withdrawal_listener_attester::circle::schema::PrepareWithdrawalResponse;
 use withdrawal_listener_attester::config::ListenerConfig;
 use withdrawal_listener_attester::error::{DecodeError, DiscoveryReject, ValidationMismatch};
 use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
-    sign_validated, validate_discovery, validate_returned, DiscoveredDetails, DiscoveryRecord,
+    sign_validated, validate_discovery, validate_returned, DiscoveredBurn, DiscoveredDetails,
+    DiscoveryRecord,
 };
 use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
 
@@ -53,16 +38,50 @@ fn hex32(s: &str) -> [u8; 32] {
     bytes.try_into().expect("exactly 32 bytes")
 }
 
-/// The burn payload that MATCHES `prepare_withdrawal_200.json`: `value = 10000000`,
+/// The burn payload's routing fields match the fixture:
 /// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`.
 fn matching_payload() -> BurnPayload {
     BurnPayload {
-        amount: AssetAmount::new(10_000_000).unwrap(),
         dest_domain: 0,
         dest_recipient: ForeignChainAddress::new(hex32(
             "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         )),
     }
+}
+
+/// The fixture's `hookData.remoteDepositor`, decoded as the discovered burn sender.
+fn matching_depositor() -> AccountId {
+    let body = base_200_json();
+    let remote_depositor = hex32(
+        body["batches"][0]["burnIntents"][0]["spec"]["hookData"]["remoteDepositor"]
+            .as_str()
+            .unwrap(),
+    );
+    let eth_address = remote_depositor[12..]
+        .try_into()
+        .expect("bytes32-embedded Ethereum address is 20 bytes");
+    EthEmbeddedAccountId::new(eth_address)
+        .expect("fixture remoteDepositor is an embedded account id")
+        .into_account_id()
+}
+
+fn discovered_burn(payload: BurnPayload, amount: AssetAmount) -> DiscoveredBurn {
+    let sender = matching_depositor();
+    let (prefix, suffix) = (sender.prefix().as_felt(), sender.suffix());
+    let record = DiscoveryRecord::new(
+        cfg().burn_tag(),
+        Some(DiscoveredDetails::from_raw_sender(
+            payload.encode(),
+            amount,
+            prefix,
+            suffix,
+        )),
+    );
+    validate_discovery(&record, &cfg()).expect("the matching fixture burn passes discovery")
+}
+
+fn matching_burn() -> DiscoveredBurn {
+    discovered_burn(matching_payload(), AssetAmount::new(10_000_000).unwrap())
 }
 
 /// Parses a fixture into the response type. Panics if it does not deserialize — used only for
@@ -81,8 +100,28 @@ fn response_from_value(v: &Value) -> Result<PrepareWithdrawalResponse, serde_jso
     serde_json::from_value(v.clone())
 }
 
+fn set_intent_field(body: &mut Value, path: &[&str], value: Value) {
+    let mut cursor = &mut body["batches"][0]["burnIntents"][0];
+    for key in &path[..path.len() - 1] {
+        cursor = cursor
+            .get_mut(*key)
+            .unwrap_or_else(|| panic!("fixture intent contains `{key}`"));
+    }
+    let leaf = path.last().expect("a non-empty path");
+    cursor[*leaf] = value;
+}
+
 fn cfg() -> ListenerConfig {
-    ListenerConfig::default()
+    let body = base_200_json();
+    let intent = &body["batches"][0]["burnIntents"][0];
+    let spec = &intent["spec"];
+    ListenerConfig::builder()
+        .miden_domain(spec["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .max_withdrawal_fee(
+            AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
+        )
+        .build()
+        .expect("fixture-derived config is valid")
 }
 
 /// A signing key for the positive control — signing MUST be reachable on a full match.
@@ -106,7 +145,7 @@ fn validate_returned_ok_on_full_match() {
     );
 
     let validated =
-        validate_returned(&resp, &matching_payload(), &cfg()).expect("a full match validates");
+        validate_returned(&resp, &matching_burn(), &cfg()).expect("a full match validates");
 
     assert_eq!(
         validated.digests().len(),
@@ -120,15 +159,14 @@ fn validate_returned_ok_on_full_match() {
     );
 }
 
-/// A returned `value` (amount) that does not match the burn payload rejects with the exact variant.
+/// A returned net value plus fee that does not match the burned asset rejects with the exact variant.
 #[test]
 fn validate_returned_rejects_amount_mismatch() {
     let resp = response("prepare_withdrawal_200");
-    let mut payload = matching_payload();
-    payload.amount = AssetAmount::new(9_999_999).unwrap();
+    let burn = discovered_burn(matching_payload(), AssetAmount::new(9_999_999).unwrap());
 
     assert_matches!(
-        validate_returned(&resp, &payload, &cfg()),
+        validate_returned(&resp, &burn, &cfg()),
         Err(ValidationMismatch::Amount { batch: 0, .. })
     );
 }
@@ -139,9 +177,10 @@ fn validate_returned_rejects_destination_domain_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
     payload.dest_domain = 7;
+    let burn = discovered_burn(payload, matching_burn().amount());
 
     assert_matches!(
-        validate_returned(&resp, &payload, &cfg()),
+        validate_returned(&resp, &burn, &cfg()),
         Err(ValidationMismatch::DestinationDomain { batch: 0, .. })
     );
 }
@@ -152,10 +191,233 @@ fn validate_returned_rejects_destination_recipient_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
     payload.dest_recipient = ForeignChainAddress::new([0x00; 32]);
+    let burn = discovered_burn(payload, matching_burn().amount());
 
     assert_matches!(
-        validate_returned(&resp, &payload, &cfg()),
+        validate_returned(&resp, &burn, &cfg()),
         Err(ValidationMismatch::DestinationRecipient { batch: 0, .. })
+    );
+}
+
+/// Rejects withdrawal terms that violate policy even when the response matches the JSON schema.
+#[rstest]
+#[case::max_fee(&["maxFee"], Value::from("1001"), "maxFee")]
+#[case::destination_caller(
+    &["spec", "destinationCaller"],
+    Value::from("0x0000000000000000000000000000000000000000000000000000000000000001"),
+    "destinationCaller"
+)]
+#[case::hook_remote_domain(&["spec", "hookData", "remoteDomain"], Value::from(10_002), "hookData.remoteDomain")]
+#[case::hook_remote_depositor(
+    &["spec", "hookData", "remoteDepositor"],
+    Value::from("0x0000000000000000000000000000000000000000000000000000000000000000"),
+    "hookData.remoteDepositor"
+)]
+#[case::hook_remote_token(
+    &["spec", "hookData", "remoteToken"],
+    Value::from("0x0000000000000000000000000000000000000000000000000000000000000000"),
+    "hookData.remoteToken"
+)]
+#[case::hook_forwarding_contract(
+    &["spec", "hookData", "forwardingContractAddress"],
+    Value::from("0x0000000000000000000000000000000000000001"),
+    "hookData.forwardingContractAddress"
+)]
+#[case::hook_forwarding_calldata(
+    &["spec", "hookData", "forwardingCalldata"],
+    Value::from("0x12345678"),
+    "hookData.forwardingCalldata"
+)]
+fn validate_returned_rejects_unbound_redemption_terms(
+    #[case] path: &[&str],
+    #[case] value: Value,
+    #[case] expected: &str,
+    #[values((0, 0), (0, 1), (1, 0))] position: (usize, usize),
+) {
+    let mut v = base_200_json();
+    set_intent_field(&mut v, path, value);
+    let bad_intent = v["batches"][0]["burnIntents"][0].clone();
+    let good_batch = base_200_json()["batches"][0].clone();
+    let (batch_index, intent_index) = position;
+    v["batches"] = Value::Array(vec![good_batch.clone(); batch_index + 1]);
+    v["batches"][batch_index]["burnIntents"] =
+        Value::Array(vec![good_batch["burnIntents"][0].clone(); intent_index + 1]);
+    v["batches"][batch_index]["burnIntents"][intent_index] = bad_intent;
+    let resp = response_from_value(&v).expect("a schema-valid term edit still deserializes");
+    let err = validate_returned(&resp, &matching_burn(), &cfg())
+        .expect_err("an unbound redemption term must reject before signing");
+
+    let rejected_batch = match &err {
+        ValidationMismatch::MaxFee { batch, .. }
+        | ValidationMismatch::DestinationCaller { batch, .. }
+        | ValidationMismatch::HookData { batch, .. } => *batch,
+        other => panic!("unexpected rejection: {other:?}"),
+    };
+    assert_eq!(rejected_batch, batch_index);
+
+    match expected {
+        "maxFee" => assert_matches!(err, ValidationMismatch::MaxFee { .. }),
+        "destinationCaller" => {
+            assert_matches!(err, ValidationMismatch::DestinationCaller { .. })
+        }
+        "hookData.remoteDomain" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    field: "remoteDomain",
+                    ..
+                }
+            )
+        }
+        "hookData.remoteDepositor" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    field: "remoteDepositor",
+                    ..
+                }
+            )
+        }
+        "hookData.remoteToken" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    field: "remoteToken",
+                    ..
+                }
+            )
+        }
+        "hookData.forwardingContractAddress" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    field: "forwardingContractAddress",
+                    ..
+                }
+            )
+        }
+        "hookData.forwardingCalldata" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    field: "forwardingCalldata",
+                    ..
+                }
+            )
+        }
+        other => panic!("unmapped mismatch class `{other}`"),
+    }
+}
+
+/// Accepts fees within both the configured limit and the burned amount.
+#[rstest]
+#[case::zero_default(0, "0", true)]
+#[case::positive_default(0, "1", false)]
+#[case::below_ceiling(1_000, "999", true)]
+#[case::at_ceiling(1_000, "1000", true)]
+#[case::above_ceiling(1_000, "1001", false)]
+#[case::one_unit_remaining(10_000_001, "9999999", true)]
+#[case::above_burn_amount(10_000_001, "10000001", false)]
+#[case::uint256_overflow(1_000, "340282366920938463463374607431768211456", false)]
+fn validate_returned_fee_boundaries(
+    #[case] ceiling: u64,
+    #[case] fee: &str,
+    #[case] accepted: bool,
+) {
+    let mut body = base_200_json();
+    set_intent_field(&mut body, &["maxFee"], Value::from(fee));
+    if let Some(value) = fee
+        .parse::<u64>()
+        .ok()
+        .and_then(|fee| matching_burn().amount().as_u64().checked_sub(fee))
+    {
+        set_intent_field(
+            &mut body,
+            &["spec", "value"],
+            Value::from(value.to_string()),
+        );
+    }
+    let response = response_from_value(&body).expect("unsigned decimal fee parses");
+    let config = ListenerConfig::builder()
+        .miden_domain(cfg().miden_domain())
+        .max_withdrawal_fee(AssetAmount::new(ceiling).unwrap())
+        .build()
+        .unwrap();
+    let result = validate_returned(&response, &matching_burn(), &config);
+    if accepted {
+        assert_eq!(
+            result.expect("fee within both limits passes").batch_count(),
+            1
+        );
+    } else {
+        assert_matches!(result, Err(ValidationMismatch::MaxFee { batch: 0, .. }));
+    }
+}
+
+/// Only a positive net value whose sum with the fee equals the burn may reach signing.
+#[rstest]
+#[case::zero_fee("10000000", "0", true)]
+#[case::fee_deducted("9999000", "1000", true)]
+#[case::fee_not_deducted("10000000", "1000", false)]
+#[case::total_too_low("9998999", "1000", false)]
+#[case::total_too_high("9999001", "1000", false)]
+#[case::zero_net_value("0", "10000000", false)]
+#[case::sum_overflow("340282366920938463463374607431768211455", "1", false)]
+#[case::value_overflow("340282366920938463463374607431768211456", "0", false)]
+fn withdrawal_amount_accounting_gates_signing(
+    #[case] value: &str,
+    #[case] fee: &str,
+    #[case] accepted: bool,
+    #[values((0, 0), (0, 1), (1, 0))] position: (usize, usize),
+) {
+    let mut body = base_200_json();
+    let good_batch = body["batches"][0].clone();
+    let (batch, intent) = position;
+    body["batches"] = Value::Array(vec![good_batch.clone(); batch + 1]);
+    body["batches"][batch]["burnIntents"] =
+        Value::Array(vec![good_batch["burnIntents"][0].clone(); intent + 1]);
+    body["batches"][batch]["burnIntents"][intent]["spec"]["value"] = Value::from(value);
+    body["batches"][batch]["burnIntents"][intent]["maxFee"] = Value::from(fee);
+    let response = response_from_value(&body).expect("unsigned decimal amounts parse");
+    let burn = matching_burn();
+    let config = ListenerConfig::builder()
+        .miden_domain(cfg().miden_domain())
+        .max_withdrawal_fee(burn.amount())
+        .build()
+        .unwrap();
+    let result = attempt_sign_flow(&response, &burn, &config, &a_key());
+    if accepted {
+        assert_eq!(result.expect("valid totals reach signing").len(), batch + 1);
+    } else {
+        assert_matches!(
+            result,
+            Err(ValidationMismatch::Amount { batch: rejected, expected: 10_000_000, returned })
+                if rejected == batch && returned == value
+        );
+    }
+}
+
+/// A returned fee cap above the burned amount rejects even if config allows it.
+#[test]
+fn validate_returned_rejects_max_fee_above_the_burn_amount() {
+    let mut v = base_200_json();
+    let amount = matching_burn().amount().as_u64();
+    set_intent_field(&mut v, &["maxFee"], Value::from((amount + 1).to_string()));
+    let resp = response_from_value(&v).expect("a larger decimal maxFee still deserializes");
+    let cfg = ListenerConfig::builder()
+        .miden_domain(cfg().miden_domain())
+        .max_withdrawal_fee(AssetAmount::new(amount + 1).unwrap())
+        .build()
+        .expect("the test fee ceiling is valid");
+
+    assert_matches!(
+        validate_returned(&resp, &matching_burn(), &cfg),
+        Err(ValidationMismatch::MaxFee {
+            batch: 0,
+            ceiling,
+            amount: returned_amount,
+            ..
+        }) if ceiling == amount + 1 && returned_amount == amount
     );
 }
 
@@ -166,7 +428,7 @@ fn validate_returned_rejects_the_mismatch_fixture() {
     let resp = response("prepare_withdrawal_validation_mismatch");
     // The fixture diverges on value (99000000 ≠ 10000000) first, so the amount check fires.
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::Amount { batch: 0, .. })
     );
 }
@@ -179,22 +441,19 @@ fn validate_returned_rejects_no_batches() {
     v["batches"] = Value::Array(vec![]);
     let resp = response_from_value(&v).expect("an empty batches[] still deserializes");
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::NoBatches)
     );
 }
 
-/// A batch whose `burnIntents` array is EMPTY is refused — with no intent to compare, its digest is
-/// bound to no amount/domain/recipient, so allowing it would mint a signing token vacuously. This
-/// is the fund-safety hole the audit surfaced: the `check_spec` loop must not be skippable into
-/// `Ok`.
+/// A batch whose `burnIntents` array is empty is refused.
 #[test]
 fn validate_returned_rejects_an_empty_burn_intents_batch() {
     let mut v = base_200_json();
     v["batches"][0]["burnIntents"] = Value::Array(vec![]);
     let resp = response_from_value(&v).expect("an empty burnIntents[] still deserializes");
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::EmptyBurnIntents { batch: 0 })
     );
 }
@@ -211,7 +470,7 @@ fn validate_returned_rejects_a_later_empty_burn_intents_batch() {
 
     let resp = response_from_value(&v).expect("both batches deserialize");
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::EmptyBurnIntents { batch: 1 })
     );
 }
@@ -225,7 +484,7 @@ fn empty_burn_intents_aborts_the_signing_flow() {
     v["batches"][0]["burnIntents"] = Value::Array(vec![]);
     let resp = response_from_value(&v).expect("an empty burnIntents[] still deserializes");
     assert_matches!(
-        attempt_sign_flow(&resp, &matching_payload(), &cfg(), &a_key()),
+        attempt_sign_flow(&resp, &matching_burn(), &cfg(), &a_key()),
         Err(ValidationMismatch::EmptyBurnIntents { batch: 0 })
     );
 }
@@ -247,7 +506,7 @@ fn validate_returned_rejects_malformed_message_hash() {
         v["batches"][0]["messageHashToSign"] = Value::from(bad.clone());
         let resp = response_from_value(&v).expect("a string hash still deserializes");
         assert_matches!(
-            validate_returned(&resp, &matching_payload(), &cfg()),
+            validate_returned(&resp, &matching_burn(), &cfg()),
             Err(ValidationMismatch::MalformedMessageHash { batch: 0, .. }),
             "a malformed hash `{bad}` must reject as MalformedMessageHash, not sign"
         );
@@ -268,7 +527,7 @@ fn validate_returned_rejects_a_later_batch_mismatch() {
     assert_eq!(resp.batches().len(), 2);
 
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::Amount { batch: 1, .. }),
         "the mismatch is in the SECOND batch — every batch must be checked"
     );
@@ -296,7 +555,7 @@ fn validate_returned_rejects_empty_message_hash() {
 
     let resp = response_from_value(&v).expect("an empty-string hash still deserializes");
     assert_matches!(
-        validate_returned(&resp, &matching_payload(), &cfg()),
+        validate_returned(&resp, &matching_burn(), &cfg()),
         Err(ValidationMismatch::MissingMessageHash { batch: 0 })
     );
 }
@@ -311,7 +570,7 @@ fn validate_returned_does_not_depend_on_the_encoded_blob() {
 
     let resp = response_from_value(&v).expect("a short encoded blob still deserializes");
     assert!(
-        validate_returned(&resp, &matching_payload(), &cfg()).is_ok(),
+        validate_returned(&resp, &matching_burn(), &cfg()).is_ok(),
         "validation must succeed from the JSON spec fields alone (encoded is opaque, ASG-5)"
     );
 }
@@ -321,16 +580,16 @@ fn validate_returned_does_not_depend_on_the_encoded_blob() {
 #[test]
 fn validate_returned_is_deterministic() {
     let ok = response("prepare_withdrawal_200");
-    assert!(validate_returned(&ok, &matching_payload(), &cfg()).is_ok());
-    assert!(validate_returned(&ok, &matching_payload(), &cfg()).is_ok());
+    assert!(validate_returned(&ok, &matching_burn(), &cfg()).is_ok());
+    assert!(validate_returned(&ok, &matching_burn(), &cfg()).is_ok());
 
     let bad = response("prepare_withdrawal_validation_mismatch");
     assert_matches!(
-        validate_returned(&bad, &matching_payload(), &cfg()),
+        validate_returned(&bad, &matching_burn(), &cfg()),
         Err(ValidationMismatch::Amount { batch: 0, .. })
     );
     assert_matches!(
-        validate_returned(&bad, &matching_payload(), &cfg()),
+        validate_returned(&bad, &matching_burn(), &cfg()),
         Err(ValidationMismatch::Amount { batch: 0, .. })
     );
 }
@@ -344,11 +603,11 @@ fn validate_returned_is_deterministic() {
 /// is produced. This is the executable enforcement that validation gates signing.
 fn attempt_sign_flow(
     resp: &PrepareWithdrawalResponse,
-    payload: &BurnPayload,
+    burn: &DiscoveredBurn,
     cfg: &ListenerConfig,
     key: &SecretKey,
 ) -> Result<Vec<Signature65>, ValidationMismatch> {
-    let validated = validate_returned(resp, payload, cfg)?;
+    let validated = validate_returned(resp, burn, cfg)?;
     // Reachable ONLY with the proof-of-validation token above.
     Ok(sign_validated(&validated, key).expect("a cleared 32-byte digest signs"))
 }
@@ -358,7 +617,7 @@ fn attempt_sign_flow(
 #[test]
 fn full_match_reaches_signing() {
     let resp = response("prepare_withdrawal_200");
-    let sigs = attempt_sign_flow(&resp, &matching_payload(), &cfg(), &a_key())
+    let sigs = attempt_sign_flow(&resp, &matching_burn(), &cfg(), &a_key())
         .expect("a full match must reach signing");
     assert_eq!(
         sigs.len(),
@@ -372,7 +631,7 @@ fn full_match_reaches_signing() {
 #[test]
 fn mismatch_aborts_and_produces_no_signature() {
     let resp = response("prepare_withdrawal_validation_mismatch");
-    let result = attempt_sign_flow(&resp, &matching_payload(), &cfg(), &a_key());
+    let result = attempt_sign_flow(&resp, &matching_burn(), &cfg(), &a_key());
     assert_matches!(
         result,
         Err(ValidationMismatch::Amount { batch: 0, .. }),
@@ -399,7 +658,7 @@ fn each_spec_mismatch_class_aborts(
     v["batches"][0]["burnIntents"][0]["spec"][field] = bad;
 
     let resp = response_from_value(&v).expect("a single-field edit still deserializes");
-    let err = attempt_sign_flow(&resp, &matching_payload(), &cfg(), &a_key())
+    let err = attempt_sign_flow(&resp, &matching_burn(), &cfg(), &a_key())
         .expect_err("each mismatch class must abort with no signature");
     assert!(
         is_expected(&err),
@@ -425,7 +684,7 @@ fn empty_message_hash_class_aborts() {
 
     let resp = response_from_value(&v).expect("an empty hash still deserializes");
     assert_matches!(
-        attempt_sign_flow(&resp, &matching_payload(), &cfg(), &a_key()),
+        attempt_sign_flow(&resp, &matching_burn(), &cfg(), &a_key()),
         Err(ValidationMismatch::MissingMessageHash { .. })
     );
 }
@@ -435,12 +694,12 @@ fn empty_message_hash_class_aborts() {
 #[test]
 fn abort_is_idempotent_on_retry() {
     let resp = response("prepare_withdrawal_validation_mismatch");
-    let payload = matching_payload();
+    let burn = matching_burn();
     let key = a_key();
 
     for _ in 0..3 {
         assert_matches!(
-            attempt_sign_flow(&resp, &payload, &cfg(), &key),
+            attempt_sign_flow(&resp, &burn, &cfg(), &key),
             Err(ValidationMismatch::Amount { batch: 0, .. }),
             "every retry of the same mismatch aborts — no remembered pass"
         );
@@ -453,13 +712,15 @@ fn abort_is_idempotent_on_retry() {
 
 /// Builds a public discovery record whose items decode to `payload` and whose sender is a genuine
 /// account id (the config's faucet id, reused as a valid, canonical id).
-fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
+fn public_record(tag: u32, payload: &BurnPayload, amount: AssetAmount) -> DiscoveryRecord {
     let items: Vec<Felt> = payload.encode();
     let faucet_id = ListenerConfig::default().faucet_id();
     let (prefix, suffix) = (faucet_id.prefix().as_felt(), faucet_id.suffix());
     DiscoveryRecord::new(
         tag,
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items, amount, prefix, suffix,
+        )),
     )
 }
 
@@ -468,7 +729,7 @@ fn public_record(tag: u32, payload: &BurnPayload) -> DiscoveryRecord {
 #[test]
 fn discovery_ok_on_matching_public_note() {
     let payload = matching_payload();
-    let record = public_record(cfg().burn_tag(), &payload);
+    let record = public_record(cfg().burn_tag(), &payload, matching_burn().amount());
 
     let discovered = validate_discovery(&record, &cfg()).expect("a matching public note validates");
     assert_eq!(discovered.payload(), &payload);
@@ -492,7 +753,8 @@ fn discovery_rejects_a_wrong_tag() {
         .burn_tag(0xAABB_CCDD)
         .build()
         .unwrap();
-    let record = public_record(0x1234_5678, &matching_payload());
+    let burn = matching_burn();
+    let record = public_record(0x1234_5678, burn.payload(), burn.amount());
     assert_matches!(
         validate_discovery(&record, &cfg),
         Err(DiscoveryReject::TagMismatch { .. })
@@ -508,7 +770,8 @@ fn discovery_rejects_a_prefix_only_tag_match() {
         .build()
         .unwrap();
     // Same high 16 bits (0xAABB), different low 16 — a prefix scan would wrongly accept this.
-    let record = public_record(0xAABB_0000, &matching_payload());
+    let burn = matching_burn();
+    let record = public_record(0xAABB_0000, burn.payload(), burn.amount());
     assert_matches!(
         validate_discovery(&record, &cfg),
         Err(DiscoveryReject::TagMismatch { .. }),
@@ -527,7 +790,12 @@ fn discovery_rejects_malformed_items() {
         vec![Felt::from(0u32); xusdc_encoding::xreserve::encoding::BURN_NOTE_ITEMS_FELTS - 1];
     let record = DiscoveryRecord::new(
         cfg().burn_tag(),
-        Some(DiscoveredDetails::from_raw_sender(items, prefix, suffix)),
+        Some(DiscoveredDetails::from_raw_sender(
+            items,
+            matching_burn().amount(),
+            prefix,
+            suffix,
+        )),
     );
     assert_matches!(
         validate_discovery(&record, &cfg()),
@@ -546,6 +814,7 @@ fn discovery_rejects_a_zero_sender() {
         cfg().burn_tag(),
         Some(DiscoveredDetails::from_raw_sender(
             items,
+            matching_burn().amount(),
             Felt::from(0u32),
             Felt::from(0u32),
         )),

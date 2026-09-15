@@ -497,14 +497,12 @@
     ],
     "bn": [
       {
-        "amount": "0",
         "cite": "DC-7",
-        "derivation": "lower boundary: amount=0, destDomain=0, destRecipient all-zero",
+        "derivation": "lower boundary: destDomain=0, destRecipient all-zero",
         "dest_domain": 0,
         "dest_recipient": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "id": "bn-pos-min",
         "items": [
-          "0x0",
           "0x0",
           "0x0",
           "0x0",
@@ -523,14 +521,12 @@
         ]
       },
       {
-        "amount": "1000000",
         "cite": "DC-7",
-        "derivation": "typical: amount=10^6 (1 USDC @ 6dp), destDomain=6 (Arbitrum CCTP), patterned bytes32",
+        "derivation": "typical: destDomain=6 (Arbitrum CCTP), patterned bytes32",
         "dest_domain": 6,
         "dest_recipient": "0x1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30",
         "id": "bn-pos-typical",
         "items": [
-          "0xf4240",
           "0x6",
           "0x14131211",
           "0x18171615",
@@ -549,14 +545,12 @@
         ]
       },
       {
-        "amount": "9223372034707292160",
         "cite": "DC-7",
-        "derivation": "upper boundary: amount=AssetAmount::MAX=2^63-2^31, destDomain=u32::MAX, recipient all-0xff",
+        "derivation": "upper boundary: destDomain=u32::MAX, recipient all-0xff",
         "dest_domain": 4294967295,
         "dest_recipient": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "id": "bn-pos-max",
         "items": [
-          "0x7fffffff80000000",
           "0xffffffff",
           "0xffffffff",
           "0xffffffff",
@@ -576,11 +570,10 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "9 felts (< 10) → wrong length",
+        "derivation": "8 felts (< 9) → wrong length",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-len-short",
         "items": [
-          "0xf4240",
           "0x6",
           "0x58575655",
           "0x5c5b5a59",
@@ -597,11 +590,10 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "11 felts (> 10) → wrong length",
+        "derivation": "10 felts (> 9) → wrong length",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-len-long",
         "items": [
-          "0xf4240",
           "0x6",
           "0x58575655",
           "0x5c5b5a59",
@@ -620,33 +612,10 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "items[0] = AssetAmount::MAX + 1 → amount out of range",
-        "expected_variant": "BurnItemsMalformed",
-        "id": "bn-rej-amount-over-cap",
-        "items": [
-          "0x7fffffff80000001",
-          "0x6",
-          "0x58575655",
-          "0x5c5b5a59",
-          "0x605f5e5d",
-          "0x64636261",
-          "0x68676665",
-          "0x6c6b6a69",
-          "0x706f6e6d",
-          "0x74737271"
-        ],
-        "kind": "reject",
-        "tv": [
-          "TV-BN-4"
-        ]
-      },
-      {
-        "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "items[1] = 2^32 → destDomain not a u32",
+        "derivation": "items[0] = 2^32 → destDomain not a u32",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-domain-over-u32",
         "items": [
-          "0xf4240",
           "0x100000000",
           "0x58575655",
           "0x5c5b5a59",
@@ -664,11 +633,10 @@
       },
       {
         "cite": "error-map ; ASG-13/ASG-17",
-        "derivation": "items[5] = 2^32 → destRecipient limb not a u32",
+        "derivation": "items[4] = 2^32 → destRecipient limb not a u32",
         "expected_variant": "BurnItemsMalformed",
         "id": "bn-rej-recipient-limb-not-u32",
         "items": [
-          "0xf4240",
           "0x6",
           "0x58575655",
           "0x5c5b5a59",

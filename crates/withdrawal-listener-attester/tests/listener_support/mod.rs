@@ -35,8 +35,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::note::NoteId;
+use miden_standards::interop::eth::EthEmbeddedAccountId;
 use withdrawal_listener_attester::attester::{
     address_of, sign, Address, AttesterAllowlist, SecretKey, Signature65,
 };
@@ -99,14 +101,39 @@ pub fn fixture_digest() -> [u8; 32] {
 /// response. Every field is read out of the fixture; nothing is typed twice.
 pub fn payload() -> BurnPayload {
     let fixture = support::fixture_json("prepare_withdrawal_200");
-    let spec = &fixture["batches"][0]["burnIntents"][0]["spec"];
+    let intent = &fixture["batches"][0]["burnIntents"][0];
+    let spec = &intent["spec"];
     BurnPayload {
-        amount: AssetAmount::new(spec["value"].as_str().unwrap().parse().unwrap()).unwrap(),
         dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
     }
+}
+
+pub fn depositor() -> AccountId {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let remote_depositor = decode_hex32(
+        fixture["batches"][0]["burnIntents"][0]["spec"]["hookData"]["remoteDepositor"]
+            .as_str()
+            .unwrap(),
+    );
+    let eth_address = remote_depositor[12..]
+        .try_into()
+        .expect("bytes32-embedded Ethereum address is 20 bytes");
+    EthEmbeddedAccountId::new(eth_address)
+        .expect("fixture remoteDepositor is an embedded account id")
+        .into_account_id()
+}
+
+pub fn fixture_max_fee() -> AssetAmount {
+    let fixture = support::fixture_json("prepare_withdrawal_200");
+    let max_fee: u64 = fixture["batches"][0]["burnIntents"][0]["maxFee"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    AssetAmount::new(max_fee).expect("fixture maxFee is an asset amount")
 }
 
 /// The evidence `burnTxId` the unit evidence port resolves for this burn — the value the batch is
@@ -130,9 +157,18 @@ pub fn discovered() -> DiscoveredNote {
 /// None`) — the two discovery rejects that must stop the flow before Circle is touched.
 pub fn discovered_with(tag: u32, payload: Option<BurnPayload>) -> DiscoveredNote {
     let details = payload.map(|p| {
-        let id = evidence_support::other_account_id();
+        let fixture = support::fixture_json("prepare_withdrawal_200");
+        let intent = &fixture["batches"][0]["burnIntents"][0];
+        let value: u64 = intent["spec"]["value"].as_str().unwrap().parse().unwrap();
+        let fee: u64 = intent["maxFee"].as_str().unwrap().parse().unwrap();
+        let id = depositor();
         let (prefix, suffix) = (id.prefix().as_felt(), id.suffix());
-        DiscoveredDetails::from_raw_sender(p.encode(), prefix, suffix)
+        DiscoveredDetails::from_raw_sender(
+            p.encode(),
+            AssetAmount::new(value.checked_add(fee).unwrap()).unwrap(),
+            prefix,
+            suffix,
+        )
     });
     DiscoveredNote::new(note_id(), DiscoveryRecord::new(tag, details))
 }
@@ -177,6 +213,7 @@ pub fn config_allowing(attesters: &[u8]) -> ListenerConfig {
     ListenerConfig::builder()
         .burn_tag(BURN_TAG)
         .miden_domain(MIDEN_DOMAIN)
+        .max_withdrawal_fee(fixture_max_fee())
         .attester_allowlist(AttesterAllowlist::new(
             attesters.iter().copied().map(address),
         ))
@@ -327,6 +364,19 @@ pub fn prepare_200_with_intents(n: usize) -> Value {
 pub fn prepare_200_with_spec_field(field: &str, value: Value) -> Value {
     let mut body = prepare_200();
     body["batches"][0]["burnIntents"][0]["spec"][field] = value;
+    body
+}
+
+pub fn prepare_200_with_intent_field(path: &[&str], value: Value) -> Value {
+    let mut body = prepare_200();
+    let mut cursor = &mut body["batches"][0]["burnIntents"][0];
+    for key in &path[..path.len() - 1] {
+        cursor = cursor
+            .get_mut(*key)
+            .unwrap_or_else(|| panic!("fixture intent contains `{key}`"));
+    }
+    let leaf = path.last().expect("a non-empty path");
+    cursor[*leaf] = value;
     body
 }
 

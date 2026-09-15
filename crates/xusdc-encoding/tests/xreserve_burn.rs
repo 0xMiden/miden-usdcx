@@ -5,7 +5,7 @@
 //! it is consumed by the faucet's stock `receive_and_burn` script rather than by a wallet. It is
 //! always `NoteType::Public`, always carries the fixed xUSDC burn tag, keeps the stock 8-felt asset
 //! layout in `NoteStorage` (so the stock script's stored-vs-carried asset check passes), and carries
-//! its `(amount, destDomain, destRecipient)` withdrawal payload in a scheme-tagged note
+//! its `(destDomain, destRecipient)` withdrawal payload in a scheme-tagged note
 //! ATTACHMENT encoded with the shared codec, so on-chain bytes and off-chain decode never drift.
 //!
 //! Public and tagged is the whole point: the off-chain listener finds these notes by tag, and
@@ -53,12 +53,9 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A representative withdrawal payload: the given amount plus an arbitrary destination domain,
-/// destination recipient. The non-amount fields are only there to be carried and read back
-/// unchanged, so their values are arbitrary as long as they round-trip.
-fn sample_items(amount: u64) -> XReserveBurnItems {
+/// A representative withdrawal payload with arbitrary destination fields that round-trip.
+fn sample_items() -> XReserveBurnItems {
     XReserveBurnItems {
-        amount: AssetAmount::new(amount).expect("amount within AssetAmount bounds"),
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     }
@@ -79,7 +76,7 @@ fn burn_withdrawal_carrier_is_frozen() {
     );
 }
 
-/// Reads a burn note's 10-felt withdrawal payload straight out of its scheme-tagged attachment:
+/// Reads a burn note's 9-felt withdrawal payload straight out of its scheme-tagged attachment:
 /// the scheme-6 attachment's words with the word-boundary padding dropped. The felts feed the
 /// shared codec's `XReserveBurnItems::decode`, which stays the single owner of the field layout —
 /// this helper reads no offset and unpacks no field.
@@ -103,12 +100,12 @@ fn withdrawal_payload(attachments: &NoteAttachments) -> Vec<Felt> {
     felts
 }
 
-/// Emits a real `XReserveBurnNote` on a MockChain and returns the 10-felt withdrawal payload of the
+/// Emits a real `XReserveBurnNote` on a MockChain and returns the 9-felt withdrawal payload of the
 /// note as it actually landed on-chain — read out of the note's scheme-tagged attachment, not its
 /// storage (which now holds the stock 8-felt asset).
 ///
 /// The chain is deliberately minimal: a basic faucet and one user holding the maximum asset
-/// amount, so any amount a vector asks for can actually be moved. What comes back is the on-chain
+/// amount, which it emits with each withdrawal-payload vector. What comes back is the on-chain
 /// truth the parity test compares the codec's output against — not a re-encode of the same Rust
 /// call, which would prove nothing.
 async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt>> {
@@ -127,9 +124,15 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
     // runs in account context, not in the transaction script.
     let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [seed_asset.into()])?;
 
-    let note = XReserveBurnNote::create(user.id(), faucet.id(), items.clone(), builder.rng_mut())?;
+    let note = XReserveBurnNote::create(
+        user.id(),
+        faucet.id(),
+        seed_asset.amount(),
+        items.clone(),
+        builder.rng_mut(),
+    )?;
     // The asset the emit moves equals the note's own NoteAssets asset (single-sourced from the amount).
-    let note_asset = FungibleAsset::new(faucet.id(), u64::from(items.amount))?;
+    let note_asset = seed_asset;
     let chain = builder.build()?;
 
     let tx0 = try_emit_burn_note(&chain, &note, &note_asset, faucet.id(), user.id())
@@ -148,8 +151,14 @@ async fn emitted_items_for(items: &XReserveBurnItems) -> anyhow::Result<Vec<Felt
 fn burn_note_is_public_with_fixed_tag() {
     let sender = test_account_id(3);
     let faucet = test_faucet_id(1);
-    let note = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut note_rng(1))
-        .expect("constructing the burn note");
+    let note = XReserveBurnNote::create(
+        sender,
+        faucet,
+        AssetAmount::new(5_000).unwrap(),
+        sample_items(),
+        &mut note_rng(1),
+    )
+    .expect("constructing the burn note");
 
     // Direct (NOT payload-inferred) assertions — a wrong tag or a Private note fails HERE.
     assert_eq!(
@@ -176,8 +185,22 @@ fn repeated_burn_terms_have_distinct_note_ids_without_payload_salt() {
     let sender = test_account_id(3);
     let faucet = test_faucet_id(1);
     let mut rng = note_rng(7);
-    let first = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut rng).unwrap();
-    let second = XReserveBurnNote::create(sender, faucet, sample_items(5_000), &mut rng).unwrap();
+    let first = XReserveBurnNote::create(
+        sender,
+        faucet,
+        AssetAmount::new(5_000).unwrap(),
+        sample_items(),
+        &mut rng,
+    )
+    .unwrap();
+    let second = XReserveBurnNote::create(
+        sender,
+        faucet,
+        AssetAmount::new(5_000).unwrap(),
+        sample_items(),
+        &mut rng,
+    )
+    .unwrap();
     assert_eq!(
         withdrawal_payload(first.attachments()),
         withdrawal_payload(second.attachments())
@@ -193,21 +216,22 @@ fn repeated_burn_terms_have_distinct_note_ids_without_payload_salt() {
 fn burn_note_payload_schema() {
     let sender = test_account_id(3);
     let faucet = test_faucet_id(1);
-    let items = sample_items(5_000);
-    let note = XReserveBurnNote::create(sender, faucet, items.clone(), &mut note_rng(2))
+    let amount = AssetAmount::new(5_000).unwrap();
+    let items = sample_items();
+    let note = XReserveBurnNote::create(sender, faucet, amount, items.clone(), &mut note_rng(2))
         .expect("constructing the burn note");
 
     // The payload rides a scheme-tagged attachment in the codec's field order and widths, so
     // decoding it returns exactly what was encoded.
     let payload_felts = withdrawal_payload(note.attachments());
-    assert_eq!(payload_felts.len(), 10, "DC-7 payload is exactly 10 felts");
+    assert_eq!(payload_felts.len(), 9, "DC-7 payload is exactly 9 felts");
     let decoded = XReserveBurnItems::decode(&payload_felts).expect("decoding DC-7 items");
     assert_eq!(
         decoded, items,
         "attachment payload decode == input items (DC-7 order)"
     );
 
-    // NoteAssets carries the burned xUSDC FungibleAsset (amount single-sourced from items.amount).
+    // NoteAssets carries the burned xUSDC FungibleAsset with the separately supplied amount.
     let asset = note
         .assets()
         .iter_fungible()
@@ -216,8 +240,8 @@ fn burn_note_payload_schema() {
     assert_eq!(asset.faucet_id(), faucet, "asset issued by the faucet");
     assert_eq!(
         asset.amount(),
-        items.amount,
-        "NoteAssets amount == items.amount"
+        amount,
+        "NoteAssets amount == the supplied amount"
     );
 
     // NoteStorage now holds the STOCK 8-felt asset layout (ASSET_ID(4) + ASSET_VALUE(4)) the stock
@@ -249,7 +273,8 @@ fn burn_note_is_never_private() {
         let note = XReserveBurnNote::create(
             test_account_id(3),
             faucet,
-            sample_items(1_000),
+            AssetAmount::new(1_000).unwrap(),
+            sample_items(),
             &mut note_rng(seed),
         )
         .expect("constructing the burn note");
@@ -318,11 +343,16 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
 
     // The REAL XReserveBurnNote with the same faucet + user + amount as the harness asset.
     let items = XReserveBurnItems {
-        amount: AssetAmount::new(AMOUNT)?,
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     };
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(42))?;
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        AssetAmount::new(AMOUNT)?,
+        items,
+        &mut note_rng(42),
+    )?;
 
     let mut chain = h.chain;
     assert_eq!(
@@ -369,11 +399,16 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     // A note demanding MORE than the holder's balance.
     let over = HELD + 1;
     let items = XReserveBurnItems {
-        amount: AssetAmount::new(over)?,
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     };
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(7))?;
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        AssetAmount::new(over)?,
+        items,
+        &mut note_rng(7),
+    )?;
     let over_asset = FungibleAsset::new(h.faucet_id, over)?;
 
     let result = try_emit_burn_note(&h.chain, &note, &over_asset, h.faucet_id, h.user_id).await;
@@ -408,8 +443,14 @@ async fn recipient_burns_full_balance() -> anyhow::Result<()> {
         MIN_BURN_SIZE,
         HELD,
     )?;
-    let items = sample_items(HELD);
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(21))?;
+    let items = sample_items();
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        AssetAmount::new(HELD)?,
+        items,
+        &mut note_rng(21),
+    )?;
 
     let mut chain = h.chain;
     let tx1 = run_burn_consume(&mut chain, &note, &h.asset, h.faucet_id, h.user_id)
@@ -461,8 +502,14 @@ async fn production_burn_note_same_block_consume_is_erased() -> anyhow::Result<(
         MIN_BURN_SIZE,
         AMOUNT,
     )?;
-    let items = sample_items(AMOUNT);
-    let note = XReserveBurnNote::create(h.user_id, h.faucet_id, items, &mut note_rng(22))?;
+    let items = sample_items();
+    let note = XReserveBurnNote::create(
+        h.user_id,
+        h.faucet_id,
+        AssetAmount::new(AMOUNT)?,
+        items,
+        &mut note_rng(22),
+    )?;
     let mut chain = h.chain;
 
     // tx0: the user emit-tx creates the production note in-block (executed, then dummy-proven —

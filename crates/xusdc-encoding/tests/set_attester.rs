@@ -1,38 +1,33 @@
-//! `set_attester` suite, reconciled to the Circle-faithful administrator-gated model.
-//! The allowlist setter's MASM is UNCHANGED — it calls the account-wide
-//! `authority::assert_authorized`, which under the account's role-based authority resolves this
-//! procedure to the built-in `ADMIN` role, since it carries no role of its own. `ADMIN` is seeded on
-//! the administrator's account, so the identity is today's; it is account-bound and does not follow an
-//! administrator handover. This file covers the administrator
-//! gate (the security core), the production attestation-gate posture pin, and the pause gate. The
-//! non-vacuity seam — that enabling, removing, and rotating an attester actually changes which
-//! attestations a real mint accepts — lives in the mint end-to-end suites, alongside the
-//! production-faucet fixtures they own. The role seeding this file's non-administrator rejects rely on is
-//! proven in `role_admin.rs::shipped_delegation_reads_back` against a production-built account and
-//! in `set_min_burn.rs::support_replica_carries_delegation_seed` against the test replica.
+//! `set_attester` requires the dedicated `ATTEST_ADMIN` role through the account-wide authority.
+//! The default fixture places `ADMIN` and `ATTEST_ADMIN` on id(1); the separate-holder case proves
+//! that attester administration follows only `ATTEST_ADMIN`. The setter remains usable while paused.
+//! Enabling, removing and rotating an attester changes which attestations real mints accept;
+//! those effects live in the mint end-to-end suites. Role seeding is pinned against production by
+//! `role_admin.rs::shipped_role_graph_reads_back` and against the burn replica by
+//! `set_min_burn.rs::support_replica_matches_the_production_role_seed`.
 
 mod support;
 
 use anyhow::{Context, Result};
 use miden_protocol::account::{AccountId, StorageMapKey, StorageSlotPatch};
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::Word;
 use miden_standards::account::policies::TokenPolicyManager;
-use miden_testing::assert_transaction_executor_error;
+use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{
-    XReserveFaucetExtension, ATTESTATION_MINT_POLICY_PROC_PATH,
+    XReserveFaucetExtension, XReserveStablecoinBuilder, ATTESTATION_MINT_POLICY_PROC_PATH,
 };
 
-// The seeded principals the reconciled builder installs: the administrator = id(1) (the sole ADMIN member); the two seeded
-// DOM role-holders DOM_PAUSER = id(2) (also the FORMER ATTEST_ADMIN holder) and DOM_MANAGER = id(3) —
-// privileged non-administrators the administrator-ONLY proof rejects.
+// The fixture gives ADMIN and ATTEST_ADMIN to id(1); DOM_PAUSER = id(2) and DOM_UNPAUSER = id(3)
+// are privileged accounts without attester-administration capability.
 fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
     test_account_id(2)
 }
-fn dom_manager() -> AccountId {
+fn dom_unpauser() -> AccountId {
     test_account_id(3)
 }
 
@@ -61,8 +56,8 @@ fn placeholder_driver_src() -> String {
         .to_string()
 }
 
-/// A guarded production faucet (administrator-gated, attestation-policy active) with a trivial driver/probe
-/// — the base for the administrator-gate tests. `attesters_seed = None` (empty allowlist).
+/// A guarded production faucet with ADMIN and ATTEST_ADMIN on the same account.
+/// The attestation policy is active and `attesters_seed = None` (empty allowlist).
 fn guarded_faucet() -> Result<GuardedMint> {
     let driver = placeholder_driver_src();
     let probe = composition_supply_probe_src(0);
@@ -109,10 +104,10 @@ fn probe_attester_admin_exports() -> Result<()> {
     Ok(())
 }
 
-// PRODUCTION REGRESSION GATE — the administrator-gated build must not perturb the mint-gate posture
+// PRODUCTION REGRESSION GATE — the role map must not perturb the mint-gate posture
 // ================================================================================================
 
-/// Making the attester setter administrator-gated did not disturb what actually guards minting.
+/// The attester role does not disturb what actually guards minting.
 ///
 /// The composed account's active mint-policy slot must still hold exactly the root of the
 /// attestation policy resolved from the installed component. That is the structural form of the
@@ -135,16 +130,16 @@ fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
         .value();
     assert_eq!(
         active, attestation_root,
-        "the ACTIVE mint policy slot must hold the attestation policy root (the administrator-gated build \
+        "the ACTIVE mint policy slot must hold the attestation policy root (the role map \
          leaves the mint gate on the attestation policy)"
     );
     Ok(())
 }
 
-// ADMINISTRATOR GATE (the security core) — the unmapped setter resolves to the ADMIN role
+// ATTESTER ADMINISTRATION — the setter resolves to ATTEST_ADMIN
 // ================================================================================================
 
-/// An OWNER-sent `set_attester(K, true)` note succeeds and the allowlist entry lands.
+/// The fixture administrator also holds ATTEST_ADMIN, so its setter note enables the entry.
 #[tokio::test]
 async fn set_attester_administrator_succeeds() -> Result<()> {
     let gm = guarded_faucet()?;
@@ -180,7 +175,50 @@ async fn set_attester_administrator_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// Shared ADMIN-only assertion for `set_attester`: a `sender` without the administrator role traps the EXACT
+/// Separating the holders hands attester administration to ATTEST_ADMIN alone.
+#[tokio::test]
+async fn set_attester_requires_attest_admin_not_admin() -> Result<()> {
+    let components = XReserveStablecoinBuilder::builder()
+        .max_supply(AssetAmount::new(1_000_000)?)
+        .token_supply(AssetAmount::ZERO)
+        .owner(test_account_id(1))
+        .attest_admin_holder(test_account_id(5))
+        .pauser_holder(test_account_id(2))
+        .unpauser_holder(test_account_id(3))
+        .blocklist_manager_holder(test_account_id(4))
+        .fee_parameters(test_fee_parameters())
+        .domain(TEST_DOMAIN)
+        .build()?
+        .build_components()?;
+    let mut builder = MockChain::builder();
+    let mut account = add_faucet_account(&mut builder, Auth::IncrNonce, components)?;
+    let chain = builder.build()?;
+    let commitment = Word::from([41u32, 42, 43, 44]);
+
+    let result = chain
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(set_attester_note(test_account_id(1), commitment, 1, 41)?)
+        .build()?
+        .execute()
+        .await;
+    assert_transaction_executor_error!(result, err_sender_lacks_role());
+    assert_eq!(read_attester(&account, commitment)?, Word::empty());
+
+    let executed = chain
+        .build_transaction(account.clone())
+        .unauthenticated_input_note(set_attester_note(test_account_id(5), commitment, 1, 42)?)
+        .build()?
+        .execute()
+        .await?;
+    account.apply_patch(executed.account_patch())?;
+    assert_eq!(
+        read_attester(&account, commitment)?,
+        Word::from([1u32, 0, 0, 0])
+    );
+    Ok(())
+}
+
+/// A `sender` without ATTEST_ADMIN traps the exact
 /// ERR_SENDER_LACKS_ROLE AND leaves the allowlist entry for the attempted key EMPTY (no partial write).
 async fn assert_set_attester_non_administrator_rejected(
     sender: AccountId,
@@ -202,28 +240,25 @@ async fn assert_set_attester_non_administrator_rejected(
     Ok(())
 }
 
-/// ADMIN-only: the seeded DOM_PAUSER holder id(2) — who is BOTH the former `ATTEST_ADMIN` holder
-/// (proving the removed role grants no access) AND privileged without being an administrator — is
-/// rejected from `set_attester`.
+/// The seeded DOM_PAUSER holder id(2) has no ATTEST_ADMIN membership and is rejected.
 #[tokio::test]
 async fn set_attester_former_admin_dom_pauser_non_administrator_rejects() -> Result<()> {
     assert_set_attester_non_administrator_rejected(dom_pauser(), 20).await
 }
 
-/// ADMIN-only: the seeded DOM_MANAGER holder id(3) — privileged, but not an administrator — is
-/// rejected from `set_attester` (completing the administrator-only cross-product for this setter).
+/// The seeded DOM_UNPAUSER holder id(3) has no ATTEST_ADMIN membership and is rejected.
 #[tokio::test]
-async fn set_attester_dom_manager_non_administrator_rejects() -> Result<()> {
-    assert_set_attester_non_administrator_rejected(dom_manager(), 30).await
+async fn set_attester_dom_unpauser_non_administrator_rejects() -> Result<()> {
+    assert_set_attester_non_administrator_rejected(dom_unpauser(), 30).await
 }
 
-// THE SETTER IS NOT PAUSE-GATED — the OWNER may set_attester while the faucet is paused
+// THE SETTER IS NOT PAUSE-GATED — ATTEST_ADMIN may set_attester while the faucet is paused
 // ================================================================================================
 
 /// After the Domain Pauser pauses the faucet (the stock `PausableManager`, role-gated), an
-/// `ADMIN`-sent `set_attester` note SUCCEEDS while paused: the admin setters are deliberately NOT
+/// `ATTEST_ADMIN`-sent `set_attester` note SUCCEEDS while paused: the admin setters are deliberately NOT
 /// pause-gated, so a compromised attester can be disabled during a pause — which is exactly when it
-/// is needed. The enabled marker lands despite is_paused == true. The administrator gate still
+/// is needed. The enabled marker lands despite is_paused == true. The attester-admin gate still
 /// governs it — the rejection tests above prove that half.
 #[tokio::test]
 async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
@@ -238,7 +273,7 @@ async fn set_attester_administrator_succeeds_while_paused() -> Result<()> {
     let mut evolved = account.clone();
     evolved.apply_patch(paused.account_patch())?;
 
-    // tx2: the OWNER's set_attester(K, true) SUCCEEDS while paused — setters are not pause-gated.
+    // tx2: the ATTEST_ADMIN holder's set_attester(K, true) SUCCEEDS while paused — setters are not pause-gated.
     let executed = run_set_attester_tx(&gm.harness, &evolved, administrator(), commitment, 1, 7)
         .await
         .expect(

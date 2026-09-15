@@ -4,8 +4,10 @@
 //! Arithmetic and layout expectations are derived here with exact integer math (the formula is
 //! recorded per entry); hash- and protocol-derived expectations (Poseidon2 Words, AccountIds) come
 //! from the protocol crates via `Hasher::hash_elements`, `bytes_to_packed_u32_elements`, and
-//! `AccountIdBuilder::build_with_seed`. The vectors are derived independently of the code they
-//! check. Regeneration is an explicit, reviewed act: `cargo run --bin gen_vectors`.
+//! `AccountIdBuilder::build_with_seed`. Every family is derived independently of the code it
+//! checks, except the `mi` carried and rebuilt felts, which are recorded from the Rust mirror and
+//! pinned against the MASM writer. Regeneration is an explicit, reviewed act:
+//! `cargo run --bin gen_vectors`.
 //!
 //! Wire-format byte offsets used below: magic@0, version@4, amount@8, remoteDomain@40,
 //! remoteToken@44, remoteRecipient@76, localToken@108, localDepositor@140, maxFee@172,
@@ -780,55 +782,48 @@ fn main() {
     }
 
     // ---- bn family (burn-note items) -------------------------------------------
-    // items = amount(1) + destDomain(1) + destRecipient(8 u32-LE) = 10 felts.
-    // amount and destDomain are the canonical felt of the integer, and the bytes32 field uses the
+    // items = destDomain(1) + destRecipient(8 u32-LE) = 9 felts.
+    // destDomain is the canonical felt of the integer, and the bytes32 field uses the
     // same `packed` primitive as the b32 family.
-    let bn_items = |amount: u64, domain: u32, recipient: &[u8; 32]| -> Vec<String> {
-        let mut out = Vec::with_capacity(10);
-        out.push(felt_hex(Felt::try_from(amount).expect("amount < p")));
+    let bn_items = |domain: u32, recipient: &[u8; 32]| -> Vec<String> {
+        let mut out = Vec::with_capacity(9);
         out.push(felt_hex(Felt::from(domain)));
         out.extend(felts_hex(&packed(recipient)));
         out
     };
-    let bn_accept = |id: &str, amount: u64, domain: u32, recipient: [u8; 32], derivation: &str| {
+    let bn_accept = |id: &str, domain: u32, recipient: [u8; 32], derivation: &str| {
         json!({
             "id": id, "tv": ["TV-BN-1", "TV-BN-2", "TV-BN-3"], "kind": "accept",
-            "amount": amount.to_string(),
             "dest_domain": domain,
             "dest_recipient": hex_bytes(&recipient),
-            "items": bn_items(amount, domain, &recipient),
+            "items": bn_items(domain, &recipient),
             "cite": "DC-7",
             "derivation": derivation,
         })
     };
-    let bn_max = ASSET_AMOUNT_MAX as u64; // 2^63 - 2^31, < u64::MAX
     let mut bn: Vec<Value> = vec![
         bn_accept(
             "bn-pos-min",
             0,
-            0,
             [0u8; 32],
-            "lower boundary: amount=0, destDomain=0, destRecipient all-zero",
+            "lower boundary: destDomain=0, destRecipient all-zero",
         ),
         bn_accept(
             "bn-pos-typical",
-            1_000_000,
             6,
             pattern32(0x11),
-            "typical: amount=10^6 (1 USDC @ 6dp), destDomain=6 (Arbitrum CCTP), patterned bytes32",
+            "typical: destDomain=6 (Arbitrum CCTP), patterned bytes32",
         ),
         bn_accept(
             "bn-pos-max",
-            bn_max,
             u32::MAX,
             [0xffu8; 32],
-            "upper boundary: amount=AssetAmount::MAX=2^63-2^31, destDomain=u32::MAX, recipient all-0xff",
+            "upper boundary: destDomain=u32::MAX, recipient all-0xff",
         ),
     ];
-    // reject entries: one perturbation each off a valid 10-felt base → BurnItemsMalformed.
-    let bn_base = bn_items(1_000_000, 6, &pattern32(0x55));
+    // each rejection vector changes one field or the length of a valid 9-felt payload
+    let bn_base = bn_items(6, &pattern32(0x55));
     let over_u32 = felt_hex(Felt::try_from((u32::MAX as u64) + 1).expect("2^32 < p"));
-    let over_cap = felt_hex(Felt::try_from(bn_max + 1).expect("MAX+1 < p"));
     let bn_reject = |id: &str, items: Vec<String>, derivation: &str| {
         json!({
             "id": id, "tv": ["TV-BN-4"], "kind": "reject",
@@ -839,39 +834,32 @@ fn main() {
         })
     };
     let mut short = bn_base.clone();
-    short.pop(); // 9 felts
+    short.pop(); // 8 felts
     let mut long = bn_base.clone();
-    long.push(felt_hex(Felt::from(0u32))); // 11 felts
-    let mut amount_over = bn_base.clone();
-    amount_over[0] = over_cap;
+    long.push(felt_hex(Felt::from(0u32))); // 10 felts
     let mut domain_over = bn_base.clone();
-    domain_over[1] = over_u32.clone();
+    domain_over[0] = over_u32.clone();
     let mut recip_limb = bn_base.clone();
-    recip_limb[5] = over_u32; // within destRecipient [2..10]
+    recip_limb[4] = over_u32; // within destRecipient [1..9]
     bn.push(bn_reject(
         "bn-rej-len-short",
         short,
-        "9 felts (< 10) → wrong length",
+        "8 felts (< 9) → wrong length",
     ));
     bn.push(bn_reject(
         "bn-rej-len-long",
         long,
-        "11 felts (> 10) → wrong length",
-    ));
-    bn.push(bn_reject(
-        "bn-rej-amount-over-cap",
-        amount_over,
-        "items[0] = AssetAmount::MAX + 1 → amount out of range",
+        "10 felts (> 9) → wrong length",
     ));
     bn.push(bn_reject(
         "bn-rej-domain-over-u32",
         domain_over,
-        "items[1] = 2^32 → destDomain not a u32",
+        "items[0] = 2^32 → destDomain not a u32",
     ));
     bn.push(bn_reject(
         "bn-rej-recipient-limb-not-u32",
         recip_limb,
-        "items[5] = 2^32 → destRecipient limb not a u32",
+        "items[4] = 2^32 → destRecipient limb not a u32",
     ));
 
     let file = json!({ "version": 1, "families": { "b32": b32, "amt": amt, "aid": aid, "di": di, "att": att, "bn": bn, "mi": mi } });

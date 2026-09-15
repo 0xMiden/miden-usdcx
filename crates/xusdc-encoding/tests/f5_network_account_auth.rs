@@ -75,11 +75,9 @@ fn note_rng(seed: u64) -> RandomCoin {
     ]))
 }
 
-/// A representative burn payload. Only the amount matters to these tests; the destination fields
-/// are arbitrary values that simply have to round-trip.
-fn sample_burn_items(amount: u64) -> XReserveBurnItems {
+/// A representative burn payload with arbitrary destination fields that round-trip.
+fn sample_burn_items() -> XReserveBurnItems {
     XReserveBurnItems {
-        amount: miden_protocol::asset::AssetAmount::new(amount).expect("amount within bounds"),
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     }
@@ -428,7 +426,8 @@ fn burn_note_carries_scheme2_target_to_faucet() -> Result<()> {
     let note = XReserveBurnNote::create(
         test_account_id(3),
         faucet_id,
-        sample_burn_items(5_000),
+        miden_protocol::asset::AssetAmount::new(5_000)?,
+        sample_burn_items(),
         &mut note_rng(2),
     )
     .map_err(|e| anyhow::anyhow!("constructing the burn note: {e}"))?;

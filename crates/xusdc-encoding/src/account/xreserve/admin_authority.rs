@@ -1,17 +1,12 @@
 //! [`XReserveAdminAuthority`] — the account-wide authority configuration for the faucet's admin
 //! surface, expressed as a per-procedure role assignment over the standard manager components.
 //!
-//! The faucet gives pausing to a dedicated pauser and the transfer blocklist to a dedicated
-//! external administrator, and gives neither capability to the account that holds everything else.
-//! The standard [`Authority`] component can express exactly that: under its RBAC mode each gated
-//! procedure may carry its own required role, resolved at runtime from the calling procedure's
-//! root, and a procedure with no assignment falls back to the built-in administrator role.
+//! Pause, unpause, attester administration and the transfer blocklist each have a dedicated role.
+//! Under [`Authority`]'s RBAC mode, each gated procedure's root selects its role; an unassigned
+//! procedure falls back to `ADMIN`. Every role is initially administered directly by `ADMIN`.
 //!
-//! This type owns that assignment. It is deliberately constructed without arguments: the four
-//! procedure roots come from the standard manager components and the two role symbols are the
-//! faucet's own constants, so there is no caller-supplied map that could gate a manager procedure
-//! on the wrong role, or leave one ungated and silently fall through to the administrator. The
-//! invariant holds because there is no way to express its violation.
+//! This type takes no arguments: the five roots come from the shipped managers and faucet
+//! extension, and the role symbols are fixed, so callers cannot misconfigure the assignment.
 //!
 //! Two conversions make it usable: into the [`Authority`] configuration it describes, and into the
 //! [`AccountComponent`] that carries it into an account.
@@ -29,21 +24,18 @@ use miden_protocol::account::{AccountComponent, AccountProcedureRoot, RoleSymbol
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
 
-use super::{BLK_MANAGER_ROLE, DOM_PAUSER_ROLE};
+use super::{
+    XReserveFaucetExtension, ATTEST_ADMIN_ROLE, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    DOM_UNPAUSER_ROLE, XRESERVE_SET_ATTESTER_PROC_PATH,
+};
 
-/// The number of manager procedures the faucet gates on a dedicated role: pause, unpause, block
-/// and unblock. Every other authority-gated procedure on the account is left unassigned and so
-/// resolves to the administrator role, which is where those capabilities sit today.
-const ROLE_GATED_PROCEDURE_COUNT: usize = 4;
+/// Dedicated-role procedures: pause, unpause, set_attester, block and unblock.
+const ROLE_GATED_PROCEDURE_COUNT: usize = 5;
 
-/// The faucet's account-wide authority: role-based, with a role assigned to each of the four
-/// standard manager procedures the faucet exposes.
+/// The faucet's account-wide RBAC authority with five dedicated procedure assignments.
 ///
-/// Pause and unpause are gated on the Circle Domain pauser role; block and unblock on the external
-/// blocklist administrator role. Nothing else is assigned, so the remaining authority-gated
-/// procedures — the attester setter, the supply cap and burn-floor setters, the policy setters and
-/// the emergency switch — resolve to the built-in administrator role, keeping them with the
-/// account that holds the administrator role.
+/// `DOM_PAUSER` gates pause, `DOM_UNPAUSER` gates unpause, `ATTEST_ADMIN` gates set_attester,
+/// and `BLK_MANAGER` gates block/unblock. Every other authority-gated procedure resolves to ADMIN.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XReserveAdminAuthority {
     procedure_roles: BTreeMap<AccountProcedureRoot, RoleSymbol>,
@@ -57,12 +49,20 @@ impl XReserveAdminAuthority {
     pub fn new() -> Self {
         let pauser = RoleSymbol::new(DOM_PAUSER_ROLE)
             .expect("the Domain pauser role symbol is a fixed valid symbol");
+        let unpauser = RoleSymbol::new(DOM_UNPAUSER_ROLE)
+            .expect("the Domain unpauser role symbol is a fixed valid symbol");
+        let attest_admin = RoleSymbol::new(ATTEST_ADMIN_ROLE)
+            .expect("the attester administrator role symbol is a fixed valid symbol");
+        let set_attester_root = XReserveFaucetExtension::code()
+            .get_procedure_root_by_path(XRESERVE_SET_ATTESTER_PROC_PATH)
+            .expect("the shipped faucet extension exports set_attester");
         let blocklist_manager = RoleSymbol::new(BLK_MANAGER_ROLE)
             .expect("the blocklist administrator role symbol is a fixed valid symbol");
 
         let procedure_roles = BTreeMap::from([
-            (PausableManager::pause_root(), pauser.clone()),
-            (PausableManager::unpause_root(), pauser),
+            (PausableManager::pause_root(), pauser),
+            (PausableManager::unpause_root(), unpauser),
+            (set_attester_root, attest_admin),
             (
                 BlocklistManager::block_account_root(),
                 blocklist_manager.clone(),
@@ -72,7 +72,7 @@ impl XReserveAdminAuthority {
         assert_eq!(
             procedure_roles.len(),
             ROLE_GATED_PROCEDURE_COUNT,
-            "the four manager procedures must be four distinct roots",
+            "the five gated procedures must be five distinct roots",
         );
 
         Self { procedure_roles }

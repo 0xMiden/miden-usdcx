@@ -522,15 +522,11 @@ pub enum ValidationMismatch {
     /// prepare response is not a match of any withdrawal. Refused rather than signed vacuously.
     NoBatches,
 
-    /// A batch carried an EMPTY `burnIntents` array — no `spec` to compare against the payload, so
-    /// its `messageHashToSign` would be bound to no amount/domain/recipient. Circle's schema
-    /// requires `burnIntents` be non-empty (`minItems: 1`); an empty list is refused here rather
-    /// than allowed to mint a signing token vacuously (the `check_spec` loop must not be skippable
-    /// into `Ok`).
+    /// A batch carried an EMPTY `burnIntents` array — no intent to compare before signing.
     EmptyBurnIntents { batch: usize },
 
-    /// A returned `burnIntents[].spec.value` (the amount, in the smallest token unit) does not
-    /// equal the burn-note payload's `amount`.
+    /// A returned `burnIntents[].spec.value` is zero or its sum with `maxFee` does not equal
+    /// the burned asset amount, all in smallest token units.
     Amount {
         batch: usize,
         expected: u64,
@@ -547,6 +543,29 @@ pub enum ValidationMismatch {
     /// A returned `destinationRecipient` does not equal the burn-note payload's `destRecipient`.
     DestinationRecipient {
         batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// A returned `burnIntents[].maxFee` exceeds the configured ceiling or the burn amount.
+    MaxFee {
+        batch: usize,
+        ceiling: u64,
+        amount: u64,
+        returned: String,
+    },
+
+    /// The returned `destinationCaller` is nonzero.
+    DestinationCaller {
+        batch: usize,
+        expected: String,
+        returned: String,
+    },
+
+    /// A returned `hookData` field diverges from the expected request terms.
+    HookData {
+        batch: usize,
+        field: &'static str,
         expected: String,
         returned: String,
     },
@@ -575,7 +594,7 @@ impl fmt::Display for ValidationMismatch {
                 returned,
             } => write!(
                 f,
-                "batch {batch}: returned amount `{returned}` does not match the burn payload amount {expected}"
+                "batch {batch}: returned amount `{returned}` must be positive and sum with max fee to the burned asset amount {expected}"
             ),
             Self::DestinationDomain {
                 batch,
@@ -592,6 +611,32 @@ impl fmt::Display for ValidationMismatch {
             } => write!(
                 f,
                 "batch {batch}: returned destination recipient `{returned}` does not match the burn payload recipient `{expected}`"
+            ),
+            Self::MaxFee {
+                batch,
+                ceiling,
+                amount,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned max fee `{returned}` exceeds the configured withdrawal fee ceiling {ceiling} or burn amount {amount}"
+            ),
+            Self::DestinationCaller {
+                batch,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned destination caller `{returned}` does not match the expected caller `{expected}`"
+            ),
+            Self::HookData {
+                batch,
+                field,
+                expected,
+                returned,
+            } => write!(
+                f,
+                "batch {batch}: returned hookData.{field} `{returned}` does not match `{expected}`"
             ),
             Self::MissingMessageHash { batch } => {
                 write!(f, "batch {batch}: response is missing a message hash to sign")

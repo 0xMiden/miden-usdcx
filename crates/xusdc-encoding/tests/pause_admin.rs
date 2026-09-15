@@ -2,7 +2,7 @@
 //!
 //! Circle's model gives pausing to a dedicated Domain Pauser and gives the administrator no direct
 //! pause path at all. That is expressed entirely through composition: the faucet installs the
-//! standard `PausableManager` and maps its two procedures to the Domain Pauser role in the
+//! standard `PausableManager` and maps pause to Domain Pauser and unpause to Domain Unpauser in the
 //! account's procedure-role map, so it ships no pause MASM of its own — an absence one test here
 //! pins directly against the assembled library. The administrator's two rejections are therefore
 //! role-assertion failures, and their exact error is what proves the map is really doing the
@@ -50,12 +50,15 @@ fn prod_note_rng(seed: u64) -> RandomCoin {
 }
 
 // The production builder seeds the administrator = id(1) (the sole seeded `ADMIN` member) and
-// DOM_PAUSER = id(2).
+// DOM_PAUSER = id(2), DOM_UNPAUSER = id(3).
 fn administrator() -> AccountId {
     test_account_id(1)
 }
 fn dom_pauser() -> AccountId {
     test_account_id(2)
+}
+fn dom_unpauser() -> AccountId {
+    test_account_id(3)
 }
 
 // Burn-faucet parameters (mirrors set_min_burn.rs).
@@ -486,9 +489,9 @@ async fn dom_pauser_pause_halts_burn() -> Result<()> {
     Ok(())
 }
 
-/// UNPAUSE RESUMES both surfaces: after a DOM_PAUSER pause→unpause (both the seeded production
-/// admin notes), a REAL attested stock mint mints again (one recipient note, token_supply += the
-/// attested amount) AND a real burn decrements token_supply.
+/// UNPAUSE RESUMES both surfaces: after a DOM_PAUSER pause and DOM_UNPAUSER unpause (both seeded
+/// production admin notes), a REAL attested stock mint emits one recipient note and raises
+/// token_supply by the attested amount, AND a real burn decrements token_supply.
 #[tokio::test]
 async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
     // --- mint side ---
@@ -496,8 +499,8 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         vec![
             stock_pause_note(dom_pauser(), faucet_id, 9)
                 .expect("building the DOM_PAUSER pause note"),
-            stock_unpause_note(dom_pauser(), faucet_id, 10)
-                .expect("building the DOM_PAUSER unpause note"),
+            stock_unpause_note(dom_unpauser(), faucet_id, 10)
+                .expect("building the DOM_UNPAUSER unpause note"),
         ]
     })?;
     bring_up(&mut pf, 3).await?; // set_attester + pause + unpause
@@ -552,9 +555,9 @@ async fn dom_pauser_unpause_resumes_mint_and_burn() -> Result<()> {
         .expect("DOM_PAUSER pauses the burn faucet");
     let mut bevolved = bacct.clone();
     bevolved.apply_patch(bpaused.account_patch())?;
-    let bunpaused = run_dom_pauser_unpause(&chain, &bevolved, dom_pauser(), 8)
+    let bunpaused = run_dom_pauser_unpause(&chain, &bevolved, dom_unpauser(), 8)
         .await
-        .expect("DOM_PAUSER unpauses the burn faucet");
+        .expect("DOM_UNPAUSER unpauses the burn faucet");
     bevolved.apply_patch(bunpaused.account_patch())?;
 
     // The faucet consumes the committed burn note against the UNPAUSED account → the burn succeeds.

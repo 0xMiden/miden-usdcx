@@ -38,7 +38,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use xusdc_encoding::account::xreserve::{
-    XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_MANAGER_ROLE, DOM_PAUSER_ROLE,
+    XReserveAdminAuthority, BLK_MANAGER_ROLE, DOM_PAUSER_ROLE,
 };
 use xusdc_encoding::note::xreserve_admin::XReserveMinBurnAmountNote;
 
@@ -58,20 +58,20 @@ pub const BLK_MANAGER_ROLE_FELT: u64 = 7_907_587_873_290_749;
 
 // ROLE HOLDERS
 // ================================================================================================
-// The production builder seeds owner = id(1), DOM_PAUSER = id(2), DOM_MANAGER = id(3),
-// BLK_MANAGER = id(4). The grounding account seeds the same identities so both suites read alike.
+// The production builder seeds ADMIN = ATTEST_ADMIN = id(1), DOM_PAUSER = id(2),
+// DOM_UNPAUSER = id(3), BLK_MANAGER = id(4).
 
 /// The bootstrap administrator — the sole member of the built-in `ADMIN` role, which is the
 /// faucet's only authority handle.
 pub fn admin_holder() -> AccountId {
     test_account_id(1)
 }
-/// The Domain pauser: the only identity the role map lets pause or unpause.
+/// The Domain pauser: the only identity the role map lets pause.
 pub fn pauser_holder() -> AccountId {
     test_account_id(2)
 }
-/// The Domain manager: administers roles and holds no admin capability of its own.
-pub fn role_manager_holder() -> AccountId {
+/// The Domain unpauser: the only identity the role map lets unpause.
+pub fn unpauser_holder() -> AccountId {
     test_account_id(3)
 }
 /// The external blocklist administrator: the only identity the role map lets block or unblock.
@@ -89,12 +89,6 @@ pub fn pauser_symbol() -> RoleSymbol {
 
 pub fn blocklist_symbol() -> RoleSymbol {
     RoleSymbol::new(BLK_MANAGER_ROLE).expect("the blocklist administrator role symbol is valid")
-}
-
-/// The Domain manager role symbol — the seeded administrator of the Domain pauser role, and so the
-/// identity the standard role note's grant, revoke and re-point actions answer to for that role.
-pub fn role_manager_symbol() -> RoleSymbol {
-    RoleSymbol::new(DOM_MANAGER_ROLE).expect("the Domain manager role symbol is valid")
 }
 
 /// The trap the standard pause gate raises when a paused faucet is asked to mint or burn.
@@ -119,10 +113,8 @@ pub fn set_word() -> Word {
 
 /// The standard pieces the admin model is built from, and nothing else.
 ///
-/// The RBAC seed deliberately uses the stock `RoleBasedAccessControl::builder` rather than the
-/// faucet's hand-seeded component: the grounding account needs no delegated role admin, so the
-/// stock builder covers it — which doubles as a check that it seeds role membership the way the
-/// admin model assumes.
+/// The RBAC seed uses the stock `RoleBasedAccessControl::builder`, which doubles as a check that
+/// it seeds role membership the way the admin model assumes.
 pub fn grounding_components() -> Vec<AccountComponent> {
     // ADMIN plus the two domain roles, no delegated admin — the same seed the pre-bump
     // `RoleBasedAccessControl::new(admins, role_members)` produced, now expressed one role config at
@@ -379,7 +371,7 @@ fn config_note_serial(seed: u64) -> Word {
 }
 
 /// The stock pause-action note for `action`, sent by `sender` and tagged for `faucet_id`. One script
-/// root covers pausing and unpausing; the Domain pauser role opens both.
+/// root covers pausing and unpausing; the Domain pauser and unpauser roles gate them separately.
 pub fn stock_pause_action_note(
     sender: AccountId,
     faucet_id: AccountId,

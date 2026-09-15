@@ -46,11 +46,11 @@ Two properties are load-bearing:
 
 ## 4. The faucet: composition and state
 
-The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. The local MASM contributes two account procedures: the attester setter and the mint policy.
+The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. A separate zero-slot component supplies the burn policy.
 
 State, grouped by writer posture:
 
-- **Fixed by construction:** decimals, symbol, token metadata, destination domain, source domain and external-contract identifier words, active policy roots, note & tx script allowlists, Authority mode, and the network sponsorship policy.
+- **Fixed by construction:** decimals, symbol, token metadata, destination domain, active policy roots, note & tx script allowlists, Authority mode, and the network sponsorship policy.
 - **Runtime-mutable through admitted authorized paths:** pause state, enabled attester commitments, `max_supply`, minimum burn amount, blocked accounts, the RBAC membership and role-admin graph, and the per-note-root fee schedule.
 - **Append-only on accepted mints:** the used-nonce map, keyed by a deterministic hash of the 32-byte deposit nonce.
 
@@ -73,21 +73,17 @@ Semantics worth stating plainly:
 
 - The signed `maxFee` is a ceiling (`maxFee <= amount`), not an amount paid. No separate `feeAmount` or relayer payout exists _today_; the complete amount goes to the recipient.
 - `localToken`, `localDepositor`, and `hookData` change the signature digest but carry no local semantics. The binding MASM does not yet reject zero `localToken`/`localDepositor` (the off-chain relayer does, but preflight is not the on-chain gate; adding the on-chain checks is planned). These fields are treated as opaque 32-byte values, not EVM-typed addresses. `hookData` is never executed.
-- The supported `hookData` ceiling is 3,840 bytes: the codec constant is computed at compile time as the note-attachment capacity less the fixed transport prefixes, and a compile-time assertion separately keeps the rebuilt preimage within the Miden protocol's note-storage limit.
+- Do not deposit with `hookData` longer than 3,840 bytes. The source contract accepts these deposits, but they cannot be claimed on Miden and the USDC remains locked on the source chain.
 
 ## 6. Burn and redemption path
 
-The burn note factory builds a public note carrying the `miden-standards` `BurnNote` script, one USDCx asset in the note's storage (the script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (amount, destination domain, destination recipient) as a **committed attachment**. Consumed against the faucet, the `miden-standards` path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
+The burn note factory builds a public note carrying the `miden-standards` `BurnNote` script, one USDCx asset in the note's storage (the script requires storage to hold exactly the burned asset), a fixed use-case tag, and the Circle withdrawal payload (destination domain, destination recipient) as a **committed attachment**. Consumed against the faucet, the `miden-standards` path receives the asset, runs the burn and transfer policies (minimum-burn floor, pause, blocklist callbacks), destroys the asset, and decrements `token_supply` by the asset amount.
 
-The attachment design has a property reviewers must not miss: **the consume script never reads attachments, so the withdrawal payload is not verified on-chain.** It is tamper-evident, because the note identifier commits to the note's attachments, but nothing on-chain checks its content. Consequences:
+**Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
 
-- **Attachment payload-amount binding is off-chain work.** The chain burns and debits exactly the note's asset amount; the attachment's declared amount is unread. A hand-built note can declare a payload amount that differs from the asset it burns, or use a different tag. The withdrawal attester must therefore validate the attachment payload against the actually burned asset before signing, and Circle's confirmation that payload-equals-asset is required before authorization is one of our open questions to them.
-- **Attachment presence is not guaranteed.** The `BurnNote` script does not require the withdrawal attachment, so a burn note without it, or with a malformed one, still burns on-chain. Discovery and verification must handle such notes rather than assume the attachment exists.
-- **Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
+The burn policy decodes no destination domain or recipient; these fields are validated off chain.
 
-No onchain contract code reads the encoded destination domain or recipient; this data is read and verified during withdrawal.
-
-Neither the attachment's presence nor its amount is constrained on chain today; both are tracked in issue #146, which proposes a dedicated burn policy that requires the attachment and the removal of the duplicated amount from it.
+The burn policy requires exactly two attachments: a scheme-2 routing target and a scheme-6 withdrawal attachment of three words, with content verified against the note commitment.
 
 ## 7. Roles and hierarchy
 
@@ -95,26 +91,26 @@ Authorization is decided by the *sender* of an admitted administrative note, che
 
 ```mermaid
 flowchart TD
-    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"]
-    DOM_MANAGER["<b>DOM_MANAGER</b>"]
-    DOM_PAUSER["<b>DOM_PAUSER</b>"]
-    BLOCK_LISTER["<b>BLOCK_LISTER</b>"]
-    ADMIN -->|administers| DOM_MANAGER
-    ADMIN -->|administers| BLOCK_LISTER
-    DOM_MANAGER -->|administers| DOM_PAUSER
-    ADMIN --- A1["set_attester<br/>set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
-    DOM_PAUSER --- A2["pause / unpause"]
-    BLOCK_LISTER --- A3["block_account / unblock_account"]
+    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"] --- A1["set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
+    ADMIN -->|administers| ATTEST_ADMIN["<b>ATTEST_ADMIN</b>"]
+    ADMIN -->|administers| DOM_PAUSER["<b>DOM_PAUSER</b>"]
+    ADMIN -->|administers| DOM_UNPAUSER["<b>DOM_UNPAUSER</b>"]
+    ADMIN -->|administers| BLK_MANAGER["<b>BLK_MANAGER</b>"]
+    ATTEST_ADMIN --- A2["set_attester"]
+    DOM_PAUSER --- A3["pause"]
+    DOM_UNPAUSER --- A4["unpause"]
+    BLK_MANAGER --- A5["block_account / unblock_account"]
 ```
 
 | Role | Initial administrator | Direct admitted powers |
 |---|---|---|
-| `ADMIN` | `ADMIN` (self) | Attester commitment map, maximum supply, minimum burn, note fees, and every fallback Authority path |
-| `DOM_PAUSER` | `DOM_MANAGER` | Pause and unpause |
-| `DOM_MANAGER` | `ADMIN` | Grant and revoke `DOM_PAUSER` membership |
-| `BLOCK_LISTER` | `ADMIN` | Block and unblock transfer participants |
+| `ADMIN` | `ADMIN` (self) | Maximum supply, minimum burn, note fees, RBAC changes, and every fallback Authority path |
+| `ATTEST_ADMIN` | `ADMIN` | Attester commitment map |
+| `DOM_PAUSER` | `ADMIN` | Pause |
+| `DOM_UNPAUSER` | `ADMIN` | Unpause |
+| `BLK_MANAGER` | `ADMIN` | Block and unblock transfer participants |
 
-Only the pause pair and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. `ADMIN` reaches every role: it administers `DOM_MANAGER` and `BLOCK_LISTER` directly and `DOM_PAUSER` in two hops by granting itself `DOM_MANAGER`. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
+Pause, unpause, the attester setter and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. The initial seed lets `ADMIN` administer every role directly. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
 
 What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the `miden-standards` RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself).
 

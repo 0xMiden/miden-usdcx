@@ -35,6 +35,7 @@ use withdrawal_listener_attester::idempotency::SubmissionStatus;
 use withdrawal_listener_attester::listener::{
     run_once, Outcome, RunContext, RunError, ONE_BATCH_PER_BURN, ONE_INTENT_PER_BURN,
 };
+use withdrawal_listener_attester::validate::validate_discovery;
 
 #[path = "listener_support/mod.rs"]
 mod listener_support;
@@ -257,7 +258,7 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 // THE DO-NOT-SIGN ABORT — validation gates signing
 // ================================================================================================
 
-/// **The mandatory negative.** Circle returns a spec that does not match the burn payload → the run
+/// **The mandatory negative.** Circle returns a spec that does not match the discovered burn → the run
 /// aborts with the exact `ValidationMismatch`, **the signer is invoked zero times**, and **no
 /// `POST /v1/withdraw` is issued**.
 ///
@@ -268,12 +269,15 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 /// in which the amount comparison had silently stopped working, which is the one this table exists
 /// to catch.
 ///
-/// The expected error is derived from the same `payload()` the request was built from rather than
-/// written out as a literal: a literal would be a second source of truth for the fixture, and the
+/// The expected error is derived from the same discovered burn the request was built from, rather
+/// than written out as a literal: a literal would be a second source of truth for the fixture, and the
 /// natural response to a fixture edit would be to "correct" the literal until the test passed
 /// again.
 #[rstest]
 #[case::amount("value", json!("999"))]
+#[case::fee_not_deducted("value", json!("10000000"))]
+#[case::zero_net_value("value", json!("0"))]
+#[case::amount_overflow("value", json!("340282366920938463463374607431768211455"))]
 #[case::destination_domain("destinationDomain", json!(WRONG_DOMAIN))]
 #[case::destination_recipient("destinationRecipient", json!(WRONG_RECIPIENT))]
 #[tokio::test]
@@ -284,8 +288,11 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
     let expected = match field {
         "value" => ValidationMismatch::Amount {
             batch: 0,
-            expected: payload().amount.as_u64(),
-            returned: String::from("999"),
+            expected: validate_discovery(discovered().record(), &config())
+                .unwrap()
+                .amount()
+                .as_u64(),
+            returned: value.as_str().unwrap().to_string(),
         },
         "destinationDomain" => ValidationMismatch::DestinationDomain {
             batch: 0,
@@ -311,6 +318,116 @@ async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(
         signer.calls(),
         0,
         "the signer must be UNREACHED on a B5 mismatch (B5 gates B6)"
+    );
+    assert_eq!(withdraw_posts(&mock), 0, "and nothing was submitted");
+}
+
+/// Rejects withdrawal terms that violate policy even when the response matches the JSON schema.
+#[rstest]
+#[case::max_fee(&["maxFee"], json!("1001"), "maxFee")]
+#[case::destination_caller(
+    &["spec", "destinationCaller"],
+    json!("0x0000000000000000000000000000000000000000000000000000000000000001"),
+    "destinationCaller"
+)]
+#[case::hook_remote_domain(&["spec", "hookData", "remoteDomain"], json!(10_002), "hookData.remoteDomain")]
+#[case::hook_remote_depositor(
+    &["spec", "hookData", "remoteDepositor"],
+    json!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+    "hookData.remoteDepositor"
+)]
+#[case::hook_remote_token(
+    &["spec", "hookData", "remoteToken"],
+    json!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+    "hookData.remoteToken"
+)]
+#[case::hook_forwarding_contract(
+    &["spec", "hookData", "forwardingContractAddress"],
+    json!("0x0000000000000000000000000000000000000001"),
+    "hookData.forwardingContractAddress"
+)]
+#[case::hook_forwarding_calldata(
+    &["spec", "hookData", "forwardingCalldata"],
+    json!("0x12345678"),
+    "hookData.forwardingCalldata"
+)]
+#[tokio::test]
+async fn a_b5_redemption_term_mismatch_produces_no_signature_and_no_withdraw(
+    #[case] path: &[&str],
+    #[case] value: Value,
+    #[case] expected: &str,
+) {
+    let mock = mock(happy_script().prepare(vec![Reply::json(
+        200,
+        prepare_200_with_intent_field(path, value),
+    )]));
+    let (outcome, signer) = run_against(&mock, config(), UnitPort::honest()).await;
+
+    let err = match outcome {
+        Err(RunError::Validation(err)) => err,
+        other => panic!("expected B5 validation refusal, got {other:?}"),
+    };
+    match expected {
+        "maxFee" => assert_matches!(err, ValidationMismatch::MaxFee { batch: 0, .. }),
+        "destinationCaller" => {
+            assert_matches!(err, ValidationMismatch::DestinationCaller { batch: 0, .. })
+        }
+        "hookData.remoteDomain" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    batch: 0,
+                    field: "remoteDomain",
+                    ..
+                }
+            )
+        }
+        "hookData.remoteDepositor" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    batch: 0,
+                    field: "remoteDepositor",
+                    ..
+                }
+            )
+        }
+        "hookData.remoteToken" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    batch: 0,
+                    field: "remoteToken",
+                    ..
+                }
+            )
+        }
+        "hookData.forwardingContractAddress" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    batch: 0,
+                    field: "forwardingContractAddress",
+                    ..
+                }
+            )
+        }
+        "hookData.forwardingCalldata" => {
+            assert_matches!(
+                err,
+                ValidationMismatch::HookData {
+                    batch: 0,
+                    field: "forwardingCalldata",
+                    ..
+                }
+            )
+        }
+        other => panic!("unmapped mismatch class `{other}`"),
+    }
+    assert_eq!(
+        signer.calls(),
+        0,
+        "the signer must be UNREACHED on a B5 term mismatch"
     );
     assert_eq!(withdraw_posts(&mock), 0, "and nothing was submitted");
 }
@@ -428,13 +545,8 @@ async fn an_empty_prepare_response_is_refused_before_the_signer() {
 /// **Fan-in — the one the batch count cannot see.** Circle answers a one-burn prepare with ONE
 /// batch carrying the matching burn intent `n` times.
 ///
-/// Every check upstream of this passes, and that is exactly why it needs its own gate. Each
-/// repeated intent matches the burn payload, so the field-by-field compare clears every one of
-/// them; the batch's `messageHashToSign` covers the whole intent SET, so a single attester
-/// signature authorizes all `n`; the quorum is a perfectly well-formed exactly-2; every signer is a
-/// registered attester; and `batches.len()` is still 1, so a gate that counts BATCHES sees nothing
-/// wrong at all. The result would be one discovered burn funding `n` releases — the fan-in the
-/// evidence package's single `burnTxId` cannot even describe.
+/// Every check upstream of this passes, so the explicit intent-count gate must reject before
+/// signing.
 ///
 /// So the cardinality rule is one burn ↔ one payload ↔ one batch ↔ **one intent**, and it is
 /// enforced before the signer: a signature over a set this burn never asked for is the artifact

@@ -20,6 +20,7 @@ use core::fmt;
 
 use bon::Builder;
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::attester::AttesterAllowlist;
@@ -142,6 +143,13 @@ pub struct ListenerConfig {
     #[builder(default = 0)]
     miden_domain: u32,
 
+    /// Maximum permitted withdrawal fee, in smallest token units.
+    /// Defaults to zero, so fee-bearing withdrawals require an explicit operator setting. The
+    /// returned fee must also fit within the burned amount; Circle's fee/scale decisions stay OPEN.
+    #[builder(default = AssetAmount::ZERO)]
+    #[serde(default = "default_max_withdrawal_fee", with = "asset_amount_u64")]
+    max_withdrawal_fee: AssetAmount,
+
     /// Circle xReserve REST base URL. The documented testnet host is the default; production is a
     /// separate host ([`CIRCLE_MAINNET_BASE_URL`]). No credential is embedded.
     #[builder(default = default_circle_base_url())]
@@ -201,6 +209,8 @@ struct ListenerConfigRaw {
     burn_tag: u32,
     #[serde(default)]
     miden_domain: u32,
+    #[serde(default = "default_max_withdrawal_fee", with = "asset_amount_u64")]
+    max_withdrawal_fee: AssetAmount,
     #[serde(default = "default_circle_base_url")]
     circle_base_url: String,
     #[serde(default)]
@@ -221,6 +231,7 @@ impl TryFrom<ListenerConfigRaw> for ListenerConfig {
             faucet_id: raw.faucet_id,
             burn_tag: raw.burn_tag,
             miden_domain: raw.miden_domain,
+            max_withdrawal_fee: raw.max_withdrawal_fee,
             circle_base_url: raw.circle_base_url,
             attester_key_handles: raw.attester_key_handles,
             attester_allowlist: raw.attester_allowlist,
@@ -239,6 +250,10 @@ fn default_circle_base_url() -> String {
 fn default_faucet_id() -> AccountId {
     AccountId::from_hex(PLACEHOLDER_FAUCET_ID)
         .expect("the package-default placeholder faucet id is a valid account id")
+}
+
+fn default_max_withdrawal_fee() -> AssetAmount {
+    AssetAmount::ZERO
 }
 
 impl Default for ListenerConfig {
@@ -342,6 +357,11 @@ impl ListenerConfig {
         self.miden_domain
     }
 
+    /// Maximum permitted withdrawal fee, in smallest token units.
+    pub fn max_withdrawal_fee(&self) -> AssetAmount {
+        self.max_withdrawal_fee
+    }
+
     /// The Circle xReserve REST base URL.
     pub fn circle_base_url(&self) -> &str {
         &self.circle_base_url
@@ -392,5 +412,18 @@ mod account_id_hex {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<AccountId, D::Error> {
         let hex = String::deserialize(d)?;
         AccountId::from_hex(&hex).map_err(serde::de::Error::custom)
+    }
+}
+
+mod asset_amount_u64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(amount: &AssetAmount, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(amount.as_u64())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<AssetAmount, D::Error> {
+        let value = u64::deserialize(d)?;
+        AssetAmount::new(value).map_err(serde::de::Error::custom)
     }
 }

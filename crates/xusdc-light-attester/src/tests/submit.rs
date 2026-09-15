@@ -151,7 +151,7 @@ impl CircleApi for ScriptedCircle {
                     endpoint: saved.endpoint.to_string(),
                     id: id.to_owned(),
                 },
-                "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND withdrawal_id = ?1",
+                "SELECT count(*) FROM submissions WHERE status IN ('SUBMITTING', 'SUBMITTED') AND withdrawal_id = ?1",
                 id,
             )
         })
@@ -161,7 +161,7 @@ impl CircleApi for ScriptedCircle {
 pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<SignedBlock>,
-    burns: Vec<DiscoveredBurn>,
+    pub(super) burns: Vec<DiscoveredBurn>,
 }
 
 impl Ledger {
@@ -233,7 +233,11 @@ impl Ledger {
         self.signed_with_max_height(index, None).await
     }
 
-    async fn signed_with_max_height(&self, index: usize, height: Option<&str>) -> SignedWithdrawal {
+    pub(super) async fn signed_with_max_height(
+        &self,
+        index: usize,
+        height: Option<&str>,
+    ) -> SignedWithdrawal {
         let burn = &self.burns[index];
         let mut prepared = batch(&burn.note_id().to_hex(), 1_000, 9);
         if let Some(height) = height {
@@ -799,7 +803,8 @@ async fn conflicts_are_checked() {
             .await
             .unwrap();
         let saved = ledger.record(&attester, 0);
-        assert_eq!(saved.status, Submitting, "{name}");
+        let held = name == "not found";
+        assert_eq!(saved.status, if held { Held } else { Submitting }, "{name}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
         assert_eq!(rate_limited, name == "rate limited", "{name}");
@@ -807,6 +812,12 @@ async fn conflicts_are_checked() {
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
+        if held {
+            assert_eq!(saved.hold_reason, Some(HoldReason::HttpRejected));
+            attester.recover_submissions(&mut false).await.unwrap();
+            assert!(requests.lock().unwrap().is_empty());
+            attester.retry_held_submission(saved.note_id).unwrap();
+        }
         attester.recover_submissions(&mut false).await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],

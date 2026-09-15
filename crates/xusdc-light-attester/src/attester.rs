@@ -320,18 +320,20 @@ impl Attester {
         )?;
         let mut validated = Vec::new();
         for burn in burns {
+            let note_id = burn.note_id();
+            let burn_tx_id = burn.burn_tx_id();
             match validate_burn(
-                &burn,
+                burn,
                 self.config.faucet_account_id(),
                 BurnNote::script_root(),
             ) {
-                Ok(items) => validated.push(ValidatedBurn { burn, items }),
+                Ok(burn) => validated.push(burn),
                 Err(reason) => {
-                    self.store.refuse_burn(burn.note_id(), reason)?;
+                    self.store.refuse_burn(note_id, reason)?;
                     eprintln!(
                         "refused burn: note={} transaction={} reason={}",
-                        burn.note_id(),
-                        burn.burn_tx_id(),
+                        note_id,
+                        burn_tx_id,
                         reason.as_str()
                     );
                 }

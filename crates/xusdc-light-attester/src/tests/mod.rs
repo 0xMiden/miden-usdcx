@@ -1,6 +1,7 @@
 mod discovery;
 mod poll;
 mod prepare;
+mod service_map;
 mod startup;
 mod submit;
 mod support;

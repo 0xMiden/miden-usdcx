@@ -143,8 +143,7 @@ impl CircleClient {
                     amount % units_per_usdc,
                     width = usize::from(USDCX_DECIMALS),
                 );
-                // Use the note serial as salt. Ignoring the attachment salt is deliberate
-                // until the note builder derives the same value.
+                // Circle's salt is the note serial. The attachment only holds the destination.
                 let salt = note.serial_num().to_hex();
                 json!({
                     "token": "USDC",

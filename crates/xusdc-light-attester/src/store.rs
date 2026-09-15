@@ -177,15 +177,19 @@ impl Store {
     /// The saved submission for `note_id`, if there is one.
     #[cfg(test)]
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
-        Ok(select_submissions(&self.connection, Some(note_id), false)?.pop())
+        Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
     }
 
     /// The submissions still being sent, which recovery resumes.
     pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
-        select_submissions(&self.connection, None, true)
+        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
     }
 
-    /// Saves the latest outcome of a submission that is still being sent. Only the outcome
+    pub(crate) fn submissions_to_poll(&self) -> Result<Vec<SavedSubmission>, StoreError> {
+        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
+    }
+
+    /// Saves the latest outcome of a submission that is being sent or polled. Only the outcome
     /// changes: the saved signed request and a known withdrawal ID stay as they are.
     pub(crate) fn update_submission_outcome(
         &self,
@@ -498,27 +502,25 @@ impl HoldReason {
 }
 
 /// Reads the saved submissions in note order: only `note_id`'s when it is given, and only those
-/// still being sent when `recoverable_only` is set. A row that fails its checks makes the store
-/// invalid.
+/// with `status` when it is given. A row that fails its checks makes the store invalid.
 fn select_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
-    recoverable_only: bool,
+    status: Option<SubmissionStatus>,
 ) -> anyhow::Result<Vec<SavedSubmission>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
             use_circle_forwarding, status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
-         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = ?3)
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 IS NULL OR status = ?2)
          ORDER BY note_id",
         )
         .map_err(classify_error)?;
     let mut rows = statement
         .query(params![
             note_id.map(|id| id.to_bytes()),
-            recoverable_only,
-            SubmissionStatus::Submitting.as_ref()
+            status.map(SubmissionStatus::as_str)
         ])
         .map_err(classify_error)?;
     let mut records = Vec::new();
@@ -702,17 +704,20 @@ fn load_burns(
     faucet_account_id: AccountId,
     include_all: bool,
 ) -> anyhow::Result<Vec<DiscoveredBurn>> {
+    // Expired work is eligible again; its old request remains saved until a fresh one replaces it.
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
              WHERE status != 'CANDIDATE' AND (?1 OR (status != 'REFUSED' AND NOT EXISTS (
                   SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+                     AND submissions.status != ?2
              )))",
         )
         .map_err(classify_error)?;
+    let expired = SubmissionStatus::Expired.as_ref();
     let rows = statement
-        .query_map([include_all], |row| {
+        .query_map(params![include_all, expired], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use miden_protocol::note::Note;
-use tracing::field::{display, Empty};
+use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
 
 pub mod circle;
@@ -169,7 +169,7 @@ impl Relayer {
             attestations.message_hashes = Empty,
             notes.count = Empty,
             notes.ids = Empty,
-            transaction.id = Empty,
+            transaction.ids = Empty,
         ),
     )]
     fn process_page(
@@ -220,10 +220,13 @@ impl Relayer {
         if notes.is_empty() && !fresh.is_empty() {
             warn!(fresh.count = fresh.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
-            let tx = self
+            let transactions = self
                 .miden_client
                 .submit_notes(self.minter.mint_account(), notes)?;
-            span.record("transaction.id", display(tx));
+            span.record(
+                "transaction.ids",
+                identifiers(transactions.iter().map(ToString::to_string)).as_str(),
+            );
             info!("page minted and on chain");
         }
 

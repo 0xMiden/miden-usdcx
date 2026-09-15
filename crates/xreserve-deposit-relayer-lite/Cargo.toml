@@ -8,6 +8,11 @@ description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 [dependencies]
 xusdc-encoding = { path = "../xusdc-encoding" }
 miden-protocol = { version = "=0.17.0-rc.6" }
+# The client pair is the release-candidate line, one minor behind the protocol pin above only in its
+# own numbering: `0.17.0-rc.1` is the first client built against protocol `0.17.0-rc.5`, so it is the
+# earliest release that resolves against the rest of the workspace.
+miden-client = { version = "=0.17.0-rc.1", default-features = false, features = ["std", "tonic"] }
+miden-client-sqlite-store = { version = "=0.17.0-rc.1" }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -22,6 +27,7 @@ parse_link_header = { version = "0.4", default-features = false, features = ["ur
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
 rstest = { workspace = true }

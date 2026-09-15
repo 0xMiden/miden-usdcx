@@ -27,6 +27,12 @@ const TOKEN_SUPPLY: u64 = 0;
 
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
+//
+// Three of the four moved when the pinned protocol family and its assembler were raised to the
+// released versions: the code the faucet composes over is upstream MASM, so a new release of it
+// gives every procedure a new root, and the code commitment carries into the seed-derived id and
+// the account state commitment. The storage digest below is the one that did NOT move, which is
+// what says the drift came from upstream rather than from this crate's own slots.
 const GOLDEN_STATE_COMMITMENT: &str =
     "Word([9382365617106241319, 278884977486975500, 1066398354981542331, 2414054331868251739])";
 const GOLDEN_CODE_COMMITMENT: &str =

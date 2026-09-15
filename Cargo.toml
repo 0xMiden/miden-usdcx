@@ -26,7 +26,9 @@ exclude = [
 # is the protocol's own build-script toolkit — the project/workspace assembly and the MASM
 # error-constant extractor — so the build script carries no copy of either. The assembler family is
 # EXACTLY 0.33.0, the version the pinned protocol release resolves: a drift would put two copies of
-# the assembler in the graph, at which point the MAST digests stop unifying.
+# the assembler in the graph, at which point the MAST digests stop unifying. The Miden client the
+# relayer submits its mint notes through accepts this same line, so both consumers of the assembler
+# agree on the one copy.
 miden-assembly              = "=0.33.0"
 miden-core-lib              = "=0.33.0"
 miden-package-registry      = "=0.33.0"

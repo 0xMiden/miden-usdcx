@@ -6,6 +6,7 @@ use miden_protocol::account::AccountId;
 use url::Url;
 
 use crate::circle::{PageSize, RemoteDomain};
+use crate::miden::{ExpirationDelta, NotesPerTransaction};
 use crate::mint::AttesterPublicKey;
 
 #[derive(Debug, Clone, Parser)]
@@ -32,6 +33,26 @@ pub struct Config {
     /// The Circle domain identifier for Miden.
     #[arg(long)]
     pub remote_domain: RemoteDomain,
+
+    /// The RPC endpoint of the Miden node the mint transactions are submitted to.
+    #[arg(long)]
+    pub miden_node_url: Url,
+
+    /// The directory holding the Miden client's state: its store, and the keystore the relayer
+    /// account's signing key is read from.
+    #[arg(long)]
+    pub miden_data_dir: PathBuf,
+
+    /// How many mint notes one transaction carries. A page with more notes than this is split
+    /// across several transactions, which trades a longer proof for each against more of them.
+    #[arg(long, default_value = "64")]
+    pub notes_per_transaction: NotesPerTransaction,
+
+    /// How many blocks a submitted mint transaction may still be included in. Once the chain is
+    /// past that block the transaction can never land, and the relayer stops waiting and retries
+    /// the page. A larger delta tolerates a slower chain; a smaller one notices sooner.
+    #[arg(long, default_value = "64")]
+    pub expiration_delta: ExpirationDelta,
 
     /// The public xUSDC faucet account, as `0x`-prefixed hex or bech32.
     #[arg(long, value_parser = parse_account_id)]

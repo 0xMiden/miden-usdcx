@@ -5,8 +5,12 @@ submits them to Miden.
 
 ## Status
 
-The service requires a Miden client that supports protocol v0.16. No compatible client release is
-available. The service validates its command-line arguments and then exits with an error.
+The service runs against a Miden node. It submits each page of mint notes from the relayer's own
+account and waits for the node to include the transaction in a block before it records the page as
+done, so a page whose transaction never lands is retried rather than skipped.
+
+The relayer account must already exist on chain, and its signing key must already be in the
+keystore directory the client is given. Neither is created here.
 
 ## Run
 
@@ -19,6 +23,10 @@ just run-relayer-lite \
   --request-timeout 30s \
   --poll-interval 5s \
   --remote-domain 10001 \
+  --miden-node-url http://127.0.0.1:57291 \
+  --miden-data-dir target/relayer-lite-miden \
+  --notes-per-transaction 64 \
+  --expiration-delta 64 \
   --faucet-account-id 0x222222222222221122222222222222 \
   --relayer-account-id 0x111111101111111111111111111111 \
   --attester-public-key 03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f \
@@ -27,6 +35,11 @@ just run-relayer-lite \
 
 The Circle domain identifier and the account identifiers depend on the deployment. The attester
 public key must use compressed SEC1 format.
+
+`--miden-data-dir` holds the Miden client's own state: the store it syncs the chain into, and the
+`keystore` directory it reads the relayer account's signing key from. It is durable state, not a
+cache — a transaction submitted just before a restart is still tracked there, so the next run can
+watch it commit instead of submitting the same deposits again.
 
 `--state-file` holds a small JSON document recording how far the relayer got:
 

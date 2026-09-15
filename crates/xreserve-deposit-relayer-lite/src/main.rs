@@ -1,15 +1,16 @@
 //! Assembles and starts the deposit relayer.
 //!
-//! Startup fails because a compatible Miden client is not available.
+//! The Miden client is built before the first Circle request, so a node the relayer cannot mint
+//! through stops the service at startup rather than after it has read the feed.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use xreserve_deposit_relayer_lite::config::Config;
-use xreserve_deposit_relayer_lite::miden::production_miden_client;
+use xreserve_deposit_relayer_lite::miden::NodeClient;
 use xreserve_deposit_relayer_lite::Relayer;
 
 fn main() -> Result<()> {
@@ -20,8 +21,7 @@ fn main() -> Result<()> {
 
     let config = Config::parse();
 
-    // Startup stops here until a compatible Miden client is available.
-    let miden = production_miden_client()?;
+    let miden = NodeClient::new(&config).context("connecting to miden")?;
 
-    Relayer::new(config, miden)?.run()
+    Relayer::new(config, Box::new(miden))?.run()
 }

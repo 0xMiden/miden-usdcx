@@ -261,7 +261,6 @@ impl Store {
 
     /// Records a burn whose withdrawal payload does not decode, without changing its evidence or
     /// scan progress.
-    #[allow(dead_code)]
     pub(crate) fn refuse_burn(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let updated = self
             .connection
@@ -283,7 +282,6 @@ impl Store {
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
-    #[allow(dead_code)]
     pub(crate) fn burns_ready_for_withdrawal(
         &self,
         proof_lag_block: BlockNumber,

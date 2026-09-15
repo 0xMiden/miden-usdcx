@@ -1,4 +1,4 @@
-//! Checks signing order and ownership without a real signing backend.
+//! Checks development signatures, signing order, and ownership.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,8 +6,44 @@ use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Signature, B256, U256};
 
-use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::signer::{DevelopmentSigner, Signer, SignerError, SigningPublicKey};
 use crate::tests::verified_withdrawal;
+
+#[tokio::test]
+async fn development_signers_sign_the_exact_digest() {
+    let digest = alloy_primitives::keccak256(b"xUSDC attester development signing");
+    for (scalar, expected_public_key) in [
+        (
+            1,
+            alloy_primitives::hex!(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+        ),
+        (
+            2,
+            alloy_primitives::hex!(
+                "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+            ),
+        ),
+    ] {
+        let mut secret = [0; 32];
+        secret[31] = scalar;
+        let signer = DevelopmentSigner::from_bytes(secret).unwrap();
+        let public_key = signer.public_key().await.unwrap();
+        assert!(public_key == SigningPublicKey::from_compressed(expected_public_key).unwrap());
+
+        let signature = signer.sign_digest(digest).await.unwrap();
+        assert!(signature.normalize_s().is_none());
+        assert_eq!(
+            signature
+                .recover_from_prehash(&digest)
+                .unwrap()
+                .to_encoded_point(true)
+                .as_bytes(),
+            expected_public_key,
+        );
+    }
+}
 
 struct RecordingSigner {
     id: u8,

@@ -15,8 +15,8 @@ use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, 
 use crate::tests::support::store_version;
 
 use super::{
-    config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
-    startup_anchor, write_config, TestChain,
+    config_toml, create_store_parent, faucet_account_id, load_config, ready_circle,
+    replace_setting, start, startup_anchor, write_config, TestChain,
 };
 use crate::tests::support::{note, test_note, transaction};
 
@@ -32,21 +32,6 @@ fn trusted_anchor() -> TrustedAnchor {
         block_num: BlockNumber::GENESIS,
         commitment: startup_anchor().header().commitment(),
     }
-}
-
-fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
-    config
-        .lines()
-        .map(|line| {
-            if line.starts_with(&format!("{key} =")) {
-                replacement
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
 }
 
 #[tokio::test]

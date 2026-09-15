@@ -186,7 +186,7 @@ fn invalid_config_is_rejected() {
     );
     let path = tempdir.path().join(CONFIG_FILE);
     std::fs::write(&path, config).unwrap();
-    let config = Config::load(&path).expect("unchecked signing keys remain accepted in S1");
+    let config = Config::load(&path).expect("startup validates signing keys against the providers");
     assert_eq!(config.store_path(), absolute_store);
     assert_eq!(config.faucet_deployment_block(), BlockNumber::from(0u32));
     assert_eq!(config.trusted_anchor_block(), BlockNumber::from(0u32));

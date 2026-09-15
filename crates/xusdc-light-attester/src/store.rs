@@ -264,7 +264,6 @@ impl Store {
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
-    #[allow(dead_code)]
     pub(crate) fn burns_ready_for_withdrawal(
         &self,
         proof_lag_block: BlockNumber,

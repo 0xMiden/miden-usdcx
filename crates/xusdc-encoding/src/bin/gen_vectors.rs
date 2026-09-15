@@ -738,10 +738,18 @@ fn main() {
     // DepositIntent payload (raw keccak, NOT EIP-712, no struct); the 65-byte r||s||v signature over
     // that digest; and the canonical commitment from miden-crypto `PublicKey::to_commitment`. The
     // nonce is varied per seed so digests, sigs, and pubkeys all differ.
+    // The fourth entry has a ten-byte hookData tail so the digest covers bytes past the header.
     let mut att: Vec<Value> = Vec::new();
-    for seed in 1u64..=3 {
+    let attestation_cases: [(u64, Vec<u8>); 4] = [
+        (1, vec![]),
+        (2, vec![]),
+        (3, vec![]),
+        (4, (0..10u8).map(|i| 0xe0 + i).collect()),
+    ];
+    for (seed, hook_data) in attestation_cases {
         let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(0xd0u8.wrapping_add(seed as u8));
+        spec.hook_data = hook_data;
         let payload = spec.encode();
 
         let sk = att_keypair(seed);
@@ -750,7 +758,11 @@ fn main() {
         let sig = att_sign65(&sk, &digest);
         let commitment = att_commitment(&pk);
         att.push(json!({
-            "id": format!("att-{seed}"),
+            "id": if spec.hook_data.is_empty() {
+                format!("att-{seed}")
+            } else {
+                format!("att-{seed}-hookdata")
+            },
             "tv": ["TV-ATT-1", "TV-ATT-2", "TV-ATT-3", "TV-DUAL-5"],
             "pubkey_hex": hex_bytes(&pk),
             "packed_felts": felts_hex(&att_pubkey(&pk).to_elements()),

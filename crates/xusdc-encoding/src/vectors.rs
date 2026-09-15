@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(v.families.amt.len(), 4, "amt family");
         assert_eq!(v.families.aid.len(), 5, "aid family");
         assert_eq!(v.families.di.len(), 10, "di family");
-        assert_eq!(v.families.att.len(), 3, "att family");
+        assert_eq!(v.families.att.len(), 4, "att family");
         assert_eq!(v.families.bn.len(), 7, "bn family");
         assert_eq!(v.families.mi.len(), 6, "mi family");
         let no_provenance = |cite: &str, derivation: &str| cite.is_empty() || derivation.is_empty();

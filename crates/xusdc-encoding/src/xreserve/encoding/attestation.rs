@@ -55,14 +55,17 @@ impl Signature {
     }
 }
 
-// TESTS — TV-ATT-1..3
+// TESTS — TV-ATT-1..4
 // ================================================================================================
 
 #[cfg(test)]
 mod tests {
 
+    use k256::ecdsa::signature::hazmat::PrehashVerifier;
+    use k256::ecdsa::{RecoveryId, Signature as K256Signature, VerifyingKey};
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::utils::bytes_to_packed_u32_elements;
+    use sha3::{Digest, Keccak256};
 
     use super::*;
     use crate::vectors::load;
@@ -160,5 +163,45 @@ mod tests {
                 v.id
             );
         }
+    }
+
+    /// TV-ATT-4: each vector's full payload, digest, signature, public key, and recovery id agree.
+    #[test]
+    fn attestation_vectors_are_self_consistent() {
+        for v in &load().families.att {
+            let digest = v.digest();
+            let actual: [u8; 32] = Keccak256::digest(v.payload()).into();
+            assert_eq!(
+                actual, digest,
+                "{}: digest must equal keccak256 of the full payload",
+                v.id
+            );
+
+            let pubkey = v.pubkey();
+            let key = VerifyingKey::from_sec1_bytes(&pubkey)
+                .unwrap_or_else(|e| panic!("{}: invalid public key: {e}", v.id));
+            let sig = K256Signature::from_slice(&v.sig()[..64])
+                .unwrap_or_else(|e| panic!("{}: invalid signature: {e}", v.id));
+            assert!(
+                key.verify_prehash(&digest, &sig).is_ok(),
+                "{}: signature must verify over the digest under the vector's public key",
+                v.id
+            );
+
+            let recovery_id = RecoveryId::from_byte(v.v_byte)
+                .unwrap_or_else(|| panic!("{}: invalid recovery id", v.id));
+            let recovered = VerifyingKey::recover_from_prehash(&digest, &sig, recovery_id)
+                .unwrap_or_else(|e| panic!("{}: public key recovery failed: {e}", v.id));
+            assert_eq!(
+                recovered.to_encoded_point(true).as_bytes(),
+                &pubkey,
+                "{}: recovery id must recover the vector's public key",
+                v.id
+            );
+        }
+        assert!(
+            load().families.att.iter().any(|v| v.payload().len() > 240),
+            "att family must retain a vector with non-empty hookData"
+        );
     }
 }

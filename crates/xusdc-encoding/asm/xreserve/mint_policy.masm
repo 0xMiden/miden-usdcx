@@ -141,7 +141,7 @@ const ERR_XRESERVE_MINT_NOTE_TYPE_NOT_PUBLIC = "mint note output note type must 
 #! - an attachment's advice-map content does not hash to its note-committed commitment (the
 #!   pipe_preimage_to_memory assert inside write_attachment_to_memory).
 #! - the note's asset value is not a mintable fungible amount.
-#! - the carried recipient is not a structurally valid account id.
+#! - the carried recipient is not a valid account id.
 #! - the amount is below the carried fee ceiling, or the nonce was already used.
 #! - the attestation verify rejects (attester allowlist, signature).
 #! - a note-supplied value diverges from its attested derivation (the ASSERT-MATCH errors).

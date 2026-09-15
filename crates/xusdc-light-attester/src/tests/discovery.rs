@@ -18,6 +18,7 @@ use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
 
+use super::startup::start as start_attester;
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
     ChainControls, TestChain,
@@ -29,7 +30,7 @@ const SIGNING_KEY_ONE: &str =
 const SIGNING_KEY_TWO: &str =
     "0x02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 
-fn write_config(
+pub(super) fn write_config(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
     anchor: &ProvenBlock,
@@ -43,7 +44,7 @@ fn write_config(
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          use_circle_forwarding = false\n\
          withdrawal_limit_24h = 10_000_000_000_000\n\
-         poll_interval_ms = 1\n\
+         poll_interval_ms = 100\n\
          faucet_deployment_block = {deployment_block}\n\
          trusted_anchor_block = {}\n\
          trusted_anchor_commitment_hex = \"{}\"\n\
@@ -68,9 +69,7 @@ pub(super) async fn start(
     let anchor = blocks[0].clone();
     let config = write_config(tempdir, deployment_block, &anchor, 1);
     let (chain, controls) = TestChain::new(blocks, scan_limits);
-    let attester = Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .unwrap();
+    let attester = start_attester(config, chain, ready_circle()).await.unwrap();
     (attester, controls)
 }
 
@@ -267,9 +266,7 @@ async fn burns_are_discovered_safely() {
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 1, &factory.blocks()[0], 2);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(3, 3));
-    let mut attester = Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .unwrap();
+    let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
     attester.discover_burns().await.unwrap();
     assert_eq!(attester.store.discovered_burns().unwrap().len(), 1);
     for (proof_lag, depth) in [(3u32, 2), (3, 4), (1, 1)] {
@@ -675,9 +672,7 @@ async fn bad_blocks_are_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 0, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![served_anchor], scan_limits(1, 0));
-    assert!(Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .is_err());
+    assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
     let (header, _, signatures, proof) = configured_anchor.clone().into_parts();
     let injected = note(BurnNote::script(), NoteType::Public, 1, 29);
@@ -691,9 +686,7 @@ async fn bad_blocks_are_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 0, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![tampered_anchor], scan_limits(1, 0));
-    assert!(Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .is_err());
+    assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
     let mut factory = BlockFactory::new(faucet_account_id());
     factory.push(Vec::new(), Vec::new());
@@ -750,9 +743,7 @@ async fn bad_blocks_are_rejected() {
         let config = write_config(&tempdir, deployment_block, &anchor, 1);
         let (chain, _) = TestChain::new(blocks, scan_limits(3, 2));
         let chain = if missing { chain.missing_at(1) } else { chain };
-        let mut attester = Attester::start(config, Box::new(chain), ready_circle())
-            .await
-            .unwrap();
+        let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
         let error = attester
             .discover_burns()
             .await
@@ -833,9 +824,7 @@ async fn bad_blocks_are_rejected() {
         let tempdir = tempfile::tempdir().unwrap();
         let config = write_config(&tempdir, 1, &blocks[0], 10);
         let (chain, _) = TestChain::new(blocks, scan_limits(12, 12));
-        let mut attester = Attester::start(config, Box::new(chain), ready_circle())
-            .await
-            .unwrap();
+        let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
         let error = attester
             .discover_burns()
             .await
@@ -924,7 +913,7 @@ async fn run_stops_when_shutdown_is_set() {
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
 
-    attester.run(Arc::new(AtomicBool::new(true))).await.unwrap();
+    attester.run(Arc::new(AtomicBool::new(true))).await;
 
     assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 0);
     assert_eq!(*controls.requests.lock().unwrap(), [BlockNumber::GENESIS]);

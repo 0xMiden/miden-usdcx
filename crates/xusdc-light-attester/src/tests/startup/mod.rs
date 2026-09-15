@@ -14,8 +14,8 @@ use crate::circle::HttpTransport;
 use crate::config::Config;
 
 use super::support::{
-    faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle, ObservedRequest,
-    TestChain, FAUCET_ACCOUNT_ID,
+    development_signers, faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle,
+    ObservedRequest, TestChain, FAUCET_ACCOUNT_ID,
 };
 
 const SIGNING_KEY_ONE: &str =
@@ -66,5 +66,5 @@ pub(super) async fn start(
     chain: TestChain,
     circle: Box<dyn HttpTransport>,
 ) -> anyhow::Result<Attester> {
-    Attester::start(config, Box::new(chain), circle).await
+    Attester::start(config, Box::new(chain), circle, development_signers()).await
 }

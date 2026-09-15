@@ -81,7 +81,6 @@ impl HttpTransport for ReqwestTransport {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
@@ -158,7 +157,6 @@ impl CircleClient {
     }
 
     /// Decodes Circle's reply only. Its contents must be verified before signing.
-    #[allow(dead_code)]
     pub(crate) async fn prepare_withdrawal(
         &self,
         burn: &ValidatedBurn,
@@ -212,13 +210,11 @@ impl CircleClient {
 }
 
 /// Decoded wire data, not a verified or signable withdrawal.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct UnverifiedPrepareResponse {
     pub(crate) batches: Vec<UnverifiedPrepareBatch>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UnverifiedPrepareBatch {
@@ -227,7 +223,6 @@ pub(crate) struct UnverifiedPrepareBatch {
     pub(crate) message_hash_to_sign: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BurnIntent {
@@ -236,7 +231,6 @@ pub(crate) struct BurnIntent {
     pub(crate) spec: TransferSpec,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TransferSpec {
@@ -256,7 +250,6 @@ pub(crate) struct TransferSpec {
     pub(crate) hook_data: StructuredHookData,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StructuredHookData {

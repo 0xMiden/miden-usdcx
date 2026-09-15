@@ -83,6 +83,7 @@ pub(crate) struct VerifiedWithdrawal {
 }
 
 impl VerifiedWithdrawal {
+    #[cfg(test)]
     pub(crate) fn note_id(&self) -> NoteId {
         self.batch.note_id
     }

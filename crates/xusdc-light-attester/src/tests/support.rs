@@ -28,11 +28,20 @@ use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems}
 
 use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{CircleError, HttpTransport, RawResponse};
+use crate::signer::{DevelopmentSigner, Signer};
 
 pub(super) const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
 pub(super) fn faucet_account_id() -> AccountId {
     AccountId::from_hex(FAUCET_ACCOUNT_ID).unwrap()
+}
+
+pub(super) fn development_signers() -> [Box<dyn Signer>; 2] {
+    [1, 2].map(|scalar| {
+        let mut key = [0; 32];
+        key[31] = scalar;
+        Box::new(DevelopmentSigner::from_bytes(key).unwrap()) as Box<dyn Signer>
+    })
 }
 
 pub(super) fn scan_limits(latest_committed_block: u32, proof_lag_block: u32) -> ScanLimits {

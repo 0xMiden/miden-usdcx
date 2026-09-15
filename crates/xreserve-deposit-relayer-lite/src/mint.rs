@@ -15,7 +15,7 @@ use miden_protocol::note::Note;
 use tracing::error;
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, Signature};
+use xusdc_encoding::xreserve::encoding::DepositIntent;
 
 use crate::circle::{Attestation, RemoteDomain};
 use crate::config::Config;
@@ -117,7 +117,7 @@ impl Minter {
             .remote_domain(self.remote_domain.into())
             .deposit_intent(intent)
             .attestation(DepositAttestation::new(
-                Signature::new(attestation.signature),
+                attestation.signature,
                 self.attester.0.clone(),
             ))
             .generate_serial_number(&mut self.rng)
@@ -134,7 +134,9 @@ mod tests {
     use rstest::rstest;
 
     use xusdc_encoding::vectors::load;
-    use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
+    use xusdc_encoding::xreserve::encoding::{
+        DepositIntent, DepositIntentHeader, DepositNonce, Signature,
+    };
 
     use super::{AttesterPublicKey, Minter};
     use crate::circle::{Attestation, PageSize, RemoteDomain};
@@ -229,7 +231,7 @@ mod tests {
             Self {
                 payload: intent.to_bytes(),
                 message_hash: [0u8; 32],
-                signature: [0xAB; 65],
+                signature: Signature::new([0xAB; 65]),
             }
         }
 
@@ -244,7 +246,7 @@ mod tests {
             Self {
                 payload: vec![0xFF; 16],
                 message_hash: [0u8; 32],
-                signature: [0xAB; 65],
+                signature: Signature::new([0xAB; 65]),
             }
         }
     }

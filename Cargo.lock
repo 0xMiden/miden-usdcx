@@ -2694,9 +2694,9 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax"
-version = "0.29.1"
+version = "0.29.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3874c53f40656a56f74afe8e957d75667218808894ab8f5dbd91e58a8a0c3393"
+checksum = "cad0d5174833b17b498d541d1ef62d73929a143ea56ea5eba719339c15cd0968"
 dependencies = [
  "env_logger",
  "log",
@@ -2739,9 +2739,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.16.0-rc.2"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60536acdc7d062845a8adb2cc57052c0629ce54b10e3eec180ac1f8a54ab25f5"
+checksum = "9f62f7b7382bcb636a9651f678d84ed675adcb428276bd80688b34651f4fa9f1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2751,8 +2751,10 @@ dependencies = [
  "gloo-timers",
  "hex",
  "miden-agglayer",
+ "miden-assembly-syntax",
  "miden-node-proto-build",
  "miden-note-transport-proto-build",
+ "miden-processor",
  "miden-protocol",
  "miden-standards",
  "miden-tx",
@@ -3027,9 +3029,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.16.0-rc.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4e8c47d752a8b6c9f475072a875799048d87038b759b47e8cb5f2767b74072c"
+checksum = "724a79e7663157e73de1fc19fcd6e30c7cee4e4c4189d44477922a3969797acb"
 dependencies = [
  "build-rs",
  "codegen",
@@ -4132,7 +4134,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -4153,7 +4155,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -5433,7 +5435,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.52.0",

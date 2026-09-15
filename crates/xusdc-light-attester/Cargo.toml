@@ -21,7 +21,7 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 tokio-util = "0.7"
 toml = "1"
 
@@ -29,4 +29,4 @@ toml = "1"
 http = "1"
 miden-protocol = { version = "=0.17.0-rc.5", features = ["testing"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "test-util"] }

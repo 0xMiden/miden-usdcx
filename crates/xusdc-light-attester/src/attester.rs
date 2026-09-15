@@ -1,7 +1,5 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::time::Instant;
-
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
@@ -11,10 +9,20 @@ use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
+use crate::signer::{Signer, SigningPublicKey};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::submission::SavedSubmission;
+use crate::verify::verify_prepared_response;
 
-#[derive(Debug)]
-pub struct RunError;
+#[derive(Debug, thiserror::Error)]
+pub enum CycleError {
+    #[error("discovery stopped on a store failure")]
+    Discovery(#[source] DiscoverError),
+    #[error("withdrawal processing stopped on a store failure")]
+    Submission(#[from] SubmitError),
+    #[error("polling stopped on a store failure")]
+    Poll(#[source] SubmitError),
+}
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -37,24 +45,23 @@ pub use crate::submission::SubmitError;
 pub struct CycleReport {
     pub discover: Result<(), DiscoverError>,
     pub submit: Result<(), SubmitError>,
-    pub poll: Result<(), SubmitError>,
 }
 
-#[allow(dead_code)]
 pub struct Attester {
     pub(crate) config: Config,
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
+    signers: [Box<dyn Signer>; 2],
 }
 
-#[allow(dead_code)]
 impl Attester {
     pub async fn start(
         config: Config,
         chain: Box<dyn ChainReader>,
         circle: Box<dyn CircleApi>,
+        signers: [Box<dyn Signer>; 2],
     ) -> anyhow::Result<Self> {
         let trusted_anchor = TrustedAnchor {
             block_num: config.trusted_anchor_block(),
@@ -87,7 +94,33 @@ impl Attester {
             );
         }
 
-        // TODO(KMS): compare the configured public keys with the loaded signing keys.
+        let [first, second] = config.expected_signing_public_keys_hex() else {
+            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+        };
+        let parse_key = |value: &str| {
+            let mut bytes = [0; 33];
+            hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)
+                .context("configured signing public key is not valid hex")?;
+            SigningPublicKey::from_compressed(bytes)
+                .context("configured signing public key is not a valid curve point")
+        };
+        let expected = [parse_key(first)?, parse_key(second)?];
+        let loaded = [
+            signers[0]
+                .public_key()
+                .await
+                .context("could not read a signing provider's public key")?,
+            signers[1]
+                .public_key()
+                .await
+                .context("could not read a signing provider's public key")?,
+        ];
+        if expected[0] == expected[1] || loaded[0] == loaded[1] {
+            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+        }
+        if !loaded.iter().all(|key| expected.contains(key)) {
+            anyhow::bail!("loaded signing public keys do not match configuration");
+        }
 
         circle
             .check_connection()
@@ -117,36 +150,81 @@ impl Attester {
             chain,
             circle,
             trusted_anchor_block,
+            signers,
         })
     }
 
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
-    pub async fn run(&mut self, shutdown: CancellationToken) -> Result<(), RunError> {
+    /// A store failure aborts only this cycle; retry after the same delay.
+    pub async fn run(&mut self, shutdown: CancellationToken) {
         while !shutdown.is_cancelled() {
-            let _ = self.run_one_cycle(Instant::now()).await;
+            match self.run_one_cycle().await {
+                Ok(report) => {
+                    if let Err(error) = report.discover {
+                        eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
+                    }
+                }
+                Err(error) => eprintln!("cycle stopped; retrying after poll interval: {error:?}"),
+            }
             tokio::select! {
                 () = shutdown.cancelled() => {}
                 () = tokio::time::sleep(self.config.poll_interval()) => {}
             }
         }
-
-        Ok(())
     }
 
-    pub async fn run_one_cycle(&mut self, now: Instant) -> CycleReport {
-        let _ = now;
-        todo!()
+    pub async fn run_one_cycle(&mut self) -> Result<CycleReport, CycleError> {
+        let discover = self.discover_burns().await;
+        if let Err(error @ DiscoverError::Store(_)) = discover {
+            return Err(CycleError::Discovery(error));
+        }
+
+        // Snapshot the ledger before any submission changes status. Work that expires or is
+        // newly submitted in this cycle must not be prepared or polled again in the same cycle.
+        let recovery = self
+            .store
+            .submissions_to_recover()
+            .map_err(SubmitError::from)?;
+        let polling = self
+            .store
+            .submissions_to_poll()
+            .map_err(SubmitError::from)?;
+        let fresh = match &discover {
+            Ok(proof_lag_block) => self
+                .validate_ready_burns(*proof_lag_block)
+                .map_err(SubmitError::from)?,
+            Err(_) => Vec::new(),
+        };
+        self.recover_submissions(recovery).await?;
+        let submit = self.submit_withdrawals(fresh).await;
+        if let Err(error @ (SubmitError::InvalidStore | SubmitError::Conflict)) = submit {
+            return Err(CycleError::Submission(error));
+        }
+        self.poll_withdrawal_statuses(polling)
+            .await
+            .map_err(CycleError::Poll)?;
+        Ok(CycleReport {
+            discover: discover.map(|_| ()),
+            submit,
+        })
     }
 
     /// Scans the blocks that became final since the saved checkpoint. Each block's burn
     /// candidates and faucet consumptions are saved together with the advanced cursor and the
     /// block's header, one block per store transaction, so a crash never skips or half-records
-    /// a block.
-    pub(crate) async fn discover_burns(&mut self) -> Result<(), DiscoverError> {
+    /// a block. Returns the node's proof-lag height, the bound for withdrawal readiness.
+    pub(crate) async fn discover_burns(&mut self) -> Result<BlockNumber, DiscoverError> {
         let saved_scan = self.store.scan_state()?;
-        let Some(last_block_to_scan) = self.find_last_block_to_scan(&saved_scan).await? else {
-            return Ok(());
+        let scan_limits = self
+            .chain
+            .scan_limits()
+            .await
+            .map_err(DiscoverError::Chain)?;
+        let Some(last_block_to_scan) =
+            self.find_last_block_to_scan(&saved_scan, scan_limits.latest_committed_block)?
+        else {
+            return Ok(scan_limits.proof_lag_block);
         };
         let mut last_verified_header = self.load_previous_verified_header(&saved_scan).await?;
 
@@ -167,25 +245,19 @@ impl Attester {
             last_verified_header = block.header().clone();
         }
 
-        Ok(())
+        Ok(scan_limits.proof_lag_block)
     }
 
-    async fn find_last_block_to_scan(
+    fn find_last_block_to_scan(
         &self,
         saved_scan: &ScanState,
+        last_block_to_scan: BlockNumber,
     ) -> Result<Option<BlockNumber>, DiscoverError> {
         let last_verified_block_number = saved_scan
             .authenticated_parent
             .as_ref()
             .map_or(self.config.trusted_anchor_block(), BlockHeader::block_num);
-        let scan_limits = self
-            .chain
-            .scan_limits()
-            .await
-            .map_err(DiscoverError::Chain)?;
-
         // Scan every available block. Withdrawal readiness separately requires verified depth.
-        let last_block_to_scan = scan_limits.latest_committed_block;
         if last_block_to_scan < last_verified_block_number {
             return behind_verified_chain(saved_scan);
         }
@@ -296,20 +368,45 @@ impl Attester {
         Ok(validated)
     }
 
-    async fn submit_withdrawals(&mut self) -> Result<(), SubmitError> {
-        todo!()
+    async fn submit_withdrawals(&mut self, burns: Vec<ValidatedBurn>) -> Result<(), SubmitError> {
+        let mut first_error = None;
+        for burn in burns {
+            let note_id = burn.burn.note_id();
+            let result = async {
+                let prepared = self
+                    .circle
+                    .prepare_withdrawal(&burn, self.config.use_circle_forwarding())
+                    .await?;
+                let verified = verify_prepared_response(&burn, prepared, &self.config)
+                    .map_err(|error| SubmitError::Verification(Box::new(error)))?;
+                let signed = verified
+                    .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
+                    .await?;
+                self.submit_signed_withdrawal(&signed).await
+            }
+            .await;
+            if let Err(error) = result {
+                if matches!(error, SubmitError::InvalidStore | SubmitError::Conflict) {
+                    return Err(error);
+                }
+                // Retry scheduling/holds for prepare and verify failures are the next slice.
+                // A failure here must not prevent another burn from getting its withdrawal.
+                eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
-    /// Asks Circle once for each submitted withdrawal that has no final status yet and records
-    /// the answer on its row: a final status closes the row, and any other answer or a lost reply
-    /// leaves it for the next pass.
-    pub(crate) async fn poll_withdrawal_statuses(&mut self) -> Result<(), SubmitError> {
+    /// Asks Circle once for each given submitted withdrawal and records the answer on its row: a
+    /// final status closes the row, and any other answer or a lost reply leaves it for the next
+    /// pass.
+    pub(crate) async fn poll_withdrawal_statuses(
+        &mut self,
+        submissions: Vec<SavedSubmission>,
+    ) -> Result<(), SubmitError> {
         // Each saved ID gets one GET; the shared handler persists its outcome before we continue.
-        for saved in self
-            .store
-            .submissions_to_poll()
-            .map_err(SubmitError::from)?
-        {
+        for saved in submissions {
             self.advance_submission(saved).await?;
         }
         Ok(())

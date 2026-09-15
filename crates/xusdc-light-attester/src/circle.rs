@@ -346,13 +346,11 @@ impl PrepareBatch {
 }
 
 /// Decoded wire data, not a verified or signable withdrawal.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct UnverifiedPrepareResponse {
     pub(crate) batches: Vec<UnverifiedPrepareBatch>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UnverifiedPrepareBatch {
@@ -361,7 +359,6 @@ pub(crate) struct UnverifiedPrepareBatch {
     pub(crate) message_hash_to_sign: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BurnIntent {
@@ -370,7 +367,6 @@ pub(crate) struct BurnIntent {
     pub(crate) spec: TransferSpec,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TransferSpec {
@@ -390,7 +386,6 @@ pub(crate) struct TransferSpec {
     pub(crate) hook_data: StructuredHookData,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StructuredHookData {

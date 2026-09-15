@@ -62,13 +62,14 @@ impl BurnRefusal {
 pub(crate) struct ValidatedBurn {
     pub(crate) burn: DiscoveredBurn,
     pub(crate) items: XReserveBurnItems,
+    pub(crate) amount: u64,
 }
 
 pub(crate) fn validate_burn(
-    burn: &DiscoveredBurn,
+    burn: DiscoveredBurn,
     faucet_account_id: AccountId,
     expected_script_root: NoteScriptRoot,
-) -> Result<XReserveBurnItems, BurnRefusal> {
+) -> Result<ValidatedBurn, BurnRefusal> {
     let note = burn.note.as_note();
     if note.script().root() != expected_script_root {
         return Err(BurnRefusal::WrongScript);
@@ -116,10 +117,10 @@ pub(crate) fn validate_burn(
         .get(..BURN_NOTE_ITEMS_FELTS)
         .ok_or(BurnRefusal::InvalidWithdrawal)?;
     let items = XReserveBurnItems::decode(payload).map_err(|_| BurnRefusal::InvalidWithdrawal)?;
-    // The attachment amount will be removed in #146; remove this comparison then too.
-    // The note-storage asset check above stays: the stock burn script requires it.
-    if items.amount != asset.amount() {
-        return Err(BurnRefusal::AmountMismatch);
-    }
-    Ok(items)
+    let amount = u64::from(asset.amount());
+    Ok(ValidatedBurn {
+        burn,
+        items,
+        amount,
+    })
 }

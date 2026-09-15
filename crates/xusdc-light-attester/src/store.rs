@@ -150,11 +150,15 @@ impl Store {
         &self,
         note_id: NoteId,
     ) -> Result<Option<SavedSubmission>, StoreError> {
-        Ok(load_submissions(&self.connection, Some(note_id), false)?.pop())
+        Ok(load_submissions(&self.connection, Some(note_id), None)?.pop())
     }
 
     pub(crate) fn submissions_to_recover(&self) -> Result<Vec<SavedSubmission>, StoreError> {
-        load_submissions(&self.connection, None, true)
+        load_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
+    }
+
+    pub(crate) fn submissions_to_poll(&self) -> Result<Vec<SavedSubmission>, StoreError> {
+        load_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
     }
 
     pub(crate) fn save_submission_outcome(
@@ -162,13 +166,13 @@ impl Store {
         outcome: &SavedSubmission,
     ) -> Result<(), StoreError> {
         validate_submission_outcome(outcome)?;
-        // The sequential submitter changes only outcomes, never a request or a known ID.
+        // Submission and polling change only outcomes, never a request or a known ID.
         let updated = self
             .connection
             .execute(
                 "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
                 last_http_status = ?4, last_response = ?5, last_error = ?6
-             WHERE note_id = ?7 AND status = 'SUBMITTING'
+             WHERE note_id = ?7 AND status IN ('SUBMITTING', 'SUBMITTED')
                 AND (withdrawal_id IS NULL OR withdrawal_id = ?2)",
                 params![
                     outcome.status.as_str(),
@@ -498,19 +502,22 @@ impl HoldReason {
 fn load_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
-    recoverable_only: bool,
+    status: Option<SubmissionStatus>,
 ) -> Result<Vec<SavedSubmission>, StoreError> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
             use_circle_forwarding, status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
-         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = 'SUBMITTING')
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 IS NULL OR status = ?2)
          ORDER BY note_id",
         )
         .map_err(classify_error)?;
     let mut rows = statement
-        .query(params![note_id.map(|id| id.to_bytes()), recoverable_only])
+        .query(params![
+            note_id.map(|id| id.to_bytes()),
+            status.map(SubmissionStatus::as_str)
+        ])
         .map_err(classify_error)?;
     let mut records = Vec::new();
     while let Some(row) = rows.next().map_err(classify_error)? {
@@ -696,12 +703,14 @@ fn load_burns(
     faucet_account_id: AccountId,
     include_all: bool,
 ) -> Result<Vec<DiscoveredBurn>, StoreError> {
+    // Expired work is eligible again; its old request remains saved until a fresh one replaces it.
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
              WHERE ?1 OR (status != 'REFUSED' AND NOT EXISTS (
                   SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+                     AND submissions.status != 'EXPIRED'
              ))",
         )
         .map_err(classify_error)?;

@@ -31,12 +31,10 @@ fn sender() -> AccountId {
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1.try_into().unwrap()
 }
 
-fn items(amount: u64) -> XReserveBurnItems {
+fn items() -> XReserveBurnItems {
     XReserveBurnItems {
-        amount: AssetAmount::new(amount).unwrap(),
         dest_domain: 9,
         dest_recipient: ForeignChainAddress::new([0xab; 32]),
-        salt: [0xcd; 32],
     }
 }
 
@@ -56,7 +54,7 @@ fn routing(target: AccountId, hint: NoteExecutionHint) -> NoteAttachment {
     NetworkAccountTarget::new(target, hint).unwrap().into()
 }
 
-/// Keep the payload and asset independent: the honest factory cannot make an amount mismatch.
+/// Keep assets, storage and attachments independent for content checks.
 struct NoteFixture {
     script: NoteScript,
     tag: u32,
@@ -76,9 +74,9 @@ impl NoteFixture {
             storage: asset.as_elements().to_vec(),
             attachments: vec![
                 routing(faucet_account_id(), NoteExecutionHint::Always),
-                NoteAttachment::from(&XUsdcBurnAttachment::new(items(100))),
+                NoteAttachment::from(&XUsdcBurnAttachment::new(items())),
             ],
-            items: items(100),
+            items: items(),
         }
     }
 
@@ -171,8 +169,9 @@ fn check_note_content_cases() {
             "withdrawal padding is ignored",
             |n| {
                 n.edit_attachment(1, |w| {
-                    w[4][2] = Felt::ONE;
-                    w[4][3] = Felt::ONE;
+                    w[2][1] = Felt::ONE;
+                    w[2][2] = Felt::ONE;
+                    w[2][3] = Felt::ONE;
                 })
             },
             None,
@@ -180,7 +179,7 @@ fn check_note_content_cases() {
         (
             "other destination",
             |n| {
-                let mut payload = items(100);
+                let mut payload = items();
                 payload.dest_domain = u32::MAX;
                 payload.dest_recipient = ForeignChainAddress::new([0; 32]);
                 n.set_items(payload);
@@ -193,7 +192,6 @@ fn check_note_content_cases() {
                 let asset = fungible(faucet_account_id(), 0);
                 n.assets = vec![asset];
                 n.storage = asset.as_elements().to_vec();
-                n.set_items(items(0));
             },
             None,
         ),
@@ -324,18 +322,8 @@ fn check_note_content_cases() {
         ),
         (
             "withdrawal cannot decode",
-            |n| n.edit_attachment(1, |w| w[0][1] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
+            |n| n.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
             Some(InvalidWithdrawal),
-        ),
-        (
-            "attachment amount is lower",
-            |n| n.set_items(items(99)),
-            Some(AmountMismatch),
-        ),
-        (
-            "attachment amount is higher",
-            |n| n.set_items(items(101)),
-            Some(AmountMismatch),
         ),
     ];
 
@@ -345,29 +333,40 @@ fn check_note_content_cases() {
         .map(|(name, edit, refusal)| {
             let mut fixture = NoteFixture::new();
             edit(&mut fixture);
-            let expected = refusal.map_or_else(|| Ok(fixture.items.clone()), Err);
+            let expected = refusal.map_or_else(
+                || {
+                    let [Asset::Fungible(asset)] = fixture.assets.as_slice() else {
+                        panic!("accepted fixture carries one fungible asset")
+                    };
+                    Ok((fixture.items.clone(), u64::from(asset.amount())))
+                },
+                Err,
+            );
             (*name, discovered(fixture.note(10)), expected)
         })
         .collect();
     let factory_note = XReserveBurnNote::create(
         sender(),
         faucet_account_id(),
-        items(100),
+        AssetAmount::new(100).unwrap(),
+        items(),
         &mut RandomCoin::new(word(8)),
     )
     .unwrap();
     assert_eq!(
         validate_burn(
-            &discovered(factory_note),
+            discovered(factory_note),
             faucet_account_id(),
             BurnNote::script_root()
-        ),
-        Ok(items(100)),
+        )
+        .map(|burn| (burn.items, burn.amount)),
+        Ok((items(), 100)),
         "real xUSDC note factory"
     );
     for (name, burn, expected) in cases {
         assert_eq!(
-            validate_burn(&burn, faucet_account_id(), BurnNote::script_root()),
+            validate_burn(burn, faucet_account_id(), BurnNote::script_root())
+                .map(|burn| (burn.items, burn.amount)),
             expected,
             "{name}"
         );
@@ -377,7 +376,7 @@ fn check_note_content_cases() {
 async fn ready_burns_are_processed(fail_refusal_write: bool) {
     let good = discovered(NoteFixture::new().note(20));
     let mut invalid = NoteFixture::new();
-    invalid.set_items(items(101));
+    invalid.attachments[0] = routing(sender(), NoteExecutionHint::Always);
     let invalid = discovered(invalid.note(21));
     let mut young = NoteFixture::new();
     young.tag ^= 1;
@@ -445,7 +444,8 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
         let validated = result.unwrap();
         assert_eq!(validated.len(), 1);
         assert_eq!(validated[0].burn, expected_good);
-        assert_eq!(validated[0].items, items(100));
+        assert_eq!(validated[0].items, items());
+        assert_eq!(validated[0].amount, 100);
     }
     assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
     assert_eq!(
@@ -474,7 +474,7 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
             if fail_refusal_write {
                 None
             } else {
-                Some("amount_mismatch")
+                Some("wrong_target")
             },
         ),
     ] {

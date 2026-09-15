@@ -33,6 +33,7 @@ pub(super) fn config_toml(deployment_block: u64) -> String {
          faucet_account_id_hex = \"{FAUCET_ACCOUNT_ID}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          use_circle_forwarding = false\n\
+         withdrawal_limit_24h = 10_000_000_000_000\n\
          poll_interval_ms = 1000\n\
          faucet_deployment_block = {deployment_block}\n\
          trusted_anchor_block = 0\n\

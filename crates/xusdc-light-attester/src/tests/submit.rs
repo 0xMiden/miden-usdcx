@@ -159,7 +159,7 @@ impl CircleApi for ScriptedCircle {
                     endpoint: saved.endpoint.clone(),
                     id: id.to_owned(),
                 },
-                "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND withdrawal_id = ?1",
+                "SELECT count(*) FROM submissions WHERE status IN ('SUBMITTING', 'SUBMITTED') AND withdrawal_id = ?1",
                 id,
             )
         })
@@ -170,14 +170,14 @@ impl CircleApi for ScriptedCircle {
     }
 }
 
-struct Ledger {
+pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<SignedBlock>,
-    burns: Vec<ValidatedBurn>,
+    pub(super) burns: Vec<ValidatedBurn>,
 }
 
 impl Ledger {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let mut burns: Vec<_> = (0..3)
             .map(|i| validated_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
@@ -226,7 +226,7 @@ impl Ledger {
         self.directory.path().join("state.sqlite3")
     }
 
-    async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
+    pub(super) async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let circle = ScriptedCircle {
             replies: Mutex::new(replies.into()),
@@ -246,7 +246,11 @@ impl Ledger {
         self.signed_with_max_height(index, None).await
     }
 
-    async fn signed_with_max_height(&self, index: usize, height: Option<&str>) -> SignedWithdrawal {
+    pub(super) async fn signed_with_max_height(
+        &self,
+        index: usize,
+        height: Option<&str>,
+    ) -> SignedWithdrawal {
         let burn = &self.burns[index];
         let mut prepared = batch(&burn.burn.note().as_note().serial_num().to_hex(), 1_000, 9);
         if let Some(height) = height {
@@ -266,13 +270,17 @@ impl Ledger {
         .unwrap()
     }
 
-    async fn submit(&self, attester: &mut Attester, index: usize) -> Result<(), SubmitError> {
+    pub(super) async fn submit(
+        &self,
+        attester: &mut Attester,
+        index: usize,
+    ) -> Result<(), SubmitError> {
         attester
             .submit_signed_withdrawal(&self.signed(index).await)
             .await
     }
 
-    fn record(&self, attester: &Attester, index: usize) -> SavedSubmission {
+    pub(super) fn record(&self, attester: &Attester, index: usize) -> SavedSubmission {
         attester
             .store
             .submission(self.burns[index].burn.note_id())
@@ -280,14 +288,14 @@ impl Ledger {
             .unwrap()
     }
 
-    fn sql(&self, sql: &str) {
+    pub(super) fn sql(&self, sql: &str) {
         Connection::open(self.path())
             .unwrap()
             .execute_batch(sql)
             .unwrap();
     }
 
-    fn response(&self, index: usize, status: &str) -> Value {
+    pub(super) fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].burn.note_id().to_hex(),
             "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(index)]})
     }
@@ -357,7 +365,7 @@ fn reference_hash(index: usize) -> String {
     keccak256(hex::decode(packed).unwrap()).to_string()
 }
 
-fn reply(status: u16, value: Value) -> CircleState {
+pub(super) fn reply(status: u16, value: Value) -> CircleState {
     CircleState::ResponseBody(
         StatusCode::from_u16(status).unwrap(),
         serde_json::to_vec(&value).unwrap(),
@@ -713,13 +721,20 @@ async fn conflicts_are_checked() {
         let (mut attester, requests) = ledger.start(vec![conflict(), unavailable]).await;
         ledger.submit(&mut attester, 0).await.unwrap();
         let saved = ledger.record(&attester, 0);
-        assert_eq!(saved.status, Submitting, "{name}");
+        let held = name == "not found";
+        assert_eq!(saved.status, if held { Held } else { Submitting }, "{name}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
         drop(attester);
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
+        if held {
+            assert_eq!(saved.hold_reason, Some(HoldReason::HttpRejected));
+            attester.recover_submissions().await.unwrap();
+            assert!(requests.lock().unwrap().is_empty());
+            attester.retry_held_submission(saved.note_id).unwrap();
+        }
         attester.recover_submissions().await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],

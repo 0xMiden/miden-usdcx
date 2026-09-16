@@ -1,10 +1,5 @@
-//! Shared test fixture: the dev config plus six REAL role `.mac` files it references.
-//!
-//! The tool reads role accounts from externally-produced `AccountFile`s, so the fixture plays
-//! the external account tooling — TEST-ONLY code: each role wallet is generated FRESH but
-//! deterministically (fixed per-role seeds, seeded ChaCha20 Falcon keys, `create_basic_wallet`),
-//! promoted to the genesis-injectable form the node expects (nonce one, no seed), and written
-//! as a `.mac` file into a temp directory the assembled config JSON references.
+//! Shared test fixture: the dev config plus six real role `.mac` files it references,
+//! generated deterministically (fixed per-role seeds, seeded ChaCha20 Falcon keys).
 
 // Each test binary compiles its own copy of this module and exercises a different subset of it.
 #![allow(dead_code)]
@@ -13,7 +8,6 @@ use std::path::Path;
 
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::account::{Account, AccountFile, AccountType};
-use miden_protocol::Felt;
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::create_basic_wallet;
 use rand_chacha::rand_core::SeedableRng;
@@ -21,13 +15,12 @@ use rand_chacha::ChaCha20Rng;
 use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
 
 /// The dev faucet seed (`0x07` repeated), distinct from every wallet seed below.
-pub const FAUCET_SEED_HEX: &str =
-    "0x0707070707070707070707070707070707070707070707070707070707070707";
+pub const FAUCET_SEED: [u8; 32] = [7; 32];
 
 /// The fixed per-role wallet seed: the role's 1-based position in [`Role::ALL`], repeated.
 pub fn role_seed(role: Role) -> [u8; 32] {
     let byte = match role {
-        Role::Operator => 1,
+        Role::Relayer => 1,
         Role::Owner => 2,
         Role::AttestAdmin => 3,
         Role::Pauser => 4,
@@ -37,10 +30,9 @@ pub fn role_seed(role: Role) -> [u8; 32] {
     [byte; 32]
 }
 
-/// Generates one role wallet at nonce zero, exactly as external account tooling would grind
-/// it: a Falcon512-Poseidon2 key pair from seeded ChaCha20, wrapped in a public basic wallet
-/// ground from the same seed.
-pub fn generate_ground_wallet(role: Role) -> Account {
+/// Generates one role wallet deterministically: a Falcon512-Poseidon2 key pair from seeded
+/// ChaCha20, wrapped in a public basic wallet ground from the same seed.
+pub fn generate_wallet(role: Role) -> Account {
     let seed = role_seed(role);
     let mut rng = ChaCha20Rng::from_seed(seed);
     let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
@@ -50,18 +42,6 @@ pub fn generate_ground_wallet(role: Role) -> Account {
         AccountType::Public,
     )
     .expect("the fixture wallet must build")
-}
-
-/// Rebuilds `account` in the genesis-injectable form the node expects: nonce one, no seed.
-pub fn promote_to_genesis(account: Account) -> Account {
-    let (id, vault, storage, code, _nonce, _seed) = account.into_parts();
-    Account::new(id, vault, storage, code, Felt::ONE, None)
-        .expect("the fixture promotion must rebuild")
-}
-
-/// Generates one role wallet in genesis-injectable form.
-pub fn generate_wallet(role: Role) -> Account {
-    promote_to_genesis(generate_ground_wallet(role))
 }
 
 /// A materialized dev fixture: the temp directory holding the six generated `.mac` files, and
@@ -89,7 +69,7 @@ impl Fixture {
         let json = serde_json::json!({
             "accounts": accounts,
             "faucet": {
-                "seed": FAUCET_SEED_HEX,
+                "seed": FAUCET_SEED,
                 "max_supply": 1_000_000_000_000u64,
                 "token_supply": 250_000_000u64,
                 "domain": 7,

@@ -12,7 +12,7 @@ use miden_protocol::block::FeeParameters;
 use miden_protocol::Felt;
 use miden_standards::account::fees::FeePolicyManager;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
-use xusdc_genesis::accounts::build_faucet;
+use xusdc_genesis::accounts::{build_faucet, placeholder_fee_faucet_id};
 use xusdc_genesis::config::Role;
 
 use crate::common::Fixture;
@@ -41,24 +41,24 @@ fn the_faucet_is_a_native_fee_genesis_account() {
         "the fee-asset slot must be rebound to the faucet's own asset",
     );
 
-    // Rebuild the PLAIN (nonce-zero, operator-placeholder) account from the same inputs: the id
-    // must match, proving the genesis build derived the id before the rebinding.
+    // Rebuild the PLAIN (nonce-zero, placeholder-fee) account from the same inputs: the id
+    // must match, proving the genesis build derived the id before the fee-asset swap.
     let plain = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(config.faucet.max_supply).expect("valid max_supply"))
         .token_supply(AssetAmount::new(config.faucet.token_supply).expect("valid token_supply"))
-        .owner(config.role_id(Role::Owner))
-        .attest_admin_holder(config.role_id(Role::AttestAdmin))
-        .pauser_holder(config.role_id(Role::Pauser))
-        .unpauser_holder(config.role_id(Role::Unpauser))
-        .blocklist_manager_holder(config.role_id(Role::BlocklistManager))
+        .owner(config.account_id(Role::Owner))
+        .attest_admin_holder(config.account_id(Role::AttestAdmin))
+        .pauser_holder(config.account_id(Role::Pauser))
+        .unpauser_holder(config.account_id(Role::Unpauser))
+        .blocklist_manager_holder(config.account_id(Role::BlocklistManager))
         .fee_parameters(FeeParameters::new(
-            config.role_id(Role::Operator),
+            placeholder_fee_faucet_id(),
             config.faucet.verification_base_fee,
         ))
         .domain(config.faucet.domain)
         .build()
         .expect("the builder must compose")
-        .build_account(config.faucet.seed.as_bytes())
+        .build_account(config.faucet.seed)
         .expect("the plain build must succeed");
     assert_eq!(
         faucet.id(),

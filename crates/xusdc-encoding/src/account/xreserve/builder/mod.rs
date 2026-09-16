@@ -84,7 +84,8 @@ pub const XRESERVE_SET_ATTESTER_PROC_PATH: &str =
 pub const XRESERVE_BURN_POLICY_PROC_PATH: &str =
     "xreserve::components::faucet_burn_policy::check_burn_policy";
 
-/// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`](miden_standards::account::policies::MinBurnAmount) policy
+/// The smallest admissible `min_burn_amount` (the zero floor). The stock [`MinBurnAmount`]
+/// policy
 /// asserts `min <= amount` ONLY (its authority-gated stock setter even accepts `0`), so the
 /// zero-burn reject is enforced at note-building time: the builder rejects a floor below this at
 /// construction, and the [`XReserveMinBurnAmountNote`](crate::note::xreserve_admin::XReserveMinBurnAmountNote)
@@ -133,10 +134,7 @@ pub struct XReserveStablecoinBuilder {
     /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
     /// the standard role-action note.
     blocklist_manager_holder: AccountId,
-    /// Parameters used to price notes and identify the network fee asset. For a genesis (native
-    /// fee faucet) build these carry the OPERATOR's account id as the fee faucet id during the
-    /// seed grind; `build_genesis_account` then rebinds the fee-asset slot to the asset the
-    /// faucet itself issues.
+    /// Parameters used to price notes and identify the network fee asset.
     fee_parameters: FeeParameters,
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
     /// and is validated at construction.

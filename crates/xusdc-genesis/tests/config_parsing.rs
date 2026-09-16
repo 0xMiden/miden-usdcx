@@ -4,7 +4,6 @@
 mod common;
 
 use assert_matches::assert_matches;
-use rstest::rstest;
 use xusdc_genesis::config::{ConfigError, Role};
 
 use crate::common::{generate_wallet, Fixture};
@@ -22,7 +21,7 @@ fn the_dev_fixture_round_trips() {
     assert!(config.output_dir.is_none());
     for role in Role::ALL {
         assert_eq!(
-            config.role_id(role),
+            config.account_id(role),
             generate_wallet(role).id(),
             "the {} id must be the one extracted from the referenced .mac file",
             role.as_str(),
@@ -34,11 +33,11 @@ fn the_dev_fixture_round_trips() {
 #[test]
 fn a_missing_account_file_is_rejected() {
     let mut fixture = Fixture::new();
-    fixture.json["accounts"]["operator"] = serde_json::Value::from("missing.mac");
+    fixture.json["accounts"]["relayer"] = serde_json::Value::from("missing.mac");
     let err = fixture
         .parse()
         .expect_err("a missing account file must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "operator", path, .. } => {
+    assert_matches!(err, ConfigError::AccountFile { field: "relayer", path, .. } => {
         assert!(path.ends_with("missing.mac"), "the error must carry the resolved path");
     });
 }
@@ -59,27 +58,15 @@ fn a_corrupt_account_file_is_rejected() {
     assert_matches!(err, ConfigError::AccountFile { field: "owner", .. });
 }
 
-/// A malformed faucet seed is rejected with the variant naming the exact defect.
-#[rstest]
-#[case::wrong_length("0x0101", |err: &ConfigError| matches!(err, ConfigError::SeedLength { field: "faucet.seed", len: 4 }))]
-#[case::missing_prefix(
-    "0707070707070707070707070707070707070707070707070707070707070707",
-    |err: &ConfigError| matches!(err, ConfigError::SeedMissingPrefix { field: "faucet.seed" })
-)]
-#[case::non_hex(
-    "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-    |err: &ConfigError| matches!(err, ConfigError::SeedHex { field: "faucet.seed", .. })
-)]
-fn a_malformed_faucet_seed_is_rejected(
-    #[case] seed: &str,
-    #[case] is_expected: fn(&ConfigError) -> bool,
-) {
+/// A faucet seed that is not exactly 32 bytes is a schema violation.
+#[test]
+fn a_wrong_length_seed_is_rejected() {
     let mut fixture = Fixture::new();
-    fixture.json["faucet"]["seed"] = serde_json::Value::String(seed.to_string());
+    fixture.json["faucet"]["seed"] = serde_json::Value::from(vec![7u8; 4]);
     let err = fixture
         .parse()
-        .expect_err("a malformed seed must be rejected");
-    assert!(is_expected(&err), "unexpected error variant: {err:?}");
+        .expect_err("a wrong-length seed must be rejected");
+    assert_matches!(err, ConfigError::Parse(_));
 }
 
 /// An unknown field anywhere in the document is a schema violation (`deny_unknown_fields`).

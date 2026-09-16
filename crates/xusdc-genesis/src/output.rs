@@ -40,7 +40,7 @@ pub fn render_listing(faucet: &Account, config: &GenesisToolConfig) -> String {
             out,
             "  {}: {}",
             role.as_str(),
-            config.role_id(role).to_hex()
+            config.account_id(role).to_hex()
         );
     }
     out

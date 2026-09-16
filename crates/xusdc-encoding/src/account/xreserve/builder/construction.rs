@@ -201,12 +201,9 @@ impl XReserveStablecoinBuilder {
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 
-    /// Builds the faucet as the network's NATIVE fee faucet for inclusion in a genesis block,
-    /// mirroring the ending of the stock `create_native_fungible_faucet_for_genesis`: the account
-    /// id is derived by [`Self::build_account`] while the builder's `fee_parameters` still carry a
-    /// placeholder fee faucet id (the operator's), then the fee-asset slot is rebound to the asset
-    /// the faucet itself issues, and the account is rebuilt at nonce one with no seed. The id is
-    /// unchanged by the rebinding because it was derived before the swap.
+    /// Builds the faucet for inclusion in a genesis block, mirroring the ending of the stock
+    /// `create_native_fungible_faucet_for_genesis`: the account comes out at nonce one with no
+    /// seed, its fee asset the one the faucet itself issues.
     ///
     /// # Warning
     ///

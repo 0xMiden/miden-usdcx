@@ -96,6 +96,33 @@ impl fmt::Display for RemoteDomain {
     }
 }
 
+/// `keccak256` of an attestation's payload, which is what names one deposit in the feed.
+///
+/// It identifies an attestation in a log line and in the set of deposits already handled; the
+/// chain recomputes and verifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MessageHash([u8; 32]);
+
+impl MessageHash {
+    /// Wraps a digest as the feed published it.
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for MessageHash {
+    /// Renders the `0x`-hex form Circle publishes, so a log line can be matched against the feed.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x{}", hex::encode(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageHash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        hex_array(deserializer).map(Self)
+    }
+}
+
 /// One entry of Circle's attestation feed: the encoded DepositIntent and the attester's signature
 /// over it. Circle publishes each field as `0x`-hex; the hex is decoded here.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -104,10 +131,8 @@ pub struct Attestation {
     /// The encoded DepositIntent.
     #[serde(deserialize_with = "hex_bytes")]
     pub payload: Vec<u8>,
-    /// `keccak256(payload)`. Identifies the attestation when it is reported as skipped; the chain
-    /// recomputes and verifies it.
-    #[serde(deserialize_with = "hex_array")]
-    pub message_hash: [u8; 32],
+    /// The digest naming this deposit.
+    pub message_hash: MessageHash,
     /// The attester's signature over the payload, published under the `attestation` key.
     #[serde(rename = "attestation", deserialize_with = "hex_signature")]
     pub signature: Signature,
@@ -305,7 +330,7 @@ fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature
 mod tests {
     use std::time::Duration;
 
-    use super::{Attestation, CircleClient, Page, PageSize, RemoteDomain, Signature};
+    use super::{Attestation, CircleClient, MessageHash, Page, PageSize, RemoteDomain, Signature};
     use crate::store::CircleCursor;
 
     /// The domain the request tests address.
@@ -330,7 +355,7 @@ mod tests {
     fn attestation(seed: u8) -> Attestation {
         Attestation {
             payload: vec![seed; 8],
-            message_hash: [seed; 32],
+            message_hash: MessageHash::new([seed; 32]),
             signature: Signature::new([seed; 65]),
         }
     }
@@ -342,7 +367,7 @@ mod tests {
             .map(|attestation| {
                 serde_json::json!({
                     "payload": format!("0x{}", hex::encode(&attestation.payload)),
-                    "messageHash": format!("0x{}", hex::encode(attestation.message_hash)),
+                    "messageHash": attestation.message_hash.to_string(),
                     "attestation": format!("0x{}", hex::encode(attestation.signature.as_bytes())),
                 })
             })

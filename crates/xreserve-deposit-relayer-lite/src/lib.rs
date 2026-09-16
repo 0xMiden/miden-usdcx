@@ -12,7 +12,7 @@ pub mod miden;
 pub mod mint;
 pub mod store;
 
-use circle::{Attestation, CircleClient};
+use circle::{Attestation, CircleClient, MessageHash};
 use config::Config;
 use miden::MidenClient;
 use mint::Minter;
@@ -24,21 +24,21 @@ pub struct Relayer {
     config: Config,
     circle: CircleClient,
     store: Store,
-    miden: Box<dyn MidenClient>,
+    miden_client: Box<dyn MidenClient>,
     minter: Minter,
-    /// The message hashes of the attestations handled since the cursor last advanced.
+    /// The attestations handled since the cursor last advanced.
     ///
     /// The final page of the feed carries attestations but no next cursor, so the cursor stays
     /// where it is and every poll while the feed is caught up fetches that same page again. This
     /// set is what stops each of those polls from rebuilding and resubmitting the same deposits.
     /// It is cleared when the cursor advances, so it never holds more than one page, and it is not
     /// persisted, so a restart handles the final page once more.
-    handled: HashSet<[u8; 32]>,
+    handled: HashSet<MessageHash>,
 }
 
 /// How a page ended, and therefore whether the loop should pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageOutcome {
+enum PageOutcome {
     /// The page was handled and there is another one — keep going without sleeping.
     MorePages,
     /// The feed is caught up.
@@ -51,7 +51,7 @@ impl Relayer {
     /// # Errors
     ///
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
-    pub fn new(config: Config, miden: Box<dyn MidenClient>) -> Result<Self> {
+    pub fn new(config: Config, miden_client: Box<dyn MidenClient>) -> Result<Self> {
         Ok(Self {
             circle: CircleClient::new(
                 config.circle_url.clone(),
@@ -60,7 +60,7 @@ impl Relayer {
             )?,
             store: Store::new(config.state_file.clone()),
             minter: Minter::from_config(&config),
-            miden,
+            miden_client,
             config,
             handled: HashSet::new(),
         })
@@ -82,17 +82,16 @@ impl Relayer {
     /// - Fetching the Circle page fails.
     /// - Submitting the mint notes fails.
     /// - Persisting the next cursor fails.
-    pub fn process_next_page(&mut self) -> Result<PageOutcome> {
+    fn process_next_page(&mut self) -> Result<PageOutcome> {
         let cursor = self.store.cursor()?;
         let page = self
             .circle
             .fetch_page(self.config.remote_domain, cursor.as_ref())?;
 
-        let unhandled: Vec<Attestation> = page
+        let unhandled: Vec<&Attestation> = page
             .attestations
             .iter()
             .filter(|attestation| !self.handled.contains(&attestation.message_hash))
-            .cloned()
             .collect();
         // The minter yields its own note type; the chain takes protocol notes, so the page is
         // converted here, once, on its way to being submitted.
@@ -107,7 +106,9 @@ impl Relayer {
             warn!(fetched = unhandled.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
             let submitted = notes.len();
-            let tx = self.miden.submit_notes(self.minter.mint_account(), notes)?;
+            let tx = self
+                .miden_client
+                .submit_notes(self.minter.mint_account(), notes)?;
             info!(
                 tx = %tx,
                 fetched = unhandled.len(),

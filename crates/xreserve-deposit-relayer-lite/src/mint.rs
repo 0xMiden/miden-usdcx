@@ -107,16 +107,19 @@ impl Minter {
 
     /// Builds the mint notes for one page.
     ///
+    /// The attestations are borrowed rather than owned, so a caller that is minting a subset of a
+    /// page does not have to copy it first.
+    ///
     /// An attestation that cannot be decoded or built is logged and skipped. Each successful note
     /// receives a fresh serial number, so rebuilding the same deposit produces a distinct note.
-    pub fn build_notes(&mut self, attestations: &[Attestation]) -> Vec<XUsdcMintNote> {
+    pub fn build_notes(&mut self, attestations: &[&Attestation]) -> Vec<XUsdcMintNote> {
         attestations
             .iter()
             .filter_map(|attestation| {
                 self.build_note(attestation)
                     .map_err(|error| {
                         error!(
-                            message_hash = format!("0x{}", hex::encode(attestation.message_hash)),
+                            message_hash = %attestation.message_hash,
                             error = format!("{error:#}"),
                             "skipping an attestation that will not build"
                         );
@@ -162,7 +165,7 @@ mod tests {
     };
 
     use super::{AttesterPublicKey, Minter, XUsdcMintNote};
-    use crate::circle::{Attestation, PageSize, RemoteDomain};
+    use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
     use crate::config::Config;
 
     /// The Miden destination domain these tests address payloads to — a placeholder value, since
@@ -254,7 +257,7 @@ mod tests {
         fn for_intent(intent: &DepositIntent) -> Self {
             Self {
                 payload: intent.to_bytes(),
-                message_hash: [0u8; 32],
+                message_hash: MessageHash::new([0u8; 32]),
                 signature: Signature::new([0xAB; 65]),
             }
         }
@@ -269,7 +272,7 @@ mod tests {
         fn undecodable() -> Self {
             Self {
                 payload: vec![0xFF; 16],
-                message_hash: [0u8; 32],
+                message_hash: MessageHash::new([0u8; 32]),
                 signature: Signature::new([0xAB; 65]),
             }
         }
@@ -279,7 +282,7 @@ mod tests {
     #[test]
     fn valid_attestations_build_notes() {
         let notes =
-            Minter::test().build_notes(&[Attestation::buildable(1), Attestation::buildable(2)]);
+            Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
         assert_eq!(notes.len(), 2);
     }
 
@@ -287,9 +290,9 @@ mod tests {
     #[test]
     fn a_malformed_attestation_is_skipped_not_fatal() {
         let notes = Minter::test().build_notes(&[
-            Attestation::buildable(1),
-            Attestation::undecodable(),
-            Attestation::buildable(3),
+            &Attestation::buildable(1),
+            &Attestation::undecodable(),
+            &Attestation::buildable(3),
         ]);
         assert_eq!(notes.len(), 2, "the two good deposits still build");
     }
@@ -298,7 +301,7 @@ mod tests {
     #[test]
     fn a_deposit_for_another_faucet_is_skipped() {
         let elsewhere = Attestation::for_intent(&deposit_intent([9; 32], other_dummy_faucet_id()));
-        let notes = Minter::test().build_notes(&[elsewhere, Attestation::buildable(2)]);
+        let notes = Minter::test().build_notes(&[&elsewhere, &Attestation::buildable(2)]);
         assert_eq!(notes.len(), 1);
     }
 
@@ -313,8 +316,8 @@ mod tests {
     #[test]
     fn a_rebuilt_deposit_is_a_distinct_note() {
         let mut minter = Minter::test();
-        let first = minter.build_notes(&[Attestation::buildable(1)]);
-        let second = minter.build_notes(&[Attestation::buildable(1)]);
+        let first = minter.build_notes(&[&Attestation::buildable(1)]);
+        let second = minter.build_notes(&[&Attestation::buildable(1)]);
         assert_ne!(only_note_id(first), only_note_id(second));
     }
 

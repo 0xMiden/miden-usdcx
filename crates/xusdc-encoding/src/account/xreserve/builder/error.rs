@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use miden_protocol::errors::AccountError;
+use miden_protocol::errors::{AccountError, StorageMapError};
 use miden_standards::account::auth::NetworkAccountNoteAllowlistError;
 use miden_standards::account::faucets::FungibleFaucetError;
 use miden_standards::account::policies::{BurnPolicyError, MintPolicyError};
@@ -50,6 +50,8 @@ pub enum XReserveStablecoinBuilderError {
     /// no other role, or a single signer gains a high-consequence power. `collides_with` names
     /// the offending role.
     PauserNotIsolated { collides_with: &'static str },
+    /// The build-seeded attester allowlist lists a key twice. Carries the storage-map error.
+    AttesterAllowlist(StorageMapError),
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
     /// the root against the supplied companion components).
     MintPolicy(MintPolicyError),
@@ -97,6 +99,9 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "the DOM_PAUSER holder must hold no other role, but it collides with {collides_with}"
             ),
+            Self::AttesterAllowlist(_) => {
+                write!(f, "the build-seeded attester allowlist lists a key twice")
+            }
             Self::MintPolicy(_) => write!(f, "mint policy descriptor construction failed"),
             Self::BurnPolicy(_) => write!(f, "burn policy descriptor construction failed"),
         }
@@ -112,6 +117,7 @@ impl core::error::Error for XReserveStablecoinBuilderError {
             Self::NetworkAuth(source) => Some(source),
             Self::AccountComposition(source) => Some(source),
             Self::FeePricing(source) => Some(source),
+            Self::AttesterAllowlist(source) => Some(source),
             _ => None,
         }
     }

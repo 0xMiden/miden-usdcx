@@ -541,14 +541,15 @@ fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<
 /// constructor argument shape that every production fixture AND every production PIN is measured
 /// through. A second copy of this shape anywhere would keep measuring
 /// the OLD arguments after the production ones changed, leaving a root/slot pin green while the
-/// shipped account moved; so there is exactly one, and callers differ only in `domain` and the
-/// optional `min_burn_amount`. Returns the constructor's typed verdict; the outer `Result` carries
-/// fixture setup failures only.
-pub fn production_builder_verdict(
+/// shipped account moved; so there is exactly one, and callers differ only in `domain`, the
+/// optional `min_burn_amount` and the build-seeded `attesters`. Returns the constructor's typed
+/// verdict; the outer `Result` carries fixture setup failures only.
+pub fn production_builder_verdict_with_attesters(
     max_supply: u64,
     token_supply: u64,
     domain: u32,
     min_burn_amount: Option<AssetAmount>,
+    attesters: Vec<PublicKey>,
 ) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
     Ok(XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
@@ -560,8 +561,25 @@ pub fn production_builder_verdict(
         .blocklist_manager_holder(test_account_id(4))
         .fee_parameters(test_fee_parameters())
         .domain(domain)
+        .attesters(attesters)
         .maybe_min_burn_amount(min_burn_amount)
         .build())
+}
+
+/// [`production_builder_verdict_with_attesters`] with an empty allowlist.
+pub fn production_builder_verdict(
+    max_supply: u64,
+    token_supply: u64,
+    domain: u32,
+    min_burn_amount: Option<AssetAmount>,
+) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
+    production_builder_verdict_with_attesters(
+        max_supply,
+        token_supply,
+        domain,
+        min_burn_amount,
+        Vec::new(),
+    )
 }
 
 pub fn production_builder(
@@ -2688,6 +2706,16 @@ pub fn setup_production_faucet(
     token_supply: u64,
     seed_notes_for: impl FnOnce(AccountId, AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
+    setup_production_faucet_with_attesters(max_supply, token_supply, Vec::new(), seed_notes_for)
+}
+
+/// [`setup_production_faucet`] with `attesters` allowlisted at build time.
+pub fn setup_production_faucet_with_attesters(
+    max_supply: u64,
+    token_supply: u64,
+    attesters: Vec<PublicKey>,
+    seed_notes_for: impl FnOnce(AccountId, AccountId) -> Vec<Note>,
+) -> Result<ProductionFaucet> {
     let mut mc = MockChain::builder();
     let recipient = mc
         .add_existing_wallet(Auth::IncrNonce)
@@ -2696,10 +2724,17 @@ pub fn setup_production_faucet(
         add_emitting_wallet(&mut mc, Auth::IncrNonce, []).context("adding producer wallet")?;
 
     // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
-    // component internally, so the fixture only supplies the supply parameters.
-    let components = production_builder(max_supply, token_supply, TEST_DOMAIN)?
-        .build_components()
-        .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
+    // component internally, so the fixture supplies only the supply parameters and the attesters.
+    let components = production_builder_verdict_with_attesters(
+        max_supply,
+        token_supply,
+        TEST_DOMAIN,
+        None,
+        attesters,
+    )?
+    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+    .build_components()
+    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
     // Build the keyless network account with the production allowlists and test fee policy.
     let account = add_network_faucet_account(&mut mc, components)

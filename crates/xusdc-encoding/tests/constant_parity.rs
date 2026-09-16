@@ -70,7 +70,9 @@ fn expected_mint_intent_word_consts() -> Vec<(&'static str, &'static str)> {
 /// Expected `word("…")` slot-name constant of the set_attester admin module — the single MASM-side
 /// declaration of the slot the attestation verification read path also keys; the shared name is the single Rust source.
 /// (The `ATTESTER_ENABLED_MARKER` / `ATTESTER_DISABLED_MARKER` Word array literals are not
-/// parity-parsed, like `NONCE_USED_MARKER`.)
+/// parity-parsed, like `NONCE_USED_MARKER`; the builder's Rust mirror of the enabled marker is
+/// checked by execution in `build_seeded_attesters.rs`, where the MASM read path accepts the row
+/// the builder wrote.)
 fn expected_attester_admin_word_consts() -> Vec<(&'static str, &'static str)> {
     vec![(
         "XRESERVE_ATTESTERS_SLOT",

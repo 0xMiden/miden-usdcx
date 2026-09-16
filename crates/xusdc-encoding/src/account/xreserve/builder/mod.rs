@@ -25,11 +25,14 @@
 //! Domain config is entirely BUILD-SEEDED: `domain` is a required builder input written into its
 //! declared slot at composition time. The faucet identifier has no slot — it is the account's own
 //! id, which the mint path derives on chain, so the composed faucet is mint-ready when it exists.
+//! The attester allowlist can be build-seeded the same way: the optional `attesters` input
+//! allowlists keys at composition time, so their attestations mint without a `set_attester` note.
 
 use bon::bon;
 use miden_protocol::account::{AccountComponent, AccountId, RoleSymbol};
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::FeeParameters;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_standards::account::access::{
     Pausable, PausableManager, RoleBasedAccessControl, RoleConfig,
 };
@@ -107,7 +110,7 @@ pub const USDCX_DECIMALS: u8 = 6;
 ///
 /// Construct with the generated [`Self::builder`] (the faucet supply parameters, the `owner` and
 /// role holders, the network fee parameters, and the build-seeded domain; the
-/// min-burn floor is the one optional input), then call
+/// min-burn floor and the build-seeded attesters are the optional inputs), then call
 /// [`XReserveStablecoinBuilder::build_components`] (or the crate-root `build_faucet_account` /
 /// [`Self::build_account`] for the finished `Account`).
 #[derive(Debug)]
@@ -137,8 +140,8 @@ pub struct XReserveStablecoinBuilder {
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
     /// and is validated at construction.
     min_burn_amount: AssetAmount,
-    /// The faucet's own Circle domain id.
-    domain: u32,
+    /// The composed faucet extension: the domain config plus the build-seeded attester allowlist.
+    faucet_extension: XReserveFaucetExtension,
 }
 
 #[bon]
@@ -153,7 +156,8 @@ impl XReserveStablecoinBuilder {
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
     /// transfer-blocklist administrator), the network `fee_parameters`, plus the BUILD-SEEDED
     /// u32 `domain`. The domain is required because a faucet without it would ship a domain
-    /// compare that reads an empty slot.
+    /// compare that reads an empty slot. `attesters` (default empty) are allowlisted at
+    /// composition time.
     ///
     /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
     /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` — so the
@@ -170,7 +174,9 @@ impl XReserveStablecoinBuilder {
     /// [`XReserveStablecoinBuilderError::FaucetComposition`] if the supply parameters do not form a
     /// valid `FungibleFaucet`;
     /// [`XReserveStablecoinBuilderError::MinBurnSizeBelowFloor`] if `min_burn_amount` is below
-    /// [`MIN_BURN_SIZE_FLOOR`] (the zero-floor invariant).
+    /// [`MIN_BURN_SIZE_FLOOR`] (the zero-floor invariant);
+    /// [`XReserveStablecoinBuilderError::AttesterAllowlist`] if a key in `attesters` is listed
+    /// twice.
     #[builder]
     pub fn new(
         max_supply: AssetAmount,
@@ -182,6 +188,7 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holder: AccountId,
         fee_parameters: FeeParameters,
         domain: u32,
+        #[builder(default)] attesters: Vec<PublicKey>,
         min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {
         let min_burn_amount = min_burn_amount.unwrap_or(
@@ -193,6 +200,8 @@ impl XReserveStablecoinBuilder {
                 min_burn_amount.as_u64(),
             ));
         }
+        let faucet_extension = XReserveFaucetExtension::new(domain, &attesters)
+            .map_err(XReserveStablecoinBuilderError::AttesterAllowlist)?;
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
             owner,
@@ -202,7 +211,7 @@ impl XReserveStablecoinBuilder {
             blocklist_manager_holder,
             fee_parameters,
             min_burn_amount,
-            domain,
+            faucet_extension,
         })
     }
 }
@@ -265,9 +274,7 @@ impl XReserveStablecoinBuilder {
                 collides_with: "DOM_UNPAUSER",
             });
         }
-        // Seed domain config before the mint policy takes the component, so the manager
-        // emits the installable copy.
-        let xreserve_component = AccountComponent::from(XReserveFaucetExtension::new(self.domain));
+        let xreserve_component = AccountComponent::from(self.faucet_extension.clone());
         let burn_policy_component = Self::burn_policy_component();
         let burn_root = burn_policy_component
             .get_procedure_root_by_path(XRESERVE_BURN_POLICY_PROC_PATH)

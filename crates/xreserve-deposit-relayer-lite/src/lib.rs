@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
+use miden_protocol::note::Note;
 use tracing::{info, warn};
 
 pub mod circle;
@@ -93,7 +94,14 @@ impl Relayer {
             .filter(|attestation| !self.handled.contains(&attestation.message_hash))
             .cloned()
             .collect();
-        let notes = self.minter.build_notes(&unhandled);
+        // The minter yields its own note type; the chain takes protocol notes, so the page is
+        // converted here, once, on its way to being submitted.
+        let notes: Vec<Note> = self
+            .minter
+            .build_notes(&unhandled)
+            .into_iter()
+            .map(Note::from)
+            .collect();
 
         if notes.is_empty() && !unhandled.is_empty() {
             warn!(fetched = unhandled.len(), "page produced no mint notes");

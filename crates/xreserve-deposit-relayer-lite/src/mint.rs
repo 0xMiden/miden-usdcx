@@ -11,7 +11,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::{random_word, RandomCoin};
 use miden_protocol::crypto::utils::Deserializable;
-use miden_protocol::note::Note;
 use tracing::error;
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
@@ -38,6 +37,9 @@ impl FromStr for AttesterPublicKey {
         let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(value))
             .context("the attester public key is not hex")?;
 
+        // Reading the key takes the first 33 bytes and leaves the rest where they are, without
+        // complaining that they went unread. A longer value would therefore be accepted as
+        // whatever key its opening 33 bytes happen to spell, so the length is checked here.
         ensure!(
             bytes.len() == Self::COMPRESSED_LEN,
             "the attester public key is {} bytes, not {}",
@@ -86,7 +88,7 @@ impl Minter {
     ///
     /// An attestation that cannot be decoded or built is logged and skipped. Each successful note
     /// receives a fresh serial number, so rebuilding the same deposit produces a distinct note.
-    pub fn build_notes(&mut self, attestations: &[Attestation]) -> Vec<Note> {
+    pub fn build_notes(&mut self, attestations: &[Attestation]) -> Vec<XUsdcMintNote> {
         attestations
             .iter()
             .filter_map(|attestation| {
@@ -107,7 +109,7 @@ impl Minter {
     ///
     /// Failures depend only on the attestation and the configured identities, so retrying the
     /// same input cannot make it build successfully.
-    fn build_note(&mut self, attestation: &Attestation) -> Result<Note> {
+    fn build_note(&mut self, attestation: &Attestation) -> Result<XUsdcMintNote> {
         let intent = DepositIntent::try_from(attestation.payload.as_slice())
             .context("the payload is not a deposit intent")?;
 
@@ -122,7 +124,6 @@ impl Minter {
             ))
             .generate_serial_number(&mut self.rng)
             .build()
-            .map(Note::from)
             .context("building the mint note")
     }
 }
@@ -131,6 +132,7 @@ impl Minter {
 mod tests {
     use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
     use miden_protocol::crypto::utils::Serializable;
+    use miden_protocol::note::{Note, NoteId};
     use rstest::rstest;
 
     use xusdc_encoding::vectors::load;
@@ -138,7 +140,7 @@ mod tests {
         DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
-    use super::{AttesterPublicKey, Minter};
+    use super::{AttesterPublicKey, Minter, XUsdcMintNote};
     use crate::circle::{Attestation, PageSize, RemoteDomain};
     use crate::config::Config;
 
@@ -278,6 +280,12 @@ mod tests {
         assert_eq!(notes.len(), 1);
     }
 
+    /// The protocol note identifier of the one note a page was expected to build. Converting is
+    /// the caller's job, so these tests do it where they need an identifier.
+    fn only_note_id(notes: Vec<XUsdcMintNote>) -> NoteId {
+        Note::from(notes.into_iter().next().expect("the page built one note")).id()
+    }
+
     /// Rebuilding the same deposit twice yields distinct notes because each receives a new serial
     /// number.
     #[test]
@@ -285,7 +293,7 @@ mod tests {
         let mut minter = Minter::test();
         let first = minter.build_notes(&[Attestation::buildable(1)]);
         let second = minter.build_notes(&[Attestation::buildable(1)]);
-        assert_ne!(first[0].id(), second[0].id());
+        assert_ne!(only_note_id(first), only_note_id(second));
     }
 
     /// The `0x` prefix is optional and does not change the key.
@@ -299,12 +307,25 @@ mod tests {
     /// A malformed attester key is refused when it is parsed.
     #[rstest]
     #[case::not_hex("nothex")]
-    #[case::wrong_length("0xdeadbeef")]
+    #[case::too_short("0xdeadbeef")]
     #[case::not_a_point("03ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")]
     fn a_malformed_attester_key_is_refused(#[case] value: &str) {
         let error = format!("{:#}", value.parse::<AttesterPublicKey>().unwrap_err());
         assert!(
             error.contains("attester public key"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A key carrying bytes past the compressed form is refused. Reading it would stop at the 33rd
+    /// byte and ignore the rest, so without the length check a mistyped key would be accepted as
+    /// whatever its opening bytes spell.
+    #[test]
+    fn an_attester_key_with_trailing_bytes_is_refused() {
+        let trailing = format!("{ATTESTER_PUBKEY_HEX}ab");
+        let error = format!("{:#}", trailing.parse::<AttesterPublicKey>().unwrap_err());
+        assert!(
+            error.contains("is 34 bytes, not 33"),
             "unexpected error: {error}"
         );
     }

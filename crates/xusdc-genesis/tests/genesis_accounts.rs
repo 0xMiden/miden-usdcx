@@ -7,11 +7,12 @@
 
 mod common;
 
+use miden_protocol::account::StorageMapKey;
 use miden_protocol::asset::{AssetAmount, AssetId};
 use miden_protocol::block::FeeParameters;
-use miden_protocol::Felt;
+use miden_protocol::{Felt, Word};
 use miden_standards::account::fees::FeePolicyManager;
-use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
+use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
 use xusdc_genesis::accounts::{build_faucet, placeholder_fee_faucet_id};
 use xusdc_genesis::config::Role;
 
@@ -56,6 +57,7 @@ fn the_faucet_is_a_native_fee_genesis_account() {
             config.faucet.verification_base_fee,
         ))
         .domain(config.faucet.domain)
+        .attesters(config.faucet.attesters.clone())
         .build()
         .expect("the builder must compose")
         .build_account(config.faucet.seed)
@@ -65,4 +67,30 @@ fn the_faucet_is_a_native_fee_genesis_account() {
         plain.id(),
         "the genesis faucet id must equal the plain build_account id at the same seed",
     );
+}
+
+/// The built faucet carries an enabled attester-allowlist row for every configured key.
+#[test]
+fn the_configured_attesters_are_allowlisted_in_storage() {
+    let fixture = Fixture::new();
+    let config = fixture.config();
+    let faucet = build_faucet(&config).expect("the dev fixture must build");
+
+    assert!(
+        !config.faucet.attesters.is_empty(),
+        "the fixture must exercise a non-empty allowlist",
+    );
+    for key in &config.faucet.attesters {
+        assert_eq!(
+            faucet
+                .storage()
+                .get_map_item(
+                    XReserveFaucetExtension::xreserve_attesters_slot(),
+                    StorageMapKey::new(key.to_commitment()),
+                )
+                .expect("the faucet installs the attester allowlist slot"),
+            Word::from([1u32, 0, 0, 0]),
+            "the built faucet must carry the enabled row for every configured attester",
+        );
+    }
 }

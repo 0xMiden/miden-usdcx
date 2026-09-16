@@ -69,7 +69,7 @@ fn write_outputs_emits_only_the_deterministic_faucet_file() {
 // fixture's generated role `.mac` files — so it moves on every protocol bump (the code
 // commitment) and on any fixture change BY DESIGN. A failure here is the alarm that the
 // genesis identity changed; refreeze deliberately, never mechanically.
-const GOLDEN_FAUCET_ID: &str = "0x4fd13f4a12cff1f1299cb13b74a6b5";
+const GOLDEN_FAUCET_ID: &str = "0xf0de439e756dd2f113cb6a42833629";
 
 /// The faucet's dev-fixture id is frozen.
 #[test]

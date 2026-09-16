@@ -6,7 +6,7 @@ mod common;
 use assert_matches::assert_matches;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{generate_wallet, Fixture};
+use crate::common::{attester_keys, generate_wallet, Fixture};
 
 /// The dev fixture parses, and each role's id is extracted from its referenced `.mac` file.
 #[test]
@@ -19,6 +19,19 @@ fn the_dev_fixture_round_trips() {
     assert_eq!(config.faucet.verification_base_fee, 500);
     assert!(config.faucet.min_burn_amount.is_none());
     assert!(config.output_dir.is_none());
+    assert_eq!(
+        config
+            .faucet
+            .attesters
+            .iter()
+            .map(|key| key.to_commitment())
+            .collect::<Vec<_>>(),
+        attester_keys()
+            .iter()
+            .map(|key| key.to_commitment())
+            .collect::<Vec<_>>(),
+        "the attester keys must decode from their configured SEC1 bytes",
+    );
     for role in Role::ALL {
         assert_eq!(
             config.account_id(role),
@@ -56,6 +69,34 @@ fn a_corrupt_account_file_is_rejected() {
         .parse()
         .expect_err("a corrupt account file must be rejected");
     assert_matches!(err, ConfigError::AccountFile { field: "owner", .. });
+}
+
+/// An absent attester list parses as an empty allowlist (seeded later via set_attester).
+#[test]
+fn an_absent_attester_list_is_an_empty_allowlist() {
+    let mut fixture = Fixture::new();
+    fixture.json["faucet"]
+        .as_object_mut()
+        .expect("the faucet section is an object")
+        .remove("attesters");
+    assert!(
+        fixture.config().faucet.attesters.is_empty(),
+        "an absent attesters field must parse as an empty allowlist",
+    );
+}
+
+/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected with the
+/// variant naming its index: a wrong-length key, and a key with an invalid SEC1 tag byte.
+#[test]
+fn a_malformed_attester_key_is_rejected() {
+    for (bad_key, bad_index) in [(vec![2u8; 32], 1usize), (vec![5u8; 33], 0usize)] {
+        let mut fixture = Fixture::new();
+        fixture.json["faucet"]["attesters"][bad_index] = serde_json::Value::from(bad_key);
+        let err = fixture
+            .parse()
+            .expect_err("a malformed attester key must be rejected");
+        assert_matches!(err, ConfigError::AttesterKey { index, .. } if index == bad_index);
+    }
 }
 
 /// A faucet seed that is not exactly 32 bytes is a schema violation.

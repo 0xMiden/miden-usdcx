@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use miden_protocol::account::{AccountFile, AccountId};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 use serde::Deserialize;
 
 // ROLES
@@ -63,6 +65,9 @@ pub struct FaucetConfig {
     pub domain: u32,
     pub min_burn_amount: Option<u64>,
     pub verification_base_fee: u32,
+    /// The deposit attesters allowlisted at build time; empty means the allowlist is seeded
+    /// later through `set_attester` notes.
+    pub attesters: Vec<PublicKey>,
 }
 
 /// The validated tool config: one extracted [`AccountId`] per [`Role`], the [`FaucetConfig`],
@@ -112,6 +117,7 @@ impl GenesisToolConfig {
                 domain: raw.faucet.domain,
                 min_burn_amount: raw.faucet.min_burn_amount,
                 verification_base_fee: raw.faucet.verification_base_fee,
+                attesters: parse_attesters(&raw.faucet.attesters)?,
             },
             output_dir: raw.output_dir,
         };
@@ -141,6 +147,18 @@ impl GenesisToolConfig {
         }
         Ok(())
     }
+}
+
+/// Decodes the configured attester keys from their 33-byte compressed SEC1 form; a key that
+/// does not decode errors with the index-naming [`ConfigError::AttesterKey`].
+fn parse_attesters(raw: &[Vec<u8>]) -> Result<Vec<PublicKey>, ConfigError> {
+    raw.iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            PublicKey::read_from_bytes(bytes)
+                .map_err(|source| ConfigError::AttesterKey { index, source })
+        })
+        .collect()
 }
 
 /// Reads one role's `.mac` file purely to extract its account id. An unreadable or undecodable
@@ -188,6 +206,9 @@ struct RawFaucet {
     domain: u32,
     min_burn_amount: Option<u64>,
     verification_base_fee: u32,
+    /// The attester public keys, each as a JSON array of the key's 33 compressed SEC1 bytes.
+    #[serde(default)]
+    attesters: Vec<Vec<u8>>,
 }
 
 // ERRORS
@@ -210,6 +231,11 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+    /// A configured attester key does not decode as a compressed secp256k1 public key.
+    AttesterKey {
+        index: usize,
+        source: DeserializationError,
+    },
     /// The initial `token_supply` exceeds `max_supply`.
     SupplyExceedsMax { token_supply: u64, max_supply: u64 },
 }
@@ -222,6 +248,11 @@ impl core::fmt::Display for ConfigError {
             Self::AccountFile { field, path, .. } => {
                 write!(f, "reading the {field} account file {}", path.display())
             }
+            Self::AttesterKey { index, .. } => write!(
+                f,
+                "the faucet.attesters key at index {index} is not a valid 33-byte compressed \
+                 secp256k1 public key"
+            ),
             Self::SupplyExceedsMax {
                 token_supply,
                 max_supply,
@@ -238,6 +269,7 @@ impl core::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } | Self::AccountFile { source, .. } => Some(source),
             Self::Parse(source) => Some(source),
+            Self::AttesterKey { source, .. } => Some(source),
             Self::SupplyExceedsMax { .. } => None,
         }
     }

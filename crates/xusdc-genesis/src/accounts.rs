@@ -42,6 +42,7 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
         .blocklist_manager_holder(config.account_id(Role::BlocklistManager))
         .fee_parameters(fee_parameters)
         .domain(faucet_config.domain)
+        .attesters(faucet_config.attesters.clone())
         .maybe_min_burn_amount(min_burn_amount)
         .build()
         .context("composing the xUSDC faucet builder")?

@@ -40,14 +40,18 @@ directory:
     "token_supply": 250000000,
     "domain": 7,
     "min_burn_amount": 1,
-    "verification_base_fee": 500
+    "verification_base_fee": 500,
+    "attesters": [[2, 121, "... 33 bytes total ..."]]
   },
   "output_dir": "optional/out/dir"
 }
 ```
 
 `faucet.seed` is the faucet's 32-byte account seed as a JSON byte array; amounts are base units
-(6 decimals, `token_supply <= max_supply`); `domain` is the Circle domain id.
+(6 decimals, `token_supply <= max_supply`); `domain` is the Circle domain id. `attesters`
+(optional) lists the deposit attester public keys to allowlist at build time, each as a JSON
+byte array of the key's 33 compressed SEC1 bytes; when empty or absent the allowlist is seeded
+later through `set_attester` notes.
 
 `verification_base_fee` is baked into the faucet's fee schedule and MUST equal the
 `[fee_parameters] verification_base_fee` the network operator puts in the node's `genesis.toml`

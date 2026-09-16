@@ -35,7 +35,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::utils::{Deserializable, Serializable};
 use miden_protocol::{Hasher, Word};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use sha3::{Digest, Keccak256};
 
 use xusdc_encoding::vectors::{load, MiVector};
@@ -205,8 +205,11 @@ impl PartnerAttester {
     /// (e.g. [`FOREIGN_KEY_SEED`], the non-allowlisted key), since [`Self::new`] always returns the
     /// one partner key.
     pub fn with_seed(seed: u64) -> Self {
+        let mut key_bytes = [0u8; 32];
+        StdRng::seed_from_u64(seed).fill_bytes(&mut key_bytes);
         Self {
-            signing_key: SigningKey::random(&mut StdRng::seed_from_u64(seed)),
+            signing_key: SigningKey::from_slice(&key_bytes)
+                .expect("the seed yields a valid non-zero scalar"),
         }
     }
 

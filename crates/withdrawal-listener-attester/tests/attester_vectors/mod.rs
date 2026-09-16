@@ -28,7 +28,7 @@ use k256::ecdsa::{RecoveryId, Signature as K256Signature, VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::SecretKey;
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use sha3::{Digest, Keccak256};
 
 use withdrawal_listener_attester::attester::{sign, Address, Signature65, EVM_V_OFFSET};
@@ -66,8 +66,11 @@ pub struct TestAttester {
 impl TestAttester {
     /// The deterministic key for `seed` (seeded `StdRng` — reproducible across runs/machines).
     pub fn from_seed(seed: u64) -> Self {
+        let mut key_bytes = [0u8; 32];
+        StdRng::seed_from_u64(seed).fill_bytes(&mut key_bytes);
         Self {
-            secret: SecretKey::random(&mut StdRng::seed_from_u64(seed)),
+            secret: SecretKey::from_slice(&key_bytes)
+                .expect("the seed yields a valid non-zero scalar"),
         }
     }
 

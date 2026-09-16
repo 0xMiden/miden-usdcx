@@ -93,7 +93,7 @@ use miden_crypto::utils::Deserializable;
 use miden_crypto::SequentialCommit;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use sha3::{Digest, Keccak256};
 
 // TEST-ONLY FAUCET CONFIG (the domain id and the identifier encoding are Circle-owned and OPEN)
@@ -1105,7 +1105,9 @@ fn native_scalar_limbs(be: &[u8]) -> [Felt; 8] {
 /// `keccak256(payload)` (sha3) with it — the SAME independent path
 /// `gen_vectors` uses. Two distinct seeds over the SAME payload give the seam's key A / key B.
 pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
-    let sk = SigningKey::random(&mut StdRng::seed_from_u64(seed));
+    let mut key_bytes = [0u8; 32];
+    StdRng::seed_from_u64(seed).fill_bytes(&mut key_bytes);
+    let sk = SigningKey::from_slice(&key_bytes).expect("the seed yields a valid non-zero scalar");
     let pk33: [u8; 33] = sk
         .verifying_key()
         .to_encoded_point(true)

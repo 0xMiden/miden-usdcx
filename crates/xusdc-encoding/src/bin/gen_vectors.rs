@@ -21,7 +21,7 @@ use miden_protocol::testing::account_id::AccountIdBuilder;
 use miden_protocol::utils::bytes_to_packed_u32_elements;
 use miden_protocol::{Felt, Hasher, Word};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
 
@@ -264,7 +264,9 @@ fn di_reject(
 
 /// Deterministic independent secp256k1 keypair (k256 + seeded StdRng).
 fn att_keypair(seed: u64) -> SigningKey {
-    SigningKey::random(&mut StdRng::seed_from_u64(seed))
+    let mut bytes = [0u8; 32];
+    StdRng::seed_from_u64(seed).fill_bytes(&mut bytes);
+    SigningKey::from_slice(&bytes).expect("the seed yields a valid non-zero scalar")
 }
 
 /// 33-byte compressed SEC1 public key.

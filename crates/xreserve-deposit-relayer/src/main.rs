@@ -140,13 +140,14 @@ fn load_config() -> Result<RelayerConfig, RelayerError> {
 /// Built from `u32`s: every one is a felt exactly, so the seed is the entropy that was drawn rather
 /// than that entropy silently reduced modulo the field.
 fn entropy_seed() -> Word {
-    use rand::RngCore;
+    use rand::TryRng;
 
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rngs::SysRng;
+    let mut next = || rng.try_next_u32().expect("the os rng must yield entropy");
     Word::from([
-        Felt::from(rng.next_u32()),
-        Felt::from(rng.next_u32()),
-        Felt::from(rng.next_u32()),
-        Felt::from(rng.next_u32()),
+        Felt::from(next()),
+        Felt::from(next()),
+        Felt::from(next()),
+        Felt::from(next()),
     ])
 }

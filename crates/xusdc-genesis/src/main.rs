@@ -1,5 +1,5 @@
-//! `xusdc-genesis` — derives the xUSDC genesis accounts offline and emits the node's genesis
-//! inputs.
+//! `xusdc-genesis` — builds the genesis xUSDC faucet offline against the externally-provided
+//! role accounts and emits the node's genesis inputs.
 //!
 //! ```text
 //! cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
@@ -34,10 +34,11 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "xusdc-genesis — derive the xUSDC genesis accounts offline\n\n\
-                     Builds the six role wallets and the genesis xUSDC faucet from a config file,\n\
-                     then writes the .mac account files, a genesis.toml fragment, and an\n\
-                     accounts.json summary, printing every account id (hex + bech32).\n\n\
+                    "xusdc-genesis — derive the xUSDC genesis inputs offline\n\n\
+                     Builds the genesis xUSDC faucet against the six externally-provided role\n\
+                     accounts the config references, then writes the .mac account files, a\n\
+                     genesis.toml fragment, and an accounts.json summary, printing every\n\
+                     account id (hex + bech32).\n\n\
                      --config <PATH>    the JSON config (see the crate README for the schema)\n\
                      --out-dir <DIR>    where to write the outputs (overrides the config's\n\
                                         output_dir; required when the config sets none)\n"

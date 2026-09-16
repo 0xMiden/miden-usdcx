@@ -3,25 +3,19 @@ name = "xusdc-genesis"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "xUSDC-on-Miden genesis tool: derives the faucet and role accounts offline and emits the node's genesis inputs"
-
-# The protocol pins mirror the workspace's exact `=0.16.1` release (see the root manifest and
-# `crates/xusdc-encoding/Cargo.toml`): account-id derivation must resolve the same protocol copy
-# the encoding crate builds the faucet with, or the derived ids would not be the deployed ids.
+description = "xUSDC-on-Miden genesis tool: builds the genesis xUSDC faucet against externally-provided role accounts and emits the node's genesis inputs"
 
 [dependencies]
-miden-protocol  = { version = "=0.16.1" }
-miden-standards = { version = "=0.16.1" }
-xusdc-encoding  = { path = "../xusdc-encoding" }
+miden-protocol = { version = "=0.16.1" }
+xusdc-encoding = { path = "../xusdc-encoding" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
-# Deterministic per-role key generation (seeded ChaCha20); the version lives in
-# [workspace.dependencies] because it must track the protocol's rand family.
-rand_chacha = { workspace = true }
 
 [dev-dependencies]
+miden-standards = { version = "=0.16.1" }
+rand_chacha = { workspace = true }
 rstest = { workspace = true }
 assert_matches = { workspace = true }
 tempfile = { workspace = true }

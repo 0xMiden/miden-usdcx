@@ -1,19 +1,18 @@
 # xusdc-genesis
 
-Derives the xUSDC genesis accounts fully **offline** — before any network exists — and emits
+Builds the xUSDC genesis faucet fully **offline** — before any network exists — and emits
 everything the node's genesis needs. Account-id derivation hashes the account seed plus the code
-and storage commitments (no chain state, vault contents excluded), so the ids this tool prints
-are the ids the network will boot with, deterministically reproducible from the config.
+and storage commitments (no chain state, vault contents excluded), so the faucet id this tool
+prints is the id the network will boot with, deterministically reproducible from the config.
 
-It builds seven accounts:
-
-- six basic wallets: the network **operator** plus the five faucet role holders the
-  `XReserveStablecoinBuilder` seeds — **owner** (`ADMIN`), **attest_admin**, **pauser**,
-  **unpauser**, **blocklist_manager**;
-- the **xUSDC faucet**, built as the network's NATIVE fee faucet: its id is ground while the fee
-  parameters carry the operator's id as a placeholder, then
-  `XReserveStablecoinBuilder::build_genesis_account` rebinds the fee-asset slot to the asset the
-  faucet itself issues.
+The six role wallets — the network **operator** plus the five faucet role holders the
+`XReserveStablecoinBuilder` seeds, **owner** (`ADMIN`), **attest_admin**, **pauser**,
+**unpauser**, **blocklist_manager** — are **not** created by this tool: the config references
+their externally-produced protocol `AccountFile`s (`.mac`) by path. The one account this tool
+builds is the **xUSDC faucet**, as the network's NATIVE fee faucet: its id is ground while the
+fee parameters carry the operator's id as a placeholder, then
+`XReserveStablecoinBuilder::build_genesis_account` rebinds the fee-asset slot to the asset the
+faucet itself issues.
 
 ## Usage
 
@@ -23,7 +22,8 @@ cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
 
 Outputs, written to `--out-dir` (or the config's `output_dir`):
 
-- `usdcx-faucet.mac` and one `<role>.mac` per wallet — protocol `AccountFile`s;
+- `usdcx-faucet.mac` and one `<role>.mac` per wallet — protocol `AccountFile`s (the wallets
+  re-emitted in genesis form, secret keys passed through unchanged);
 - `genesis.toml` — a plain-text fragment for the node's genesis config
   (`native_faucet = "usdcx-faucet.mac"` plus one `[[account]] path = "<role>.mac"` per wallet);
 - `accounts.json` — a machine-readable summary of every id;
@@ -32,7 +32,10 @@ Outputs, written to `--out-dir` (or the config's `output_dir`):
 The node consumes `genesis.toml` together with the `.mac` files it references when constructing
 the genesis block; all seven accounts enter the chain at **nonce one** with no seed — they exist
 at genesis, they are never deployed in a transaction, and this tool's output cannot be used to
-deploy them anywhere else.
+deploy them anywhere else. Provided wallets are normalized to that form (the account id never
+changes: the nonce and seed do not enter it), and when `token_supply` is non-zero the operator's
+emitted vault additionally holds exactly that amount of the faucet's asset, matching the
+faucet's issued-supply tracker.
 
 ## Config reference
 
@@ -41,12 +44,12 @@ JSON, unknown fields rejected:
 ```json
 {
   "accounts": {
-    "operator":          { "seed": "0x<64 hex>", "public_key": "0x<hex, optional>" },
-    "owner":             { "seed": "0x<64 hex>" },
-    "attest_admin":      { "seed": "0x<64 hex>" },
-    "pauser":            { "seed": "0x<64 hex>" },
-    "unpauser":          { "seed": "0x<64 hex>" },
-    "blocklist_manager": { "seed": "0x<64 hex>" }
+    "operator":          "accounts/operator.mac",
+    "owner":             "accounts/owner.mac",
+    "attest_admin":      "accounts/attest_admin.mac",
+    "pauser":            "accounts/pauser.mac",
+    "unpauser":          "accounts/unpauser.mac",
+    "blocklist_manager": "accounts/blocklist_manager.mac"
   },
   "faucet": {
     "seed": "0x<64 hex>",
@@ -60,26 +63,25 @@ JSON, unknown fields rejected:
 }
 ```
 
-- `seed` — the 32-byte account seed (`0x` + 64 hex chars). All seven must be distinct.
-- `public_key` (optional, wallets only) — the hex of a protocol `PublicKey` serialization,
-  Falcon512-Poseidon2 only. When present, the holder keeps the secret and the tool never sees
-  it. When absent, the tool generates the key pair deterministically from the seed (seeded
-  ChaCha20) and embeds the secret in that account's `.mac` file.
+- `accounts.<role>` — the path to that role's protocol `AccountFile` (`.mac`); relative paths
+  resolve against the config file's directory. The six accounts must be pairwise distinct. This
+  tool creates no wallets and generates no keys — produce the account files with whatever
+  account tooling the deployment uses.
+- `faucet.seed` — the faucet's 32-byte account seed (`0x` + 64 hex chars).
 - `faucet` — the `XReserveStablecoinBuilder` inputs: the supply cap and initial supply (base
   units, 6 decimals; `token_supply <= max_supply`), the Circle domain id, the optional minimum
-  burn amount, and the network's `verification_base_fee` used to price the fee schedule. When
-  `token_supply` is non-zero the operator's genesis vault holds exactly that amount of the
-  faucet's asset, matching the faucet's issued-supply tracker.
+  burn amount, and the network's `verification_base_fee` used to price the fee schedule.
 
 ## SECURITY
 
-A config in which any account omits `public_key` **seeds real key material**: the account's
-secret key is derived from its `seed` and written into its `.mac` file. Treat such a config
-file — and the emitted `.mac` files — as secrets: anyone holding them controls the accounts.
-For production, supply `public_key` for every wallet so no secret ever exists in this tool.
+This tool generates no key material. It does, however, **pass through** any secret keys embedded
+in a provided `.mac` file into the re-emitted `.mac` in the output directory — if the account
+tooling that produced a wallet embedded its secret, treat that file and the corresponding output
+file as secrets: anyone holding them controls the account.
 
-## Determinism and the golden ids
+## Determinism and the golden id
 
-`tests/determinism.rs` freezes the ids the committed `tests/fixtures/dev-config.json` derives.
-They move on every protocol bump BY DESIGN (the id hashes the code commitment); the frozen test
-is the alarm, and a refreeze must be a deliberate act.
+`tests/determinism.rs` freezes the faucet id derived from the test fixture (six role wallets
+generated deterministically by the test support code — the tool itself consumes them as provided
+account files). The id moves on every protocol bump BY DESIGN (it hashes the code commitment);
+the frozen test is the alarm, and a refreeze must be a deliberate act.

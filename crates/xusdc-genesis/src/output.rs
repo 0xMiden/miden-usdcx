@@ -27,8 +27,9 @@ struct AccountSummary {
     bech32_mainnet: String,
     bech32_testnet: String,
     bech32_devnet: String,
-    /// True when the tool generated the key pair and embedded the secret in the `.mac` file.
-    key_generated: bool,
+    /// True when the emitted `.mac` file embeds secret keys (passed through from the provided
+    /// account file — this tool generates none).
+    secrets_embedded: bool,
 }
 
 #[derive(Serialize)]
@@ -37,7 +38,12 @@ struct Summary {
     accounts: Vec<AccountSummary>,
 }
 
-fn summarize(name: &str, mac_file: &str, account: &Account, key_generated: bool) -> AccountSummary {
+fn summarize(
+    name: &str,
+    mac_file: &str,
+    account: &Account,
+    secrets_embedded: bool,
+) -> AccountSummary {
     let id = account.id();
     AccountSummary {
         name: name.to_string(),
@@ -46,7 +52,7 @@ fn summarize(name: &str, mac_file: &str, account: &Account, key_generated: bool)
         bech32_mainnet: id.to_bech32(NetworkId::Mainnet),
         bech32_testnet: id.to_bech32(NetworkId::Testnet),
         bech32_devnet: id.to_bech32(NetworkId::Devnet),
-        key_generated,
+        secrets_embedded,
     }
 }
 
@@ -121,10 +127,11 @@ pub fn render_listing(accounts: &GenesisAccounts) -> String {
         let _ = writeln!(out, "  mainnet: {}", entry.bech32_mainnet);
         let _ = writeln!(out, "  testnet: {}", entry.bech32_testnet);
         let _ = writeln!(out, "  devnet:  {}", entry.bech32_devnet);
-        if entry.key_generated {
+        if entry.secrets_embedded {
             let _ = writeln!(
                 out,
-                "  key:     GENERATED (secret embedded in the .mac file)"
+                "  key:     secret embedded in the .mac file (passed through from the provided \
+                 account file)"
             );
         }
     }

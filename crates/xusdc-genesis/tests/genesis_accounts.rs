@@ -1,32 +1,26 @@
-//! Structural invariants of the built genesis accounts: nonce-one promotion, the faucet's
-//! native-fee rebinding, both key paths, and the operator's genesis supply.
+//! Structural invariants of the built genesis accounts: nonce-one promotion of the provided
+//! wallets, the faucet's native-fee rebinding, and the operator's genesis supply.
 //!
 //! There is deliberately NO MockChain smoke test in this crate: genesis accounts exist before
 //! any chain does, the invariants below are pure account-state checks, and live-node coverage
 //! (a node actually booting from these `.mac` files) belongs to `crates/xusdc-validation`.
 
-use std::path::PathBuf;
+mod common;
 
-use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::asset::{AssetAmount, AssetId};
 use miden_protocol::block::FeeParameters;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Felt;
 use miden_standards::account::fees::FeePolicyManager;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaCha20Rng;
 use rstest::rstest;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_genesis::accounts::{build_all, GenesisAccounts};
 use xusdc_genesis::config::{GenesisToolConfig, Role};
 
-fn fixture_config() -> GenesisToolConfig {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-config.json");
-    GenesisToolConfig::load(&path).expect("the committed dev fixture must parse")
-}
+use crate::common::Fixture;
 
 fn build_fixture() -> (GenesisToolConfig, GenesisAccounts) {
-    let config = fixture_config();
+    let fixture = Fixture::new();
+    let config = fixture.config();
     let accounts = build_all(&config).expect("the dev fixture must build");
     (config, accounts)
 }
@@ -59,13 +53,13 @@ fn the_faucet_is_a_native_fee_genesis_account() {
     let plain = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(config.faucet.max_supply).expect("valid max_supply"))
         .token_supply(AssetAmount::new(config.faucet.token_supply).expect("valid token_supply"))
-        .owner(accounts.wallet(Role::Owner).account.id())
-        .attest_admin_holder(accounts.wallet(Role::AttestAdmin).account.id())
-        .pauser_holder(accounts.wallet(Role::Pauser).account.id())
-        .unpauser_holder(accounts.wallet(Role::Unpauser).account.id())
-        .blocklist_manager_holder(accounts.wallet(Role::BlocklistManager).account.id())
+        .owner(config.provided(Role::Owner).account().id())
+        .attest_admin_holder(config.provided(Role::AttestAdmin).account().id())
+        .pauser_holder(config.provided(Role::Pauser).account().id())
+        .unpauser_holder(config.provided(Role::Unpauser).account().id())
+        .blocklist_manager_holder(config.provided(Role::BlocklistManager).account().id())
         .fee_parameters(FeeParameters::new(
-            accounts.wallet(Role::Operator).account.id(),
+            config.provided(Role::Operator).account().id(),
             config.faucet.verification_base_fee,
         ))
         .domain(config.faucet.domain)
@@ -80,8 +74,8 @@ fn the_faucet_is_a_native_fee_genesis_account() {
     );
 }
 
-/// Every wallet is a genesis account: nonce one, no seed, and (all fixture keys are generated)
-/// exactly one embedded secret whose public key matches the wallet's.
+/// Every provided wallet is normalized to a genesis account: nonce one, no seed, the id
+/// unchanged from the provided account, and the provided file's secret keys passed through.
 #[rstest]
 #[case::operator(Role::Operator)]
 #[case::owner(Role::Owner)]
@@ -90,7 +84,7 @@ fn the_faucet_is_a_native_fee_genesis_account() {
 #[case::unpauser(Role::Unpauser)]
 #[case::blocklist_manager(Role::BlocklistManager)]
 fn every_wallet_is_a_nonce_one_genesis_account(#[case] role: Role) {
-    let (_, accounts) = build_fixture();
+    let (config, accounts) = build_fixture();
     let wallet = accounts.wallet(role);
     assert_eq!(
         wallet.account.nonce(),
@@ -104,48 +98,15 @@ fn every_wallet_is_a_nonce_one_genesis_account(#[case] role: Role) {
         role.as_str(),
     );
     assert_eq!(
-        wallet.secrets.len(),
-        1,
-        "a generated-key wallet embeds exactly its one secret in the .mac",
-    );
-}
-
-/// Supplying the public key that the seeded generator would have produced yields the identical
-/// wallet account — but with NO secret material in the tool's output. Locks both key paths onto
-/// the same account identity.
-#[test]
-fn a_supplied_public_key_builds_the_same_wallet_without_secrets() {
-    let generated = build_fixture().1;
-
-    // Derive the operator's public key exactly as the tool's generated path does, and feed it
-    // back through the supplied-key path.
-    let config = fixture_config();
-    let mut rng = ChaCha20Rng::from_seed(config.operator.seed.as_bytes());
-    let public_key = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng).public_key();
-    let fixture_text = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-config.json"),
-    )
-    .expect("the fixture file is readable");
-    let mut raw: serde_json::Value =
-        serde_json::from_str(&fixture_text).expect("the fixture is valid JSON");
-    raw["accounts"]["operator"]["public_key"] =
-        serde_json::Value::String(format!("0x{}", hex::encode(public_key.to_bytes())));
-    let supplied_config =
-        GenesisToolConfig::from_json(&raw.to_string()).expect("the supplied-key config must parse");
-    let supplied = build_all(&supplied_config).expect("the supplied-key config must build");
-
-    let (generated_op, supplied_op) = (
-        generated.wallet(Role::Operator),
-        supplied.wallet(Role::Operator),
+        wallet.account.id(),
+        config.provided(role).account().id(),
+        "promotion must never change the {} wallet's id",
+        role.as_str(),
     );
     assert_eq!(
-        generated_op.account.to_commitment(),
-        supplied_op.account.to_commitment(),
-        "the same approver key must build the identical wallet on either key path",
-    );
-    assert!(
-        supplied_op.secrets.is_empty(),
-        "a supplied-key wallet must embed no secret material",
+        wallet.secrets.len(),
+        1,
+        "the fixture embeds one secret per wallet, passed through into the .mac",
     );
 }
 

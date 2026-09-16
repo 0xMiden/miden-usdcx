@@ -1,33 +1,26 @@
-//! Determinism and golden-id freeze over the committed dev fixture.
+//! Determinism and the golden-id freeze over the dev fixture.
 //!
-//! The whole point of the tool is that the genesis identities are derivable offline, before any
-//! network exists — so the same config must always produce byte-identical outputs, and the dev
-//! fixture's ids are FROZEN below as the drift alarm.
+//! The whole point of the tool is that the genesis faucet identity is derivable offline, before
+//! any network exists — so the same config must always produce byte-identical outputs, and the
+//! dev fixture's faucet id is FROZEN below as the drift alarm.
 
-use std::path::PathBuf;
+mod common;
 
 use miden_protocol::account::AccountFile;
 use miden_protocol::utils::serde::Serializable;
-use rstest::rstest;
-use xusdc_genesis::accounts::{build_all, GenesisAccounts};
-use xusdc_genesis::config::{GenesisToolConfig, Role};
+use xusdc_genesis::accounts::build_all;
+use xusdc_genesis::config::Role;
 use xusdc_genesis::output::write_outputs;
 
-fn fixture_config() -> GenesisToolConfig {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dev-config.json");
-    GenesisToolConfig::load(&path).expect("the committed dev fixture must parse")
-}
-
-fn build_fixture() -> GenesisAccounts {
-    build_all(&fixture_config()).expect("the dev fixture must build")
-}
+use crate::common::Fixture;
 
 /// Building the same config twice yields identical account commitments and byte-identical `.mac`
-/// serializations — including the deterministically generated secret keys.
+/// serializations — including the passed-through secret keys.
 #[test]
 fn the_same_config_builds_byte_identical_outputs() {
-    let first = build_fixture();
-    let second = build_fixture();
+    let fixture = Fixture::new();
+    let first = build_all(&fixture.config()).expect("the dev fixture must build");
+    let second = build_all(&fixture.config()).expect("the dev fixture must build again");
 
     assert_eq!(
         first.faucet.to_commitment(),
@@ -50,7 +43,7 @@ fn the_same_config_builds_byte_identical_outputs() {
         assert_eq!(
             AccountFile::new(a.account.clone(), a.secrets.clone()).to_bytes(),
             AccountFile::new(b.account.clone(), b.secrets.clone()).to_bytes(),
-            "the {} .mac bytes (account + generated secret) must be deterministic",
+            "the {} .mac bytes (account + passed-through secrets) must be deterministic",
             role.as_str(),
         );
     }
@@ -61,7 +54,8 @@ fn the_same_config_builds_byte_identical_outputs() {
 /// same build is byte-identical.
 #[test]
 fn write_outputs_emits_the_complete_deterministic_file_set() {
-    let accounts = build_fixture();
+    let fixture = Fixture::new();
+    let accounts = build_all(&fixture.config()).expect("the dev fixture must build");
     let dir = tempfile::tempdir().expect("a temp dir is available");
     write_outputs(&accounts, dir.path()).expect("the outputs must write");
 
@@ -112,35 +106,20 @@ fn write_outputs_emits_the_complete_deterministic_file_set() {
     }
 }
 
-// The dev-config account ids, FROZEN. These move on every protocol bump BY DESIGN — the account
-// id hashes the code and storage commitments, so any protocol change that touches a component's
-// MAST root moves every id. A failure here is the alarm that the genesis identity changed;
-// refreeze deliberately, never mechanically.
+// The dev-fixture faucet id, FROZEN. It moves on every protocol bump BY DESIGN — the account id
+// hashes the code and storage commitments (the storage seeds the fixture's role account ids),
+// so any protocol change that touches a component's MAST root moves it. A failure here is the
+// alarm that the genesis identity changed; refreeze deliberately, never mechanically.
 const GOLDEN_FAUCET_ID: &str = "0x6c2fc53dff48d2f1077c0f2ee881f3";
 
-/// The faucet's dev-config id is frozen.
+/// The faucet's dev-fixture id is frozen.
 #[test]
 fn the_faucet_id_is_frozen() {
+    let fixture = Fixture::new();
+    let accounts = build_all(&fixture.config()).expect("the dev fixture must build");
     assert_eq!(
-        build_fixture().faucet.id().to_hex(),
+        accounts.faucet.id().to_hex(),
         GOLDEN_FAUCET_ID,
-        "the dev-config faucet id drifted — expected on a protocol bump, refreeze deliberately",
-    );
-}
-
-/// Each wallet's dev-config id is frozen (same refreeze discipline as the faucet id above).
-#[rstest]
-#[case::operator(Role::Operator, "0x6aeeb7cba03918516870e95568b77b")]
-#[case::owner(Role::Owner, "0x3cd7940c4946bad179675b1d7d8059")]
-#[case::attest_admin(Role::AttestAdmin, "0x2bb51b585b2a98916aebb827cc5804")]
-#[case::pauser(Role::Pauser, "0x88dc763b163d53513c4ea2c4f5f1f7")]
-#[case::unpauser(Role::Unpauser, "0x83b89e07263e3b51799cb3af134d6d")]
-#[case::blocklist_manager(Role::BlocklistManager, "0x5cf939821efad05159595966886192")]
-fn the_wallet_ids_are_frozen(#[case] role: Role, #[case] expected: &str) {
-    assert_eq!(
-        build_fixture().wallet(role).account.id().to_hex(),
-        expected,
-        "the dev-config {} id drifted — expected on a protocol bump, refreeze deliberately",
-        role.as_str(),
+        "the dev-fixture faucet id drifted — expected on a protocol bump, refreeze deliberately",
     );
 }

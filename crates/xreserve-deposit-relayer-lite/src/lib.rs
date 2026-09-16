@@ -143,9 +143,10 @@ impl Relayer {
     /// scan and the stored progress for the page an interrupted scan stopped at.
     ///
     /// Malformed attestations are skipped inside [`Minter::build_notes`]. Buildable notes are
-    /// submitted in one transaction, and the page is done only once
-    /// [`MidenClient::submit_notes`] confirms that the transaction is included on chain — so
-    /// returning is what entitles the caller to record the page as done.
+    /// submitted across as many transactions as the configured notes-per-transaction bound
+    /// requires, and the page is done only once [`MidenClient::submit_notes`] confirms that every
+    /// one of them is included on chain — so returning is what entitles the caller to record the
+    /// page as done.
     ///
     /// # Errors
     ///

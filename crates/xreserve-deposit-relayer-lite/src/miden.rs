@@ -3,7 +3,7 @@
 //! [`MidenClient`] is the surface the relay loop needs; [`NodeClient`] implements it against a
 //! Miden node. Submitting is only half the job: the node accepts a transaction into its mempool
 //! long before it lands in a block, so every submission here is followed by a wait for inclusion.
-//! Until that wait succeeds the page is not done, and the Circle cursor does not move.
+//! Until that wait succeeds the page is not done, and the scan's progress does not move past it.
 //!
 //! Every mint transaction is given an expiration block, so the wait always has an answer. A
 //! transaction the chain has passed the expiration block of can no longer be included by anyone:
@@ -12,6 +12,7 @@
 
 use std::fmt;
 use std::fs;
+use std::num::NonZeroU16;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,9 +73,7 @@ pub struct NotesPerTransaction(usize);
 
 impl NotesPerTransaction {
     const MIN: usize = 1;
-    /// The protocol's own ceiling on the notes one transaction may create. Taking it from the
-    /// protocol rather than restating it means this bound cannot drift from the one that is
-    /// actually enforced.
+    /// The protocol's own ceiling on the notes one transaction may create.
     const MAX: usize = MAX_OUTPUT_NOTES_PER_TX;
 
     /// The count, ready to chunk a page by.
@@ -120,17 +119,16 @@ impl fmt::Display for NotesPerTransaction {
 /// chain is past a transaction's expiration block, no block can carry it any more. Too small a
 /// delta expires transactions that were merely slow to prove or to reach a block; too large a one
 /// leaves a page waiting longer before the relayer gives up on it and retries.
+///
+/// The delta is non-zero by construction: zero would expire a transaction at the very block it was
+/// built against, leaving it no block it could ever be included in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExpirationDelta(u16);
+pub struct ExpirationDelta(NonZeroU16);
 
 impl ExpirationDelta {
-    /// Zero would expire a transaction at the very block it was built against, leaving it no block
-    /// it could ever be included in.
-    const MIN: u16 = 1;
-
     /// The delta, as the number of blocks the transaction request is given.
     pub fn get(self) -> u16 {
-        self.0
+        self.0.get()
     }
 }
 
@@ -138,12 +136,9 @@ impl TryFrom<u16> for ExpirationDelta {
     type Error = anyhow::Error;
 
     fn try_from(value: u16) -> Result<Self> {
-        ensure!(
-            value >= Self::MIN,
-            "the expiration delta must be at least {} block, got {value}",
-            Self::MIN
-        );
-        Ok(Self(value))
+        NonZeroU16::new(value)
+            .map(Self)
+            .context("the expiration delta must be at least 1 block, got 0")
     }
 }
 

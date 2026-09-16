@@ -38,9 +38,7 @@ async fn main() -> Result<()> {
             signal_flag.store(true, Ordering::Release);
         }
     });
-    eprintln!(
-        "attester started with development keys; local rolling-limit enforcement is not implemented yet"
-    );
+    eprintln!("attester started with development keys");
     attester.run(shutdown).await;
     signal_task.abort();
     Ok(())

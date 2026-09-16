@@ -43,7 +43,7 @@ pub(super) fn write_config(
          faucet_account_id_hex = \"{}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          use_circle_forwarding = false\n\
-         withdrawal_limit_24h = 10_000_000_000_000\n\
+         withdrawal_limit = 10_000_000_000_000\n\
          poll_interval_ms = 100\n\
          faucet_deployment_block = {deployment_block}\n\
          trusted_anchor_block = {}\n\

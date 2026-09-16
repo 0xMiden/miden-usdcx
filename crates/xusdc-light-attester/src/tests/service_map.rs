@@ -193,8 +193,10 @@ async fn circle_response_is_checked_before_signing() {
         .store
         .burns_ready_for_withdrawal(3u32.into(), 1)
         .unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].note_id(), ledger.burns[order[0]].burn.note_id());
+    assert!(
+        pending.is_empty(),
+        "verification failure waits for operator release"
+    );
     assert_eq!(ledger.record(&attester, order[1]).status, Submitted);
     assert_eq!(ledger.record(&attester, order[2]).status, Finalized);
     let error = report.submit.unwrap_err();
@@ -233,10 +235,20 @@ async fn expiry_waits_for_the_next_cycle() {
     assert_eq!(ledger.record(&attester, 2).status, Finalized);
     assert_eq!(counts(&calls), [0, 0]);
     assert_eq!(requests.lock().unwrap().len(), 4);
+    assert_eq!(
+        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount = 1000"),
+        3,
+        "expiry and finalization keep their capacity charges"
+    );
     attester.run_one_cycle().await.unwrap();
     assert_eq!(counts(&calls), [1, 1]);
     assert_eq!(requests.lock().unwrap().len(), 6);
     assert_eq!(ledger.record(&attester, 0).status, Submitted);
+    assert_eq!(
+        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount = 1000"),
+        3,
+        "a replacement must not add or remove a burn's reservation"
+    );
 }
 
 #[tokio::test]

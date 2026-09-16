@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
@@ -13,7 +14,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleClient, HttpTransport};
 use crate::config::Config;
 use crate::signer::{Signer, SigningPublicKey};
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
 use crate::submission::SavedSubmission;
 use crate::verify::verify_prepared_response;
 
@@ -21,7 +22,7 @@ use crate::verify::verify_prepared_response;
 pub enum CycleError {
     #[error("discovery stopped on a store failure")]
     Discovery(#[source] DiscoverError),
-    #[error("withdrawal processing stopped on a store failure")]
+    #[error("withdrawal processing stopped")]
     Submission(#[from] SubmitError),
     #[error("polling stopped on a store failure")]
     Poll(#[source] SubmitError),
@@ -59,12 +60,13 @@ pub struct CycleReport {
 }
 
 pub struct Attester {
-    config: Config,
+    pub(crate) config: Config,
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
     pub(crate) circle: CircleClient,
     trusted_anchor_block: Option<ProvenBlock>,
     signers: [Box<dyn Signer>; 2],
+    pub(crate) now: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
 
 impl Attester {
@@ -167,6 +169,7 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
+            now: Box::new(SystemTime::now),
         })
     }
 
@@ -211,7 +214,10 @@ impl Attester {
         };
         self.recover_submissions(recovery).await?;
         let submit = self.submit_withdrawals(fresh).await;
-        if let Err(error @ (SubmitError::InvalidStore | SubmitError::Conflict)) = submit {
+        if let Err(
+            error @ (SubmitError::InvalidStore | SubmitError::Conflict | SubmitError::Clock),
+        ) = submit
+        {
             return Err(CycleError::Submission(error));
         }
         self.poll_withdrawal_statuses(polling)
@@ -405,6 +411,16 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             let note_id = burn.burn.note_id();
+            // A waiting burn must not spend a prepare call or block smaller burns behind it.
+            if !self.store.can_submit_burn(
+                note_id,
+                burn.amount,
+                self.now_ms()?,
+                self.config.withdrawal_window_ms(),
+                self.config.withdrawal_limit(),
+            )? {
+                continue;
+            }
             let result = async {
                 let prepared = self
                     .circle
@@ -419,11 +435,26 @@ impl Attester {
             }
             .await;
             if let Err(error) = result {
-                if matches!(error, SubmitError::InvalidStore | SubmitError::Conflict) {
+                if matches!(
+                    error,
+                    SubmitError::InvalidStore | SubmitError::Conflict | SubmitError::Clock
+                ) {
                     return Err(error);
                 }
-                // Retry scheduling/holds for prepare and verify failures are the next slice.
-                // A failure here must not prevent another burn from getting its withdrawal.
+                let hold = match &error {
+                    SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
+                        status, ..
+                    }) if !status.is_server_error() => Some(BurnHoldReason::PrepareRejected),
+                    SubmitError::Prepare(CircleError::InvalidResponse(_)) => {
+                        Some(BurnHoldReason::PrepareRejected)
+                    }
+                    SubmitError::Verification(_) => Some(BurnHoldReason::VerifyFailed),
+                    _ => None,
+                };
+                if let Some(reason) = hold {
+                    self.store.hold_burn(note_id, reason)?;
+                }
+                // Transport/server and signing failures remain eligible next cycle.
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
                 first_error.get_or_insert(error);
             }

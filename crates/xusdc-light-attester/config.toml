@@ -5,9 +5,12 @@ circle_api_base_url = "https://xreserve-api-testnet.circle.com"
 use_circle_forwarding = false
 # Maximum fee per withdrawal, in smallest USDC units. Zero permits only fee-free withdrawals.
 max_withdrawal_fee = 0
-# Rolling 24-hour withdrawal limit in smallest USDC units; not yet enforced.
-# Temporary 10m USDC placeholder: replace with the Circle-confirmed chain limit.
-withdrawal_limit_24h = 10_000_000_000_000
+# Rolling withdrawal limit in smallest USDC units; zero pauses new submissions.
+# Development 10m USDC placeholder: replace with Circle's confirmed chain limit.
+withdrawal_limit = 10_000_000_000_000
+withdrawal_window_hours = 24
+# Set this only to Circle's confirmed exact HTTP 400 cap message to enable automatic retries.
+# withdrawal_cap_error_message = ""
 poll_interval_ms = 1000
 faucet_deployment_block = 0
 

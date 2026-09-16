@@ -44,7 +44,7 @@ miden-crypto = { version = "0.28", default-features = false, features = ["std"] 
 
 [dev-dependencies]
 # `AccountId::dummy` for synthetic assertion fixtures (tests only; same crates.io v16 pin).
-miden-protocol = { version = "=0.16.0-alpha.4", features = ["testing"] }
+miden-protocol = { version = "=0.16.1", features = ["testing"] }
 # Row-L log-scanner fixtures: a per-test temp dir with a random, collision-resistant name that is
 # removed on drop. The shared version lives in [workspace.dependencies] (the relayer/attester
 # idempotency tests use it for the same reason — an on-disk store dir removed when the test ends);

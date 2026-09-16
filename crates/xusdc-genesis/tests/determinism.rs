@@ -34,76 +34,34 @@ fn the_same_config_builds_byte_identical_outputs() {
     );
 }
 
-/// `write_outputs` emits the complete file set — the faucet's `.mac` file, the `genesis.toml`
-/// fragment, and the `accounts.json` summary — the fragment's `[[account]]` paths resolve from
-/// the fragment's own location, and a second run over the same build is reproducible.
+/// `write_outputs` emits exactly one file — the faucet's `.mac` — and a second run over the
+/// same build is byte-identical.
 #[test]
-fn write_outputs_emits_the_complete_resolvable_file_set() {
+fn write_outputs_emits_only_the_deterministic_faucet_file() {
     let fixture = Fixture::new();
-    let config = fixture.config();
-    let faucet = build_faucet(&config).expect("the dev fixture must build");
+    let faucet = build_faucet(&fixture.config()).expect("the dev fixture must build");
     let dir = tempfile::tempdir().expect("a temp dir is available");
-    write_outputs(&faucet, &config, dir.path()).expect("the outputs must write");
+    write_outputs(&faucet, dir.path()).expect("the outputs must write");
 
-    let expected_files = ["usdcx-faucet.mac", "genesis.toml", "accounts.json"];
-    for name in expected_files {
-        assert!(dir.path().join(name).is_file(), "{name} must be emitted");
-    }
+    assert!(
+        dir.path().join("usdcx-faucet.mac").is_file(),
+        "usdcx-faucet.mac must be emitted",
+    );
     assert_eq!(
         std::fs::read_dir(dir.path())
             .expect("the out dir is readable")
             .count(),
-        expected_files.len(),
-        "no unexpected files are emitted — the role .mac files are referenced, never copied",
+        1,
+        "the faucet .mac is the tool's only file output",
     );
 
-    assert_fragment_resolves(dir.path());
-
-    // A second run over the same build: the faucet `.mac` and the summary are byte-identical
-    // (the fragment's `[[account]]` paths are rewritten per output location, so it is compared
-    // by resolvability above, not by bytes across different directories).
     let second_dir = tempfile::tempdir().expect("a second temp dir is available");
-    write_outputs(&faucet, &config, second_dir.path()).expect("the second write must succeed");
-    assert_fragment_resolves(second_dir.path());
-    for name in ["usdcx-faucet.mac", "accounts.json"] {
-        assert_eq!(
-            std::fs::read(dir.path().join(name)).expect("first output readable"),
-            std::fs::read(second_dir.path().join(name)).expect("second output readable"),
-            "{name} must be byte-identical across writes",
-        );
-    }
-}
-
-/// Asserts the fragment in `out_dir` declares the faucet plus six `[[account]]` entries, and
-/// that every referenced path exists when resolved from the fragment's own directory.
-fn assert_fragment_resolves(out_dir: &std::path::Path) {
-    let genesis_toml = std::fs::read_to_string(out_dir.join("genesis.toml"))
-        .expect("the genesis.toml fragment is readable");
-    assert!(
-        genesis_toml.contains("native_faucet = \"usdcx-faucet.mac\""),
-        "the fragment must declare the faucet as native_faucet",
-    );
+    write_outputs(&faucet, second_dir.path()).expect("the second write must succeed");
     assert_eq!(
-        genesis_toml.matches("[[account]]").count(),
-        6,
-        "the fragment must carry one [[account]] entry per role",
+        std::fs::read(dir.path().join("usdcx-faucet.mac")).expect("first output readable"),
+        std::fs::read(second_dir.path().join("usdcx-faucet.mac")).expect("second output readable"),
+        "usdcx-faucet.mac must be byte-identical across writes",
     );
-    let referenced: Vec<&str> = genesis_toml
-        .lines()
-        .filter_map(|line| line.strip_prefix("path = \""))
-        .filter_map(|rest| rest.strip_suffix('"'))
-        .collect();
-    assert_eq!(
-        referenced.len(),
-        6,
-        "every [[account]] entry carries a path"
-    );
-    for path in referenced {
-        assert!(
-            out_dir.join(path).is_file(),
-            "the fragment path {path} must resolve from the fragment's own directory",
-        );
-    }
 }
 
 // The dev-fixture faucet id, FROZEN. The value is fixture-derived: it hashes the faucet seed

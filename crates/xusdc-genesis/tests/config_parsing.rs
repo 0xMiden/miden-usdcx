@@ -4,12 +4,10 @@
 mod common;
 
 use assert_matches::assert_matches;
-use miden_protocol::account::{Account, AccountFile};
-use miden_protocol::Felt;
 use rstest::rstest;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{generate_ground_wallet, generate_wallet, Fixture};
+use crate::common::{generate_wallet, Fixture};
 
 /// The dev fixture parses, and each role's id is extracted from its referenced `.mac` file.
 #[test]
@@ -30,62 +28,6 @@ fn the_dev_fixture_round_trips() {
             role.as_str(),
         );
     }
-}
-
-/// An account whose nonce is not one is rejected with the variant naming the role: the ground
-/// (nonce-zero, still-seeded) form external tooling grinds, and any other non-one nonce.
-#[rstest]
-#[case::ground_nonce_zero(0)]
-#[case::nonce_two(2)]
-fn a_wrong_nonce_account_file_is_rejected(#[case] nonce: u64) {
-    let account = generate_ground_wallet(Role::Operator);
-    let account = if nonce == 0 {
-        account
-    } else {
-        // A post-genesis shape: the nonce advanced past one, no seed. Rebuilt unchecked because
-        // only the wire form matters to the loader.
-        let (id, vault, storage, code, _nonce, _seed) = account.into_parts();
-        let nonce = Felt::new(nonce).expect("a small test nonce is a valid felt");
-        Account::new_unchecked(id, vault, storage, code, nonce, None)
-    };
-    let fixture = Fixture::new();
-    AccountFile::new(account, Vec::new())
-        .write(fixture.base_dir().join("wrong-nonce.mac"))
-        .expect("the wrong-nonce fixture .mac must write");
-    let mut fixture = fixture;
-    fixture.json["accounts"]["operator"] = serde_json::Value::from("wrong-nonce.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a wrong-nonce account must be rejected");
-    assert_matches!(
-        err,
-        ConfigError::AccountNonce {
-            field: "operator",
-            nonce: got,
-        } if got == nonce
-    );
-}
-
-/// A nonce-one account that still carries its seed cannot even decode — the protocol's own
-/// `Account` deserialization rejects that shape — so the file is refused as unreadable, still
-/// naming the role.
-#[test]
-fn a_seeded_nonce_one_account_file_is_rejected() {
-    let ground = generate_ground_wallet(Role::Owner);
-    let (id, vault, storage, code, _nonce, seed) = ground.into_parts();
-    // The invalid shape under test: nonce one with the seed still attached. Only constructible
-    // unchecked — the checked constructor refuses it exactly like the deserializer will.
-    let seeded = Account::new_unchecked(id, vault, storage, code, Felt::ONE, seed);
-    let fixture = Fixture::new();
-    AccountFile::new(seeded, Vec::new())
-        .write(fixture.base_dir().join("seeded.mac"))
-        .expect("the seeded fixture .mac must write");
-    let mut fixture = fixture;
-    fixture.json["accounts"]["owner"] = serde_json::Value::from("seeded.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a seeded nonce-one account must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "owner", .. });
 }
 
 /// A missing account file is rejected with the variant naming the role and the resolved path.

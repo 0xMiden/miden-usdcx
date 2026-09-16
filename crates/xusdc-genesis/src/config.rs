@@ -1,17 +1,16 @@
 //! The tool's input-file schema ([`GenesisToolConfig`]) and its validation.
 //!
 //! This is OUR tool's config, deliberately NOT the node's `GenesisConfig` (no node-crate
-//! dependency anywhere: the `genesis.toml` fragment is emitted as plain text and the faucet
-//! `.mac` file uses the protocol's `AccountFile`). The role accounts are referenced as paths to
-//! their externally-produced `.mac` files, and the loader reads each file ONLY to extract its
-//! account id — reading the id from the actual injectable file keeps the faucet's role slots
-//! and the genesis account set consistent by construction, where a hand-copied bare id could
-//! not be cross-checked. Nothing but the extracted id (plus the path, reused by reference in
-//! the emitted fragment) flows past the loader: no account state and no secret material is ever
-//! held or re-serialized. Parsing is two-stage: a serde mirror of the raw JSON
-//! (`deny_unknown_fields`) followed by the typed conversion, so every rejection surfaces as a
-//! specific [`ConfigError`] variant. Role-collision rules are owned and enforced by the
-//! `XReserveStablecoinBuilder`, not re-implemented here.
+//! dependency anywhere; the faucet `.mac` file uses the protocol's `AccountFile`). The role
+//! accounts are referenced as paths to their externally-produced `.mac` files, and the loader
+//! reads each file PURELY to extract its account id — reading the id from the actual account
+//! file keeps the faucet's role slots and the genesis account set consistent by construction,
+//! where a hand-copied bare id could not be cross-checked. Nothing but the extracted ids flows
+//! past the loader: no account state, no paths, and no secret material is ever held or
+//! re-serialized. Parsing is two-stage: a serde mirror of the raw JSON (`deny_unknown_fields`)
+//! followed by the typed conversion, so every rejection surfaces as a specific [`ConfigError`]
+//! variant. Role-collision rules are owned and enforced by the `XReserveStablecoinBuilder`,
+//! not re-implemented here.
 
 use std::path::{Path, PathBuf};
 
@@ -48,7 +47,7 @@ impl Role {
         Role::BlocklistManager,
     ];
 
-    /// The role's config-field name, doubling as its name in the emitted summary.
+    /// The role's config-field name, doubling as its name in the stdout listing.
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Operator => "operator",
@@ -98,15 +97,6 @@ impl Seed32 {
 // TYPED CONFIG
 // ================================================================================================
 
-/// One role account's extracted identity: the id (all the faucet build ever consumes) and the
-/// resolved path to its `.mac` file (reused ONLY by reference in the emitted `genesis.toml`
-/// fragment — the file itself is never copied or re-serialized).
-#[derive(Debug, Clone)]
-pub struct RoleAccount {
-    pub id: AccountId,
-    pub path: PathBuf,
-}
-
 /// The faucet's config: its account seed and the `XReserveStablecoinBuilder` inputs that are
 /// not role-account ids.
 #[derive(Debug, Clone)]
@@ -119,16 +109,16 @@ pub struct FaucetConfig {
     pub verification_base_fee: u32,
 }
 
-/// The validated tool config: one [`RoleAccount`] per [`Role`], the [`FaucetConfig`], and the
-/// optional default output directory (`--out-dir` overrides it).
+/// The validated tool config: one extracted [`AccountId`] per [`Role`], the [`FaucetConfig`],
+/// and the optional default output directory (`--out-dir` overrides it).
 #[derive(Debug, Clone)]
 pub struct GenesisToolConfig {
-    pub operator: RoleAccount,
-    pub owner: RoleAccount,
-    pub attest_admin: RoleAccount,
-    pub pauser: RoleAccount,
-    pub unpauser: RoleAccount,
-    pub blocklist_manager: RoleAccount,
+    pub operator: AccountId,
+    pub owner: AccountId,
+    pub attest_admin: AccountId,
+    pub pauser: AccountId,
+    pub unpauser: AccountId,
+    pub blocklist_manager: AccountId,
     pub faucet: FaucetConfig,
     pub output_dir: Option<PathBuf>,
 }
@@ -177,22 +167,16 @@ impl GenesisToolConfig {
         Ok(config)
     }
 
-    /// Returns the role account for `role`.
-    pub fn role_account(&self, role: Role) -> &RoleAccount {
-        match role {
-            Role::Operator => &self.operator,
-            Role::Owner => &self.owner,
-            Role::AttestAdmin => &self.attest_admin,
-            Role::Pauser => &self.pauser,
-            Role::Unpauser => &self.unpauser,
-            Role::BlocklistManager => &self.blocklist_manager,
-        }
-    }
-
-    /// Returns the extracted account id for `role` — the only role data the faucet build
-    /// consumes.
+    /// Returns the extracted account id for `role`.
     pub fn role_id(&self, role: Role) -> AccountId {
-        self.role_account(role).id
+        match role {
+            Role::Operator => self.operator,
+            Role::Owner => self.owner,
+            Role::AttestAdmin => self.attest_admin,
+            Role::Pauser => self.pauser,
+            Role::Unpauser => self.unpauser,
+            Role::BlocklistManager => self.blocklist_manager,
+        }
     }
 
     /// Cross-field validation: the initial supply must fit under the cap.
@@ -207,36 +191,21 @@ impl GenesisToolConfig {
     }
 }
 
-/// Reads one role's `.mac` file and extracts its account id. VALIDATION ONLY, never mutation:
-/// the account must already be genesis-injectable — nonce one and no seed — and only the id
-/// and the resolved path flow past this point. The seed half of the requirement needs no check
-/// of its own: the protocol's `Account` deserialization rejects any nonzero-nonce account that
-/// still carries a seed, so a seeded file at nonce one cannot even decode and surfaces as
-/// [`ConfigError::AccountFile`], while a ground (nonce-zero, seeded) wallet is caught by the
-/// nonce check below.
+/// Reads one role's `.mac` file PURELY to extract its account id; nothing else about the
+/// account is inspected, held, or re-serialized. An unreadable or undecodable file errors with
+/// the role-naming [`ConfigError::AccountFile`].
 fn read_role_account(
     role: Role,
     base_dir: &Path,
     raw_path: &str,
-) -> Result<RoleAccount, ConfigError> {
+) -> Result<AccountId, ConfigError> {
     let path = base_dir.join(raw_path);
     let file = AccountFile::read(&path).map_err(|source| ConfigError::AccountFile {
         field: role.as_str(),
-        path: path.clone(),
+        path,
         source,
     })?;
-    let account = file.account;
-    let nonce = account.nonce().as_canonical_u64();
-    if nonce != 1 {
-        return Err(ConfigError::AccountNonce {
-            field: role.as_str(),
-            nonce,
-        });
-    }
-    Ok(RoleAccount {
-        id: account.id(),
-        path,
-    })
+    Ok(file.account.id())
 }
 
 // RAW (SERDE) MIRROR
@@ -293,10 +262,6 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    /// A referenced account is not genesis-injectable: its nonce is not one. (A still-seeded
-    /// account at a nonzero nonce cannot even decode — the protocol rejects that shape — so it
-    /// surfaces as [`ConfigError::AccountFile`] instead.)
-    AccountNonce { field: &'static str, nonce: u64 },
     /// The seed is missing its mandatory `0x` prefix.
     SeedMissingPrefix { field: &'static str },
     /// The seed's hex part is not exactly 64 characters. Carries the offending length.
@@ -318,10 +283,6 @@ impl core::fmt::Display for ConfigError {
             Self::AccountFile { field, path, .. } => {
                 write!(f, "reading the {field} account file {}", path.display())
             }
-            Self::AccountNonce { field, nonce } => write!(
-                f,
-                "the {field} account is not genesis-injectable: its nonce is {nonce}, expected 1"
-            ),
             Self::SeedMissingPrefix { field } => {
                 write!(f, "the {field} seed is missing its 0x prefix")
             }

@@ -1,11 +1,11 @@
-//! `xusdc-genesis` — builds the genesis xUSDC faucet offline and emits the node's genesis
-//! inputs for it.
+//! `xusdc-genesis` — builds the genesis xUSDC faucet offline and writes its `.mac` account
+//! file.
 //!
 //! ```text
 //! cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
 //! ```
 //!
-//! Exit 0 = the faucet built and every output written. The id listing goes to stdout.
+//! Exit 0 = the faucet built and its account file written. The id listing goes to stdout.
 
 use std::path::PathBuf;
 
@@ -36,10 +36,9 @@ fn parse_args() -> Result<Option<Args>> {
                 println!(
                     "xusdc-genesis — build the genesis xUSDC faucet offline\n\n\
                      Builds the genesis xUSDC faucet from the faucet parameters and the six\n\
-                     role .mac files the config references (read only to extract their account\n\
-                     ids; each must be genesis-injectable: nonce 1, no seed), then writes the\n\
-                     faucet's .mac account file, a genesis.toml fragment referencing every\n\
-                     account, and an accounts.json summary, printing the ids (hex + bech32).\n\n\
+                     role .mac files the config references (read purely to extract their\n\
+                     account ids), then writes the faucet's .mac account file — the only file\n\
+                     output — printing the ids (hex + bech32) to stdout.\n\n\
                      --config <PATH>    the JSON config (see the crate README for the schema)\n\
                      --out-dir <DIR>    where to write the outputs (overrides the config's\n\
                                         output_dir; required when the config sets none)\n"
@@ -66,7 +65,7 @@ fn main() -> Result<()> {
     };
 
     let faucet = build_faucet(&config).context("building the genesis faucet")?;
-    write_outputs(&faucet, &config, &out_dir)
+    write_outputs(&faucet, &out_dir)
         .with_context(|| format!("writing the outputs to {}", out_dir.display()))?;
 
     print!("{}", render_listing(&faucet, &config));

@@ -14,8 +14,8 @@ anyhow = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
-miden-protocol = { version = "=0.16.1", features = ["testing"] }
 miden-standards = { version = "=0.16.1" }
+rand_chacha = { workspace = true }
 rstest = { workspace = true }
 assert_matches = { workspace = true }
 tempfile = { workspace = true }

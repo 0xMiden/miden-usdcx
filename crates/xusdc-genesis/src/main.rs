@@ -36,9 +36,10 @@ fn parse_args() -> Result<Option<Args>> {
                 println!(
                     "xusdc-genesis — build the genesis xUSDC faucet offline\n\n\
                      Builds the genesis xUSDC faucet from the faucet parameters and the six\n\
-                     role-account ids in the config file, then writes the faucet's .mac account\n\
-                     file, a genesis.toml fragment, and an accounts.json summary, printing the\n\
-                     faucet id (hex + bech32).\n\n\
+                     role .mac files the config references (read only to extract their account\n\
+                     ids; each must be genesis-injectable: nonce 1, no seed), then writes the\n\
+                     faucet's .mac account file, a genesis.toml fragment referencing every\n\
+                     account, and an accounts.json summary, printing the ids (hex + bech32).\n\n\
                      --config <PATH>    the JSON config (see the crate README for the schema)\n\
                      --out-dir <DIR>    where to write the outputs (overrides the config's\n\
                                         output_dir; required when the config sets none)\n"

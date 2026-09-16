@@ -15,14 +15,15 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_genesis::accounts::build_faucet;
 use xusdc_genesis::config::Role;
 
-use crate::common::fixture_config;
+use crate::common::Fixture;
 
 /// The faucet is a genesis account (nonce one, no seed) whose fee-asset slot holds its OWN
 /// asset, and whose id equals the plain `build_account` id at the same seed — the genesis build
 /// changes the fee binding and the nonce, never the identity.
 #[test]
 fn the_faucet_is_a_native_fee_genesis_account() {
-    let config = fixture_config();
+    let fixture = Fixture::new();
+    let config = fixture.config();
     let faucet = build_faucet(&config).expect("the dev fixture must build");
 
     assert_eq!(

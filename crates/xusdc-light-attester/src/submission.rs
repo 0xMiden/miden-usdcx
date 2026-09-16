@@ -24,13 +24,15 @@ pub enum SubmitError {
     Verification(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("withdrawal signing failed")]
     Signing(#[from] SignerError),
+    #[error("system time cannot be used for withdrawal capacity accounting")]
+    Clock,
 }
 
 impl SubmitError {
     /// A failure that stops the rest of the cycle: the store can no longer record what Circle
-    /// answers.
+    /// answers, or the clock cannot be used for capacity accounting.
     pub(crate) fn is_fatal(&self) -> bool {
-        matches!(self, Self::Store(_))
+        matches!(self, Self::Store(_) | Self::Clock)
     }
 }
 
@@ -72,10 +74,18 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(|_| SubmitError::InvalidRequest)?;
-        let saved = withdrawal.submission(endpoint)?;
-        // Only confirmed failed/expired attempts may receive a fresh authorization.
-        self.store.save_submission(&saved)?;
-        self.advance_submission(saved).await
+        let (saved, amount) = withdrawal.submission(endpoint)?;
+        // The final fit check, reservation and exact request become durable together.
+        if !self.store.admit_submission(
+            &saved,
+            amount,
+            self.now_ms()?,
+            self.config.withdrawal_window_ms(),
+            self.config.withdrawal_limit(),
+        )? {
+            return Ok(());
+        }
+        self.send_admitted_submission(saved).await
     }
 
     /// Sends each given saved request once: the saved POST while Circle's withdrawal ID is
@@ -101,15 +111,71 @@ impl Attester {
             .map_err(Into::into)
     }
 
+    /// After fixing a prepare/verification failure, let this burn be checked again.
+    /// Capacity reservations and any cap-rejection cooldown remain unchanged.
+    pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
+        self.store.release_burn_hold(note_id).map_err(Into::into)
+    }
+
+    pub(crate) fn now_ms(&self) -> Result<i64, SubmitError> {
+        let elapsed = (self.now)()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| SubmitError::Clock)?;
+        elapsed
+            .as_millis()
+            .try_into()
+            .map_err(|_| SubmitError::Clock)
+    }
+
     pub(crate) async fn advance_submission(
         &mut self,
-        mut saved: SavedSubmission,
+        saved: SavedSubmission,
     ) -> Result<(), SubmitError> {
         // After a 429 the rest of the cycle leaves Circle alone; the row stays queued.
         if self.circle.rate_limited() {
             return Ok(());
         }
+        // GET needs no capacity. Before each retry POST, renew the one reservation for this
+        // note: the previous attempt may have been accepted even if its response was lost.
+        if saved.withdrawal_id.is_none()
+            && !self.store.renew_submission(
+                saved.note_id,
+                self.now_ms()?,
+                self.config.withdrawal_window_ms(),
+                self.config.withdrawal_limit(),
+            )?
+        {
+            return Ok(());
+        }
+        self.send_admitted_submission(saved).await
+    }
+
+    async fn send_admitted_submission(
+        &mut self,
+        mut saved: SavedSubmission,
+    ) -> Result<(), SubmitError> {
         let mut response = self.send_saved_request(&mut saved).await;
+        if saved.withdrawal_id.is_none()
+            && response.as_ref().is_some_and(|reply| {
+                reply.status == StatusCode::BAD_REQUEST
+                    && self
+                        .config
+                        .withdrawal_cap_error_message()
+                        .is_some_and(|expected| {
+                            serde_json::from_slice::<serde_json::Value>(&reply.body)
+                                .is_ok_and(|body| body["message"].as_str() == Some(expected))
+                        })
+            })
+        {
+            // Only a confirmed cap rejection releases capacity. Discard its signed bytes;
+            // after the cooldown it must be prepared and signed again, not replayed stale.
+            self.store.record_cap_rejection(saved.note_id)?;
+            eprintln!(
+                "withdrawal note={} waiting after Circle's capacity rejection",
+                saved.note_id
+            );
+            return Ok(());
+        }
         if saved.withdrawal_id.is_none()
             && response
                 .as_ref()

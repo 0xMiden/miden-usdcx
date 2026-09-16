@@ -132,6 +132,7 @@ async fn signer_address(signer: &dyn Signer) -> Result<Address, SignerError> {
 struct VerifiedBatch {
     // Circle's request key and the local ledger key are both the burn note ID.
     note_id: NoteId,
+    amount: u64,
     intent: BurnIntent,
     digest: B256,
     transfer_spec_hash: B256,
@@ -144,7 +145,10 @@ pub(crate) struct SignedWithdrawal {
 }
 
 impl SignedWithdrawal {
-    pub(crate) fn submission(&self, endpoint: String) -> Result<SavedSubmission, SubmitError> {
+    pub(crate) fn submission(
+        &self,
+        endpoint: String,
+    ) -> Result<(SavedSubmission, u64), SubmitError> {
         let signed = &self.batch;
         let batch = &signed.batch;
         let body = serde_json::to_vec(&json!({
@@ -157,19 +161,22 @@ impl SignedWithdrawal {
             }],
         }))
         .map_err(SubmitError::Encoding)?;
-        Ok(SavedSubmission {
-            note_id: batch.note_id,
-            endpoint,
-            body,
-            transfer_spec_hash: batch.transfer_spec_hash,
-            use_circle_forwarding: self.use_circle_forwarding,
-            status: SubmissionStatus::Submitting,
-            withdrawal_id: None,
-            hold_reason: None,
-            last_http_status: None,
-            last_response: None,
-            last_error: None,
-        })
+        Ok((
+            SavedSubmission {
+                note_id: batch.note_id,
+                endpoint,
+                body,
+                transfer_spec_hash: batch.transfer_spec_hash,
+                use_circle_forwarding: self.use_circle_forwarding,
+                status: SubmissionStatus::Submitting,
+                withdrawal_id: None,
+                hold_reason: None,
+                last_http_status: None,
+                last_response: None,
+                last_error: None,
+            },
+            batch.amount,
+        ))
     }
 }
 
@@ -272,6 +279,8 @@ impl UnverifiedPrepareResponse {
         Ok(VerifiedWithdrawal {
             batch: VerifiedBatch {
                 note_id: burn.burn.note_id(),
+                // Reserve the actual burned asset, including the fee, not Circle's net payout.
+                amount: burn.amount,
                 intent: raw,
                 digest,
                 transfer_spec_hash: spec.hash()?,

@@ -168,7 +168,7 @@ impl CircleApi for ScriptedCircle {
                     endpoint: saved.endpoint.clone(),
                     body: saved.body.clone(),
                 },
-                "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND body = ?1 AND withdrawal_id IS NULL",
+                "SELECT count(*) FROM submissions JOIN burns USING (note_id) WHERE submissions.status = 'SUBMITTING' AND body = ?1 AND withdrawal_id IS NULL AND reservation_amount IS NOT NULL AND admitted_at_ms IS NOT NULL",
                 &saved.body,
             )
         })
@@ -209,8 +209,14 @@ pub(super) struct Ledger {
 
 impl Ledger {
     pub(super) async fn new() -> Self {
-        let mut burns: Vec<_> = (0..3)
-            .map(|i| validated_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
+        Self::with_amounts([1_000; 3]).await
+    }
+
+    pub(super) async fn with_amounts(amounts: [u64; 3]) -> Self {
+        let mut burns: Vec<_> = amounts
+            .into_iter()
+            .enumerate()
+            .map(|(i, amount)| validated_burn(amount, serial(0x3132_3334_3536_3738 + i as u64), 9))
             .collect();
         let mut factory = BlockFactory::new();
         factory.push(vec![], vec![]);
@@ -270,6 +276,29 @@ impl Ledger {
         self.directory.path().join("state.sqlite3")
     }
 
+    pub(super) fn configure(&self, limit: u64, cap_message: bool) {
+        let path = self.directory.path().join("attester.toml");
+        let text = std::fs::read_to_string(&path).unwrap().replace(
+            "withdrawal_limit = 10_000_000_000_000",
+            &format!("withdrawal_limit = {limit}"),
+        );
+        let extra = if cap_message {
+            "\nwithdrawal_cap_error_message = 'synthetic cap rejection'\n"
+        } else {
+            ""
+        };
+        std::fs::write(path, format!("{text}{extra}")).unwrap();
+    }
+
+    pub(super) fn stored(&self, sql: &str) -> i64 {
+        let disk = Connection::open_with_flags(
+            format!("file:{}?immutable=1", self.path().display()),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        disk.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
     pub(super) async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
         let (attester, requests, _) = self.runtime(replies, development_signers()).await;
         (attester, requests)
@@ -316,7 +345,11 @@ impl Ledger {
         height: Option<&str>,
     ) -> SignedWithdrawal {
         let burn = &self.burns[index];
-        let mut prepared = batch(&burn.burn.note().as_note().serial_num().to_hex(), 1_000, 9);
+        let mut prepared = batch(
+            &burn.burn.note().as_note().serial_num().to_hex(),
+            burn.amount,
+            9,
+        );
         if let Some(height) = height {
             prepared.burn_intents[0].max_block_height = height.into();
             rebuild_for_test(&mut prepared).unwrap();
@@ -535,7 +568,7 @@ async fn submit_sends_checked_request() {
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;
-            let fresh_body = fresh.submission(ENDPOINT.into()).unwrap().body;
+            let fresh_body = fresh.submission(ENDPOINT.into()).unwrap().0.body;
             assert_ne!(fresh_body, saved.body);
             drop(attester);
 
@@ -618,6 +651,11 @@ async fn submit_saves_before_sending() {
         .submission(ledger.burns[0].burn.note_id())
         .unwrap()
         .is_none());
+    assert_eq!(
+        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount IS NOT NULL"),
+        0,
+        "a failed saved request rolls back its reservation too"
+    );
     drop(attester);
     ledger.sql("DROP TRIGGER fail_insert;");
     let (mut attester, requests) = ledger.start(vec![CircleState::TransportError]).await;
@@ -994,7 +1032,8 @@ async fn submission_requests_use_the_saved_request() {
         .signed(0)
         .await
         .submission("https://saved.example.invalid/v1/withdraw".into())
-        .unwrap();
+        .unwrap()
+        .0;
     let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
     let client = CircleClient::new(&config).unwrap();
 
@@ -1033,7 +1072,12 @@ async fn submission_requests_use_the_saved_request() {
 async fn circle_answers_are_read_into_the_saved_row() {
     use SubmissionStatus::*;
     let ledger = Ledger::new().await;
-    let queued = ledger.signed(0).await.submission(ENDPOINT.into()).unwrap();
+    let queued = ledger
+        .signed(0)
+        .await
+        .submission(ENDPOINT.into())
+        .unwrap()
+        .0;
     let body = |value: Value| serde_json::to_vec(&value).unwrap();
     let created = ledger.response(0, "created");
     let mut failed = ledger.response(0, "failed");

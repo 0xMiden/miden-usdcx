@@ -1,6 +1,6 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
@@ -12,7 +12,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
 use crate::signer::{Signer, SignerPair};
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -47,6 +47,7 @@ pub struct Attester {
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
+    pub(crate) now: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
 
 impl Attester {
@@ -118,6 +119,7 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
+            now: Box::new(SystemTime::now),
         })
     }
 
@@ -359,12 +361,34 @@ impl Attester {
                 break;
             }
             let note_id = burn.burn.note_id();
+            // A waiting burn must not spend a prepare call or block smaller burns behind it.
+            if !self.store.can_submit_burn(
+                note_id,
+                burn.amount,
+                self.now_ms()?,
+                self.config.withdrawal_window_ms(),
+                self.config.withdrawal_limit(),
+            )? {
+                continue;
+            }
             if let Err(error) = self.withdraw(&burn).await {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                // Retry scheduling/holds for prepare and verify failures are the next slice.
-                // A failure here must not prevent another burn from getting its withdrawal.
+                let hold = match &error {
+                    SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
+                        status, ..
+                    }) if !status.is_server_error() => Some(BurnHoldReason::PrepareRejected),
+                    SubmitError::Prepare(CircleError::InvalidResponse(_)) => {
+                        Some(BurnHoldReason::PrepareRejected)
+                    }
+                    SubmitError::Verification(_) => Some(BurnHoldReason::VerifyFailed),
+                    _ => None,
+                };
+                if let Some(reason) = hold {
+                    self.store.hold_burn(note_id, reason)?;
+                }
+                // Transport/server and signing failures remain eligible next cycle.
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
                 first_error.get_or_insert(error);
             }

@@ -21,6 +21,22 @@ use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, Submissi
 use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
+const CAP_REJECTED: &str = "CAP_REJECTED";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BurnHoldReason {
+    PrepareRejected,
+    VerifyFailed,
+}
+
+impl BurnHoldReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PrepareRejected => "prepare_rejected",
+            Self::VerifyFailed => "verify_failed",
+        }
+    }
+}
 
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
@@ -153,38 +169,121 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    /// Saves a signed request before it is sent, and records it in the burn's history. It can
-    /// replace only an expired withdrawal; any other saved submission, a failed one included, stays
-    /// as it is.
-    pub(crate) fn save_submission(&mut self, record: &SavedSubmission) -> anyhow::Result<()> {
-        validate_submission(record)?;
+    pub(crate) fn can_submit_burn(
+        &self,
+        note_id: NoteId,
+        amount: u64,
+        now_ms: i64,
+        window_ms: i64,
+        limit: u64,
+    ) -> Result<bool, StoreError> {
+        can_submit_burn(&self.connection, note_id, amount, now_ms, window_ms, limit)
+    }
+
+    /// The exact signed request and its capacity reservation commit before any POST.
+    pub(crate) fn admit_submission(
+        &mut self,
+        record: &SavedSubmission,
+        amount: u64,
+        now_ms: i64,
+        window_ms: i64,
+        limit: u64,
+    ) -> Result<bool, StoreError> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        let written = transaction
-            .execute(
-                "INSERT INTO submissions (
-                note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (note_id) DO UPDATE SET
-                endpoint = excluded.endpoint, body = excluded.body,
-                transfer_spec_hash = excluded.transfer_spec_hash,
-                use_circle_forwarding = excluded.use_circle_forwarding,
-                status = ?6, withdrawal_id = NULL, hold_reason = NULL,
-                last_http_status = NULL, last_response = NULL, last_error = NULL
-             WHERE submissions.status = ?7 AND submissions.withdrawal_id IS NOT NULL",
-                params![
-                    record.note_id.to_bytes(),
-                    record.endpoint.as_str(),
-                    record.body,
-                    record.transfer_spec_hash.as_slice(),
-                    record.use_circle_forwarding,
-                    SubmissionStatus::Submitting.as_ref(),
-                    SubmissionStatus::Expired.as_ref(),
-                ],
+        if !can_submit_burn(
+            &transaction,
+            record.note_id,
+            amount,
+            now_ms,
+            window_ms,
+            limit,
+        )? {
+            return Ok(false);
+        }
+        reserve_capacity(&transaction, record.note_id, amount, now_ms)?;
+        save_submission(&transaction, record)?;
+        transaction.commit().map_err(classify_error)?;
+        Ok(true)
+    }
+
+    /// An uncertain POST may arrive at Circle again, so refresh its existing reservation first.
+    pub(crate) fn renew_submission(
+        &mut self,
+        note_id: NoteId,
+        now_ms: i64,
+        window_ms: i64,
+        limit: u64,
+    ) -> Result<bool, StoreError> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let amount = transaction
+            .query_row(
+                "SELECT reservation_amount FROM burns JOIN submissions USING (note_id)
+                 WHERE note_id = ?1 AND submissions.status = 'SUBMITTING'
+                    AND withdrawal_id IS NULL",
+                [note_id.to_bytes()],
+                |row| row.get::<_, u64>(0),
             )
-            .map_err(classify_write_error)?;
-        ensure!(written == 1, CONFLICT);
-        record_submission(&transaction, record.note_id, EventKind::Authorized)?;
+            .map_err(classify_error)?;
+        if !can_submit_burn(&transaction, note_id, amount, now_ms, window_ms, limit)? {
+            return Ok(false);
+        }
+        reserve_capacity(&transaction, note_id, amount, now_ms)?;
+        transaction.commit().map_err(classify_error)?;
+        Ok(true)
+    }
+
+    pub(crate) fn record_cap_rejection(&mut self, note_id: NoteId) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let removed = transaction
+            .execute(
+                "DELETE FROM submissions WHERE note_id = ?1
+                    AND status = 'SUBMITTING' AND withdrawal_id IS NULL",
+                [note_id.to_bytes()],
+            )
+            .map_err(classify_error)?;
+        let updated = transaction
+            .execute(
+                "UPDATE burns SET status = 'CAP_REJECTED' WHERE note_id = ?1
+                    AND status = 'DISCOVERED' AND admitted_at_ms IS NOT NULL",
+                [note_id.to_bytes()],
+            )
+            .map_err(classify_error)?;
+        if removed != 1 || updated != 1 {
+            return Err(StoreError::Conflict);
+        }
+        // Circle refused this attempt: release its charge, retain its cooldown, discard its bytes.
         transaction.commit().map_err(classify_error)
+    }
+
+    pub(crate) fn hold_burn(
+        &self,
+        note_id: NoteId,
+        reason: BurnHoldReason,
+    ) -> Result<(), StoreError> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE burns SET hold_reason = ?2
+                 WHERE note_id = ?1 AND status IN ('DISCOVERED', 'CAP_REJECTED')
+                    AND (hold_reason IS NULL OR hold_reason = ?2)
+                    AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1
+                        AND status != 'EXPIRED')",
+                params![note_id.to_bytes(), reason.as_str()],
+            )
+            .map_err(classify_error)?;
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+    }
+
+    pub(crate) fn release_burn_hold(&self, note_id: NoteId) -> Result<(), StoreError> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE burns SET hold_reason = NULL
+                 WHERE note_id = ?1 AND hold_reason IS NOT NULL",
+                [note_id.to_bytes()],
+            )
+            .map_err(classify_error)?;
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
     }
 
     /// The saved submission for `note_id`, if there is one.
@@ -323,6 +422,123 @@ impl Store {
 
         transaction.commit().map_err(classify_error)
     }
+}
+
+fn can_submit_burn(
+    connection: &rusqlite::Connection,
+    note_id: NoteId,
+    amount: u64,
+    now_ms: i64,
+    window_ms: i64,
+    limit: u64,
+) -> Result<bool, StoreError> {
+    if now_ms < 0 || window_ms <= 0 {
+        return Err(StoreError::Invalid);
+    }
+    let (status, hold, previous_amount, admitted_at) = connection
+        .query_row(
+            "SELECT status, hold_reason, reservation_amount, admitted_at_ms
+             FROM burns WHERE note_id = ?1",
+            [note_id.to_bytes()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<u64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .map_err(classify_error)?;
+    if previous_amount.is_some_and(|previous| previous != amount) {
+        return Err(StoreError::Conflict);
+    }
+    if hold.is_some()
+        || amount > limit
+        || (status == CAP_REJECTED
+            && inside_window(now_ms, admitted_at.ok_or(StoreError::Invalid)?, window_ms))
+    {
+        return Ok(false);
+    }
+
+    // Count each burn once. A replacement or retry renews this burn's existing charge.
+    let mut statement = connection
+        .prepare(
+            "SELECT reservation_amount, admitted_at_ms FROM burns
+             WHERE note_id != ?1 AND status != 'CAP_REJECTED'
+                AND reservation_amount IS NOT NULL",
+        )
+        .map_err(classify_error)?;
+    let mut rows = statement
+        .query([note_id.to_bytes()])
+        .map_err(classify_error)?;
+    let mut total = u128::from(amount);
+    while let Some(row) = rows.next().map_err(classify_error)? {
+        if inside_window(now_ms, row.get(1).map_err(classify_error)?, window_ms) {
+            total += u128::from(row.get::<_, u64>(0).map_err(classify_error)?);
+            if total > u128::from(limit) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn inside_window(now_ms: i64, admitted_at_ms: i64, window_ms: i64) -> bool {
+    // A backwards clock keeps reservations live; exactly one window old stops counting.
+    i128::from(now_ms) - i128::from(admitted_at_ms) < i128::from(window_ms)
+}
+
+fn reserve_capacity(
+    connection: &rusqlite::Connection,
+    note_id: NoteId,
+    amount: u64,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    let updated = connection
+        .execute(
+            "UPDATE burns SET status = 'DISCOVERED', reservation_amount = ?2,
+                admitted_at_ms = MAX(COALESCE(admitted_at_ms, ?3), ?3)
+             WHERE note_id = ?1 AND status IN ('DISCOVERED', 'CAP_REJECTED')
+                AND hold_reason IS NULL",
+            params![note_id.to_bytes(), amount, now_ms],
+        )
+        .map_err(classify_error)?;
+    (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+}
+
+/// Saves a signed request before it is sent, and records it in the burn's history. It can replace
+/// only an expired withdrawal; any other saved submission, a failed one included, stays as it is.
+fn save_submission(
+    connection: &rusqlite::Connection,
+    record: &SavedSubmission,
+) -> Result<(), StoreError> {
+    validate_submission(record)?;
+    let written = connection
+        .execute(
+            "INSERT INTO submissions (
+                note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (note_id) DO UPDATE SET
+                endpoint = excluded.endpoint, body = excluded.body,
+                transfer_spec_hash = excluded.transfer_spec_hash,
+                use_circle_forwarding = excluded.use_circle_forwarding,
+                status = ?6, withdrawal_id = NULL, hold_reason = NULL,
+                last_http_status = NULL, last_response = NULL, last_error = NULL
+             WHERE submissions.status = ?7 AND submissions.withdrawal_id IS NOT NULL",
+            params![
+                record.note_id.to_bytes(),
+                record.endpoint.as_str(),
+                record.body,
+                record.transfer_spec_hash.as_slice(),
+                record.use_circle_forwarding,
+                SubmissionStatus::Submitting.as_ref(),
+                SubmissionStatus::Expired.as_ref(),
+            ],
+        )
+        .map_err(classify_write_error)?;
+    (written == 1).then_some(()).ok_or(StoreError::Conflict)?;
+    record_submission(connection, record.note_id, EventKind::Authorized)
 }
 
 fn initialize_store(
@@ -540,8 +756,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-            FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
+            hold_reason, reservation_amount, admitted_at_ms FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status,
             withdrawal_id, hold_reason, last_http_status, last_response, last_error
             FROM submissions LIMIT 0",
@@ -620,7 +836,7 @@ fn select_submissions(
         if !exists(
             connection,
             "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND status = 'DISCOVERED')",
+             WHERE note_id = ?1 AND status = 'DISCOVERED' AND reservation_amount IS NOT NULL)",
             [record.note_id.to_bytes()],
         )? {
             bail!(INVALID);
@@ -768,9 +984,11 @@ fn load_burns(
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
-             WHERE status = 'DISCOVERED' AND (?1 OR NOT EXISTS (
-                  SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
-                     AND submissions.status != ?2
+             WHERE status = 'DISCOVERED' AND (?1 OR (
+                 hold_reason IS NULL AND NOT EXISTS (
+                     SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+                        AND submissions.status != ?2
+                 )
              ))",
         )
         .map_err(classify_error)?;

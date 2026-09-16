@@ -1,16 +1,16 @@
-//! `xusdc-genesis` — builds the genesis xUSDC faucet offline against the externally-provided
-//! role accounts and emits the node's genesis inputs.
+//! `xusdc-genesis` — builds the genesis xUSDC faucet offline and emits the node's genesis
+//! inputs for it.
 //!
 //! ```text
 //! cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
 //! ```
 //!
-//! Exit 0 = every account built and every output written. The id listing goes to stdout.
+//! Exit 0 = the faucet built and every output written. The id listing goes to stdout.
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use xusdc_genesis::accounts::build_all;
+use xusdc_genesis::accounts::build_faucet;
 use xusdc_genesis::config::GenesisToolConfig;
 use xusdc_genesis::output::{render_listing, write_outputs};
 
@@ -34,11 +34,11 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "xusdc-genesis — derive the xUSDC genesis inputs offline\n\n\
-                     Builds the genesis xUSDC faucet against the six externally-provided role\n\
-                     accounts the config references, then writes the .mac account files, a\n\
-                     genesis.toml fragment, and an accounts.json summary, printing every\n\
-                     account id (hex + bech32).\n\n\
+                    "xusdc-genesis — build the genesis xUSDC faucet offline\n\n\
+                     Builds the genesis xUSDC faucet from the faucet parameters and the six\n\
+                     role-account ids in the config file, then writes the faucet's .mac account\n\
+                     file, a genesis.toml fragment, and an accounts.json summary, printing the\n\
+                     faucet id (hex + bech32).\n\n\
                      --config <PATH>    the JSON config (see the crate README for the schema)\n\
                      --out-dir <DIR>    where to write the outputs (overrides the config's\n\
                                         output_dir; required when the config sets none)\n"
@@ -64,11 +64,11 @@ fn main() -> Result<()> {
         bail!("no output directory: pass --out-dir or set output_dir in the config");
     };
 
-    let accounts = build_all(&config).context("building the genesis accounts")?;
-    write_outputs(&accounts, &out_dir)
+    let faucet = build_faucet(&config).context("building the genesis faucet")?;
+    write_outputs(&faucet, &config, &out_dir)
         .with_context(|| format!("writing the outputs to {}", out_dir.display()))?;
 
-    print!("{}", render_listing(&accounts));
+    print!("{}", render_listing(&faucet, &config));
     println!("outputs written to {}", out_dir.display());
     Ok(())
 }

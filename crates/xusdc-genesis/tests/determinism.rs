@@ -8,68 +8,42 @@ mod common;
 
 use miden_protocol::account::AccountFile;
 use miden_protocol::utils::serde::Serializable;
-use xusdc_genesis::accounts::build_all;
-use xusdc_genesis::config::Role;
+use xusdc_genesis::accounts::build_faucet;
 use xusdc_genesis::output::write_outputs;
 
-use crate::common::Fixture;
+use crate::common::fixture_config;
 
-/// Building the same config twice yields identical account commitments and byte-identical `.mac`
-/// serializations — including the passed-through secret keys.
+/// Building the same config twice yields an identical faucet commitment and byte-identical
+/// `.mac` serialization.
 #[test]
 fn the_same_config_builds_byte_identical_outputs() {
-    let fixture = Fixture::new();
-    let first = build_all(&fixture.config()).expect("the dev fixture must build");
-    let second = build_all(&fixture.config()).expect("the dev fixture must build again");
+    let config = fixture_config();
+    let first = build_faucet(&config).expect("the dev fixture must build");
+    let second = build_faucet(&config).expect("the dev fixture must build again");
 
     assert_eq!(
-        first.faucet.to_commitment(),
-        second.faucet.to_commitment(),
+        first.to_commitment(),
+        second.to_commitment(),
         "the faucet commitment must be deterministic",
     );
     assert_eq!(
-        AccountFile::new(first.faucet.clone(), Vec::new()).to_bytes(),
-        AccountFile::new(second.faucet.clone(), Vec::new()).to_bytes(),
+        AccountFile::new(first, Vec::new()).to_bytes(),
+        AccountFile::new(second, Vec::new()).to_bytes(),
         "the faucet .mac bytes must be deterministic",
     );
-    for role in Role::ALL {
-        let (a, b) = (first.wallet(role), second.wallet(role));
-        assert_eq!(
-            a.account.to_commitment(),
-            b.account.to_commitment(),
-            "the {} wallet commitment must be deterministic",
-            role.as_str(),
-        );
-        assert_eq!(
-            AccountFile::new(a.account.clone(), a.secrets.clone()).to_bytes(),
-            AccountFile::new(b.account.clone(), b.secrets.clone()).to_bytes(),
-            "the {} .mac bytes (account + passed-through secrets) must be deterministic",
-            role.as_str(),
-        );
-    }
 }
 
-/// `write_outputs` emits the complete file set — the seven `.mac` files, the `genesis.toml`
-/// fragment referencing all of them, and the `accounts.json` summary — and a second run over the
-/// same build is byte-identical.
+/// `write_outputs` emits the complete file set — the faucet's `.mac` file, the `genesis.toml`
+/// fragment carrying only the `native_faucet` line, and the `accounts.json` summary — and a
+/// second run over the same build is byte-identical.
 #[test]
 fn write_outputs_emits_the_complete_deterministic_file_set() {
-    let fixture = Fixture::new();
-    let accounts = build_all(&fixture.config()).expect("the dev fixture must build");
+    let config = fixture_config();
+    let faucet = build_faucet(&config).expect("the dev fixture must build");
     let dir = tempfile::tempdir().expect("a temp dir is available");
-    write_outputs(&accounts, dir.path()).expect("the outputs must write");
+    write_outputs(&faucet, &config, dir.path()).expect("the outputs must write");
 
-    let expected_files = [
-        "usdcx-faucet.mac",
-        "operator.mac",
-        "owner.mac",
-        "attest_admin.mac",
-        "pauser.mac",
-        "unpauser.mac",
-        "blocklist_manager.mac",
-        "genesis.toml",
-        "accounts.json",
-    ];
+    let expected_files = ["usdcx-faucet.mac", "genesis.toml", "accounts.json"];
     for name in expected_files {
         assert!(dir.path().join(name).is_file(), "{name} must be emitted");
     }
@@ -83,20 +57,14 @@ fn write_outputs_emits_the_complete_deterministic_file_set() {
 
     let genesis_toml = std::fs::read_to_string(dir.path().join("genesis.toml"))
         .expect("the genesis.toml fragment is readable");
-    assert!(
-        genesis_toml.contains("native_faucet = \"usdcx-faucet.mac\""),
-        "the fragment must declare the faucet as native_faucet",
+    assert_eq!(
+        genesis_toml, "native_faucet = \"usdcx-faucet.mac\"\n",
+        "the fragment must carry exactly the native_faucet line — the role accounts are not \
+         this tool's genesis entries",
     );
-    for role in Role::ALL {
-        assert!(
-            genesis_toml.contains(&format!("path = \"{}\"", role.mac_file_name())),
-            "the fragment must reference the {} account file",
-            role.as_str(),
-        );
-    }
 
     let second_dir = tempfile::tempdir().expect("a second temp dir is available");
-    write_outputs(&accounts, second_dir.path()).expect("the second write must succeed");
+    write_outputs(&faucet, &config, second_dir.path()).expect("the second write must succeed");
     for name in expected_files {
         assert_eq!(
             std::fs::read(dir.path().join(name)).expect("first output readable"),
@@ -106,19 +74,19 @@ fn write_outputs_emits_the_complete_deterministic_file_set() {
     }
 }
 
-// The dev-fixture faucet id, FROZEN. It moves on every protocol bump BY DESIGN — the account id
-// hashes the code and storage commitments (the storage seeds the fixture's role account ids),
-// so any protocol change that touches a component's MAST root moves it. A failure here is the
-// alarm that the genesis identity changed; refreeze deliberately, never mechanically.
-const GOLDEN_FAUCET_ID: &str = "0x6c2fc53dff48d2f1077c0f2ee881f3";
+// The dev-fixture faucet id, FROZEN. The value is fixture-derived: it hashes the faucet seed
+// plus the code and storage commitments, and the storage seeds the fixture's dummy role ids —
+// so it moves on every protocol bump (the code commitment) and on any fixture change BY DESIGN.
+// A failure here is the alarm that the genesis identity changed; refreeze deliberately, never
+// mechanically.
+const GOLDEN_FAUCET_ID: &str = "0x3f5867b34798c4314a78297038fe58";
 
 /// The faucet's dev-fixture id is frozen.
 #[test]
 fn the_faucet_id_is_frozen() {
-    let fixture = Fixture::new();
-    let accounts = build_all(&fixture.config()).expect("the dev fixture must build");
+    let faucet = build_faucet(&fixture_config()).expect("the dev fixture must build");
     assert_eq!(
-        accounts.faucet.id().to_hex(),
+        faucet.id().to_hex(),
         GOLDEN_FAUCET_ID,
         "the dev-fixture faucet id drifted — expected on a protocol bump, refreeze deliberately",
     );

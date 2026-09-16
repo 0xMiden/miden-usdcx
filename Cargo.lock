@@ -5824,7 +5824,6 @@ dependencies = [
  "hex",
  "miden-protocol",
  "miden-standards",
- "rand_chacha 0.10.0",
  "rstest",
  "serde",
  "serde_json",

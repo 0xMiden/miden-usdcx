@@ -1,16 +1,18 @@
 //! The tool's input-file schema ([`GenesisToolConfig`]) and its validation.
 //!
 //! This is OUR tool's config, deliberately NOT the node's `GenesisConfig` (no node-crate
-//! dependency anywhere: the `genesis.toml` fragment is emitted as plain text and the `.mac`
-//! files use the protocol's `AccountFile`). The role wallets are NOT created by this tool: the
-//! config references their externally-produced `AccountFile`s by path, and loading decodes them
-//! up front. Parsing is two-stage: a serde mirror of the raw JSON (`deny_unknown_fields`)
-//! followed by a typed conversion that reads every referenced account file and validates the
-//! faucet inputs, so every rejection surfaces as a specific [`ConfigError`] variant.
+//! dependency anywhere: the `genesis.toml` fragment is emitted as plain text and the faucet
+//! `.mac` file uses the protocol's `AccountFile`). The role accounts are referenced by BARE
+//! account id — this tool neither creates nor reads any account but the faucet it builds.
+//! Parsing is two-stage: a serde mirror of the raw JSON (`deny_unknown_fields`) followed by a
+//! typed conversion through the protocol's own id and seed parsers, so every rejection surfaces
+//! as a specific [`ConfigError`] variant. Role-collision rules are owned and enforced by the
+//! `XReserveStablecoinBuilder`, not re-implemented here.
 
 use std::path::{Path, PathBuf};
 
-use miden_protocol::account::{Account, AccountFile};
+use miden_protocol::account::AccountId;
+use miden_protocol::errors::AccountIdError;
 use serde::Deserialize;
 
 /// The number of hex characters in a 32-byte seed (after the mandatory `0x` prefix).
@@ -19,9 +21,9 @@ const SEED_HEX_LEN: usize = 64;
 // ROLES
 // ================================================================================================
 
-/// The six genesis wallet roles the config provides accounts for: the network operator plus the
-/// five faucet role holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`,
-/// `DOM_PAUSER`, `DOM_UNPAUSER`, `BLK_MANAGER`).
+/// The six role-account ids the config provides: the network operator plus the five faucet role
+/// holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`,
+/// `DOM_UNPAUSER`, `BLK_MANAGER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Operator,
@@ -43,7 +45,7 @@ impl Role {
         Role::BlocklistManager,
     ];
 
-    /// The role's config-field name, doubling as its output-file stem.
+    /// The role's config-field name, doubling as its name in the emitted summary.
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Operator => "operator",
@@ -53,11 +55,6 @@ impl Role {
             Role::Unpauser => "unpauser",
             Role::BlocklistManager => "blocklist_manager",
         }
-    }
-
-    /// The `.mac` file name this role's account is written to.
-    pub fn mac_file_name(self) -> String {
-        format!("{}.mac", self.as_str())
     }
 }
 
@@ -98,23 +95,8 @@ impl Seed32 {
 // TYPED CONFIG
 // ================================================================================================
 
-/// One externally-provided role account: the path the config resolved and the decoded protocol
-/// `AccountFile` (the account plus whatever secret keys the file embeds).
-#[derive(Debug, Clone)]
-pub struct ProvidedAccount {
-    pub path: PathBuf,
-    pub file: AccountFile,
-}
-
-impl ProvidedAccount {
-    /// Returns the provided account.
-    pub fn account(&self) -> &Account {
-        &self.file.account
-    }
-}
-
 /// The faucet's config: its account seed and the `XReserveStablecoinBuilder` inputs that are not
-/// derived from the role wallets.
+/// role-account ids.
 #[derive(Debug, Clone)]
 pub struct FaucetConfig {
     pub seed: Seed32,
@@ -125,44 +107,41 @@ pub struct FaucetConfig {
     pub verification_base_fee: u32,
 }
 
-/// The validated tool config: one [`ProvidedAccount`] per [`Role`], the [`FaucetConfig`], and
-/// the optional default output directory (`--out-dir` overrides it).
+/// The validated tool config: one [`AccountId`] per [`Role`], the [`FaucetConfig`], and the
+/// optional default output directory (`--out-dir` overrides it).
 #[derive(Debug, Clone)]
 pub struct GenesisToolConfig {
-    pub operator: ProvidedAccount,
-    pub owner: ProvidedAccount,
-    pub attest_admin: ProvidedAccount,
-    pub pauser: ProvidedAccount,
-    pub unpauser: ProvidedAccount,
-    pub blocklist_manager: ProvidedAccount,
+    pub operator: AccountId,
+    pub owner: AccountId,
+    pub attest_admin: AccountId,
+    pub pauser: AccountId,
+    pub unpauser: AccountId,
+    pub blocklist_manager: AccountId,
     pub faucet: FaucetConfig,
     pub output_dir: Option<PathBuf>,
 }
 
 impl GenesisToolConfig {
-    /// Reads and parses the config file at `path`; relative account-file paths resolve against
-    /// the config file's directory.
+    /// Reads and parses the config file at `path`.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        Self::from_json(&text, path.parent().unwrap_or(Path::new(".")))
+        Self::from_json(&text)
     }
 
-    /// Parses and validates a config from its JSON text, reading every referenced account file;
-    /// relative account-file paths resolve against `base_dir`.
-    pub fn from_json(text: &str, base_dir: &Path) -> Result<Self, ConfigError> {
+    /// Parses and validates a config from its JSON text.
+    pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = serde_json::from_str(text).map_err(ConfigError::Parse)?;
         let config = Self {
-            operator: read_account(Role::Operator, base_dir, &raw.accounts.operator)?,
-            owner: read_account(Role::Owner, base_dir, &raw.accounts.owner)?,
-            attest_admin: read_account(Role::AttestAdmin, base_dir, &raw.accounts.attest_admin)?,
-            pauser: read_account(Role::Pauser, base_dir, &raw.accounts.pauser)?,
-            unpauser: read_account(Role::Unpauser, base_dir, &raw.accounts.unpauser)?,
-            blocklist_manager: read_account(
+            operator: parse_account_id(Role::Operator, &raw.accounts.operator)?,
+            owner: parse_account_id(Role::Owner, &raw.accounts.owner)?,
+            attest_admin: parse_account_id(Role::AttestAdmin, &raw.accounts.attest_admin)?,
+            pauser: parse_account_id(Role::Pauser, &raw.accounts.pauser)?,
+            unpauser: parse_account_id(Role::Unpauser, &raw.accounts.unpauser)?,
+            blocklist_manager: parse_account_id(
                 Role::BlocklistManager,
-                base_dir,
                 &raw.accounts.blocklist_manager,
             )?,
             faucet: FaucetConfig {
@@ -179,20 +158,19 @@ impl GenesisToolConfig {
         Ok(config)
     }
 
-    /// Returns the provided account for `role`.
-    pub fn provided(&self, role: Role) -> &ProvidedAccount {
+    /// Returns the provided account id for `role`.
+    pub fn role_id(&self, role: Role) -> AccountId {
         match role {
-            Role::Operator => &self.operator,
-            Role::Owner => &self.owner,
-            Role::AttestAdmin => &self.attest_admin,
-            Role::Pauser => &self.pauser,
-            Role::Unpauser => &self.unpauser,
-            Role::BlocklistManager => &self.blocklist_manager,
+            Role::Operator => self.operator,
+            Role::Owner => self.owner,
+            Role::AttestAdmin => self.attest_admin,
+            Role::Pauser => self.pauser,
+            Role::Unpauser => self.unpauser,
+            Role::BlocklistManager => self.blocklist_manager,
         }
     }
 
-    /// Cross-field validation: the initial supply must fit under the cap, and the six provided
-    /// accounts must be pairwise distinct (one account cannot hold two roles).
+    /// Cross-field validation: the initial supply must fit under the cap.
     fn validate(&self) -> Result<(), ConfigError> {
         if self.faucet.token_supply > self.faucet.max_supply {
             return Err(ConfigError::SupplyExceedsMax {
@@ -200,35 +178,23 @@ impl GenesisToolConfig {
                 max_supply: self.faucet.max_supply,
             });
         }
-        let ids: Vec<_> = Role::ALL
-            .iter()
-            .map(|role| (role.as_str(), self.provided(*role).account().id()))
-            .collect();
-        for (i, (first, first_id)) in ids.iter().enumerate() {
-            for (second, second_id) in ids.iter().skip(i + 1) {
-                if first_id == second_id {
-                    return Err(ConfigError::DuplicateAccount { first, second });
-                }
-            }
-        }
         Ok(())
     }
 }
 
-/// Reads the account file for one role: the raw config path resolved against `base_dir`, decoded
-/// as a protocol `AccountFile`.
-fn read_account(
-    role: Role,
-    base_dir: &Path,
-    raw_path: &str,
-) -> Result<ProvidedAccount, ConfigError> {
-    let path = base_dir.join(raw_path);
-    let file = AccountFile::read(&path).map_err(|source| ConfigError::AccountFile {
+/// Parses one role's account id with the protocol's own parsers: the `0x` form through
+/// [`AccountId::from_hex`], anything else through [`AccountId::from_bech32`] (the embedded
+/// network id is not checked — the genesis accounts exist on whatever network boots from them).
+fn parse_account_id(role: Role, id_str: &str) -> Result<AccountId, ConfigError> {
+    let parsed = if id_str.starts_with("0x") {
+        AccountId::from_hex(id_str)
+    } else {
+        AccountId::from_bech32(id_str).map(|(_network, id)| id)
+    };
+    parsed.map_err(|source| ConfigError::AccountId {
         field: role.as_str(),
-        path: path.clone(),
         source,
-    })?;
-    Ok(ProvidedAccount { path, file })
+    })
 }
 
 // RAW (SERDE) MIRROR
@@ -242,7 +208,7 @@ struct RawConfig {
     output_dir: Option<PathBuf>,
 }
 
-/// Per role, the path to its externally-produced protocol `AccountFile`.
+/// Per role, its account id as hex (`0x`-prefixed) or bech32.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAccounts {
@@ -278,12 +244,10 @@ pub enum ConfigError {
     },
     /// The JSON does not match the schema (including unknown fields, which are rejected).
     Parse(serde_json::Error),
-    /// A referenced account file could not be read or does not decode as a protocol
-    /// `AccountFile`.
-    AccountFile {
+    /// A role's account id parses as neither hex nor bech32.
+    AccountId {
         field: &'static str,
-        path: PathBuf,
-        source: std::io::Error,
+        source: AccountIdError,
     },
     /// The seed is missing its mandatory `0x` prefix.
     SeedMissingPrefix { field: &'static str },
@@ -296,11 +260,6 @@ pub enum ConfigError {
     },
     /// The initial `token_supply` exceeds `max_supply`.
     SupplyExceedsMax { token_supply: u64, max_supply: u64 },
-    /// Two roles reference the same account.
-    DuplicateAccount {
-        first: &'static str,
-        second: &'static str,
-    },
 }
 
 impl core::fmt::Display for ConfigError {
@@ -308,9 +267,10 @@ impl core::fmt::Display for ConfigError {
         match self {
             Self::Io { path, .. } => write!(f, "reading the config file {}", path.display()),
             Self::Parse(_) => write!(f, "the config JSON does not match the schema"),
-            Self::AccountFile { field, path, .. } => {
-                write!(f, "reading the {field} account file {}", path.display())
-            }
+            Self::AccountId { field, .. } => write!(
+                f,
+                "the {field} account id is neither valid hex nor valid bech32"
+            ),
             Self::SeedMissingPrefix { field } => {
                 write!(f, "the {field} seed is missing its 0x prefix")
             }
@@ -326,12 +286,6 @@ impl core::fmt::Display for ConfigError {
                 f,
                 "token_supply {token_supply} exceeds max_supply {max_supply}"
             ),
-            Self::DuplicateAccount { first, second } => {
-                write!(
-                    f,
-                    "the {first} and {second} roles reference the same account"
-                )
-            }
         }
     }
 }
@@ -339,8 +293,9 @@ impl core::fmt::Display for ConfigError {
 impl core::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } | Self::AccountFile { source, .. } => Some(source),
+            Self::Io { source, .. } => Some(source),
             Self::Parse(source) => Some(source),
+            Self::AccountId { source, .. } => Some(source),
             Self::SeedHex { source, .. } => Some(source),
             _ => None,
         }

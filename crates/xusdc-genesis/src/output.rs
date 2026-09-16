@@ -1,5 +1,5 @@
-//! Output rendering: the seven `.mac` account files, the plain-text `genesis.toml` fragment, the
-//! `accounts.json` summary, and the stdout id listing.
+//! Output rendering: the faucet's `.mac` account file, the plain-text `genesis.toml` fragment,
+//! the `accounts.json` summary, and the stdout listing.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -9,7 +9,7 @@ use miden_protocol::account::{Account, AccountFile};
 use miden_protocol::address::NetworkId;
 use serde::Serialize;
 
-use crate::accounts::GenesisAccounts;
+use crate::config::{GenesisToolConfig, Role};
 
 /// The faucet's `.mac` file name, referenced by the `genesis.toml` fragment's `native_faucet`.
 const FAUCET_MAC_FILE: &str = "usdcx-faucet.mac";
@@ -18,84 +18,69 @@ const GENESIS_TOML_FILE: &str = "genesis.toml";
 /// The emitted machine-readable summary.
 const ACCOUNTS_JSON_FILE: &str = "accounts.json";
 
-/// One account's identity in every printable form.
+/// The faucet's identity in every printable form.
 #[derive(Serialize)]
-struct AccountSummary {
-    name: String,
+struct FaucetSummary {
     mac_file: String,
     id_hex: String,
     bech32_mainnet: String,
     bech32_testnet: String,
     bech32_devnet: String,
-    /// True when the emitted `.mac` file embeds secret keys (passed through from the provided
-    /// account file — this tool generates none).
-    secrets_embedded: bool,
+}
+
+/// One provided role-account id, echoed back from the config.
+#[derive(Serialize)]
+struct RoleSummary {
+    name: String,
+    id_hex: String,
 }
 
 #[derive(Serialize)]
 struct Summary {
-    faucet: AccountSummary,
-    accounts: Vec<AccountSummary>,
+    faucet: FaucetSummary,
+    roles: Vec<RoleSummary>,
 }
 
-fn summarize(
-    name: &str,
-    mac_file: &str,
-    account: &Account,
-    secrets_embedded: bool,
-) -> AccountSummary {
-    let id = account.id();
-    AccountSummary {
-        name: name.to_string(),
-        mac_file: mac_file.to_string(),
-        id_hex: id.to_hex(),
-        bech32_mainnet: id.to_bech32(NetworkId::Mainnet),
-        bech32_testnet: id.to_bech32(NetworkId::Testnet),
-        bech32_devnet: id.to_bech32(NetworkId::Devnet),
-        secrets_embedded,
-    }
-}
-
-fn build_summary(accounts: &GenesisAccounts) -> Summary {
+fn build_summary(faucet: &Account, config: &GenesisToolConfig) -> Summary {
+    let id = faucet.id();
     Summary {
-        faucet: summarize("usdcx-faucet", FAUCET_MAC_FILE, &accounts.faucet, false),
-        accounts: accounts
-            .wallets
+        faucet: FaucetSummary {
+            mac_file: FAUCET_MAC_FILE.to_string(),
+            id_hex: id.to_hex(),
+            bech32_mainnet: id.to_bech32(NetworkId::Mainnet),
+            bech32_testnet: id.to_bech32(NetworkId::Testnet),
+            bech32_devnet: id.to_bech32(NetworkId::Devnet),
+        },
+        roles: Role::ALL
             .iter()
-            .map(|wallet| {
-                summarize(
-                    wallet.role.as_str(),
-                    &wallet.role.mac_file_name(),
-                    &wallet.account,
-                    !wallet.secrets.is_empty(),
-                )
+            .map(|role| RoleSummary {
+                name: role.as_str().to_string(),
+                id_hex: config.role_id(*role).to_hex(),
             })
             .collect(),
     }
 }
 
-/// Writes every output into `out_dir` (created if absent): the seven `.mac` files, the
+/// Writes every output into `out_dir` (created if absent): the faucet's `.mac` file, the
 /// `genesis.toml` fragment, and the `accounts.json` summary.
-pub fn write_outputs(accounts: &GenesisAccounts, out_dir: &Path) -> Result<()> {
+pub fn write_outputs(faucet: &Account, config: &GenesisToolConfig, out_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating the output directory {}", out_dir.display()))?;
 
-    AccountFile::new(accounts.faucet.clone(), Vec::new())
+    AccountFile::new(faucet.clone(), Vec::new())
         .write(out_dir.join(FAUCET_MAC_FILE))
         .context("writing the faucet account file")?;
-    for wallet in &accounts.wallets {
-        AccountFile::new(wallet.account.clone(), wallet.secrets.clone())
-            .write(out_dir.join(wallet.role.mac_file_name()))
-            .with_context(|| format!("writing the {} account file", wallet.role.as_str()))?;
-    }
 
+    // The node-genesis fragment, emitted textually on purpose — this tool has no node-crate
+    // dependency, the node's own `GenesisConfig` parses the fragment. It carries only the
+    // faucet; the role accounts are someone else's genesis entries.
     std::fs::write(
         out_dir.join(GENESIS_TOML_FILE),
-        render_genesis_toml(accounts),
+        format!("native_faucet = \"{FAUCET_MAC_FILE}\"\n"),
     )
     .context("writing the genesis.toml fragment")?;
 
-    let summary = serde_json::to_string_pretty(&build_summary(accounts))
+    let summary = serde_json::to_string_pretty(&build_summary(faucet, config))
         .context("serializing the summary")?;
     std::fs::write(out_dir.join(ACCOUNTS_JSON_FILE), summary + "\n")
         .context("writing the accounts.json summary")?;
@@ -103,37 +88,19 @@ pub fn write_outputs(accounts: &GenesisAccounts, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Renders the node-genesis fragment as plain text: the faucet as `native_faucet` plus one
-/// `[[account]]` entry per wallet. Emitted textually on purpose — this tool has no node-crate
-/// dependency, the node's own `GenesisConfig` parses the fragment.
-fn render_genesis_toml(accounts: &GenesisAccounts) -> String {
+/// Renders the stdout listing: the faucet id in hex and its bech32 form on each network, then
+/// the provided role ids echoed back.
+pub fn render_listing(faucet: &Account, config: &GenesisToolConfig) -> String {
+    let summary = build_summary(faucet, config);
     let mut out = String::new();
-    let _ = writeln!(out, "native_faucet = \"{FAUCET_MAC_FILE}\"");
-    for wallet in &accounts.wallets {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "[[account]]");
-        let _ = writeln!(out, "path = \"{}\"", wallet.role.mac_file_name());
-    }
-    out
-}
-
-/// Renders the stdout listing: per account the id in hex and its bech32 form on each network.
-pub fn render_listing(accounts: &GenesisAccounts) -> String {
-    let summary = build_summary(accounts);
-    let mut out = String::new();
-    for entry in std::iter::once(&summary.faucet).chain(summary.accounts.iter()) {
-        let _ = writeln!(out, "{} ({})", entry.name, entry.mac_file);
-        let _ = writeln!(out, "  hex:     {}", entry.id_hex);
-        let _ = writeln!(out, "  mainnet: {}", entry.bech32_mainnet);
-        let _ = writeln!(out, "  testnet: {}", entry.bech32_testnet);
-        let _ = writeln!(out, "  devnet:  {}", entry.bech32_devnet);
-        if entry.secrets_embedded {
-            let _ = writeln!(
-                out,
-                "  key:     secret embedded in the .mac file (passed through from the provided \
-                 account file)"
-            );
-        }
+    let _ = writeln!(out, "usdcx-faucet ({})", summary.faucet.mac_file);
+    let _ = writeln!(out, "  hex:     {}", summary.faucet.id_hex);
+    let _ = writeln!(out, "  mainnet: {}", summary.faucet.bech32_mainnet);
+    let _ = writeln!(out, "  testnet: {}", summary.faucet.bech32_testnet);
+    let _ = writeln!(out, "  devnet:  {}", summary.faucet.bech32_devnet);
+    let _ = writeln!(out, "provided role accounts:");
+    for role in &summary.roles {
+        let _ = writeln!(out, "  {}: {}", role.name, role.id_hex);
     }
     out
 }

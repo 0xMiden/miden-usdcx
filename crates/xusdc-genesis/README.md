@@ -1,18 +1,17 @@
 # xusdc-genesis
 
-Builds the xUSDC genesis faucet fully **offline** — before any network exists — and emits
-everything the node's genesis needs. Account-id derivation hashes the account seed plus the code
-and storage commitments (no chain state, vault contents excluded), so the faucet id this tool
-prints is the id the network will boot with, deterministically reproducible from the config.
+Builds the genesis xUSDC faucet fully **offline** — before any network exists — and emits the
+node's genesis inputs for it. Account-id derivation hashes the account seed plus the code and
+storage commitments (no chain state, vault contents excluded), so the faucet id this tool prints
+is the id the network will boot with, deterministically reproducible from the config.
 
-The six role wallets — the network **operator** plus the five faucet role holders the
-`XReserveStablecoinBuilder` seeds, **owner** (`ADMIN`), **attest_admin**, **pauser**,
-**unpauser**, **blocklist_manager** — are **not** created by this tool: the config references
-their externally-produced protocol `AccountFile`s (`.mac`) by path. The one account this tool
-builds is the **xUSDC faucet**, as the network's NATIVE fee faucet: its id is ground while the
-fee parameters carry the operator's id as a placeholder, then
-`XReserveStablecoinBuilder::build_genesis_account` rebinds the fee-asset slot to the asset the
-faucet itself issues.
+The faucet is the ONLY account this tool builds. The six role accounts — the network
+**operator** plus the five faucet role holders the `XReserveStablecoinBuilder` seeds, **owner**
+(`ADMIN`), **attest_admin**, **pauser**, **unpauser**, **blocklist_manager** — are referenced by
+bare account id in the config (producing them is out of scope here). The faucet is built as the
+network's NATIVE fee faucet: its id is ground while the fee parameters carry the operator's id
+as a placeholder, then `XReserveStablecoinBuilder::build_genesis_account` rebinds the fee-asset
+slot to the asset the faucet itself issues.
 
 ## Usage
 
@@ -22,20 +21,17 @@ cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
 
 Outputs, written to `--out-dir` (or the config's `output_dir`):
 
-- `usdcx-faucet.mac` and one `<role>.mac` per wallet — protocol `AccountFile`s (the wallets
-  re-emitted in genesis form, secret keys passed through unchanged);
+- `usdcx-faucet.mac` — the faucet as a protocol `AccountFile`;
 - `genesis.toml` — a plain-text fragment for the node's genesis config
-  (`native_faucet = "usdcx-faucet.mac"` plus one `[[account]] path = "<role>.mac"` per wallet);
-- `accounts.json` — a machine-readable summary of every id;
-- a stdout listing per account: the id as hex and as bech32 for mainnet, testnet, and devnet.
+  (`native_faucet = "usdcx-faucet.mac"`);
+- `accounts.json` — a machine-readable summary: the faucet id in hex and bech32, plus the
+  provided role ids echoed back;
+- a stdout listing of the same.
 
-The node consumes `genesis.toml` together with the `.mac` files it references when constructing
-the genesis block; all seven accounts enter the chain at **nonce one** with no seed — they exist
-at genesis, they are never deployed in a transaction, and this tool's output cannot be used to
-deploy them anywhere else. Provided wallets are normalized to that form (the account id never
-changes: the nonce and seed do not enter it), and when `token_supply` is non-zero the operator's
-emitted vault additionally holds exactly that amount of the faucet's asset, matching the
-faucet's issued-supply tracker.
+The node consumes `genesis.toml` together with the `.mac` file it references when constructing
+the genesis block; the faucet enters the chain at **nonce one** with no seed — it exists at
+genesis, it is never deployed in a transaction, and this tool's output cannot be used to deploy
+it anywhere else.
 
 ## Config reference
 
@@ -44,12 +40,12 @@ JSON, unknown fields rejected:
 ```json
 {
   "accounts": {
-    "operator":          "accounts/operator.mac",
-    "owner":             "accounts/owner.mac",
-    "attest_admin":      "accounts/attest_admin.mac",
-    "pauser":            "accounts/pauser.mac",
-    "unpauser":          "accounts/unpauser.mac",
-    "blocklist_manager": "accounts/blocklist_manager.mac"
+    "operator":          "0x<account id hex> or bech32",
+    "owner":             "0x<account id hex> or bech32",
+    "attest_admin":      "0x<account id hex> or bech32",
+    "pauser":            "0x<account id hex> or bech32",
+    "unpauser":          "0x<account id hex> or bech32",
+    "blocklist_manager": "0x<account id hex> or bech32"
   },
   "faucet": {
     "seed": "0x<64 hex>",
@@ -63,25 +59,17 @@ JSON, unknown fields rejected:
 }
 ```
 
-- `accounts.<role>` — the path to that role's protocol `AccountFile` (`.mac`); relative paths
-  resolve against the config file's directory. The six accounts must be pairwise distinct. This
-  tool creates no wallets and generates no keys — produce the account files with whatever
-  account tooling the deployment uses.
+- `accounts.<role>` — that role's account id, as `0x`-prefixed hex or as bech32 (parsed with
+  the protocol's own `AccountId` parsers). Role-collision rules are enforced by the
+  `XReserveStablecoinBuilder` itself.
 - `faucet.seed` — the faucet's 32-byte account seed (`0x` + 64 hex chars).
-- `faucet` — the `XReserveStablecoinBuilder` inputs: the supply cap and initial supply (base
-  units, 6 decimals; `token_supply <= max_supply`), the Circle domain id, the optional minimum
-  burn amount, and the network's `verification_base_fee` used to price the fee schedule.
-
-## SECURITY
-
-This tool generates no key material. It does, however, **pass through** any secret keys embedded
-in a provided `.mac` file into the re-emitted `.mac` in the output directory — if the account
-tooling that produced a wallet embedded its secret, treat that file and the corresponding output
-file as secrets: anyone holding them controls the account.
+- `faucet` — the remaining `XReserveStablecoinBuilder` inputs: the supply cap and initial
+  supply (base units, 6 decimals; `token_supply <= max_supply`), the Circle domain id, the
+  optional minimum burn amount, and the network's `verification_base_fee` used to price the fee
+  schedule.
 
 ## Determinism and the golden id
 
-`tests/determinism.rs` freezes the faucet id derived from the test fixture (six role wallets
-generated deterministically by the test support code — the tool itself consumes them as provided
-account files). The id moves on every protocol bump BY DESIGN (it hashes the code commitment);
-the frozen test is the alarm, and a refreeze must be a deliberate act.
+`tests/determinism.rs` freezes the faucet id derived from the test fixture (fixed faucet
+parameters plus fixed dummy role ids). The id moves on every protocol bump BY DESIGN (it hashes
+the code commitment); the frozen test is the alarm, and a refreeze must be a deliberate act.

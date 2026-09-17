@@ -88,8 +88,7 @@ impl RoleAccounts {
 }
 
 /// The faucet's account seed and the `XReserveStablecoinBuilder` inputs that are not role
-/// account ids; amounts are base units. The supply cap is not configurable: the tool sets it to
-/// the maximum asset amount.
+/// account ids; amounts are base units.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FaucetConfig {

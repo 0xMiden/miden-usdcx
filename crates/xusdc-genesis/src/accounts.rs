@@ -8,10 +8,10 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::FeeParameters;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
-use crate::config::{GenesisToolConfig, Role};
+use crate::config::GenesisToolConfig;
 
 /// The dummy fee faucet id the fee parameters carry while the faucet's own id is derived.
-pub fn placeholder_fee_faucet_id() -> AccountId {
+fn placeholder_fee_faucet_id() -> AccountId {
     AccountId::dummy(
         [0; 15],
         AccountIdVersion::Version1,
@@ -35,11 +35,11 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
     XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(faucet_config.max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(faucet_config.token_supply).context("invalid token_supply")?)
-        .owner(config.account_id(Role::Owner))
-        .attest_admin_holder(config.account_id(Role::AttestAdmin))
-        .pauser_holder(config.account_id(Role::Pauser))
-        .unpauser_holder(config.account_id(Role::Unpauser))
-        .blocklist_manager_holder(config.account_id(Role::BlocklistManager))
+        .owner(config.accounts.owner)
+        .attest_admin_holder(config.accounts.attest_admin)
+        .pauser_holder(config.accounts.pauser)
+        .unpauser_holder(config.accounts.unpauser)
+        .blocklist_manager_holder(config.accounts.blocklist_manager)
         .fee_parameters(fee_parameters)
         .domain(faucet_config.domain)
         .attesters(faucet_config.attesters.clone())

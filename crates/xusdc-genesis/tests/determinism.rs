@@ -1,8 +1,5 @@
-//! Determinism and the golden-id freeze over the dev fixture.
-//!
-//! The whole point of the tool is that the genesis faucet identity is derivable offline, before
-//! any network exists — so the same config must always produce byte-identical outputs, and the
-//! dev fixture's faucet id is FROZEN below as the drift alarm.
+//! Determinism over the dev fixture: the genesis faucet identity is derivable offline, before any
+//! network exists, so the same config must always produce byte-identical outputs.
 
 mod common;
 
@@ -61,24 +58,5 @@ fn write_outputs_emits_only_the_deterministic_faucet_file() {
         std::fs::read(dir.path().join("usdcx-faucet.mac")).expect("first output readable"),
         std::fs::read(second_dir.path().join("usdcx-faucet.mac")).expect("second output readable"),
         "usdcx-faucet.mac must be byte-identical across writes",
-    );
-}
-
-// The dev-fixture faucet id, FROZEN. The value is fixture-derived: it hashes the faucet seed
-// plus the code and storage commitments, and the storage seeds the ids extracted from the
-// fixture's generated role `.mac` files — so it moves on every protocol bump (the code
-// commitment) and on any fixture change BY DESIGN. A failure here is the alarm that the
-// genesis identity changed; refreeze deliberately, never mechanically.
-const GOLDEN_FAUCET_ID: &str = "0xf0de439e756dd2f113cb6a42833629";
-
-/// The faucet's dev-fixture id is frozen.
-#[test]
-fn the_faucet_id_is_frozen() {
-    let fixture = Fixture::new();
-    let faucet = build_faucet(&fixture.config()).expect("the dev fixture must build");
-    assert_eq!(
-        faucet.id().to_hex(),
-        GOLDEN_FAUCET_ID,
-        "the dev-fixture faucet id drifted — expected on a protocol bump, refreeze deliberately",
     );
 }

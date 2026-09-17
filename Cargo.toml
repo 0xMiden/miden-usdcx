@@ -35,6 +35,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1" }
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 rstest = "0.26"
 assert_matches = "1.5"
 
@@ -57,11 +58,6 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 bon = "3"
 sha3 = "0.10"
 rand = "0.8"
-# TEST-ONLY deterministic wallet fixtures in the genesis tool (dev-dependency there): the
-# protocol's own rand generation is the 0.10 family, so the seeded ChaCha20 generator must come
-# from rand_chacha 0.10 for the rand_core versions to unify. The rand 0.8 pin above is unrelated
-# (k256's test-fixture signing) and stays.
-rand_chacha = "0.10"
 # Circle-facing HTTP (the relayer's `circle::client` info/attestation-fetch drivers) + the offline
 # mock Circle server its contract tests run against. Both are pinned here, not in the crate, so the
 # later off-chain services (listener, monitoring) cannot drift onto a different HTTP stack.

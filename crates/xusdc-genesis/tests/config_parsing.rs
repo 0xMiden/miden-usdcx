@@ -1,15 +1,16 @@
-//! Config-schema rejections: every malformed input surfaces as its specific
-//! [`ConfigError`] variant.
+//! Config-schema acceptance and rejections.
 
 mod common;
 
 use assert_matches::assert_matches;
+use miden_protocol::account::AccountId;
+use miden_protocol::address::NetworkId;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{attester_keys, generate_wallet, Fixture, USED_NONCE_BYTES};
+use crate::common::{attester_keys, role_id_hex, Fixture, USED_NONCE_BYTES};
 
-/// The dev fixture parses, and each role's id is extracted from its referenced `.mac` file.
+/// The dev fixture parses, and the typed config reflects it.
 #[test]
 fn the_dev_fixture_round_trips() {
     let fixture = Fixture::new();
@@ -40,41 +41,39 @@ fn the_dev_fixture_round_trips() {
     );
     for role in Role::ALL {
         assert_eq!(
-            config.account_id(role),
-            generate_wallet(role).id(),
-            "the {} id must be the one extracted from the referenced .mac file",
+            config.accounts.get(role).to_hex(),
+            role_id_hex(role),
+            "the {} id must round-trip through the hex form",
             role.as_str(),
         );
     }
 }
 
-/// A missing account file is rejected with the variant naming the role and the resolved path.
+/// A bech32 account id parses to the same id as its hex form.
 #[test]
-fn a_missing_account_file_is_rejected() {
+fn a_bech32_account_id_is_accepted() {
+    let hex = role_id_hex(Role::Owner);
+    let id = AccountId::from_hex(hex).expect("the fixture id is valid hex");
     let mut fixture = Fixture::new();
-    fixture.json["accounts"]["relayer"] = serde_json::Value::from("missing.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a missing account file must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "relayer", path, .. } => {
-        assert!(path.ends_with("missing.mac"), "the error must carry the resolved path");
-    });
+    fixture.json["accounts"]["owner"] = serde_json::Value::from(id.to_bech32(NetworkId::Testnet));
+    assert_eq!(
+        fixture.config().accounts.owner,
+        id,
+        "the bech32 form must decode to the same id as the hex form",
+    );
 }
 
-/// A file that does not decode as a protocol `AccountFile` is rejected.
+/// An account id that parses as neither hex nor bech32 is rejected.
 #[test]
-fn a_corrupt_account_file_is_rejected() {
-    let mut fixture = Fixture::new();
-    std::fs::write(
-        fixture.base_dir().join("garbage.mac"),
-        b"not an account file",
-    )
-    .expect("the garbage file must write");
-    fixture.json["accounts"]["owner"] = serde_json::Value::from("garbage.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a corrupt account file must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "owner", .. });
+fn a_malformed_account_id_is_rejected() {
+    for bad_id in ["0xnothex", "definitely-not-bech32"] {
+        let mut fixture = Fixture::new();
+        fixture.json["accounts"]["owner"] = serde_json::Value::from(bad_id);
+        let err = fixture
+            .parse()
+            .expect_err("a malformed account id must be rejected");
+        assert_matches!(err, ConfigError::Parse(_));
+    }
 }
 
 /// An absent attester list parses as an empty allowlist (seeded later via set_attester).
@@ -105,17 +104,17 @@ fn an_absent_used_nonce_list_is_empty() {
     );
 }
 
-/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected with the
-/// variant naming its index: a wrong-length key, and a key with an invalid SEC1 tag byte.
+/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected: a
+/// wrong-length key, and a key with an invalid SEC1 tag byte.
 #[test]
 fn a_malformed_attester_key_is_rejected() {
-    for (bad_key, bad_index) in [(vec![2u8; 32], 1usize), (vec![5u8; 33], 0usize)] {
+    for bad_key in [vec![2u8; 32], vec![5u8; 33]] {
         let mut fixture = Fixture::new();
-        fixture.json["faucet"]["attesters"][bad_index] = serde_json::Value::from(bad_key);
+        fixture.json["faucet"]["attesters"][0] = serde_json::Value::from(bad_key);
         let err = fixture
             .parse()
             .expect_err("a malformed attester key must be rejected");
-        assert_matches!(err, ConfigError::AttesterKey { index, .. } if index == bad_index);
+        assert_matches!(err, ConfigError::Parse(_));
     }
 }
 

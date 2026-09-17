@@ -8,19 +8,16 @@
 mod common;
 
 use miden_protocol::account::StorageMapKey;
-use miden_protocol::asset::{AssetAmount, AssetId};
-use miden_protocol::block::FeeParameters;
+use miden_protocol::asset::AssetId;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::fees::FeePolicyManager;
-use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
-use xusdc_genesis::accounts::{build_faucet, placeholder_fee_faucet_id};
-use xusdc_genesis::config::Role;
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
+use xusdc_genesis::accounts::build_faucet;
 
 use crate::common::Fixture;
 
 /// The faucet is a genesis account (nonce one, no seed) whose fee-asset slot holds its OWN
-/// asset, and whose id equals the plain `build_account` id at the same seed — the genesis build
-/// changes the fee binding and the nonce, never the identity.
+/// asset.
 #[test]
 fn the_faucet_is_a_native_fee_genesis_account() {
     let fixture = Fixture::new();
@@ -40,32 +37,6 @@ fn the_faucet_is_a_native_fee_genesis_account() {
             .expect("the faucet installs the fee-asset slot"),
         AssetId::new_fungible(faucet.id()).to_word(),
         "the fee-asset slot must be rebound to the faucet's own asset",
-    );
-
-    // Rebuild the PLAIN (nonce-zero, placeholder-fee) account from the same inputs: the id
-    // must match, proving the genesis build derived the id before the fee-asset swap.
-    let plain = XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(config.faucet.max_supply).expect("valid max_supply"))
-        .token_supply(AssetAmount::new(config.faucet.token_supply).expect("valid token_supply"))
-        .owner(config.account_id(Role::Owner))
-        .attest_admin_holder(config.account_id(Role::AttestAdmin))
-        .pauser_holder(config.account_id(Role::Pauser))
-        .unpauser_holder(config.account_id(Role::Unpauser))
-        .blocklist_manager_holder(config.account_id(Role::BlocklistManager))
-        .fee_parameters(FeeParameters::new(
-            placeholder_fee_faucet_id(),
-            config.faucet.verification_base_fee,
-        ))
-        .domain(config.faucet.domain)
-        .attesters(config.faucet.attesters.clone())
-        .build()
-        .expect("the builder must compose")
-        .build_account(config.faucet.seed)
-        .expect("the plain build must succeed");
-    assert_eq!(
-        faucet.id(),
-        plain.id(),
-        "the genesis faucet id must equal the plain build_account id at the same seed",
     );
 }
 

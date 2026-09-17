@@ -140,7 +140,7 @@ pub struct XReserveStablecoinBuilder {
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
     /// and is validated at construction.
     min_burn_amount: AssetAmount,
-    /// The composed faucet extension: the domain config plus the build-seeded attester allowlist.
+    /// The composed faucet extension.
     faucet_extension: XReserveFaucetExtension,
 }
 

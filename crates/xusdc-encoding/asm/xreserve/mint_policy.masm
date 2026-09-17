@@ -52,8 +52,7 @@ const NONCE_USED_MARKER = ONE_WORD
 # region is trivially zero-initialized by that fresh context — no longer relying on the address
 # being unused in a shared parent context. The failure mode if the zero read ever stopped holding
 # would be LIVENESS, not forgery: stale bytes rebuild a message Circle never signed, the signature
-# refuses it, and no mint occurs. `rebuild_depends_on_a_zeroed_region` pins the dependency so it
-# cannot go invisible.
+# refuses it, and no mint occurs.
 const DEPOSIT_INTENT_PTR = 0x40000000
 
 # `check_policy` memory locals.

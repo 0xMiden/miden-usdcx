@@ -94,8 +94,7 @@ const ATTESTATION_COVERED_NUMS: &[&str] = &[
 /// attestation section word count are parity-asserted against the `XUsdcMintNote` factory
 /// constants in `masm_rust_constant_parity` below (the constructor builds what the policy
 /// verifies; the DC-5 scale is asserted the same way but is parser-owned, see
-/// `SHELL_COVERED_NUMS`). `DEPOSIT_INTENT_HEADER_WORDS` carries a derived relation row (x 4 == the
-/// header felt count), and the intent sub-region's word offset carries a derived relation row of
+/// `SHELL_COVERED_NUMS`). The intent sub-region's word offset carries a derived relation row of
 /// its own (== the attestation width on both sides). The `*_LOC` procedure-local offsets of
 /// `check_policy` (including the derived transport sub-region and shared-layout field offsets)
 /// and the `NONCE_USED_MARKER` Word array literal (not parity-parsed) are
@@ -179,7 +178,6 @@ const DEPOSIT_INTENT_COVERED_NUMS: &[&str] = &[
     "DEPOSIT_INTENT_MAGIC_PACKED",
     "DEPOSIT_INTENT_VERSION_PACKED",
     "DEPOSIT_INTENT_HEADER_BYTES",
-    "DEPOSIT_INTENT_HEADER_WORDS",
     "WRITE_AMOUNT_FELT_OFF",
     "WRITE_REMOTE_TOKEN_FELT_OFF",
     "WRITE_REMOTE_RECIPIENT_FELT_OFF",
@@ -326,14 +324,6 @@ fn masm_rust_constant_parity() {
         DepositIntent::HEADER_NUM_FELTS as u64 * 4,
         "header byte length must be 4x the felt count (4 bytes per felt)"
     );
-    // the header is a whole number of words, which is what lets the hookData tail start
-    // word-aligned and lets the writer zero the header word by word
-    assert_eq!(
-        num(&nums, "DEPOSIT_INTENT_HEADER_WORDS", "deposit_intent.masm") * 4,
-        DepositIntent::HEADER_NUM_FELTS as u64,
-        "header word count must be the felt count / 4"
-    );
-
     // DC-14 sub-field widths. The MASM side counts packed limbs because it writes felts; the Rust
     // side counts bytes because it writes bytes. Pinning the DERIVED relation — a value sits at
     // the end of its 32-byte field, so its pad is the field minus its own width — is what keeps

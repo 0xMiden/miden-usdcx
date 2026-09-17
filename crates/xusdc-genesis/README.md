@@ -34,7 +34,6 @@ JSON, unknown fields rejected:
   },
   "faucet": {
     "seed": [7, 7, "... 32 bytes total ..."],
-    "max_supply": 1000000000000,
     "token_supply": 250000000,
     "domain": 10007,
     "min_burn_amount": 1,
@@ -47,11 +46,12 @@ JSON, unknown fields rejected:
 ```
 
 `accounts.<role>` is that role's account id, as `0x`-prefixed hex or as bech32. `faucet.seed`
-is the faucet's 32-byte account seed as a JSON byte array; amounts are base units (6 decimals,
-`token_supply <= max_supply`); `domain` is the Circle domain id, 10007 for Miden. `attesters`
-(optional) lists the deposit attester public keys to allowlist at build time, each as a JSON
-byte array of the key's 33 compressed SEC1 bytes; when empty or absent the allowlist is seeded
-later through `set_attester` notes.
+is the faucet's 32-byte account seed as a JSON byte array; `token_supply` is the initial supply
+in base units (6 decimals); the supply cap is not configurable and is set to the maximum asset
+amount; `domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the
+deposit attester public keys to allowlist at build time, each as a JSON byte array of the key's
+33 compressed SEC1 bytes; when empty or absent the allowlist is seeded later through
+`set_attester` notes.
 
 `used_nonces` (optional) lists the Circle deposit nonces whose deposits the genesis state already
 honours - the balances seeded at genesis are backed by them - each as a JSON byte array of the

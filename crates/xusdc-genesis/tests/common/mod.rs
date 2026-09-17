@@ -66,7 +66,6 @@ impl Fixture {
             "accounts": accounts,
             "faucet": {
                 "seed": FAUCET_SEED,
-                "max_supply": 1_000_000_000_000u64,
                 "token_supply": 250_000_000u64,
                 "domain": 7,
                 "verification_base_fee": 500,

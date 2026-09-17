@@ -1,4 +1,4 @@
-//! The tool's input-file schema ([`GenesisToolConfig`]) and its validation.
+//! The tool's input-file schema ([`GenesisToolConfig`]).
 
 use std::path::{Path, PathBuf};
 
@@ -88,13 +88,13 @@ impl RoleAccounts {
 }
 
 /// The faucet's account seed and the `XReserveStablecoinBuilder` inputs that are not role
-/// account ids; amounts are base units.
+/// account ids; amounts are base units. The supply cap is not configurable: the tool sets it to
+/// the maximum asset amount.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FaucetConfig {
     /// The faucet's 32-byte account seed, as a JSON array of bytes.
     pub seed: [u8; 32],
-    pub max_supply: u64,
     pub token_supply: u64,
     /// The Circle domain id.
     pub domain: u32,
@@ -121,16 +121,9 @@ impl GenesisToolConfig {
         Self::from_json(&text)
     }
 
-    /// Parses and validates a config from its JSON text.
+    /// Parses a config from its JSON text.
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
-        let config: Self = serde_json::from_str(text).map_err(ConfigError::Parse)?;
-        if config.faucet.token_supply > config.faucet.max_supply {
-            return Err(ConfigError::SupplyExceedsMax {
-                token_supply: config.faucet.token_supply,
-                max_supply: config.faucet.max_supply,
-            });
-        }
-        Ok(config)
+        serde_json::from_str(text).map_err(ConfigError::Parse)
     }
 }
 
@@ -172,8 +165,6 @@ pub enum ConfigError {
     /// The JSON does not match the schema: a malformed value (an account id, an attester key,
     /// the seed) or an unknown field.
     Parse(serde_json::Error),
-    /// The initial `token_supply` exceeds `max_supply`.
-    SupplyExceedsMax { token_supply: u64, max_supply: u64 },
 }
 
 impl core::fmt::Display for ConfigError {
@@ -181,13 +172,6 @@ impl core::fmt::Display for ConfigError {
         match self {
             Self::Io { path, .. } => write!(f, "reading the config file {}", path.display()),
             Self::Parse(_) => write!(f, "the config JSON does not match the schema"),
-            Self::SupplyExceedsMax {
-                token_supply,
-                max_supply,
-            } => write!(
-                f,
-                "token_supply {token_supply} exceeds max_supply {max_supply}"
-            ),
         }
     }
 }
@@ -197,7 +181,6 @@ impl core::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse(source) => Some(source),
-            Self::SupplyExceedsMax { .. } => None,
         }
     }
 }

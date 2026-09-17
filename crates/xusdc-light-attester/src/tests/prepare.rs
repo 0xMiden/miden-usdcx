@@ -24,25 +24,17 @@ fn serial(last: u64) -> Word {
     ])
 }
 
-fn client(
-    state: CircleState,
-    forwarding: bool,
-) -> (CircleClient, Arc<Mutex<Vec<ObservedRequest>>>) {
+fn client(state: CircleState) -> (CircleClient, Arc<Mutex<Vec<ObservedRequest>>>) {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
     let path = tempdir.path().join("attester.toml");
-    let text = config_toml(1).replace(
-        "use_circle_forwarding = false",
-        &format!("use_circle_forwarding = {forwarding}"),
-    );
-    std::fs::write(&path, text).unwrap();
+    std::fs::write(&path, config_toml(1)).unwrap();
     let config = Config::load(&path).unwrap();
     let (transport, requests) = FakeCircle::new(state);
     (
         CircleClient::new(
             config.circle_api_base_url().clone(),
             config.circle_request_timeout(),
-            config.use_circle_forwarding(),
             Box::new(transport),
         ),
         requests,
@@ -69,23 +61,17 @@ async fn prepare_sends_the_right_values() {
     let expected_salt = "0x0807060504030201181716151413121128272625242322213837363534333231";
     let other_salt = "0x0807060504030201181716151413121128272625242322213937363534333231";
     for forwarding in [false, true] {
-        let (client, requests) = client(
-            CircleState::ResponseBody(StatusCode::OK, br#"{"batches":[]}"#.to_vec()),
-            forwarding,
-        );
-        assert!(client
-            .prepare_withdrawals(&[])
-            .await
-            .unwrap()
-            .batches
-            .is_empty());
-        assert!(
-            requests.lock().unwrap().is_empty(),
-            "empty queue makes no request"
-        );
-        for _ in 0..2 {
-            client.prepare_withdrawals(&burns).await.unwrap();
+        let (client, requests) = client(CircleState::ResponseBody(
+            StatusCode::OK,
+            br#"{"batches":[]}"#.to_vec(),
+        ));
+        for burn in &burns {
+            client.prepare_withdrawal(burn, forwarding).await.unwrap();
         }
+        client
+            .prepare_withdrawal(&burns[0], forwarding)
+            .await
+            .unwrap();
 
         let mut expected: Vec<_> = cases.iter().map(|(_, amount, domain)| json!({
             "token": "USDC",
@@ -101,8 +87,11 @@ async fn prepare_sends_the_right_values() {
         same_parameters["salt"] = json!(other_salt);
         expected.push(same_parameters);
         let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 2, "one POST per call, not one per burn");
-        for request in requests.iter() {
+        assert_eq!(requests.len(), burns.len() + 1, "one POST per burn");
+        for (request, expected) in requests
+            .iter()
+            .zip(expected.iter().chain(std::iter::once(&expected[0])))
+        {
             assert_eq!(request.method, Method::POST);
             assert_eq!(
                 request.url,
@@ -117,7 +106,7 @@ async fn prepare_sends_the_right_values() {
             assert_eq!(request.headers[CONTENT_TYPE], "application/json");
             assert_eq!(
                 serde_json::from_slice::<Value>(&request.body).unwrap(),
-                json!({"batches": expected})
+                json!({"batches": [expected]})
             );
         }
     }
@@ -160,7 +149,7 @@ fn circle_response() -> Value {
 /// Decoding does not approve a response; malformed replies and request failures remain errors.
 #[tokio::test]
 async fn prepare_handles_circle_responses() {
-    let burns = [validated_burn(100, serial(0x3132_3334_3536_3738), 9)];
+    let burn = validated_burn(100, serial(0x3132_3334_3536_3738), 9);
     let mut reply = circle_response();
     let mut other_intent = reply["batches"][0]["burnIntents"][0].clone();
     other_intent["maxFee"] = json!("004");
@@ -173,11 +162,11 @@ async fn prepare_handles_circle_responses() {
     other_batch["messageHashToSign"] = json!("0xef01");
     reply["batches"].as_array_mut().unwrap().push(other_batch);
     reply["newServerField"] = json!(true);
-    let (circle, requests) = client(
-        CircleState::ResponseBody(StatusCode::OK, reply.to_string().into_bytes()),
-        false,
-    );
-    let response = circle.prepare_withdrawals(&burns).await.unwrap();
+    let (circle, requests) = client(CircleState::ResponseBody(
+        StatusCode::OK,
+        reply.to_string().into_bytes(),
+    ));
+    let response = circle.prepare_withdrawal(&burn, false).await.unwrap();
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(response.batches.len(), 2);
     for (batch, encoded, hash) in [
@@ -240,9 +229,9 @@ async fn prepare_handles_circle_responses() {
         missing.to_string().into_bytes(),
         wrong_shape.to_string().into_bytes(),
     ] {
-        let (circle, requests) = client(CircleState::ResponseBody(StatusCode::OK, body), false);
+        let (circle, requests) = client(CircleState::ResponseBody(StatusCode::OK, body));
         assert!(matches!(
-            circle.prepare_withdrawals(&burns).await,
+            circle.prepare_withdrawal(&burn, false).await,
             Err(CircleError::InvalidResponse(_))
         ));
         assert_eq!(requests.lock().unwrap().len(), 1);
@@ -263,8 +252,8 @@ async fn prepare_handles_circle_responses() {
             b"undocumented response".as_slice(),
         ),
     ] {
-        let (circle, requests) = client(CircleState::ResponseBody(status, body.to_vec()), false);
-        let error = circle.prepare_withdrawals(&burns).await.unwrap_err();
+        let (circle, requests) = client(CircleState::ResponseBody(status, body.to_vec()));
+        let error = circle.prepare_withdrawal(&burn, false).await.unwrap_err();
         let CircleError::UnexpectedPrepareStatus {
             status: actual_status,
             body: actual_body,
@@ -275,9 +264,9 @@ async fn prepare_handles_circle_responses() {
         assert_eq!((actual_status, actual_body.as_slice()), (status, body));
         assert_eq!(requests.lock().unwrap().len(), 1, "no automatic retry");
     }
-    let (circle, requests) = client(CircleState::TransportError, false);
+    let (circle, requests) = client(CircleState::TransportError);
     assert!(matches!(
-        circle.prepare_withdrawals(&burns).await,
+        circle.prepare_withdrawal(&burn, false).await,
         Err(CircleError::Unavailable)
     ));
     assert_eq!(requests.lock().unwrap().len(), 1);
@@ -317,10 +306,9 @@ async fn real_http_response(
     let circle = CircleClient::new(
         url.parse().unwrap(),
         Duration::from_secs(2),
-        false,
         Box::new(ReqwestTransport::new().unwrap()),
     );
-    let burns = [validated_burn(100, serial(0x3132_3334_3536_3738), 9)];
+    let burn = validated_burn(100, serial(0x3132_3334_3536_3738), 9);
     let serve = async {
         let (stream, _) = listener.accept().await.unwrap();
         let mut reader = BufReader::new(stream);
@@ -348,7 +336,7 @@ async fn real_http_response(
         stream.shutdown().await.unwrap();
     };
     tokio::time::timeout(Duration::from_secs(3), async {
-        let ((), result) = tokio::join!(serve, circle.prepare_withdrawals(&burns));
+        let ((), result) = tokio::join!(serve, circle.prepare_withdrawal(&burn, false));
         result
     })
     .await

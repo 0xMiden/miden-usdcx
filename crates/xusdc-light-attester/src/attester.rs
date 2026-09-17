@@ -106,7 +106,6 @@ impl Attester {
         let circle = CircleClient::new(
             config.circle_api_base_url().clone(),
             config.circle_request_timeout(),
-            config.use_circle_forwarding(),
             circle_transport,
         );
         circle

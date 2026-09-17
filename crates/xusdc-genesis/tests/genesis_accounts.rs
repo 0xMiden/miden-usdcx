@@ -14,7 +14,6 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::fees::FeePolicyManager;
 use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilder};
 use xusdc_genesis::accounts::{build_faucet, placeholder_fee_faucet_id};
-use xusdc_genesis::config::Role;
 
 use crate::common::Fixture;
 
@@ -47,11 +46,11 @@ fn the_faucet_is_a_native_fee_genesis_account() {
     let plain = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(config.faucet.max_supply).expect("valid max_supply"))
         .token_supply(AssetAmount::new(config.faucet.token_supply).expect("valid token_supply"))
-        .owner(config.account_id(Role::Owner))
-        .attest_admin_holder(config.account_id(Role::AttestAdmin))
-        .pauser_holder(config.account_id(Role::Pauser))
-        .unpauser_holder(config.account_id(Role::Unpauser))
-        .blocklist_manager_holder(config.account_id(Role::BlocklistManager))
+        .owner(config.accounts.owner)
+        .attest_admin_holder(config.accounts.attest_admin)
+        .pauser_holder(config.accounts.pauser)
+        .unpauser_holder(config.accounts.unpauser)
+        .blocklist_manager_holder(config.accounts.blocklist_manager)
         .fee_parameters(FeeParameters::new(
             placeholder_fee_faucet_id(),
             config.faucet.verification_base_fee,

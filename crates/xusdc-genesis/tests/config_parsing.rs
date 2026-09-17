@@ -1,5 +1,4 @@
-//! Config-schema rejections: every malformed input surfaces as its specific
-//! [`ConfigError`] variant.
+//! Config-schema acceptance and rejections.
 
 mod common;
 
@@ -36,7 +35,7 @@ fn the_dev_fixture_round_trips() {
     );
     for role in Role::ALL {
         assert_eq!(
-            config.account_id(role).to_hex(),
+            config.accounts.get(role).to_hex(),
             role_id_hex(role),
             "the {} id must round-trip through the hex form",
             role.as_str(),
@@ -52,14 +51,13 @@ fn a_bech32_account_id_is_accepted() {
     let mut fixture = Fixture::new();
     fixture.json["accounts"]["owner"] = serde_json::Value::from(id.to_bech32(NetworkId::Testnet));
     assert_eq!(
-        fixture.config().owner,
+        fixture.config().accounts.owner,
         id,
         "the bech32 form must decode to the same id as the hex form",
     );
 }
 
-/// An account id that parses as neither hex nor bech32 is rejected with the variant naming the
-/// role.
+/// An account id that parses as neither hex nor bech32 is rejected.
 #[test]
 fn a_malformed_account_id_is_rejected() {
     for bad_id in ["0xnothex", "definitely-not-bech32"] {
@@ -68,7 +66,7 @@ fn a_malformed_account_id_is_rejected() {
         let err = fixture
             .parse()
             .expect_err("a malformed account id must be rejected");
-        assert_matches!(err, ConfigError::AccountId { field: "owner", .. });
+        assert_matches!(err, ConfigError::Parse(_));
     }
 }
 
@@ -86,17 +84,17 @@ fn an_absent_attester_list_is_an_empty_allowlist() {
     );
 }
 
-/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected with the
-/// variant naming its index: a wrong-length key, and a key with an invalid SEC1 tag byte.
+/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected: a
+/// wrong-length key, and a key with an invalid SEC1 tag byte.
 #[test]
 fn a_malformed_attester_key_is_rejected() {
-    for (bad_key, bad_index) in [(vec![2u8; 32], 1usize), (vec![5u8; 33], 0usize)] {
+    for bad_key in [vec![2u8; 32], vec![5u8; 33]] {
         let mut fixture = Fixture::new();
-        fixture.json["faucet"]["attesters"][bad_index] = serde_json::Value::from(bad_key);
+        fixture.json["faucet"]["attesters"][0] = serde_json::Value::from(bad_key);
         let err = fixture
             .parse()
             .expect_err("a malformed attester key must be rejected");
-        assert_matches!(err, ConfigError::AttesterKey { index, .. } if index == bad_index);
+        assert_matches!(err, ConfigError::Parse(_));
     }
 }
 

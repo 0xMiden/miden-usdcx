@@ -127,19 +127,7 @@ impl Store {
                 params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
             )
             .map_err(classify_error)?;
-        if updated == 1 {
-            return Ok(());
-        }
-        // Retrying the same refusal is harmless; a different reason is a conflict.
-        let already_refused = exists(
-            &self.connection,
-            "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND status = ?2 AND refusal_reason = ?3)",
-            params![note_id.to_bytes(), REFUSED, reason.as_str()],
-        )?;
-        (updated == 0 && already_refused)
-            .then_some(())
-            .ok_or(StoreError::Conflict)
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
     }
 
     #[cfg(test)]
@@ -477,11 +465,12 @@ fn load_burns(
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
-                    burn_tx_id, status, refusal_reason FROM burns",
+                    burn_tx_id FROM burns
+             WHERE ?1 OR status != 'REFUSED'",
         )
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map([include_refused], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -489,40 +478,18 @@ fn load_burns(
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(classify_error)?;
 
     let mut burns = Vec::new();
     for row in rows {
-        let (
-            note_id,
-            nullifier,
-            note,
-            creation_block,
-            consumption_block,
-            burn_tx_id,
-            status,
-            reason,
-        ) = row.map_err(classify_error)?;
+        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id) =
+            row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         let creation_block = decode_block_number(creation_block)?;
         let consumption_block = decode_block_number(consumption_block)?;
         let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
-        let refusal = match (status.as_str(), reason.as_deref()) {
-            (DISCOVERED, None) => None,
-            (REFUSED, Some(reason)) => Some(BurnRefusal::parse(reason).ok_or(StoreError::Invalid)?),
-            _ => return Err(StoreError::Invalid),
-        };
-        if consumption_block <= creation_block {
-            return Err(StoreError::Invalid);
-        }
-        // Terminal rows still have to decode correctly; they are only excluded from pending work.
-        if refusal.is_some() && !include_refused {
-            continue;
-        }
         burns.push(
             DiscoveredBurn::try_new(
                 note,

@@ -17,7 +17,6 @@ use rusqlite::{params, Params, Transaction};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::validation::BurnRefusal;
 
-const SCHEMA_VERSION: i64 = 4;
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
 
@@ -311,18 +310,6 @@ fn validate_store(
 ) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
-    // Older development stores need an explicit rebuild. Add migrations before sending
-    // real withdrawals.
-    let version = connection
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(classify_error)?;
-    if version != SCHEMA_VERSION {
-        return Err(StoreError::Invalid);
-    }
-
-    // Stored chain state becomes the next run's trust base, so reject any malformed or
-    // internally inconsistent row before using it.
-
     // Stored chain state becomes the next run's trust base, so reject any malformed or
     // internally inconsistent row before using it.
     let row_count = connection
@@ -383,8 +370,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-            FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
+            refusal_reason FROM burns LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }

@@ -22,6 +22,8 @@ pub(crate) enum BurnRefusal {
     WrongAsset,
     StoredAssetMismatch,
     InvalidWithdrawal,
+    // Retained in the persisted refusal vocabulary; current production validation does not emit it.
+    #[allow(dead_code)]
     AmountMismatch,
 }
 

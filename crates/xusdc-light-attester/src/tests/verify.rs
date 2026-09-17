@@ -5,13 +5,14 @@ use serde_json::json;
 
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::verify::{rebuild_for_test, verify_prepared_response, VerifyError};
+use crate::verify::{
+    canonical_values_for_test, rebuild_for_test, verify_prepared_response, VerifyError,
+};
 
 use super::startup::{config_toml, create_store_parent};
 use super::validation::validated_burn;
 
 const FIRST_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
-const SECOND_SALT: &str = "0x0807060504030201181716151413121128272625242322213937363534333231";
 const ZERO_WORD: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 fn serial(last: u64) -> Word {
@@ -73,18 +74,11 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
     batch
 }
 
-/// Each returned intent must belong to exactly one burn and preserve that burn's fields.
+/// The returned intent must belong to the burn and preserve all of its fields.
 #[test]
 fn circle_response_matches_burns() {
     use VerifyError::*;
-    let first_serial = serial(0x3132_3334_3536_3738);
-    let second_serial = serial(0x3132_3334_3536_3739);
-    let mut burns = [
-        validated_burn(1_000, first_serial, 9),
-        validated_burn(2_000, second_serial, 7),
-    ];
-    // A faucet transaction can consume several notes; each remains a separate burn row.
-    burns[1].burn.burn_tx_id = burns[0].burn.burn_tx_id;
+    let burn = validated_burn(1_000, serial(0x3132_3334_3536_3738), 9);
     let config = config(None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
     let field_cases: [Case; 7] = [
@@ -127,7 +121,7 @@ fn circle_response_matches_burns() {
     let refuse = |name: &str, batches, expected| {
         let response = UnverifiedPrepareResponse { batches };
         assert_eq!(
-            verify_prepared_response(&burns[..1], response, &config).err(),
+            verify_prepared_response(&burn, response, &config).err(),
             Some(expected),
             "{name}"
         );
@@ -141,7 +135,7 @@ fn circle_response_matches_burns() {
     refuse("missing batch", vec![], WrongCount);
     refuse(
         "extra batch",
-        vec![batch(FIRST_SALT, 1_000, 9), batch(SECOND_SALT, 2_000, 7)],
+        vec![batch(FIRST_SALT, 1_000, 9), batch(FIRST_SALT, 1_000, 9)],
         WrongCount,
     );
     let mut empty = batch(FIRST_SALT, 1_000, 9);
@@ -150,19 +144,17 @@ fn circle_response_matches_burns() {
     let mut split = batch(FIRST_SALT, 1_000, 9);
     split
         .burn_intents
-        .push(batch(SECOND_SALT, 2_000, 7).burn_intents.remove(0));
+        .push(batch(FIRST_SALT, 1_000, 9).burn_intents.remove(0));
     refuse("two intents in one batch", vec![split], WrongCount);
 
     for as_set in [false, true] {
         let mut accepted = batch(FIRST_SALT, 1_000, 9);
         rebuild_for_test(&mut accepted, as_set).unwrap();
-        // Only the header selects the hash form; the unused body need not match.
-        accepted.encoded.replace_range(10.., "00");
         let response = UnverifiedPrepareResponse {
             batches: vec![accepted],
         };
         assert_eq!(
-            verify_prepared_response(&burns[..1], response, &config).err(),
+            verify_prepared_response(&burn, response, &config).err(),
             None
         );
 
@@ -171,6 +163,16 @@ fn circle_response_matches_burns() {
         changed.message_hash_to_sign = ZERO_WORD.into();
         refuse("different digest", vec![changed], DigestMismatch);
     }
+    let mut wrong_set_count = batch(FIRST_SALT, 1_000, 9);
+    rebuild_for_test(&mut wrong_set_count, true).unwrap();
+    let mut encoded_set = hex::decode(&wrong_set_count.encoded[2..]).unwrap();
+    encoded_set[7] = 2;
+    wrong_set_count.encoded = format!("0x{}", hex::encode(encoded_set));
+    refuse(
+        "one-intent set count",
+        vec![wrong_set_count],
+        EncodedMismatch,
+    );
     let mut unknown_header = batch(FIRST_SALT, 1_000, 9);
     unknown_header.encoded.replace_range(..10, "0x00000000");
     refuse(
@@ -178,32 +180,36 @@ fn circle_response_matches_burns() {
         vec![unknown_header],
         MalformedField("encoded"),
     );
-    let reordered = UnverifiedPrepareResponse {
-        batches: vec![batch(SECOND_SALT, 2_000, 7), batch(FIRST_SALT, 1_000, 9)],
-    };
-    let verified = verify_prepared_response(&burns, reordered, &config).unwrap();
+    let mut mismatched = batch(FIRST_SALT, 1_000, 9);
+    let original = mismatched.encoded.clone();
+    let mut altered = hex::decode(&original[2..]).unwrap();
+    altered[100] ^= 1;
+    for encoded in [
+        format!("{}00", original),
+        original[..original.len() - 2].to_owned(),
+        format!("0x{}", hex::encode(altered)),
+    ] {
+        mismatched.encoded = encoded;
+        refuse(
+            "complete encoded bytes must match",
+            vec![mismatched],
+            EncodedMismatch,
+        );
+        mismatched = batch(FIRST_SALT, 1_000, 9);
+    }
+
+    let verified = verify_prepared_response(
+        &burn,
+        UnverifiedPrepareResponse {
+            batches: vec![batch(FIRST_SALT, 1_000, 9)],
+        },
+        &config,
+    )
+    .unwrap();
     assert_eq!(
-        verified.note_ids().collect::<Vec<_>>(),
-        vec![burns[1].burn.note_id(), burns[0].burn.note_id()],
-        "returned batches keep the matched note IDs, not their array positions or shared tx ID"
-    );
-    let duplicated = UnverifiedPrepareResponse {
-        batches: vec![batch(FIRST_SALT, 1_000, 9), batch(FIRST_SALT, 1_000, 9)],
-    };
-    assert_eq!(
-        verify_prepared_response(&burns, duplicated, &config).err(),
-        Some(DuplicateSalt)
-    );
-    let ambiguous_burns = [
-        validated_burn(1_000, first_serial, 9),
-        validated_burn(2_000, first_serial, 7),
-    ];
-    let ambiguous = UnverifiedPrepareResponse {
-        batches: vec![batch(FIRST_SALT, 1_000, 9), batch(SECOND_SALT, 2_000, 7)],
-    };
-    assert_eq!(
-        verify_prepared_response(&ambiguous_burns, ambiguous, &config).err(),
-        Some(AmbiguousSalt)
+        verified.note_id(),
+        burn.burn.note_id(),
+        "the verified authorization retains the durable burn row identity"
     );
 }
 
@@ -217,7 +223,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
             batches: vec![batch],
         };
         assert_eq!(
-            verify_prepared_response(&burns, response, &config(ceiling)).err(),
+            verify_prepared_response(&burns[0], response, &config(ceiling)).err(),
             expected,
             "{name}"
         );
@@ -284,9 +290,17 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     }
 }
 
-/// Reconstruct the EIP-712 digest and compare it with Circle's captured messageHashToSign.
+/// Reconstruct the packed bytes and EIP-712 digest from Circle's untouched sandbox capture.
 #[test]
-#[ignore = "awaiting Philipp's captured prepare response with encoded and messageHashToSign"]
 fn circle_hash_matches_reference() {
-    todo!("use the captured response as the independent digest reference")
+    let response: UnverifiedPrepareResponse = serde_json::from_str(include_str!(
+        "fixtures/circle-sandbox-2026-09-10-live-control-single.response.json"
+    ))
+    .unwrap();
+    let [batch] = response.batches.as_slice() else {
+        panic!("the captured response must contain one batch");
+    };
+    let (encoded, digest) = canonical_values_for_test(batch).unwrap();
+    assert_eq!(format!("0x{}", hex::encode(encoded)), batch.encoded);
+    assert_eq!(format!("{digest:#x}"), batch.message_hash_to_sign);
 }

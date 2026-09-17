@@ -16,6 +16,5 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 miden-standards = { version = "=0.16.1" }
-rand_chacha = { workspace = true }
 assert_matches = { workspace = true }
 tempfile = { workspace = true }

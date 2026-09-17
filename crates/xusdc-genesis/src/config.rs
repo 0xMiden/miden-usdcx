@@ -1,21 +1,22 @@
 //! The tool's input-file schema ([`GenesisToolConfig`]) and its validation.
 //!
-//! The role accounts are referenced as paths to their `.mac` files (relative paths resolve
-//! against the config file's directory); each file is read purely to extract its account id.
-//! Parsing is a serde mirror of the raw JSON (`deny_unknown_fields`) followed by a typed
-//! conversion, so every rejection surfaces as a specific [`ConfigError`] variant.
+//! The role accounts are given as bare account-id strings (hex or bech32), parsed with the
+//! protocol's [`AccountId::parse`]. Parsing is a serde mirror of the raw JSON
+//! (`deny_unknown_fields`) followed by a typed conversion, so every rejection surfaces as a
+//! specific [`ConfigError`] variant.
 
 use std::path::{Path, PathBuf};
 
-use miden_protocol::account::{AccountFile, AccountId};
+use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::errors::AccountIdError;
 use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 use serde::Deserialize;
 
 // ROLES
 // ================================================================================================
 
-/// The six role accounts the config references: the mint relayer plus the five faucet role
+/// The six role accounts the config names: the mint relayer plus the five faucet role
 /// holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`,
 /// `DOM_UNPAUSER`, `BLK_MANAGER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,8 +71,8 @@ pub struct FaucetConfig {
     pub attesters: Vec<PublicKey>,
 }
 
-/// The validated tool config: one extracted [`AccountId`] per [`Role`], the [`FaucetConfig`],
-/// and the optional default output directory (`--out-dir` overrides it).
+/// The validated tool config: one [`AccountId`] per [`Role`], the [`FaucetConfig`], and the
+/// optional default output directory (`--out-dir` overrides it).
 #[derive(Debug, Clone)]
 pub struct GenesisToolConfig {
     pub relayer: AccountId,
@@ -85,29 +86,26 @@ pub struct GenesisToolConfig {
 }
 
 impl GenesisToolConfig {
-    /// Reads and parses the config file at `path`; relative account-file paths resolve against
-    /// the config file's directory.
+    /// Reads and parses the config file at `path`.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        Self::from_json(&text, path.parent().unwrap_or(Path::new(".")))
+        Self::from_json(&text)
     }
 
-    /// Parses and validates a config from its JSON text, extracting each role's account id
-    /// from its referenced `.mac` file; relative account-file paths resolve against `base_dir`.
-    pub fn from_json(text: &str, base_dir: &Path) -> Result<Self, ConfigError> {
+    /// Parses and validates a config from its JSON text.
+    pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = serde_json::from_str(text).map_err(ConfigError::Parse)?;
         let config = Self {
-            relayer: read_account_id(Role::Relayer, base_dir, &raw.accounts.relayer)?,
-            owner: read_account_id(Role::Owner, base_dir, &raw.accounts.owner)?,
-            attest_admin: read_account_id(Role::AttestAdmin, base_dir, &raw.accounts.attest_admin)?,
-            pauser: read_account_id(Role::Pauser, base_dir, &raw.accounts.pauser)?,
-            unpauser: read_account_id(Role::Unpauser, base_dir, &raw.accounts.unpauser)?,
-            blocklist_manager: read_account_id(
+            relayer: parse_account_id(Role::Relayer, &raw.accounts.relayer)?,
+            owner: parse_account_id(Role::Owner, &raw.accounts.owner)?,
+            attest_admin: parse_account_id(Role::AttestAdmin, &raw.accounts.attest_admin)?,
+            pauser: parse_account_id(Role::Pauser, &raw.accounts.pauser)?,
+            unpauser: parse_account_id(Role::Unpauser, &raw.accounts.unpauser)?,
+            blocklist_manager: parse_account_id(
                 Role::BlocklistManager,
-                base_dir,
                 &raw.accounts.blocklist_manager,
             )?,
             faucet: FaucetConfig {
@@ -125,7 +123,7 @@ impl GenesisToolConfig {
         Ok(config)
     }
 
-    /// Returns the account id extracted for `role`.
+    /// Returns the account id configured for `role`.
     pub fn account_id(&self, role: Role) -> AccountId {
         match role {
             Role::Relayer => self.relayer,
@@ -161,16 +159,16 @@ fn parse_attesters(raw: &[Vec<u8>]) -> Result<Vec<PublicKey>, ConfigError> {
         .collect()
 }
 
-/// Reads one role's `.mac` file purely to extract its account id. An unreadable or undecodable
-/// file errors with the role-naming [`ConfigError::AccountFile`].
-fn read_account_id(role: Role, base_dir: &Path, raw_path: &str) -> Result<AccountId, ConfigError> {
-    let path = base_dir.join(raw_path);
-    let file = AccountFile::read(&path).map_err(|source| ConfigError::AccountFile {
-        field: role.as_str(),
-        path,
-        source,
-    })?;
-    Ok(file.account.id())
+/// Parses one role's account-id string with [`AccountId::parse`] (hex or bech32; the embedded
+/// network id, when present, is not checked). A string that parses as neither errors with the
+/// role-naming [`ConfigError::AccountId`].
+fn parse_account_id(role: Role, id_str: &str) -> Result<AccountId, ConfigError> {
+    AccountId::parse(id_str)
+        .map(|(id, _network)| id)
+        .map_err(|source| ConfigError::AccountId {
+            field: role.as_str(),
+            source,
+        })
 }
 
 // RAW (SERDE) MIRROR
@@ -184,7 +182,7 @@ struct RawConfig {
     output_dir: Option<PathBuf>,
 }
 
-/// Per role, the path to its protocol `AccountFile` (`.mac`).
+/// Per role, its account id as hex (`0x`-prefixed) or bech32.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAccounts {
@@ -224,12 +222,10 @@ pub enum ConfigError {
     },
     /// The JSON does not match the schema (including unknown fields, which are rejected).
     Parse(serde_json::Error),
-    /// A referenced account file could not be read or does not decode as a protocol
-    /// `AccountFile`.
-    AccountFile {
+    /// A role's account-id string parses as neither hex nor bech32.
+    AccountId {
         field: &'static str,
-        path: PathBuf,
-        source: std::io::Error,
+        source: AccountIdError,
     },
     /// A configured attester key does not decode as a compressed secp256k1 public key.
     AttesterKey {
@@ -245,9 +241,10 @@ impl core::fmt::Display for ConfigError {
         match self {
             Self::Io { path, .. } => write!(f, "reading the config file {}", path.display()),
             Self::Parse(_) => write!(f, "the config JSON does not match the schema"),
-            Self::AccountFile { field, path, .. } => {
-                write!(f, "reading the {field} account file {}", path.display())
-            }
+            Self::AccountId { field, .. } => write!(
+                f,
+                "the {field} account id is neither valid hex nor valid bech32"
+            ),
             Self::AttesterKey { index, .. } => write!(
                 f,
                 "the faucet.attesters key at index {index} is not a valid 33-byte compressed \
@@ -267,8 +264,9 @@ impl core::fmt::Display for ConfigError {
 impl core::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } | Self::AccountFile { source, .. } => Some(source),
+            Self::Io { source, .. } => Some(source),
             Self::Parse(source) => Some(source),
+            Self::AccountId { source, .. } => Some(source),
             Self::AttesterKey { source, .. } => Some(source),
             Self::SupplyExceedsMax { .. } => None,
         }

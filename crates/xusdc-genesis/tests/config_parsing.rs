@@ -4,11 +4,13 @@
 mod common;
 
 use assert_matches::assert_matches;
+use miden_protocol::account::AccountId;
+use miden_protocol::address::NetworkId;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{attester_keys, generate_wallet, Fixture};
+use crate::common::{attester_keys, role_id_hex, Fixture};
 
-/// The dev fixture parses, and each role's id is extracted from its referenced `.mac` file.
+/// The dev fixture parses, and the typed config reflects it.
 #[test]
 fn the_dev_fixture_round_trips() {
     let fixture = Fixture::new();
@@ -34,41 +36,46 @@ fn the_dev_fixture_round_trips() {
     );
     for role in Role::ALL {
         assert_eq!(
-            config.account_id(role),
-            generate_wallet(role).id(),
-            "the {} id must be the one extracted from the referenced .mac file",
+            config.account_id(role).to_hex(),
+            role_id_hex(role),
+            "the {} id must round-trip through the hex form",
             role.as_str(),
         );
     }
 }
 
-/// A missing account file is rejected with the variant naming the role and the resolved path.
+/// A bech32 account id parses to the same id as its hex form.
 #[test]
-fn a_missing_account_file_is_rejected() {
+fn a_bech32_account_id_is_accepted() {
+    let hex = role_id_hex(Role::Relayer);
+    let id = AccountId::from_hex(hex).expect("the fixture id is valid hex");
     let mut fixture = Fixture::new();
-    fixture.json["accounts"]["relayer"] = serde_json::Value::from("missing.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a missing account file must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "relayer", path, .. } => {
-        assert!(path.ends_with("missing.mac"), "the error must carry the resolved path");
-    });
+    fixture.json["accounts"]["relayer"] = serde_json::Value::from(id.to_bech32(NetworkId::Testnet));
+    assert_eq!(
+        fixture.config().relayer,
+        id,
+        "the bech32 form must decode to the same id as the hex form",
+    );
 }
 
-/// A file that does not decode as a protocol `AccountFile` is rejected.
+/// An account id that parses as neither hex nor bech32 is rejected with the variant naming the
+/// role.
 #[test]
-fn a_corrupt_account_file_is_rejected() {
-    let mut fixture = Fixture::new();
-    std::fs::write(
-        fixture.base_dir().join("garbage.mac"),
-        b"not an account file",
-    )
-    .expect("the garbage file must write");
-    fixture.json["accounts"]["owner"] = serde_json::Value::from("garbage.mac");
-    let err = fixture
-        .parse()
-        .expect_err("a corrupt account file must be rejected");
-    assert_matches!(err, ConfigError::AccountFile { field: "owner", .. });
+fn a_malformed_account_id_is_rejected() {
+    for bad_id in ["0xnothex", "definitely-not-bech32"] {
+        let mut fixture = Fixture::new();
+        fixture.json["accounts"]["relayer"] = serde_json::Value::from(bad_id);
+        let err = fixture
+            .parse()
+            .expect_err("a malformed account id must be rejected");
+        assert_matches!(
+            err,
+            ConfigError::AccountId {
+                field: "relayer",
+                ..
+            }
+        );
+    }
 }
 
 /// An absent attester list parses as an empty allowlist (seeded later via set_attester).

@@ -25,7 +25,7 @@ pub fn write_outputs(faucet: &Account, out_dir: &Path) -> Result<()> {
 }
 
 /// Renders the stdout listing: the faucet id in hex and its bech32 form on each network, then
-/// the role ids extracted from the referenced account files, echoed back.
+/// the configured role ids echoed back.
 pub fn render_listing(faucet: &Account, config: &GenesisToolConfig) -> String {
     let id = faucet.id();
     let mut out = String::new();
@@ -34,7 +34,7 @@ pub fn render_listing(faucet: &Account, config: &GenesisToolConfig) -> String {
     let _ = writeln!(out, "  mainnet: {}", id.to_bech32(NetworkId::Mainnet));
     let _ = writeln!(out, "  testnet: {}", id.to_bech32(NetworkId::Testnet));
     let _ = writeln!(out, "  devnet:  {}", id.to_bech32(NetworkId::Devnet));
-    let _ = writeln!(out, "referenced role accounts:");
+    let _ = writeln!(out, "role accounts:");
     for role in Role::ALL {
         let _ = writeln!(
             out,

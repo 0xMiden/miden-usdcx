@@ -1,22 +1,13 @@
-//! Shared test fixture: the dev config plus six real role `.mac` files it references,
-//! generated deterministically (fixed per-role seeds, seeded ChaCha20 Falcon keys).
+//! Shared test fixture: the dev config JSON (mutable, so tests can inject malformed values).
 
 // Each test binary compiles its own copy of this module and exercises a different subset of it.
 #![allow(dead_code)]
 
-use std::path::Path;
-
-use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{Account, AccountFile, AccountType};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
-use miden_standards::account::auth::Approver;
-use miden_standards::account::wallets::create_basic_wallet;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaCha20Rng;
 use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
 
-/// The dev faucet seed (`0x07` repeated), distinct from every wallet seed below.
+/// The dev faucet seed (`0x07` repeated).
 pub const FAUCET_SEED: [u8; 32] = [7; 32];
 
 /// Two known-valid attester keys in the 33-byte compressed SEC1 form: the secp256k1 generator
@@ -42,53 +33,31 @@ pub fn attester_keys() -> Vec<PublicKey> {
         .collect()
 }
 
-/// The fixed per-role wallet seed: the role's 1-based position in [`Role::ALL`], repeated.
-pub fn role_seed(role: Role) -> [u8; 32] {
-    let byte = match role {
-        Role::Relayer => 1,
-        Role::Owner => 2,
-        Role::AttestAdmin => 3,
-        Role::Pauser => 4,
-        Role::Unpauser => 5,
-        Role::BlocklistManager => 6,
-    };
-    [byte; 32]
+/// The fixed dev role ids, as hex strings.
+pub fn role_id_hex(role: Role) -> &'static str {
+    match role {
+        Role::Relayer => "0x6aeeb7cba03918516870e95568b77b",
+        Role::Owner => "0x3cd7940c4946bad179675b1d7d8059",
+        Role::AttestAdmin => "0x2bb51b585b2a98916aebb827cc5804",
+        Role::Pauser => "0x88dc763b163d53513c4ea2c4f5f1f7",
+        Role::Unpauser => "0x83b89e07263e3b51799cb3af134d6d",
+        Role::BlocklistManager => "0x5cf939821efad05159595966886192",
+    }
 }
 
-/// Generates one role wallet deterministically: a Falcon512-Poseidon2 key pair from seeded
-/// ChaCha20, wrapped in a public basic wallet ground from the same seed.
-pub fn generate_wallet(role: Role) -> Account {
-    let seed = role_seed(role);
-    let mut rng = ChaCha20Rng::from_seed(seed);
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
-    create_basic_wallet(
-        seed,
-        Approver::from(&secret.public_key()),
-        AccountType::Public,
-    )
-    .expect("the fixture wallet must build")
-}
-
-/// A materialized dev fixture: the temp directory holding the six generated `.mac` files, and
-/// the config JSON referencing them (mutable, so tests can inject malformed values).
+/// A materialized dev fixture: the config JSON, mutable so tests can inject malformed values.
 pub struct Fixture {
-    pub dir: tempfile::TempDir,
     pub json: serde_json::Value,
 }
 
 impl Fixture {
-    /// Generates the six role wallets, writes their `.mac` files, and assembles the dev config.
+    /// Assembles the dev config.
     pub fn new() -> Self {
-        let dir = tempfile::tempdir().expect("a temp dir is available");
         let mut accounts = serde_json::Map::new();
         for role in Role::ALL {
-            let file_name = format!("{}.mac", role.as_str());
-            AccountFile::new(generate_wallet(role), Vec::new())
-                .write(dir.path().join(&file_name))
-                .expect("the fixture .mac must write");
             accounts.insert(
                 role.as_str().to_string(),
-                serde_json::Value::from(file_name),
+                serde_json::Value::from(role_id_hex(role)),
             );
         }
         let json = serde_json::json!({
@@ -102,17 +71,12 @@ impl Fixture {
                 "attesters": [ATTESTER_KEY_BYTES[0].to_vec(), ATTESTER_KEY_BYTES[1].to_vec()],
             },
         });
-        Self { dir, json }
-    }
-
-    /// The directory the config's relative account paths resolve against.
-    pub fn base_dir(&self) -> &Path {
-        self.dir.path()
+        Self { json }
     }
 
     /// Parses the (possibly mutated) config JSON.
     pub fn parse(&self) -> Result<GenesisToolConfig, ConfigError> {
-        GenesisToolConfig::from_json(&self.json.to_string(), self.base_dir())
+        GenesisToolConfig::from_json(&self.json.to_string())
     }
 
     /// Parses the config JSON, expecting it to be valid.

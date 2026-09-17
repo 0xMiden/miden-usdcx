@@ -5823,7 +5823,6 @@ dependencies = [
  "assert_matches",
  "miden-protocol",
  "miden-standards",
- "rand_chacha 0.10.0",
  "serde",
  "serde_json",
  "tempfile",

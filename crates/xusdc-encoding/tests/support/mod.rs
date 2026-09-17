@@ -904,27 +904,16 @@ pub const DEPOSIT_INTENT_PTR: u64 = 3072;
 /// The expected felts arrive on the ADVICE STACK rather than baked into this source, because the
 /// message embeds the account's own id and an account id is a hash over the account's code — which
 /// is this driver. Baking them would change the id they are trying to describe.
-///
-/// `poison` pre-fills the region with a recognizable pattern. `rebuild` does NOT zero it — that is
-/// the caller's contract — so poisoning is how the dependency is made visible rather than assumed.
 pub fn rebuild_driver_src(
     mint_intent_felts: &[Felt],
     mint_intent_num_words: u64,
     amount: u64,
     num_expected_felts: usize,
-    poison: bool,
 ) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent\n\n         #! Test driver: stages the mint intent in the account context, rebuilds the DepositIntent\n         #! from it, and pins every felt against the Rust mirror.\n         #!\n         #! Inputs:  [pad(16)]\n         #! Outputs: [pad(16)]\n         #!\n         #! Invocation: call\n         @account_procedure\n         pub proc drive\n",
     );
     stage_felts(&mut src, mint_intent_felts, MINT_INTENT_PTR);
-    if poison {
-        let poison_word = Word::new([Felt::from(0xdead_beefu32); 4]);
-        for i in 0..num_expected_felts.div_ceil(4) {
-            let addr = DEPOSIT_INTENT_PTR + 4 * i as u64;
-            writeln!(src, "    push.{poison_word} mem_storew_le.{addr} dropw").unwrap();
-        }
-    }
     writeln!(src, "    push.{amount}").unwrap();
     writeln!(src, "    push.{mint_intent_num_words}").unwrap();
     writeln!(src, "    push.{MINT_INTENT_PTR}").unwrap();

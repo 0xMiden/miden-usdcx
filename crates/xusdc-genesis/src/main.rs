@@ -10,53 +10,26 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
+use clap::Parser;
 use xusdc_genesis::accounts::build_faucet;
 use xusdc_genesis::config::GenesisToolConfig;
 use xusdc_genesis::output::{render_listing, write_outputs};
 
+/// Builds the genesis xUSDC faucet offline from the config's faucet parameters and role-account
+/// ids, writes its .mac account file, and prints the ids (hex + bech32).
+#[derive(Parser)]
 struct Args {
+    /// The JSON config (see the crate README for the schema).
+    #[arg(long)]
     config: PathBuf,
+    /// Where to write the outputs; overrides the config's output_dir and is required when the
+    /// config sets none.
+    #[arg(long)]
     out_dir: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<Option<Args>> {
-    let mut config: Option<PathBuf> = None;
-    let mut out_dir: Option<PathBuf> = None;
-
-    let mut it = std::env::args().skip(1);
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--config" => {
-                config = Some(PathBuf::from(it.next().context("--config needs a path")?));
-            }
-            "--out-dir" => {
-                out_dir = Some(PathBuf::from(it.next().context("--out-dir needs a path")?));
-            }
-            "-h" | "--help" => {
-                println!(
-                    "xusdc-genesis — build the genesis xUSDC faucet offline\n\n\
-                     Builds the genesis xUSDC faucet from the faucet parameters and the five\n\
-                     role-account ids (hex or bech32) in the config file, then writes the\n\
-                     faucet's .mac account file — the only file output — printing the ids\n\
-                     (hex + bech32) to stdout.\n\n\
-                     --config <PATH>    the JSON config (see the crate README for the schema)\n\
-                     --out-dir <DIR>    where to write the outputs (overrides the config's\n\
-                                        output_dir; required when the config sets none)\n"
-                );
-                return Ok(None);
-            }
-            other => bail!("unknown argument '{other}' (see --help)"),
-        }
-    }
-
-    let config = config.context("--config is required (see --help)")?;
-    Ok(Some(Args { config, out_dir }))
-}
-
 fn main() -> Result<()> {
-    let Some(args) = parse_args()? else {
-        return Ok(());
-    };
+    let args = Args::parse();
 
     let config = GenesisToolConfig::load(&args.config)
         .with_context(|| format!("loading the config from {}", args.config.display()))?;

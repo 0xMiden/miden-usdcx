@@ -430,17 +430,49 @@ fn burns_and_scan_position_are_saved_together() {
         .execute("UPDATE burns SET note = x'00'", [])
         .unwrap();
     drop(connection);
-    assert!(matches!(
+    let store = Store::open_or_create(
+        &path,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: BlockNumber::GENESIS,
+        },
+        trusted_anchor,
+    )
+    .unwrap();
+    assert_eq!(store.discovered_burns(), Err(StoreError::Invalid));
+    drop(store);
+
+    let malformed_candidate_path = tempdir.path().join("malformed-candidate.sqlite3");
+    drop(
         Store::open_or_create(
-            &path,
+            &malformed_candidate_path,
             faucet_account_id(),
             ScanCursor {
                 next_block: BlockNumber::GENESIS,
             },
             trusted_anchor,
-        ),
-        Err(StoreError::Invalid)
-    ));
+        )
+        .unwrap(),
+    );
+    let connection = rusqlite::Connection::open(&malformed_candidate_path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO burn_candidates (note_id, nullifier, note, creation_block)
+             VALUES (X'00', X'01', X'02', 0)",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let store = Store::open_or_create(
+        &malformed_candidate_path,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: BlockNumber::GENESIS,
+        },
+        trusted_anchor,
+    )
+    .unwrap();
+    assert_eq!(store.candidates(), Err(StoreError::Invalid));
 
     let predeployment_path = tempdir.path().join("predeployment.sqlite3");
     let mut store = Store::open_or_create(

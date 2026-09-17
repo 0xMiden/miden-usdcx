@@ -318,21 +318,6 @@ fn validate_store(
     {
         return Err(StoreError::Invalid);
     }
-    let candidates = load_candidates(connection)?;
-    let burns = load_burns(connection)?;
-    validate_discovery_records(&candidates, &burns, state.cursor, initial_cursor)
-        .map_err(|_| StoreError::Invalid)?;
-
-    if exists(
-        connection,
-        "SELECT EXISTS (
-            SELECT 1 FROM burn_candidates AS candidate JOIN burns AS burn
-            ON candidate.note_id = burn.note_id OR candidate.nullifier = burn.nullifier
-        )",
-        [],
-    )? {
-        return Err(StoreError::Invalid);
-    }
 
     Ok(())
 }
@@ -345,12 +330,15 @@ fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreE
         return Err(StoreError::Invalid);
     }
 
-    connection
-        .prepare(
-            "SELECT singleton, faucet_account_id, next_block
-             FROM attester_state LIMIT 0",
-        )
-        .map_err(classify_error)?;
+    for probe in [
+        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
+            next_block, authenticated_parent FROM attester_state LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block FROM burn_candidates LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
+            FROM burns LIMIT 0",
+    ] {
+        connection.prepare(probe).map_err(classify_error)?;
+    }
 
     Ok(())
 }
@@ -440,6 +428,7 @@ fn load_candidates(connection: &rusqlite::Connection) -> Result<Vec<BurnCandidat
     Ok(candidates)
 }
 
+#[allow(dead_code)]
 fn load_burns(connection: &rusqlite::Connection) -> Result<Vec<DiscoveredBurn>, StoreError> {
     let mut statement = connection
         .prepare(

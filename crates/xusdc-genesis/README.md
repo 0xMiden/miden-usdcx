@@ -5,9 +5,9 @@ account file. The faucet id hashes the account seed plus the code and storage co
 chain state), so the id the tool prints is the id the network boots with, reproducible from the
 config.
 
-The config names the six role accounts — the mint **relayer** plus the five holders the
-`XReserveStablecoinBuilder` seeds: **owner** (`ADMIN`), **attest_admin**, **pauser**,
-**unpauser**, **blocklist_manager** — by bare account id (hex or bech32).
+The config names the five role holders the `XReserveStablecoinBuilder` seeds — **owner**
+(`ADMIN`), **attest_admin**, **pauser**, **unpauser**, **blocklist_manager** — by bare account
+id (hex or bech32).
 
 ## Usage
 
@@ -26,8 +26,7 @@ JSON, unknown fields rejected:
 ```json
 {
   "accounts": {
-    "relayer":           "0x6aeeb7cba03918516870e95568b77b",
-    "owner":             "0x... or bech32",
+    "owner":             "0x6aeeb7cba03918516870e95568b77b",
     "attest_admin":      "0x... or bech32",
     "pauser":            "0x... or bech32",
     "unpauser":          "0x... or bech32",

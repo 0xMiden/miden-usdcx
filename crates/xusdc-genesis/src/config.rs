@@ -16,12 +16,10 @@ use serde::Deserialize;
 // ROLES
 // ================================================================================================
 
-/// The six role accounts the config names: the mint relayer plus the five faucet role
-/// holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`,
-/// `DOM_UNPAUSER`, `BLK_MANAGER`).
+/// The five faucet role holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`,
+/// `DOM_PAUSER`, `DOM_UNPAUSER`, `BLK_MANAGER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    Relayer,
     Owner,
     AttestAdmin,
     Pauser,
@@ -31,8 +29,7 @@ pub enum Role {
 
 impl Role {
     /// Every role, in the stable order the outputs are emitted in.
-    pub const ALL: [Role; 6] = [
-        Role::Relayer,
+    pub const ALL: [Role; 5] = [
         Role::Owner,
         Role::AttestAdmin,
         Role::Pauser,
@@ -43,7 +40,6 @@ impl Role {
     /// The role's config-field name, doubling as its name in the stdout listing.
     pub fn as_str(self) -> &'static str {
         match self {
-            Role::Relayer => "relayer",
             Role::Owner => "owner",
             Role::AttestAdmin => "attest_admin",
             Role::Pauser => "pauser",
@@ -75,7 +71,6 @@ pub struct FaucetConfig {
 /// optional default output directory (`--out-dir` overrides it).
 #[derive(Debug, Clone)]
 pub struct GenesisToolConfig {
-    pub relayer: AccountId,
     pub owner: AccountId,
     pub attest_admin: AccountId,
     pub pauser: AccountId,
@@ -99,7 +94,6 @@ impl GenesisToolConfig {
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = serde_json::from_str(text).map_err(ConfigError::Parse)?;
         let config = Self {
-            relayer: parse_account_id(Role::Relayer, &raw.accounts.relayer)?,
             owner: parse_account_id(Role::Owner, &raw.accounts.owner)?,
             attest_admin: parse_account_id(Role::AttestAdmin, &raw.accounts.attest_admin)?,
             pauser: parse_account_id(Role::Pauser, &raw.accounts.pauser)?,
@@ -126,7 +120,6 @@ impl GenesisToolConfig {
     /// Returns the account id configured for `role`.
     pub fn account_id(&self, role: Role) -> AccountId {
         match role {
-            Role::Relayer => self.relayer,
             Role::Owner => self.owner,
             Role::AttestAdmin => self.attest_admin,
             Role::Pauser => self.pauser,
@@ -186,7 +179,6 @@ struct RawConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAccounts {
-    relayer: String,
     owner: String,
     attest_admin: String,
     pauser: String,

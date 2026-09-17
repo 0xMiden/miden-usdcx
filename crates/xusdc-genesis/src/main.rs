@@ -35,7 +35,7 @@ fn parse_args() -> Result<Option<Args>> {
             "-h" | "--help" => {
                 println!(
                     "xusdc-genesis — build the genesis xUSDC faucet offline\n\n\
-                     Builds the genesis xUSDC faucet from the faucet parameters and the six\n\
+                     Builds the genesis xUSDC faucet from the faucet parameters and the five\n\
                      role-account ids (hex or bech32) in the config file, then writes the\n\
                      faucet's .mac account file — the only file output — printing the ids\n\
                      (hex + bech32) to stdout.\n\n\

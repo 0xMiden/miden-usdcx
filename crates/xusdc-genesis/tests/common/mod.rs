@@ -36,7 +36,6 @@ pub fn attester_keys() -> Vec<PublicKey> {
 /// The fixed dev role ids, as hex strings.
 pub fn role_id_hex(role: Role) -> &'static str {
     match role {
-        Role::Relayer => "0x6aeeb7cba03918516870e95568b77b",
         Role::Owner => "0x3cd7940c4946bad179675b1d7d8059",
         Role::AttestAdmin => "0x2bb51b585b2a98916aebb827cc5804",
         Role::Pauser => "0x88dc763b163d53513c4ea2c4f5f1f7",

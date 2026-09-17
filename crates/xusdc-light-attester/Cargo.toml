@@ -6,6 +6,7 @@ publish = false
 description = "Off-chain xUSDC withdrawal attester"
 
 [dependencies]
+anyhow = { workspace = true }
 xusdc-encoding = { path = "../xusdc-encoding" }
 miden-client = { version = "=0.16.1", features = ["tonic"] }
 miden-protocol = { version = "=0.16.1" }

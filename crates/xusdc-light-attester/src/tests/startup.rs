@@ -365,7 +365,7 @@ enum InvalidStoreCase {
     ZeroByte,
     Corrupt,
     WrongSchema,
-    WrongVersion,
+    MissingColumn,
     MissingRow,
     ExtraRow,
     OutOfRange,
@@ -378,12 +378,9 @@ const STATE_TABLE: &str = "CREATE TABLE attester_state (
     next_block INTEGER NOT NULL
 ) STRICT;";
 
-fn state_database(path: &Path, version: i64, faucet: &str, next_block: i64) {
+fn state_database(path: &Path, faucet: &str, next_block: i64) {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection.execute_batch(STATE_TABLE).unwrap();
-    connection
-        .pragma_update(None, "user_version", version)
-        .unwrap();
     connection
         .execute(
             "INSERT INTO attester_state (singleton, faucet_account_id, next_block)
@@ -402,18 +399,24 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             connection
                 .execute("CREATE TABLE unrelated (value INTEGER NOT NULL)", [])
                 .unwrap();
-            connection.pragma_update(None, "user_version", 1).unwrap();
         }
-        InvalidStoreCase::WrongVersion => {
-            state_database(path, 999, FAUCET_ACCOUNT_ID, 1);
+        InvalidStoreCase::MissingColumn => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE attester_state (
+                        singleton INTEGER PRIMARY KEY,
+                        faucet_account_id TEXT NOT NULL
+                    ) STRICT;",
+                )
+                .unwrap();
         }
         InvalidStoreCase::MissingRow => {
             let connection = rusqlite::Connection::open(path).unwrap();
             connection.execute_batch(STATE_TABLE).unwrap();
-            connection.pragma_update(None, "user_version", 1).unwrap();
         }
         InvalidStoreCase::ExtraRow => {
-            state_database(path, 1, FAUCET_ACCOUNT_ID, 1);
+            state_database(path, FAUCET_ACCOUNT_ID, 1);
             rusqlite::Connection::open(path)
                 .unwrap()
                 .execute(
@@ -424,7 +427,7 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap();
         }
         InvalidStoreCase::OutOfRange => {
-            state_database(path, 1, FAUCET_ACCOUNT_ID, 4_294_967_296);
+            state_database(path, FAUCET_ACCOUNT_ID, 4_294_967_296);
         }
         InvalidStoreCase::WrongFaucet => {
             let store = Store::open_or_create(
@@ -446,7 +449,7 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::ZeroByte,
         InvalidStoreCase::Corrupt,
         InvalidStoreCase::WrongSchema,
-        InvalidStoreCase::WrongVersion,
+        InvalidStoreCase::MissingColumn,
         InvalidStoreCase::MissingRow,
         InvalidStoreCase::ExtraRow,
         InvalidStoreCase::OutOfRange,

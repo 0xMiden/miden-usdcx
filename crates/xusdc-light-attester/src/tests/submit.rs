@@ -36,7 +36,7 @@ const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
 pub(super) type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
 
 pub(super) async fn recover(attester: &mut Attester) -> Result<(), SubmitError> {
-    let queue = attester.store.submissions_to_recover().unwrap();
+    let queue = attester.store.submissions_to_recover()?;
     attester.recover_submissions(queue).await
 }
 

@@ -23,6 +23,7 @@ use miden_standards::account::fees::FeePolicyManager;
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
+use crate::xreserve::encoding::DepositNonce;
 
 // CONSTANTS
 // ================================================================================================
@@ -35,6 +36,9 @@ const BURN_POLICY_COMPONENT_LABEL: &str = "xusdc-burn-policy";
 
 /// The allowlist row the attestation check accepts (the MASM `ATTESTER_ENABLED_MARKER`).
 const ATTESTER_ENABLED_MARKER: [u32; 4] = [1, 0, 0, 0];
+
+/// The registry row the mint policy writes for a consumed nonce (the MASM `NONCE_USED_MARKER`).
+const NONCE_USED_MARKER: [u32; 4] = [1, 0, 0, 0];
 
 /// What the faucet adds on top of the stock fungible faucet, assembled at build time from
 /// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
@@ -201,9 +205,11 @@ impl XReserveStablecoinBuilder {
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 
-    /// Builds the faucet for inclusion in a genesis block, mirroring the ending of the stock
-    /// `create_native_fungible_faucet_for_genesis`: the account comes out at nonce one with no
-    /// seed, its fee asset the one the faucet itself issues.
+    /// Builds the faucet for inclusion in a genesis block, mirroring the ending of the
+    /// `miden-standards` `create_native_fungible_faucet_for_genesis`: the account comes out at
+    /// nonce one with no seed, its fee asset the one the faucet itself issues, and every nonce in
+    /// `used_nonces` recorded as consumed, so a deposit the genesis state already honours cannot
+    /// be minted again.
     ///
     /// # Warning
     ///
@@ -212,6 +218,7 @@ impl XReserveStablecoinBuilder {
     pub fn build_genesis_account(
         &self,
         init_seed: [u8; 32],
+        used_nonces: &[DepositNonce],
     ) -> Result<Account, XReserveStablecoinBuilderError> {
         let account = self.build_account(init_seed)?;
         let fee_asset_id = AssetId::new_fungible(account.id());
@@ -222,6 +229,15 @@ impl XReserveStablecoinBuilder {
                 fee_asset_id.to_word(),
             )
             .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
+        for nonce in used_nonces {
+            storage
+                .set_map_item(
+                    XReserveFaucetExtension::used_nonces_slot(),
+                    nonce.to_storage_map_key(),
+                    Word::from(NONCE_USED_MARKER),
+                )
+                .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
+        }
         Account::new(id, vault, storage, code, Felt::ONE, None)
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }

@@ -11,6 +11,7 @@ use miden_protocol::account::{AccountFile, AccountId};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 use serde::Deserialize;
+use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 // ROLES
 // ================================================================================================
@@ -68,6 +69,9 @@ pub struct FaucetConfig {
     /// The deposit attesters allowlisted at build time; empty means the allowlist is seeded
     /// later through `set_attester` notes.
     pub attesters: Vec<PublicKey>,
+    /// The Circle deposit nonces the genesis state already honours; each is recorded as consumed
+    /// at build time so the relayer cannot mint it again.
+    pub used_nonces: Vec<DepositNonce>,
 }
 
 /// The validated tool config: one extracted [`AccountId`] per [`Role`], the [`FaucetConfig`],
@@ -118,6 +122,12 @@ impl GenesisToolConfig {
                 min_burn_amount: raw.faucet.min_burn_amount,
                 verification_base_fee: raw.faucet.verification_base_fee,
                 attesters: parse_attesters(&raw.faucet.attesters)?,
+                used_nonces: raw
+                    .faucet
+                    .used_nonces
+                    .into_iter()
+                    .map(DepositNonce::new)
+                    .collect(),
             },
             output_dir: raw.output_dir,
         };
@@ -209,6 +219,9 @@ struct RawFaucet {
     /// The attester public keys, each as a JSON array of the key's 33 compressed SEC1 bytes.
     #[serde(default)]
     attesters: Vec<Vec<u8>>,
+    /// The deposit nonces to record as consumed, each as a JSON array of its 32 bytes.
+    #[serde(default)]
+    used_nonces: Vec<[u8; 32]>,
 }
 
 // ERRORS

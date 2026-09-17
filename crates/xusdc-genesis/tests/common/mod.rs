@@ -34,6 +34,9 @@ pub const ATTESTER_KEY_BYTES: [[u8; 33]; 2] = [
     ],
 ];
 
+/// Two fixture deposit nonces, recorded as consumed at build time.
+pub const USED_NONCE_BYTES: [[u8; 32]; 2] = [[0x55; 32], [0x66; 32]];
+
 /// The fixture attester keys, decoded.
 pub fn attester_keys() -> Vec<PublicKey> {
     ATTESTER_KEY_BYTES
@@ -100,6 +103,7 @@ impl Fixture {
                 "domain": 7,
                 "verification_base_fee": 500,
                 "attesters": [ATTESTER_KEY_BYTES[0].to_vec(), ATTESTER_KEY_BYTES[1].to_vec()],
+                "used_nonces": [USED_NONCE_BYTES[0].to_vec(), USED_NONCE_BYTES[1].to_vec()],
             },
         });
         Self { dir, json }

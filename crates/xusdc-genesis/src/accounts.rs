@@ -46,6 +46,6 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
         .maybe_min_burn_amount(min_burn_amount)
         .build()
         .context("composing the xUSDC faucet builder")?
-        .build_genesis_account(faucet_config.seed)
+        .build_genesis_account(faucet_config.seed, &faucet_config.used_nonces)
         .context("building the genesis faucet account")
 }

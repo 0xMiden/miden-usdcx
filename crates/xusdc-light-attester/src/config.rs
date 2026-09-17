@@ -1,7 +1,6 @@
 //! Deployment-specific attester configuration.
 
 use std::error::Error;
-use std::fmt::{self, Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,9 +10,11 @@ use miden_protocol::block::BlockNumber;
 use reqwest::Url;
 use serde::Deserialize;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{context}")]
 pub struct ConfigError {
     context: &'static str,
+    #[source]
     source: Option<Box<dyn Error + Send + Sync>>,
 }
 
@@ -30,20 +31,6 @@ impl ConfigError {
             context,
             source: Some(Box::new(source)),
         }
-    }
-}
-
-impl Display for ConfigError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.context)
-    }
-}
-
-impl Error for ConfigError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.source
-            .as_deref()
-            .map(|source| source as &(dyn Error + 'static))
     }
 }
 

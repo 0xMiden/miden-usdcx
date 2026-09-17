@@ -11,7 +11,7 @@ use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use crate::config::GenesisToolConfig;
 
 /// The dummy fee faucet id the fee parameters carry while the faucet's own id is derived.
-pub fn placeholder_fee_faucet_id() -> AccountId {
+fn placeholder_fee_faucet_id() -> AccountId {
     AccountId::dummy(
         [0; 15],
         AccountIdVersion::Version1,

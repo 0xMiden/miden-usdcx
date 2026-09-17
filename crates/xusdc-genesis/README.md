@@ -66,9 +66,3 @@ native_faucet = "usdcx-faucet.mac"
 
 The role accounts are NOT injected at genesis — their holders deploy them with their first
 transaction.
-
-## Golden id
-
-`tests/determinism.rs` freezes the faucet id derived from the fixed test fixture. It moves on
-every protocol bump BY DESIGN (it hashes the code commitment); a refreeze must be a deliberate
-act.

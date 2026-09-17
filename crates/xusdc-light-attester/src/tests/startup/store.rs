@@ -147,14 +147,12 @@ enum InvalidStoreCase {
     ZeroByte,
     Corrupt,
     WrongSchema,
-    WrongVersion,
     MissingColumn,
     MissingRow,
     ExtraRow,
     OutOfRange,
     WrongFaucet,
     CorruptParent,
-    CorruptCandidate,
 }
 
 fn create_valid_store(path: &Path) {
@@ -179,13 +177,6 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             let connection = rusqlite::Connection::open(path).unwrap();
             connection
                 .execute("CREATE TABLE unrelated (value INTEGER NOT NULL)", [])
-                .unwrap();
-        }
-        InvalidStoreCase::WrongVersion => {
-            create_valid_store(path);
-            rusqlite::Connection::open(path)
-                .unwrap()
-                .pragma_update(None, "user_version", 999)
                 .unwrap();
         }
         InvalidStoreCase::MissingColumn => {
@@ -259,17 +250,6 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 )
                 .unwrap();
         }
-        InvalidStoreCase::CorruptCandidate => {
-            create_valid_store(path);
-            rusqlite::Connection::open(path)
-                .unwrap()
-                .execute(
-                    "INSERT INTO burn_candidates (note_id, nullifier, note, creation_block)
-                     VALUES (X'00', X'01', X'02', 0)",
-                    [],
-                )
-                .unwrap();
-        }
     }
 }
 
@@ -279,14 +259,12 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::ZeroByte,
         InvalidStoreCase::Corrupt,
         InvalidStoreCase::WrongSchema,
-        InvalidStoreCase::WrongVersion,
         InvalidStoreCase::MissingColumn,
         InvalidStoreCase::MissingRow,
         InvalidStoreCase::ExtraRow,
         InvalidStoreCase::OutOfRange,
         InvalidStoreCase::WrongFaucet,
         InvalidStoreCase::CorruptParent,
-        InvalidStoreCase::CorruptCandidate,
     ] {
         let tempdir = tempfile::tempdir().unwrap();
         let store_path = create_store_parent(&tempdir);

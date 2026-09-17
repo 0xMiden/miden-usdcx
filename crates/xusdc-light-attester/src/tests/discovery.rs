@@ -534,8 +534,8 @@ fn burns_and_scan_position_are_saved_together() {
     );
     assert_eq!(
         store.refuse_burn(burn.note_id(), BurnRefusal::AmountMismatch),
-        Ok(()),
-        "repeating the same refusal is harmless"
+        Err(StoreError::Conflict),
+        "a refused burn is no longer pending work"
     );
     for (id, reason) in [
         (burn.note_id(), BurnRefusal::WrongTag),

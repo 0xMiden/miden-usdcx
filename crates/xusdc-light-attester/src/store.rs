@@ -7,8 +7,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use rusqlite::params;
 
-const SCHEMA_VERSION: i64 = 1;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) struct ScanCursor {
@@ -96,9 +94,6 @@ fn initialize_store(
         )
         .map_err(classify_error)?;
     transaction
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(classify_error)?;
-    transaction
         .execute(
             "INSERT INTO attester_state (singleton, faucet_account_id, next_block)
              VALUES (1, ?1, ?2)",
@@ -115,12 +110,7 @@ fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
 ) -> Result<(), StoreError> {
-    let schema_version = connection
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(classify_error)?;
-    if schema_version != SCHEMA_VERSION {
-        return Err(StoreError::Invalid);
-    }
+    validate_store_format(connection)?;
 
     let (stored_faucet, next_block, row_count) = connection
         .query_row(
@@ -144,6 +134,24 @@ fn validate_store(
     {
         return Err(StoreError::Invalid);
     }
+
+    Ok(())
+}
+
+fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    let quick_check = connection
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+        .map_err(classify_error)?;
+    if quick_check != "ok" {
+        return Err(StoreError::Invalid);
+    }
+
+    connection
+        .prepare(
+            "SELECT singleton, faucet_account_id, next_block
+             FROM attester_state LIMIT 0",
+        )
+        .map_err(classify_error)?;
 
     Ok(())
 }

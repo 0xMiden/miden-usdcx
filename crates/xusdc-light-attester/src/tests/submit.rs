@@ -269,6 +269,33 @@ pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<ProvenBlock>) 
     (ledger.directory, ledger.blocks)
 }
 
+#[tokio::test]
+async fn malformed_saved_submission_is_rejected_when_loaded() {
+    let (directory, blocks) = submission_store().await;
+    Connection::open(directory.path().join("state.sqlite3"))
+        .unwrap()
+        .execute("UPDATE submissions SET body = X'00'", [])
+        .unwrap();
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let circle = ScriptedCircle {
+        replies: Mutex::new(VecDeque::new()),
+        requests: requests.clone(),
+        store_path: directory.path().join("state.sqlite3"),
+    };
+    let config = Config::load(&directory.path().join("attester.toml")).unwrap();
+    let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
+    let mut attester = Attester::start(config, Box::new(chain), Box::new(circle))
+        .await
+        .expect("startup checks structure, not submission contents");
+
+    assert!(matches!(
+        attester.recover_submissions().await,
+        Err(SubmitError::InvalidStore)
+    ));
+    assert!(requests.lock().unwrap().is_empty());
+}
+
 // Synthetic packed TransferSpec vector, independently transcribed from Circle's Solidity layout.
 // This tests our encoder, not the still-unobserved correspondence to REST transferSpecHashes.
 fn reference_hash(index: usize) -> String {

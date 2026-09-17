@@ -67,7 +67,6 @@ pub trait CircleApi: Send + Sync {
 pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
-    use_circle_forwarding: bool,
     requests: mpsc::Sender<Job>,
 }
 
@@ -96,7 +95,6 @@ impl CircleClient {
         let circle = Self {
             base_url: config.circle_api_base_url().clone(),
             request_timeout: config.circle_request_timeout(),
-            use_circle_forwarding: config.use_circle_forwarding(),
             requests,
         };
         Ok((circle, worker))
@@ -124,44 +122,36 @@ impl CircleClient {
 
     /// Decodes Circle's reply only. Its contents must be verified before signing.
     #[allow(dead_code)]
-    pub(crate) async fn prepare_withdrawals(
+    pub(crate) async fn prepare_withdrawal(
         &self,
-        burns: &[ValidatedBurn],
+        burn: &ValidatedBurn,
+        use_circle_forwarding: bool,
     ) -> Result<UnverifiedPrepareResponse, CircleError> {
-        if burns.is_empty() {
-            return Ok(UnverifiedPrepareResponse { batches: vec![] });
-        }
-
         let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
-        let batches: Vec<_> = burns
-            .iter()
-            .map(|burn| {
-                let note = burn.burn.note.as_note();
-                let amount = burn.amount;
-                let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
-                // Circle takes whole-USDC decimal strings, not smallest-unit integers.
-                let value_including_fees = format!(
-                    "{}.{:0width$}",
-                    amount / units_per_usdc,
-                    amount % units_per_usdc,
-                    width = usize::from(USDCX_DECIMALS),
-                );
-                // Circle's salt is the note serial. The attachment only holds the destination.
-                let salt = note.serial_num().to_hex();
-                json!({
-                    "token": "USDC",
-                    "remoteDomain": MIDEN_DOMAIN,
-                    "remoteDepositor": format!("0x{}", hex::encode(sender.to_bytes32())),
-                    "finalDestinationDomain": burn.items.dest_domain.as_u32(),
-                    "finalDestinationRecipient": format!(
-                        "0x{}", hex::encode(burn.items.dest_recipient.as_bytes())
-                    ),
-                    "valueIncludingFees": value_including_fees,
-                    "salt": salt,
-                    "useCircleForwarding": self.use_circle_forwarding,
-                })
-            })
-            .collect();
+        let note = burn.burn.note.as_note();
+        let amount = burn.amount;
+        let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
+        // Circle takes whole-USDC decimal strings, not smallest-unit integers.
+        let value_including_fees = format!(
+            "{}.{:0width$}",
+            amount / units_per_usdc,
+            amount % units_per_usdc,
+            width = usize::from(USDCX_DECIMALS),
+        );
+        // Circle's salt is the note serial. The attachment only holds the destination.
+        let salt = note.serial_num().to_hex();
+        let batch = json!({
+            "token": "USDC",
+            "remoteDomain": MIDEN_DOMAIN,
+            "remoteDepositor": format!("0x{}", hex::encode(sender.to_bytes32())),
+            "finalDestinationDomain": burn.items.dest_domain.as_u32(),
+            "finalDestinationRecipient": format!(
+                "0x{}", hex::encode(burn.items.dest_recipient.as_bytes())
+            ),
+            "valueIncludingFees": value_including_fees,
+            "salt": salt,
+            "useCircleForwarding": use_circle_forwarding,
+        });
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
@@ -172,7 +162,7 @@ impl CircleClient {
             reqwest::header::CONTENT_TYPE,
             reqwest::header::HeaderValue::from_static("application/json"),
         );
-        *request.body_mut() = Some(json!({ "batches": batches }).to_string().into());
+        *request.body_mut() = Some(json!({ "batches": [batch] }).to_string().into());
         let response = self.send(request).await?;
         if response.status != StatusCode::OK {
             return Err(CircleError::UnexpectedPrepareStatus {

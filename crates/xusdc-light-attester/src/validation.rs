@@ -39,21 +39,6 @@ impl BurnRefusal {
             Self::AmountMismatch => "amount_mismatch",
         }
     }
-
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "wrong_script" => Some(Self::WrongScript),
-            "wrong_tag" => Some(Self::WrongTag),
-            "wrong_attachments" => Some(Self::WrongAttachments),
-            "invalid_routing" => Some(Self::InvalidRouting),
-            "wrong_target" => Some(Self::WrongTarget),
-            "wrong_asset" => Some(Self::WrongAsset),
-            "stored_asset_mismatch" => Some(Self::StoredAssetMismatch),
-            "invalid_withdrawal" => Some(Self::InvalidWithdrawal),
-            "amount_mismatch" => Some(Self::AmountMismatch),
-            _ => None,
-        }
-    }
 }
 
 /// Local content checks passed; this is not permission to sign.

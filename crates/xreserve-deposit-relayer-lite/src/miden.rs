@@ -20,8 +20,8 @@ pub trait MidenClient: fmt::Debug + Send + Sync {
     /// Submits `notes` in one transaction from `sender` and returns its ID after inclusion
     /// on-chain.
     ///
-    /// The caller advances the Circle cursor after this method succeeds. Returning before
-    /// inclusion could advance the cursor past deposits whose transaction is later dropped.
+    /// The caller counts the page as handled after this method succeeds. Returning before
+    /// inclusion could move the watermark past deposits whose transaction is later dropped.
     fn submit_notes(&self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId>;
 }
 

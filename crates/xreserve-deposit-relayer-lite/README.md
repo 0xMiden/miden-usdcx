@@ -27,3 +27,25 @@ just run-relayer-lite \
 
 The Circle domain identifier and the account identifiers depend on the deployment. The attester
 public key must use compressed SEC1 format.
+
+`--state-file` holds a small JSON document recording how far the relayer got:
+
+```json
+{
+  "watermark": "0x1e1c…",
+  "scan": {
+    "head": "0x8a30…",
+    "resume": "eyJ2YWx1ZXMiOnsi…"
+  }
+}
+```
+
+Circle serves the feed newest first, so every scan starts at the head of the feed and walks back
+until it reaches `watermark` — the newest attestation the last completed scan handled. `scan` is
+present only while a scan is unfinished, and it records the head that scan started at along with
+Circle's cursor for the page it stopped on. The next poll then resumes at that page instead of
+re-minting the ones already on chain, and both fields are dropped once `watermark` moves up to
+`head`. A backlog therefore costs one pass per outage rather than one per restart.
+
+Deleting the file is safe, just slow — the next run scans the whole feed, and the faucet refuses
+the deposits it has already minted.

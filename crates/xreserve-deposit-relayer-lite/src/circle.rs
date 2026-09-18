@@ -6,6 +6,9 @@
 //! as the first would make a corrupted header look like the end of the feed and silently end the
 //! scan early.
 //!
+//! The feed is ordered newest first, so the first page holds the most recent deposits and the
+//! `next` relation leads into the past. Circle publishes no way to ask for the opposite order.
+//!
 //! No authentication is sent because Circle has not documented an authentication scheme yet.
 
 use std::fmt;
@@ -16,11 +19,30 @@ use std::time::Duration;
 use anyhow::{ensure, Context, Result};
 use reqwest::Url;
 use serde::de::{self, Deserializer};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 
 use xusdc_encoding::xreserve::encoding::Signature;
 
-use crate::store::CircleCursor;
+/// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
+///
+/// Circle builds it from the attestation time and message hash of the entry a page ended at, so it
+/// names an entry rather than an offset. Deposits arriving at the head of the feed therefore do not
+/// shift what it addresses, which is what makes it safe to store and hand back after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CircleCursor(String);
+
+impl CircleCursor {
+    /// Wraps a token taken verbatim from a Circle feed response.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// The token, ready to be sent back as the `pageAfter` query parameter.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// The number of attestations requested per page, within Circle's documented `pageSize` range of
 /// 1 through 1000.
@@ -96,16 +118,19 @@ impl fmt::Display for RemoteDomain {
     }
 }
 
+/// The width of the `keccak256` digest that names a deposit.
+const MESSAGE_HASH_BYTES: usize = 32;
+
 /// `keccak256` of an attestation's payload, which is what names one deposit in the feed.
 ///
-/// It identifies an attestation in a log line and in the set of deposits already handled; the
-/// chain recomputes and verifies it.
+/// It identifies an attestation in a log line and in the relayer's stored progress; the chain
+/// recomputes and verifies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MessageHash([u8; 32]);
+pub struct MessageHash([u8; MESSAGE_HASH_BYTES]);
 
 impl MessageHash {
     /// Wraps a digest as the feed published it.
-    pub const fn new(bytes: [u8; 32]) -> Self {
+    pub const fn new(bytes: [u8; MESSAGE_HASH_BYTES]) -> Self {
         Self(bytes)
     }
 }
@@ -120,6 +145,14 @@ impl fmt::Display for MessageHash {
 impl<'de> Deserialize<'de> for MessageHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         hex_array(deserializer).map(Self)
+    }
+}
+
+impl Serialize for MessageHash {
+    /// Writes the `0x`-hex form the feed publishes, so what the store holds is the text an
+    /// operator can search the feed for, and is what [`Deserialize`] reads back.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
@@ -330,8 +363,10 @@ fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature
 mod tests {
     use std::time::Duration;
 
-    use super::{Attestation, CircleClient, MessageHash, Page, PageSize, RemoteDomain, Signature};
-    use crate::store::CircleCursor;
+    use super::{
+        Attestation, CircleClient, CircleCursor, MessageHash, Page, PageSize, RemoteDomain,
+        Signature,
+    };
 
     /// The domain the request tests address.
     const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(7);
@@ -394,6 +429,31 @@ mod tests {
         assert!(PageSize::try_from(1001).is_err());
         assert!("abc".parse::<PageSize>().is_err());
         assert_eq!("250".parse::<PageSize>().unwrap(), page_size(250));
+    }
+
+    /// A message hash written to the store reads back unchanged, so a restart stops at the same
+    /// attestation. It is written in the form the feed publishes, so an operator reading the file
+    /// can search the feed for it.
+    #[test]
+    fn a_message_hash_survives_the_store_round_trip() {
+        let message_hash = MessageHash::new([0x5A; 32]);
+        let json = serde_json::to_string(&message_hash).unwrap();
+
+        assert_eq!(json, format!("\"{message_hash}\""));
+        assert_eq!(
+            serde_json::from_str::<MessageHash>(&json).unwrap(),
+            message_hash
+        );
+    }
+
+    /// A cursor written to the store reads back verbatim, so a resumed scan asks Circle for the
+    /// page it stopped at.
+    #[test]
+    fn a_cursor_survives_the_store_round_trip() {
+        let cursor = CircleCursor::new("a+b/c=");
+        let json = serde_json::to_string(&cursor).unwrap();
+
+        assert_eq!(serde_json::from_str::<CircleCursor>(&json).unwrap(), cursor);
     }
 
     /// A remote domain is any 32-bit number and nothing else.

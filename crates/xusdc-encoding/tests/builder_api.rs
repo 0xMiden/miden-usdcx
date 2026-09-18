@@ -29,8 +29,7 @@ use xusdc_encoding::account::xreserve::{
 /// definition in `support` (ADMIN = ATTEST_ADMIN = id(1), DOM_PAUSER = id(2), DOM_UNPAUSER = id(3),
 /// BLK_MANAGER = id(4), plus the build-seeded domain config).
 fn production_builder() -> XReserveStablecoinBuilder {
-    support::production_builder(1_000_000, 0, TEST_DOMAIN)
-        .expect("the fixed-identity USDCx faucet builds")
+    support::production_builder(0, TEST_DOMAIN).expect("the fixed-identity USDCx faucet builds")
 }
 
 /// Looks up a procedure's root by its library path across every component in the composed set.
@@ -114,7 +113,6 @@ fn production_seeds_min_burn_size() -> Result<()> {
         "MIN_BURN must exceed u32::MAX so the encoding test catches u32 truncation",
     );
     let components = production_builder_verdict(
-        1_000_000,
         0,
         TEST_DOMAIN,
         Some(AssetAmount::new(MIN_BURN).context("MIN_BURN must be within AssetAmount::MAX")?),
@@ -153,7 +151,7 @@ fn production_seeds_min_burn_size() -> Result<()> {
 #[test]
 fn build_rejects_zero_min_burn_amount() -> Result<()> {
     let zero = AssetAmount::new(0).expect("a zero asset amount is representable");
-    let err = production_builder_verdict(1_000_000, 0, TEST_DOMAIN, Some(zero))?.expect_err(
+    let err = production_builder_verdict(0, TEST_DOMAIN, Some(zero))?.expect_err(
         "a min_burn_amount of 0 must be rejected at construction (zero-floor invariant)",
     );
     assert!(

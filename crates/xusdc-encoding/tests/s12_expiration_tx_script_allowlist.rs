@@ -37,9 +37,6 @@ use miden_tx::TransactionExecutorError;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
-/// The faucet max supply used by the production-faucet fixture (mirrors the sibling suites).
-const MAX_SUPPLY: u64 = 1_000_000;
-
 /// Reads the non-empty keys of the named MAP storage slot out of an `AccountComponent`. Only
 /// non-empty values mark an allowlisted key (matching the MASM `word::eqz` check), so this view
 /// agrees with on-chain enforcement.
@@ -108,7 +105,7 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
 /// executes) while an arbitrary no-op tx-script is REJECTED.
 #[tokio::test]
 async fn expiration_is_admitted_and_every_other_tx_script_is_rejected() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
 
     // NEGATIVE — a nop tx script is not the expiration root, so the one-root allowlist rejects it.

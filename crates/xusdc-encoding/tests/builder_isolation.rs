@@ -19,7 +19,6 @@ fn builder_with_holders(
     blk_manager: AccountId,
 ) -> Result<XReserveStablecoinBuilder> {
     XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
         .owner(test_account_id(1))
         .attest_admin_holder(attest_admin)

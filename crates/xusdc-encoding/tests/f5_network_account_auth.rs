@@ -60,8 +60,6 @@ use xusdc_encoding::xreserve::encoding::{
     DepositIntent, ForeignChainAddress, MintIntent, Signature, XReserveBurnItems,
 };
 
-const MAX_SUPPLY: u64 = 1_000_000;
-
 // HELPERS
 // ================================================================================================
 
@@ -124,7 +122,7 @@ fn attested_deposit_intent_payload(
 /// Builds the current PRODUCTION faucet and returns its MockChain + committed faucet account object.
 /// The faucet id (`account.id()`) is PUBLIC — usable as a `NetworkAccountTarget` target.
 fn production_faucet() -> Result<(MockChain, Account)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production faucet")?;
     let account = pf
         .mock_chain

@@ -23,7 +23,6 @@ use xusdc_encoding::xreserve::encoding::{
     DepositIntentField, ForeignChainAddress, HookData, XReserveBurnItems,
 };
 
-const MAX_SUPPLY: u64 = 1_000_000_000_000;
 const BURN_AMOUNT: u64 = 5_000;
 const DRIFT_TOLERANCE_PERCENT: u64 = 5;
 const VERIFICATION_BASE_FEE: u32 = 500;
@@ -75,7 +74,7 @@ fn priced_fixture_with(
         .verification_base_fee(VERIFICATION_BASE_FEE);
     let recipient = builder.add_existing_wallet(Auth::IncrNonce)?;
     let producer = add_emitting_wallet(&mut builder, Auth::IncrNonce, [])?;
-    let components = production_builder(MAX_SUPPLY, 0, TEST_DOMAIN)?.build_components()?;
+    let components = production_builder(0, TEST_DOMAIN)?.build_components()?;
     let faucet = build_network_faucet_account_with_fee_policy_and_assets(
         components,
         fee_faucet_id(),
@@ -108,6 +107,7 @@ fn priced_fixture_with(
         recipient_id: recipient.id(),
         producer_id: producer.id(),
         seeded_notes: notes,
+        build_token_supply: 0,
     })
 }
 
@@ -159,8 +159,7 @@ async fn burn_cycles() -> Result<u32> {
     let mut builder = MockChain::builder()
         .fee_faucet_id(fee_faucet_id())
         .verification_base_fee(VERIFICATION_BASE_FEE);
-    let components =
-        production_builder(MAX_SUPPLY, BURN_AMOUNT, TEST_DOMAIN)?.build_components()?;
+    let components = production_builder(BURN_AMOUNT, TEST_DOMAIN)?.build_components()?;
     let faucet = build_network_faucet_account_with_fee_policy_and_assets(
         components,
         fee_faucet_id(),

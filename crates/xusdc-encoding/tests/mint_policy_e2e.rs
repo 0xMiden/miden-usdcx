@@ -96,7 +96,7 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
 /// non-empty — key rotation depends on it.
 #[tokio::test]
 async fn mint_rejects_a_removed_attester() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
+    let mut pf = fixture_with(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
         vec![XReserveSetAttesterNote::create(
@@ -125,7 +125,7 @@ async fn mint_rejects_a_removed_attester() -> Result<()> {
 /// lands on the SAME chain — the allowlist reflects exactly the rotated state.
 #[tokio::test]
 async fn mint_rotation_rejects_the_old_attester_and_accepts_the_new() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |recipient, faucet_id| {
+    let mut pf = fixture_with(0, |recipient, faucet_id| {
         let base = payload_for(recipient, faucet_id, MINT_AMOUNT, 0);
         vec![
             XReserveSetAttesterNote::create(
@@ -260,10 +260,12 @@ async fn mint_rejects_an_amount_below_max_fee() -> Result<()> {
 
 /// A mint that would push total supply past the faucet's maximum is refused by the standard
 /// `mint_and_send` cap check — the faucet's own policy does no supply arithmetic at all — and
-/// fails closed.
+/// fails closed. The cap is fixed at the maximum asset amount, so the over-cap condition is a
+/// build-time supply one short of leaving room for the attested amount.
 #[tokio::test]
 async fn mint_rejects_an_over_cap_amount() -> Result<()> {
-    let mut pf = fixture_with(MINT_AMOUNT - 1, |_, _| vec![])?;
+    let over_cap_supply = miden_protocol::asset::AssetAmount::MAX.as_u64() - MINT_AMOUNT + 1;
+    let mut pf = fixture_with(over_cap_supply, |_, _| vec![])?;
     bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 16);
     let note = honest_note(&pf, &payload, 85)?;
@@ -279,7 +281,7 @@ async fn mint_rejects_an_over_cap_amount() -> Result<()> {
 /// fail-closed (no nonce burned, no supply raised).
 #[tokio::test]
 async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
+    let mut pf = fixture_with(0, |_, faucet_id| {
         vec![
             stock_set_max_supply_note(administrator(), faucet_id, MINT_AMOUNT - 1, 957)
                 .expect("building the administrator lower-cap note"),
@@ -291,15 +293,15 @@ async fn mint_rejects_after_the_administrator_lowers_max_supply_below_the_amount
     expect_reject(&mut pf, note, &payload, &err_stock_over_cap()).await
 }
 
-/// AT-CAP boundary: from a build cap BELOW the attested amount, the administrator's note RAISES the cap
-/// to EXACTLY that amount; the mint then lands with `token_supply == max_supply` — the boundary
-/// ACCEPTS (the cap is `<=`, not `<`), and the acceptance is attributable to the admin note.
+/// AT-CAP boundary: the administrator's note sets the cap to EXACTLY the attested amount; the
+/// mint then lands with `token_supply == max_supply` — the boundary ACCEPTS (the cap is `<=`,
+/// not `<`), and the acceptance is attributable to the admin note.
 #[tokio::test]
 async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
-    let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
+    let mut pf = fixture_with(0, |_, faucet_id| {
         vec![
             stock_set_max_supply_note(administrator(), faucet_id, MINT_AMOUNT, 958)
-                .expect("building the administrator raise-to-boundary note"),
+                .expect("building the administrator set-to-boundary note"),
         ]
     })?;
     bring_up(&mut pf, 2).await?; // set_attester + set_max_supply(= amount)
@@ -318,26 +320,29 @@ async fn mint_accepts_at_the_exact_raised_cap_boundary() -> Result<()> {
     Ok(())
 }
 
-/// RAISE-then-accepts: under the too-low build cap the attested mint REJECTS over-cap (the low
-/// cap binds); after the administrator's raise note lands, a fresh-nonce mint of the SAME amount
-/// succeeds — the runtime raise is what unlocks the mint.
+/// RAISE-then-accepts: under a too-low runtime cap (the administrator's lowering note) the
+/// attested mint REJECTS over-cap (the low cap binds); after the administrator's raise note
+/// lands, a fresh-nonce mint of the SAME amount succeeds — the runtime raise is what unlocks
+/// the mint.
 #[tokio::test]
 async fn mint_accepts_after_the_administrator_raises_max_supply() -> Result<()> {
-    let mut pf = fixture_with(MINT_AMOUNT - 1, |_, faucet_id| {
+    let mut pf = fixture_with(0, |_, faucet_id| {
         vec![
+            stock_set_max_supply_note(administrator(), faucet_id, MINT_AMOUNT - 1, 961)
+                .expect("building the administrator lower-cap note"),
             stock_set_max_supply_note(administrator(), faucet_id, MAX_SUPPLY, 959)
                 .expect("building the administrator raise-cap note"),
         ]
     })?;
-    bring_up(&mut pf, 1).await?; // set_attester — the raise stays unconsumed
+    bring_up(&mut pf, 2).await?; // set_attester + set_max_supply(lower) — the raise stays unconsumed
 
-    // under the low build cap the attested amount rejects (the cap binds pre-raise)
+    // under the lowered cap the attested amount rejects (the cap binds pre-raise)
     let payload_low = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 36);
     let note_low = honest_note(&pf, &payload_low, 105)?;
     expect_reject(&mut pf, note_low, &payload_low, &err_stock_over_cap()).await?;
 
     // the administrator's raise lands, then a fresh-nonce mint of the same amount succeeds
-    consume_seeded_admin_note(&mut pf, 1).await?;
+    consume_seeded_admin_note(&mut pf, 2).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 37);
     let note = honest_note(&pf, &payload, 106)?;
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;

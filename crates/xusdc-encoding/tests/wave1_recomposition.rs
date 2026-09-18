@@ -59,8 +59,6 @@ const FORMER_MINT_DENY_GUARD_PROC_PATH: &str = "xreserve::mint_deny_guard::check
 const FORMER_CUSTOM_MINT_NOTE_ROOT_HEX: &str =
     "0x530e20b39e77a111f00a162835823ff503202d05c182b98728387853e07d19d5";
 
-const MAX_SUPPLY: u64 = 1_000_000_000_000;
-
 // COMPONENT-SET INSPECTION HELPERS (the basic_asset_tripwire pattern)
 // ================================================================================================
 
@@ -128,7 +126,7 @@ fn shipped_note_project_dir(name: &str) -> std::path::PathBuf {
 #[test]
 fn active_mint_policy_is_the_attestation_policy() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
         .context(
         "the composed set must carry the attestation mint policy (xreserve::mint_policy::check_policy)",
@@ -147,7 +145,7 @@ fn active_mint_policy_is_the_attestation_policy() -> Result<()> {
 #[test]
 fn allowed_mint_policy_map_is_exactly_the_attestation_root() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     let attestation_root = resolve_proc_root(&components, ATTESTATION_MINT_POLICY_PROC_PATH)
         .context("the composed set must carry the attestation mint policy")?;
     let map = map_slot(
@@ -182,7 +180,7 @@ fn allowed_mint_policy_map_is_exactly_the_attestation_root() -> Result<()> {
 #[test]
 fn mint_deny_guard_is_fully_dissolved() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     assert!(
         resolve_proc_root(&components, FORMER_MINT_DENY_GUARD_PROC_PATH).is_none(),
         "the mint-deny guard must not resolve anywhere in the composed set"
@@ -259,7 +257,7 @@ fn legacy_config_and_burn_masm_are_replaced() -> Result<()> {
 #[test]
 fn burn_policy_has_one_allowed_root_and_a_positive_floor() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     let map = map_slot(
         &components,
         TokenPolicyManager::allowed_burn_policies_slot(),
@@ -293,7 +291,7 @@ fn burn_policy_has_one_allowed_root_and_a_positive_floor() -> Result<()> {
 #[test]
 fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let outcome = production_builder_outcome(MAX_SUPPLY, 0, Some(0))?;
+    let outcome = production_builder_outcome(0, Some(0))?;
     assert_matches!(
         outcome,
         Err(XReserveStablecoinBuilderError::MinBurnSizeBelowFloor(0)),

@@ -30,8 +30,6 @@ use miden_protocol::Word;
 use miden_standards::account::policies::{BasicBlocklist, TokenPolicyManager};
 use support::{production_component_set, tripwire_serial_guard_blocking};
 
-const MAX_SUPPLY: u64 = 1_000_000;
-
 /// First storage slot named `name` across the whole composed component set, if any.
 fn find_slot<'a>(
     components: &'a [AccountComponent],
@@ -76,7 +74,7 @@ fn value_slot(components: &[AccountComponent], name: &StorageSlotName) -> Result
 #[test]
 fn production_build_wires_the_transfer_blocklist() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     let blocklist_root = BasicBlocklist::root().as_word();
 
     // (1) the send + receive transfer policy is registered: each allowed-roots map carries EXACTLY

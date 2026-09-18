@@ -38,7 +38,6 @@ use xusdc_encoding::xreserve::encoding::Signature;
 // THE MINT FIXTURE — only the pause-halt proof needs a faucet that can actually mint
 // ================================================================================================
 
-const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
 // the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
@@ -73,7 +72,7 @@ fn payload_for(recipient: AccountId, faucet_id: AccountId, nonce_variant: u8) ->
 /// A production faucet brought up for a real mint: one attester allowlisted through its own admin
 /// note, plus whatever the caller wants seeded.
 fn mint_faucet(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
-    setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
+    setup_production_faucet(0, |recipient, faucet_id| {
         let commitment = gen_attester(1, &payload_for(recipient, faucet_id, 0)).commitment;
         let mut notes = vec![XReserveSetAttesterNote::create(
             admin_holder(),

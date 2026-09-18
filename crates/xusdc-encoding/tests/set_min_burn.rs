@@ -94,7 +94,7 @@ fn faucet(h: &BurnPolicyHarness) -> Result<Account> {
 /// build-time-shaped failure with an obvious cause.
 #[test]
 fn probe_stock_min_burn_setter_installed() -> Result<()> {
-    let components = production_component_set(MAX_SUPPLY, 0)?;
+    let components = production_component_set(0)?;
     assert!(
         components
             .iter()
@@ -149,7 +149,7 @@ async fn set_min_burn_administrator_succeeds_while_paused() -> Result<()> {
 async fn support_replica_matches_the_production_role_seed() -> Result<()> {
     let h = faucet_harness()?;
     let account = faucet(&h)?;
-    let components = production_component_set(MAX_SUPPLY, TOKEN_SUPPLY)?;
+    let components = production_component_set(TOKEN_SUPPLY)?;
     for name in [
         RoleBasedAccessControl::role_config_slot(),
         RoleBasedAccessControl::role_membership_slot(),

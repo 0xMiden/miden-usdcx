@@ -45,7 +45,6 @@ use xusdc_encoding::note::xreserve_burn::{
 use xusdc_encoding::note::xreserve_mint::DepositAttestation;
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, Signature, XReserveBurnItems};
 
-const MAX_SUPPLY: u64 = 1_000_000;
 const NEW_FEE: u64 = 73;
 const VERIFICATION_BASE_FEE: u32 = 500;
 const SPONSORED_MINT_AMOUNT: u64 = 5_000;
@@ -81,7 +80,6 @@ fn production_builder() -> Result<XReserveStablecoinBuilder> {
 
 fn production_builder_with_supply(token_supply: AssetAmount) -> Result<XReserveStablecoinBuilder> {
     Ok(XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"))
         .token_supply(token_supply)
         .owner(test_account_id(1))
         .attest_admin_holder(test_account_id(1))

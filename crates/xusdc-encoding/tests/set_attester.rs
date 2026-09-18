@@ -116,7 +116,7 @@ fn probe_attester_admin_exports() -> Result<()> {
 /// suites.
 #[test]
 fn production_build_gates_mint_on_the_attestation_policy() -> Result<()> {
-    let components = production_component_set(1_000_000, 0)?;
+    let components = production_component_set(0)?;
     let attestation_root = components
         .iter()
         .find_map(|c| c.get_procedure_root_by_path(ATTESTATION_MINT_POLICY_PROC_PATH))
@@ -179,7 +179,6 @@ async fn set_attester_administrator_succeeds() -> Result<()> {
 #[tokio::test]
 async fn set_attester_requires_attest_admin_not_admin() -> Result<()> {
     let components = XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000)?)
         .token_supply(AssetAmount::ZERO)
         .owner(test_account_id(1))
         .attest_admin_holder(test_account_id(5))

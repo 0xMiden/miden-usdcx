@@ -103,7 +103,7 @@ fn raw_burn_note(
 
 #[tokio::test]
 async fn burn_rejects_a_missing_withdrawal_attachment() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+    let pf = setup_production_faucet(TOKEN_SUPPLY, |sender, faucet_id| {
         let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
             .expect("public network faucet");
         vec![raw_burn_note(sender, faucet_id, vec![routing.into()])]
@@ -124,7 +124,7 @@ async fn burn_rejects_a_missing_withdrawal_attachment() -> Result<()> {
 
 #[tokio::test]
 async fn burn_rejects_a_wrong_withdrawal_word_count() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+    let pf = setup_production_faucet(TOKEN_SUPPLY, |sender, faucet_id| {
         let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
             .expect("public network faucet");
         let withdrawal = NoteAttachment::with_words(
@@ -155,7 +155,7 @@ async fn burn_rejects_a_wrong_withdrawal_word_count() -> Result<()> {
 
 #[tokio::test]
 async fn burn_rejects_an_extra_attachment() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+    let pf = setup_production_faucet(TOKEN_SUPPLY, |sender, faucet_id| {
         let routing = NetworkAccountTarget::new(faucet_id, NoteExecutionHint::Always)
             .expect("public network faucet");
         let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(items()));
@@ -186,7 +186,7 @@ async fn burn_rejects_an_extra_attachment() -> Result<()> {
 
 #[tokio::test]
 async fn burn_rejects_a_missing_routing_attachment() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, TOKEN_SUPPLY, |sender, faucet_id| {
+    let pf = setup_production_faucet(TOKEN_SUPPLY, |sender, faucet_id| {
         let withdrawal = NoteAttachment::from(&XUsdcBurnAttachment::new(items()));
         vec![raw_burn_note(
             sender,

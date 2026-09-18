@@ -78,10 +78,6 @@ const CIRCLE_DEPOSITS: [u64; 4] = [
 /// amount assertion, not the fee gate, is what must decide these tests.
 const MAX_FEE_RAW: u64 = 1;
 
-/// Headroom for the whole sweep at the CORRECT (identity) scale — the supply cap must never be
-/// what fails a case here.
-const MAX_SUPPLY: u64 = 1_000_000_000_000;
-
 /// First byte of the 32-byte `remoteRecipient` field (felt 19 x 4 bytes of the fixed header).
 const REMOTE_RECIPIENT_BYTE_OFF: usize = 19 * 4;
 /// First byte of the 32-byte `remoteToken` field (felt 11 x 4 bytes of the fixed header).
@@ -155,7 +151,7 @@ fn marker() -> Word {
 /// The production-faucet fixture with the administrator's `set_attester` seeded on-chain.
 /// The allowlisted attester is `gen_attester(1, ..)`, whose commitment is payload-independent.
 fn fixture() -> Result<ProductionFaucet> {
-    setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    setup_production_faucet(0, |recipient, faucet_id| {
         let commitment = gen_attester(
             1,
             &payload_for(recipient, faucet_id, CIRCLE_DEPOSIT_100_USDC, 0),
@@ -514,7 +510,7 @@ async fn mint_to_a_blocked_recipient_succeeds_then_strands() -> anyhow::Result<(
 
     // A fixture that additionally seeds a BLK_MANAGER block note targeting the recipient; bring_up
     // consumes set_attester AND the block note (so the recipient is blocked pre-mint).
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    let mut pf = setup_production_faucet(0, |recipient, faucet_id| {
         let commitment = gen_attester(
             1,
             &payload_for(recipient, faucet_id, CIRCLE_DEPOSIT_100_USDC, 0),

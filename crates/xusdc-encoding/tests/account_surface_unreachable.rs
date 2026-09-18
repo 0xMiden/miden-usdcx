@@ -29,15 +29,13 @@ use miden_standards::note::ConstantFeePolicyConfigNote;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
-const MAX_SUPPLY: u64 = 1_000_000;
-
 /// The production composition, component by component: the SHIPPED component set
 /// (`support::production_component_set` → `XReserveStablecoinBuilder::build_components()`) PLUS the
 /// `AuthNetworkAccount` auth component the MockChain fixture installs — both single-sourced from
 /// `XReserveStablecoinBuilder`, so this cannot drift from what ships.
 fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
-        production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
+        production_component_set(0).context("the production composition must build")?;
     components.extend(
         XReserveStablecoinBuilder::auth_component(test_fee_parameters())
             .context("the production auth component must build")?,

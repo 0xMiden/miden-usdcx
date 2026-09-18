@@ -28,6 +28,12 @@ pub const ATTESTER_KEY_BYTES: [[u8; 33]; 2] = [
 /// Two fixture deposit nonces, recorded as consumed at build time.
 pub const USED_NONCE_BYTES: [[u8; 32]; 2] = [[0x55; 32], [0x66; 32]];
 
+/// The `0x`-prefixed hex string of `bytes` — the config's byte encoding.
+pub fn to_hex(bytes: &[u8]) -> String {
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("0x{hex}")
+}
+
 /// The fixture attester keys, decoded.
 pub fn attester_keys() -> Vec<PublicKey> {
     ATTESTER_KEY_BYTES
@@ -65,12 +71,12 @@ impl Fixture {
         let json = serde_json::json!({
             "accounts": accounts,
             "faucet": {
-                "seed": FAUCET_SEED,
+                "seed": to_hex(&FAUCET_SEED),
                 "token_supply": 250_000_000u64,
                 "domain": 7,
                 "verification_base_fee": 500,
-                "attesters": [ATTESTER_KEY_BYTES[0].to_vec(), ATTESTER_KEY_BYTES[1].to_vec()],
-                "used_nonces": [USED_NONCE_BYTES[0].to_vec(), USED_NONCE_BYTES[1].to_vec()],
+                "attesters": [to_hex(&ATTESTER_KEY_BYTES[0]), to_hex(&ATTESTER_KEY_BYTES[1])],
+                "used_nonces": [to_hex(&USED_NONCE_BYTES[0]), to_hex(&USED_NONCE_BYTES[1])],
             },
         });
         Self { json }

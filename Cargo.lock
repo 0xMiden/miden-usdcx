@@ -5862,6 +5862,7 @@ dependencies = [
  "anyhow",
  "assert_matches",
  "clap",
+ "hex",
  "miden-protocol",
  "miden-standards",
  "serde",

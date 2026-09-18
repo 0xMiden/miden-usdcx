@@ -93,7 +93,8 @@ impl RoleAccounts {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FaucetConfig {
-    /// The faucet's 32-byte account seed, as a JSON array of bytes.
+    /// The faucet's 32-byte account seed, as a hex string.
+    #[serde(deserialize_with = "seed")]
     pub seed: [u8; 32],
     /// The initial supply, validated as an [`AssetAmount`] at parse time so it cannot exceed
     /// the hardcoded supply cap.
@@ -103,12 +104,12 @@ pub struct FaucetConfig {
     pub domain: u32,
     pub min_burn_amount: Option<u64>,
     pub verification_base_fee: u32,
-    /// The deposit attesters allowlisted at build time, each as a JSON array of the key's 33
+    /// The deposit attesters allowlisted at build time, each as the hex string of the key's 33
     /// compressed SEC1 bytes; empty means the allowlist is seeded later through `set_attester`
     /// notes.
     #[serde(default, deserialize_with = "attesters")]
     pub attesters: Vec<PublicKey>,
-    /// The Circle deposit nonces the genesis state already honours, each as a JSON array of its
+    /// The Circle deposit nonces the genesis state already honours, each as the hex string of its
     /// 32 bytes; each is recorded as consumed at build time so the relayer cannot mint it again.
     #[serde(default, deserialize_with = "used_nonces")]
     pub used_nonces: Vec<DepositNonce>,
@@ -143,20 +144,38 @@ fn account_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AccountId, D
         .map_err(D::Error::custom)
 }
 
-/// Deserializes attester keys from their 33-byte compressed SEC1 form.
+/// Decodes a hex string (an optional `0x` prefix) into bytes.
+fn hex_bytes<E: serde::de::Error>(text: &str) -> Result<Vec<u8>, E> {
+    hex::decode(text.strip_prefix("0x").unwrap_or(text)).map_err(E::custom)
+}
+
+/// Decodes a hex string into exactly `N` bytes.
+fn hex_array<E: serde::de::Error, const N: usize>(text: &str) -> Result<[u8; N], E> {
+    <[u8; N]>::try_from(hex_bytes::<E>(text)?)
+        .map_err(|bytes| E::custom(format!("expected {N} bytes, got {}", bytes.len())))
+}
+
+/// Deserializes the faucet seed from its 32-byte hex string.
+fn seed<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+    hex_array::<D::Error, 32>(&String::deserialize(deserializer)?)
+}
+
+/// Deserializes attester keys from the hex strings of their 33-byte compressed SEC1 form.
 fn attesters<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PublicKey>, D::Error> {
-    Vec::<Vec<u8>>::deserialize(deserializer)?
+    Vec::<String>::deserialize(deserializer)?
         .iter()
-        .map(|bytes| PublicKey::read_from_bytes(bytes).map_err(D::Error::custom))
+        .map(|text| {
+            PublicKey::read_from_bytes(&hex_bytes::<D::Error>(text)?).map_err(D::Error::custom)
+        })
         .collect()
 }
 
-/// Deserializes deposit nonces from their 32 raw bytes.
+/// Deserializes deposit nonces from the hex strings of their 32 bytes.
 fn used_nonces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<DepositNonce>, D::Error> {
-    Ok(Vec::<[u8; 32]>::deserialize(deserializer)?
-        .into_iter()
-        .map(DepositNonce::new)
-        .collect())
+    Vec::<String>::deserialize(deserializer)?
+        .iter()
+        .map(|text| hex_array::<D::Error, 32>(text).map(DepositNonce::new))
+        .collect()
 }
 
 // ERRORS

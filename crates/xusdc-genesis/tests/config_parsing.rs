@@ -8,7 +8,7 @@ use miden_protocol::address::NetworkId;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{attester_keys, role_id_hex, Fixture, USED_NONCE_BYTES};
+use crate::common::{attester_keys, role_id_hex, to_hex, Fixture, USED_NONCE_BYTES};
 
 /// The dev fixture parses, and the typed config reflects it.
 #[test]
@@ -126,8 +126,9 @@ fn an_absent_used_nonce_list_is_empty() {
 #[test]
 fn a_malformed_attester_key_is_rejected() {
     for (bad_key, cause) in [
-        (vec![2u8; 32], "unexpected end of file"),
-        (vec![5u8; 33], "Invalid public key"),
+        (to_hex(&[2u8; 32]), "unexpected end of file"),
+        (to_hex(&[5u8; 33]), "Invalid public key"),
+        ("0xzz".to_string(), "Invalid character"),
     ] {
         let mut fixture = Fixture::new();
         fixture.json["faucet"]["attesters"][0] = serde_json::Value::from(bad_key);
@@ -154,11 +155,11 @@ fn an_out_of_range_token_supply_is_rejected() {
 #[test]
 fn a_wrong_length_seed_is_rejected() {
     let mut fixture = Fixture::new();
-    fixture.json["faucet"]["seed"] = serde_json::Value::from(vec![7u8; 4]);
+    fixture.json["faucet"]["seed"] = serde_json::Value::from(to_hex(&[7u8; 4]));
     let err = fixture
         .parse()
         .expect_err("a wrong-length seed must be rejected");
-    assert_parse_error_contains(err, "invalid length 4, expected an array of length 32");
+    assert_parse_error_contains(err, "expected 32 bytes, got 4");
 }
 
 /// An unknown field anywhere in the document is a schema violation (`deny_unknown_fields`).

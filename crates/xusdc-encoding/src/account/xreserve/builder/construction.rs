@@ -205,11 +205,9 @@ impl XReserveStablecoinBuilder {
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
 
-    /// Builds the faucet for inclusion in a genesis block, mirroring the ending of the
-    /// `miden-standards` `create_native_fungible_faucet_for_genesis`: the account comes out at
-    /// nonce one with no seed, its fee asset the one the faucet itself issues, and every nonce in
-    /// `used_nonces` recorded as consumed, so a deposit the genesis state already honours cannot
-    /// be minted again.
+    /// Builds the faucet for inclusion in a genesis block.
+    /// The account is created with a nonce of one, its own ID as the fee asset, and every
+    /// nonce in `used_nonces` recorded as consumed.
     ///
     /// # Warning
     ///

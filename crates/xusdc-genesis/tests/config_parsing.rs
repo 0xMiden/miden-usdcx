@@ -39,8 +39,15 @@ fn the_dev_fixture_round_trips() {
         "the used nonces must decode from their configured bytes",
     );
     for role in Role::ALL {
+        let members = config.accounts.get(role);
         assert_eq!(
-            config.accounts.get(role).to_hex(),
+            members.len(),
+            1,
+            "the {} fixture seeds one holder",
+            role.as_str()
+        );
+        assert_eq!(
+            members[0].to_hex(),
             role_id_hex(role),
             "the {} id must round-trip through the hex form",
             role.as_str(),

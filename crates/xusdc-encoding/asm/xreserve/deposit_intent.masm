@@ -66,7 +66,6 @@ pub const DEPOSIT_INTENT_MAGIC_PACKED = 0xcd0a2e5a
 pub const DEPOSIT_INTENT_VERSION_PACKED = 0x01000000
 
 pub const DEPOSIT_INTENT_HEADER_BYTES = 240
-pub const DEPOSIT_INTENT_HEADER_WORDS = 15
 
 # CONSTANTS — where each written value lands
 # =================================================================================================
@@ -103,9 +102,10 @@ const ERR_XRESERVE_DOMAIN_NOT_U32 = "faucet domain config is not a valid u32"
 #! Outputs: [intent_num_bytes]
 #!
 #! Where:
-#! - deposit_intent_ptr is the WORD-ALIGNED base of the region to write, in GLOBAL memory. Every
-#!   felt of the header is written here, pads included, so the region's prior contents cannot reach
-#!   the message; the hookData tail past it is fully written by the copy.
+#! - deposit_intent_ptr is the WORD-ALIGNED base of the region to write, in GLOBAL memory. Only the
+#!   fields the message carries are written; the structural pads are left alone, so the region has
+#!   to read as zero before the call. The hookData tail past the header is fully written by the
+#!   copy.
 #! - mint_intent_ptr is the base of the carried mint intent, INSIDE the caller's hash-verified
 #!   transport region.
 #! - mint_intent_num_words is that region's hash-committed word count, past the attestation. It is
@@ -147,13 +147,6 @@ pub proc rebuild
     # => [expected_num_words, mint_intent_num_words]
 
     assert_eq.err=ERR_XRESERVE_MINT_NOTE_INTENT_WORDS
-    # => []
-
-    # ---- every felt of the header gets a writer, before any field lands on top of it ----
-    # Global memory reads as zero from MASM, so we wouldn't technically need to zeroize the header,
-    # but keccak's host-side byte reader fails on one that was never written.
-    # See https://github.com/0xMiden/miden-vm/issues/3537.
-    loc_load.DEPOSIT_INTENT_PTR_LOC exec.zero_header
     # => []
 
     # ---- the scheme's own two fields. both constants are already in packed form ----
@@ -261,32 +254,6 @@ end
 
 # HELPER PROCEDURES
 # =================================================================================================
-
-#! Writes zeros over the whole header region.
-#!
-#! Inputs:  [dst_ptr]
-#! Outputs: []
-#!
-#! Where:
-#! - dst_ptr is the word-aligned base of the header region.
-#!
-#! Invocation: exec
-proc zero_header
-    padw
-    # => [ZERO_WORD, dst_ptr]
-
-    repeat.DEPOSIT_INTENT_HEADER_WORDS
-        dup.4 mem_storew_le
-        # => [ZERO_WORD, dst_ptr]
-
-        movup.4 add.4 movdn.4
-        # => [ZERO_WORD, dst_ptr+4]
-    end
-    # => [ZERO_WORD, dst_ptr+60]
-
-    dropw drop
-    # => []
-end
 
 #! Reads the faucet's configured destination domain.
 #!

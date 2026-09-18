@@ -7,7 +7,7 @@ use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
 use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifiedWithdrawal, VerifyError};
 
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::validation::validated_burn;
 
 /// The note serial of the test burns, which prepare sent as the salt before it sent the note ID.
@@ -26,13 +26,11 @@ pub(super) fn serial(last: u64) -> Word {
 fn config(fee_ceiling: Option<u64>) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let path = directory.path().join("attester.toml");
-    let mut text = config_toml(1);
+    let mut args = TestArgs::new(&directory, 1);
     if let Some(ceiling) = fee_ceiling {
-        text.push_str(&format!("max_withdrawal_fee = {ceiling}\n"));
+        args.replace("--max-withdrawal-fee", ceiling.to_string());
     }
-    std::fs::write(&path, text).unwrap();
-    Config::load(&path).unwrap()
+    args.load()
 }
 
 pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {

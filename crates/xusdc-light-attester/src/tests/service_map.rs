@@ -14,12 +14,11 @@ use tokio_util::sync::CancellationToken;
 use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::chain::ChainError;
 use crate::circle::CircleError;
-use crate::config::Config;
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted, Submitting};
 use crate::verify::VerifyError;
 
-use super::discovery::write_config;
+use super::discovery::test_config;
 use super::submit::{reply, Ledger, ScriptedCircle};
 use super::support::{
     development_signers, faucet_account_id, scan_limits, test_note, transaction, BlockFactory,
@@ -158,7 +157,7 @@ async fn invalid_burns_are_not_signed() {
     );
     blocks.push(vec![], vec![]);
     let directory = tempfile::tempdir().unwrap();
-    let config = write_config(&directory, 0, &blocks.blocks()[0], 1);
+    let config = test_config(&directory, 0, &blocks.blocks()[0], 1);
     let (circle, requests) = ScriptedCircle::new(directory.path().join("state.sqlite3"), vec![]);
     let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 1));
     let (signers, calls) = signers(None).await;
@@ -393,7 +392,7 @@ async fn diverged_chain_stops_the_cycle() {
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
 
-    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let config = test_config(&ledger.directory, 1, &ledger.blocks[0], 1);
     let (circle, fork_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.fork_blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;
@@ -410,7 +409,7 @@ async fn diverged_chain_stops_the_cycle() {
     );
     assert!(fork_requests.lock().unwrap().is_empty());
 
-    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let config = test_config(&ledger.directory, 1, &ledger.blocks[0], 1);
     let (circle, missing_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;

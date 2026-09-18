@@ -159,8 +159,8 @@ impl XReserveStablecoinBuilder {
     /// composition time.
     ///
     /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
-    /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`]
-    /// (not an input, so it cannot be set wrong), and `is_max_supply_mutable(true)` — so the
+    /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`],
+    /// and `is_max_supply_mutable(true)` — so the
     /// builder BUILDS it here from `token_supply`, and the cap, the mutability invariant, the
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a

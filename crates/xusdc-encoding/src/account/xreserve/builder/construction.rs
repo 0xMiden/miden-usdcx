@@ -275,8 +275,8 @@ pub fn build_faucet_account(
 }
 
 /// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],
-/// [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`] (not an input, so a caller
-/// cannot set it wrong), and `is_max_supply_mutable(true)` so the deployed `set_max_supply`
+/// [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`], and
+/// `is_max_supply_mutable(true)` so the deployed `set_max_supply`
 /// stays operable. The identity fields are constants (the `.expect`s are invariants); setting the
 /// mutability flag here is what guarantees it by construction, replacing the removed runtime reject.
 pub(super) fn build_usdcx_faucet(

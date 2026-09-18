@@ -7,6 +7,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, warn};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -140,7 +141,10 @@ impl Attester {
             match self.cycle(&mut rate_limited).await {
                 Ok(report) => {
                     if let Err(error) = report.discover {
-                        eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
+                        warn!(
+                            error = %error,
+                            "discovery failed; new signing paused for this cycle"
+                        );
                     }
                 }
                 Err(error)
@@ -152,7 +156,10 @@ impl Attester {
                     return Err(error);
                 }
                 Err(error) => {
-                    eprintln!("cycle stopped; retrying after the pause between cycles: {error:?}")
+                    error!(
+                        error = %error,
+                        "cycle stopped; retrying after the pause between cycles"
+                    );
                 }
             }
             pause = if rate_limited {
@@ -376,7 +383,11 @@ impl Attester {
                 if let Some((reason, response)) = burn_hold(&error) {
                     self.store.hold_burn(note_id, reason, response)?;
                 }
-                eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
+                warn!(
+                    note_id = %note_id,
+                    error = %error,
+                    "withdrawal failed before submission"
+                );
                 first_error.get_or_insert(error);
             }
         }

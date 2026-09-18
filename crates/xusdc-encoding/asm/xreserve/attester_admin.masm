@@ -2,11 +2,10 @@
 #
 # The authority-gated deposit-attester allowlist setter (`set_attester`): writes the
 # xReserveAttesters allowlist — the write side of the allowlist that attestation_verify.masm
-# reads at mint time. Under the account's role-based authority this procedure carries no
-# role assignment of its own, so the gate resolves to the built-in ADMIN role, whose sole
-# seeded member is the bootstrap administrator's account. The setter is NOT pause-gated,
-# matching Circle's onlyOwner model, so the administrator can disable a compromised
-# attester while the faucet is paused.
+# reads at mint time. Under the account's role-based authority this procedure is mapped to
+# the ATTEST_ADMIN role, whose seeded member is the attester administrator's account. The
+# setter is NOT pause-gated, matching Circle's onlyOwner model, so the attester
+# administrator can disable a compromised attester while the faucet is paused.
 
 use miden::protocol::native_account
 use miden::standards::access::authority
@@ -29,8 +28,8 @@ const ATTESTER_DISABLED_MARKER = ZERO_WORD
 # =================================================================================================
 
 #! Enables (enabled = 1) or disables (enabled = 0) a deposit attester keyed by its pubkey
-#! commitment — the `ADMIN`-gated setter for the xReserveAttesters allowlist. It trusts the
-#! caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
+#! commitment — the `ATTEST_ADMIN`-gated setter for the xReserveAttesters allowlist. It
+#! trusts the caller's commitment Word verbatim and does NOT recompute it from a raw pubkey.
 #!
 #! Inputs:  [PK_COMMITMENT, enabled, pad(11)]
 #! Outputs: [pad(16)]

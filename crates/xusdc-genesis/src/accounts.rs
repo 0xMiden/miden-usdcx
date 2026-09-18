@@ -20,7 +20,7 @@ fn placeholder_fee_faucet_id() -> AccountId {
     )
 }
 
-/// Builds the genesis faucet from the validated config.
+/// Builds the genesis faucet from the config, with the supply cap at [`AssetAmount::MAX`].
 pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
     let faucet_config = &config.faucet;
     let fee_parameters = FeeParameters::new(
@@ -33,8 +33,8 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
         .transpose()
         .context("min_burn_amount is not a valid asset amount")?;
     XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(faucet_config.max_supply).context("invalid max_supply")?)
-        .token_supply(AssetAmount::new(faucet_config.token_supply).context("invalid token_supply")?)
+        .max_supply(AssetAmount::MAX)
+        .token_supply(faucet_config.token_supply)
         .owner(config.accounts.owner)
         .attest_admin_holder(config.accounts.attest_admin)
         .pauser_holder(config.accounts.pauser)

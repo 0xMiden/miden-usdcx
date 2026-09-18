@@ -15,8 +15,7 @@ use crate::common::{attester_keys, role_id_hex, Fixture, USED_NONCE_BYTES};
 fn the_dev_fixture_round_trips() {
     let fixture = Fixture::new();
     let config = fixture.config();
-    assert_eq!(config.faucet.max_supply, 1_000_000_000_000);
-    assert_eq!(config.faucet.token_supply, 250_000_000);
+    assert_eq!(config.faucet.token_supply.as_u64(), 250_000_000);
     assert_eq!(config.faucet.domain, 7);
     assert_eq!(config.faucet.verification_base_fee, 500);
     assert!(config.faucet.min_burn_amount.is_none());
@@ -118,6 +117,18 @@ fn a_malformed_attester_key_is_rejected() {
     }
 }
 
+/// A token supply that is not a valid asset amount is rejected at parse time — it could
+/// otherwise exceed the hardcoded supply cap.
+#[test]
+fn an_out_of_range_token_supply_is_rejected() {
+    let mut fixture = Fixture::new();
+    fixture.json["faucet"]["token_supply"] = serde_json::Value::from(u64::MAX);
+    let err = fixture
+        .parse()
+        .expect_err("an out-of-range token supply must be rejected");
+    assert_matches!(err, ConfigError::Parse(_));
+}
+
 /// A faucet seed that is not exactly 32 bytes is a schema violation.
 #[test]
 fn a_wrong_length_seed_is_rejected() {
@@ -143,21 +154,4 @@ fn an_unknown_field_is_rejected() {
             "the parse error must name the unknown field, got: {source}",
         );
     });
-}
-
-/// An initial supply above the cap is rejected before the faucet is built.
-#[test]
-fn a_token_supply_above_the_cap_is_rejected() {
-    let mut fixture = Fixture::new();
-    fixture.json["faucet"]["token_supply"] = serde_json::Value::from(2_000_000_000_000u64);
-    let err = fixture
-        .parse()
-        .expect_err("token_supply above max_supply must be rejected");
-    assert_matches!(
-        err,
-        ConfigError::SupplyExceedsMax {
-            token_supply: 2_000_000_000_000,
-            max_supply: 1_000_000_000_000,
-        }
-    );
 }

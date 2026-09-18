@@ -65,3 +65,29 @@ fn the_configured_attesters_are_allowlisted_in_storage() {
         );
     }
 }
+
+/// The built faucet records every configured deposit nonce as consumed.
+#[test]
+fn the_configured_used_nonces_are_recorded_as_consumed() {
+    let fixture = Fixture::new();
+    let config = fixture.config();
+    let faucet = build_faucet(&config).expect("the dev fixture must build");
+
+    assert!(
+        !config.faucet.used_nonces.is_empty(),
+        "the fixture must exercise a non-empty nonce list",
+    );
+    for nonce in &config.faucet.used_nonces {
+        assert_eq!(
+            faucet
+                .storage()
+                .get_map_item(
+                    XReserveFaucetExtension::used_nonces_slot(),
+                    nonce.to_storage_map_key(),
+                )
+                .expect("the faucet installs the nonce registry slot"),
+            Word::from([1u32, 0, 0, 0]),
+            "the built faucet must record every configured nonce as consumed",
+        );
+    }
+}

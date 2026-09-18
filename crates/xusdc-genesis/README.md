@@ -39,7 +39,8 @@ JSON, unknown fields rejected:
     "domain": 10007,
     "min_burn_amount": 1,
     "verification_base_fee": 500,
-    "attesters": [[2, 121, "... 33 bytes total ..."]]
+    "attesters": [[2, 121, "... 33 bytes total ..."]],
+    "used_nonces": [[85, 133, "... 32 bytes total ..."]]
   },
   "output_dir": "optional/out/dir"
 }
@@ -51,6 +52,13 @@ is the faucet's 32-byte account seed as a JSON byte array; amounts are base unit
 (optional) lists the deposit attester public keys to allowlist at build time, each as a JSON
 byte array of the key's 33 compressed SEC1 bytes; when empty or absent the allowlist is seeded
 later through `set_attester` notes.
+
+`used_nonces` (optional) lists the Circle deposit nonces whose deposits the genesis state already
+honours - the balances seeded at genesis are backed by them - each as a JSON byte array of the
+nonce's 32 bytes. The faucet records them as consumed, so the relayer cannot mint them a second
+time. The nonces do not feed the id: run the tool once without them to learn the faucet id, make
+the deposits against that id, then add their nonces and run it again. The second run prints the
+same id, and its `.mac` is the one to put into genesis.
 
 `verification_base_fee` is baked into the faucet's fee schedule and MUST equal the
 `[fee_parameters] verification_base_fee` the network operator puts in the node's `genesis.toml`

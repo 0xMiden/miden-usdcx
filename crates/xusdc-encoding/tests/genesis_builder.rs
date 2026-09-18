@@ -3,15 +3,18 @@
 //!
 //! The genesis build must reuse the plain `build_account` identity (the id is derived while the
 //! fee parameters still carry the operator placeholder), then rebind the fee-asset slot to the
-//! faucet's OWN asset and promote the account to nonce one with no seed. A forgotten rebinding or
-//! a drifted id fails here.
+//! faucet's OWN asset, record the listed nonces as consumed, and promote the account to nonce one
+//! with no seed. A forgotten rebinding or a drifted id fails here.
 
 mod support;
 
 use miden_protocol::asset::AssetId;
 use miden_protocol::Felt;
 use miden_standards::account::fees::FeePolicyManager;
+use support::mint_transport::{marker, read_map_word};
 use support::{production_builder, test_fee_faucet_id, TEST_DOMAIN};
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
+use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 /// The fixed account seed, matching the byte-identity suite's anchor seed.
 const SEED: [u8; 32] = [7u8; 32];
@@ -25,7 +28,7 @@ fn genesis_build_rebinds_the_fee_asset_and_promotes_to_nonce_one() {
     let builder = production_builder(MAX_SUPPLY, TOKEN_SUPPLY, TEST_DOMAIN)
         .expect("the production builder must construct");
     let genesis = builder
-        .build_genesis_account(SEED)
+        .build_genesis_account(SEED, &[])
         .expect("the genesis build must succeed");
     let plain = builder
         .build_account(SEED)
@@ -64,5 +67,31 @@ fn genesis_build_rebinds_the_fee_asset_and_promotes_to_nonce_one() {
             .expect("the plain account installs the fee-asset slot"),
         AssetId::new_fungible(test_fee_faucet_id()).to_word(),
         "the plain build must keep the placeholder fee asset the id was ground with",
+    );
+}
+
+/// The genesis build records every listed nonce as consumed without changing the account id.
+#[test]
+fn genesis_build_records_the_used_nonces_and_keeps_the_id() {
+    let builder = production_builder(MAX_SUPPLY, TOKEN_SUPPLY, TEST_DOMAIN)
+        .expect("the production builder must construct");
+    let consumed = DepositNonce::new([0x55; 32]);
+    let genesis = builder
+        .build_genesis_account(SEED, &[consumed])
+        .expect("the genesis build must succeed");
+    let plain = builder
+        .build_account(SEED)
+        .expect("the plain build must succeed");
+
+    assert_eq!(
+        genesis.id(),
+        plain.id(),
+        "recording a consumed nonce must not change the account id",
+    );
+    let slot = XReserveFaucetExtension::used_nonces_slot();
+    assert_eq!(
+        read_map_word(&genesis, slot, consumed.to_word()).expect("the registry slot exists"),
+        marker(),
+        "a listed nonce must carry the consumed marker",
     );
 }

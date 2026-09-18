@@ -7,6 +7,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
 use serde::de::{Deserializer, Error as _};
 use serde::Deserialize;
+use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 // ROLES
 // ================================================================================================
@@ -104,6 +105,10 @@ pub struct FaucetConfig {
     /// notes.
     #[serde(default, deserialize_with = "attesters")]
     pub attesters: Vec<PublicKey>,
+    /// The Circle deposit nonces the genesis state already honours, each as a JSON array of its
+    /// 32 bytes; each is recorded as consumed at build time so the relayer cannot mint it again.
+    #[serde(default, deserialize_with = "used_nonces")]
+    pub used_nonces: Vec<DepositNonce>,
 }
 
 impl GenesisToolConfig {
@@ -143,6 +148,14 @@ fn attesters<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PublicKey
         .iter()
         .map(|bytes| PublicKey::read_from_bytes(bytes).map_err(D::Error::custom))
         .collect()
+}
+
+/// Deserializes deposit nonces from their 32 raw bytes.
+fn used_nonces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<DepositNonce>, D::Error> {
+    Ok(Vec::<[u8; 32]>::deserialize(deserializer)?
+        .into_iter()
+        .map(DepositNonce::new)
+        .collect())
 }
 
 // ERRORS

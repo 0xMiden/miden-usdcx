@@ -5,9 +5,10 @@ mod common;
 use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
+use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{attester_keys, role_id_hex, Fixture};
+use crate::common::{attester_keys, role_id_hex, Fixture, USED_NONCE_BYTES};
 
 /// The dev fixture parses, and the typed config reflects it.
 #[test]
@@ -32,6 +33,11 @@ fn the_dev_fixture_round_trips() {
             .map(|key| key.to_commitment())
             .collect::<Vec<_>>(),
         "the attester keys must decode from their configured SEC1 bytes",
+    );
+    assert_eq!(
+        config.faucet.used_nonces,
+        USED_NONCE_BYTES.map(DepositNonce::new),
+        "the used nonces must decode from their configured bytes",
     );
     for role in Role::ALL {
         assert_eq!(
@@ -81,6 +87,20 @@ fn an_absent_attester_list_is_an_empty_allowlist() {
     assert!(
         fixture.config().faucet.attesters.is_empty(),
         "an absent attesters field must parse as an empty allowlist",
+    );
+}
+
+/// An absent used-nonce list parses as no consumed nonces.
+#[test]
+fn an_absent_used_nonce_list_is_empty() {
+    let mut fixture = Fixture::new();
+    fixture.json["faucet"]
+        .as_object_mut()
+        .expect("the faucet section is an object")
+        .remove("used_nonces");
+    assert!(
+        fixture.config().faucet.used_nonces.is_empty(),
+        "an absent used_nonces field must parse as no consumed nonces",
     );
 }
 

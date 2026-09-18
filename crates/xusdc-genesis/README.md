@@ -68,6 +68,10 @@ same id, and its `.mac` is the one to put into genesis.
 `[fee_parameters] verification_base_fee` the network operator puts in the node's `genesis.toml`
 — the tool cannot enforce this.
 
+The config types also serialize back to this schema (`serde::Serialize`, unset optional fields
+omitted), so a caller that builds the config in Rust can write out exactly the config it ran,
+and the CLI reproduces the artifacts from that file.
+
 ## Node genesis (the network operator's artifact)
 
 The operator's `genesis.toml` needs only the faucet:

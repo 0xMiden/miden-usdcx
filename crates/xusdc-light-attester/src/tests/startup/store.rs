@@ -10,18 +10,17 @@ use miden_standards::note::BurnNote;
 use miden_usdcx::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 use rusqlite::params;
 
-use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
 use crate::tests::support::{scan_limits, store_version, BlockFactory};
 
 use super::{
-    config_toml, create_store_parent, faucet_account_id, load_config, ready_circle,
-    replace_setting, start, startup_anchor, write_config, TestChain,
+    create_store_parent, faucet_account_id, load_config, ready_circle, start, startup_anchor,
+    TestArgs, TestChain,
 };
 use crate::tests::support::{note, test_note, transaction};
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
-const LOCK_CHILD_CONFIG: &str = "XUSDC_ATTESTER_LOCK_CHILD_CONFIG";
+const LOCK_CHILD_STORE_PATH: &str = "XUSDC_ATTESTER_LOCK_CHILD_STORE_PATH";
 
 fn other_faucet_account_id() -> AccountId {
     AccountId::from_hex(OTHER_FAUCET_ACCOUNT_ID).unwrap()
@@ -60,23 +59,10 @@ async fn new_store_starts_at_deployment_block() {
 async fn bad_anchor_does_not_create_store() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let config_path = write_config(&tempdir, 1);
-    let bad_config = replace_setting(
-        &config_toml(1),
-        "trusted_anchor_commitment_hex",
-        &format!(
-            "trusted_anchor_commitment_hex = \"{}\"",
-            Word::empty().to_hex()
-        ),
-    );
-    std::fs::write(&config_path, bad_config).unwrap();
+    let mut args = TestArgs::new(&tempdir, 1);
+    args.replace("--trusted-anchor-commitment", Word::empty().to_hex());
 
-    let result = start(
-        Config::load(&config_path).unwrap(),
-        TestChain::anchor_only(),
-        ready_circle(),
-    )
-    .await;
+    let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
     assert!(result.is_err());
     assert!(!store_path.exists());
 
@@ -129,20 +115,13 @@ async fn existing_store_resumes_from_saved_block() {
         .unwrap();
     drop(store);
 
-    let config_path = write_config(&tempdir, 700);
-    let config = replace_setting(
-        &config_toml(700),
-        "trusted_anchor_commitment_hex",
-        &format!(
-            "trusted_anchor_commitment_hex = \"{}\"",
-            anchor.header().commitment().to_hex()
-        ),
+    let mut args = TestArgs::new(&tempdir, 700);
+    args.replace(
+        "--trusted-anchor-commitment",
+        anchor.header().commitment().to_hex(),
     );
-    std::fs::write(&config_path, config).unwrap();
     let chain = TestChain::new(factory.blocks(), scan_limits(1, 1)).0;
-    let attester = start(Config::load(&config_path).unwrap(), chain, ready_circle())
-        .await
-        .unwrap();
+    let attester = start(args.load(), chain, ready_circle()).await.unwrap();
 
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
@@ -383,13 +362,12 @@ async fn invalid_store_is_rejected() {
 
 #[tokio::test]
 async fn store_cannot_be_opened_twice() {
-    if let Some(config_path) = std::env::var_os(LOCK_CHILD_CONFIG) {
-        let result = start(
-            Config::load(Path::new(&config_path)).unwrap(),
-            TestChain::anchor_only(),
-            ready_circle(),
-        )
-        .await;
+    if let Some(store_path) = std::env::var_os(LOCK_CHILD_STORE_PATH) {
+        let tempdir = tempfile::tempdir().unwrap();
+        create_store_parent(&tempdir);
+        let mut args = TestArgs::new(&tempdir, 1);
+        args.replace("--store-path", store_path);
+        let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
         let error = result.err().unwrap();
         assert!(format!("{error:#}").contains("attester store is locked by another process"));
         return;
@@ -397,7 +375,6 @@ async fn store_cannot_be_opened_twice() {
 
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let config_path = write_config(&tempdir, 1);
     let cursor = ScanCursor {
         next_block: BlockNumber::from(1u32),
     };
@@ -411,7 +388,7 @@ async fn store_cannot_be_opened_twice() {
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("tests::startup::store::store_cannot_be_opened_twice")
-        .env(LOCK_CHILD_CONFIG, config_path)
+        .env(LOCK_CHILD_STORE_PATH, store_path)
         .status()
         .unwrap();
     drop(store);

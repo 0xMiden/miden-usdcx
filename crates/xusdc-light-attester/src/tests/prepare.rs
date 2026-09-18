@@ -8,9 +8,8 @@ use serde_json::{json, Value};
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{read_prepared, CircleClient, CircleError, PrepareBatch, RawResponse};
-use crate::config::Config;
 
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::validation::discovered_burn;
 use super::verify::serial;
 
@@ -18,9 +17,7 @@ use super::verify::serial;
 fn client() -> CircleClient {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let path = tempdir.path().join("attester.toml");
-    std::fs::write(&path, config_toml(1)).unwrap();
-    CircleClient::start(&Config::load(&path).unwrap())
+    CircleClient::start(&TestArgs::new(&tempdir, 1).load())
         .unwrap()
         .0
 }

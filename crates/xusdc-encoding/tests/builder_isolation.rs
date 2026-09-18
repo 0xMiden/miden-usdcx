@@ -21,7 +21,7 @@ fn builder_with_holders(
     XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![attest_admin])
         .pauser_holders(vec![pauser])
         .unpauser_holders(vec![unpauser])
@@ -117,7 +117,7 @@ fn build_seeds_every_member_of_a_multi_holder_role() -> Result<()> {
         [7u8; 32],
         AssetAmount::new(1_000_000).context("valid max supply")?,
         AssetAmount::ZERO,
-        vec![test_account_id(1)],
+        test_account_id(1),
         vec![test_account_id(5)],
         pausers.to_vec(),
         vec![test_account_id(3)],
@@ -137,13 +137,15 @@ fn build_seeds_every_member_of_a_multi_holder_role() -> Result<()> {
     Ok(())
 }
 
-/// A role configured with no members is rejected at construction.
+/// The operational roles may be empty at build time: a faucet with no seeded pauser composes
+/// (the role is populated later through the standard role-action note). Only `ADMIN` requires a
+/// holder, which its singular `owner` input guarantees by type.
 #[test]
-fn build_rejects_an_empty_role() -> Result<()> {
-    let err = XReserveStablecoinBuilder::builder()
+fn build_accepts_an_empty_operational_role() -> Result<()> {
+    XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
         .pauser_holders(Vec::new())
         .unpauser_holders(vec![test_account_id(3)])
@@ -151,13 +153,9 @@ fn build_rejects_an_empty_role() -> Result<()> {
         .fee_parameters(test_fee_parameters())
         .domain(TEST_DOMAIN)
         .build()
-        .expect_err("an empty role must be rejected");
-    match err {
-        XReserveStablecoinBuilderError::EmptyRole { role } => {
-            assert_eq!(role, "DOM_PAUSER", "the rejection must name the empty role");
-        }
-        other => panic!("expected EmptyRole{{DOM_PAUSER}}, got {other:?}"),
-    }
+        .context("an empty DOM_PAUSER role must construct")?
+        .build_components()
+        .map_err(|e| anyhow::anyhow!("an empty DOM_PAUSER role must compose: {e}"))?;
     Ok(())
 }
 
@@ -167,7 +165,7 @@ fn build_rejects_a_duplicate_role_member() -> Result<()> {
     let err = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
         .pauser_holders(vec![test_account_id(2), test_account_id(2)])
         .unpauser_holders(vec![test_account_id(3)])
@@ -192,7 +190,7 @@ fn build_rejects_a_secondary_pauser_colliding_with_another_role() -> Result<()> 
     let err = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
         .pauser_holders(vec![test_account_id(2), test_account_id(3)])
         .unpauser_holders(vec![test_account_id(3)])

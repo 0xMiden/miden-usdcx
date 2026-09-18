@@ -108,7 +108,7 @@ fn account_via_crate_root_constructor() -> Account {
         SEED,
         AssetAmount::new(MAX_SUPPLY).expect("max supply is a valid asset amount"),
         AssetAmount::new(TOKEN_SUPPLY).expect("token supply is a valid asset amount"),
-        vec![test_account_id(1)],
+        test_account_id(1),
         vec![test_account_id(1)],
         vec![test_account_id(2)],
         vec![test_account_id(3)],

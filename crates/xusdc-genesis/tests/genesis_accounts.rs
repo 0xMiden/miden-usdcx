@@ -100,8 +100,8 @@ fn a_multi_holder_role_builds_with_every_member_seeded() {
 
     let extra_pauser = "0x2bb51b585b2a98916aebb827cc5899";
     let mut fixture = Fixture::new();
-    let existing = fixture.json["accounts"]["pauser"][0].clone();
-    fixture.json["accounts"]["pauser"] = serde_json::Value::from(vec![
+    let existing = fixture.json["accounts"]["pausers"][0].clone();
+    fixture.json["accounts"]["pausers"] = serde_json::Value::from(vec![
         existing
             .as_str()
             .expect("the fixture pauser is a string")
@@ -112,7 +112,7 @@ fn a_multi_holder_role_builds_with_every_member_seeded() {
     let faucet = build_faucet(&config).expect("the two-pauser fixture must build");
 
     let role = RoleSymbol::new("DOM_PAUSER").expect("DOM_PAUSER is a valid role symbol");
-    for pauser in &config.accounts.pauser {
+    for pauser in &config.accounts.pausers {
         let key = Word::from([
             Felt::ZERO,
             Felt::from(&role),
@@ -132,17 +132,18 @@ fn a_multi_holder_role_builds_with_every_member_seeded() {
             "every configured pauser must be seeded as a DOM_PAUSER member",
         );
     }
-    let _: AccountId = config.accounts.pauser[1];
+    let _: AccountId = config.accounts.pausers[1];
 }
 
-/// A role configured with an empty list is refused by the builder with the role named.
+/// An operational role configured with an empty list (or absent) still builds: the role is
+/// populated later through the standard role-action note. Only `owner` is required.
 #[test]
-fn an_empty_role_is_rejected_at_build() {
+fn an_empty_operational_role_builds() {
     let mut fixture = Fixture::new();
-    fixture.json["accounts"]["pauser"] = serde_json::Value::from(Vec::<String>::new());
-    let err = build_faucet(&fixture.config()).expect_err("an empty role must not build");
-    assert!(
-        format!("{err:#}").contains("needs at least one seeded member"),
-        "the error must name the empty-role cause, got: {err:#}",
-    );
+    fixture.json["accounts"]["pausers"] = serde_json::Value::from(Vec::<String>::new());
+    fixture.json["accounts"]
+        .as_object_mut()
+        .expect("the accounts section is an object")
+        .remove("unpausers");
+    build_faucet(&fixture.config()).expect("empty and absent operational roles must build");
 }

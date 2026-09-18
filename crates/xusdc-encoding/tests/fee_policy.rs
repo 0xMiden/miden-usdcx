@@ -83,7 +83,7 @@ fn production_builder_with_supply(token_supply: AssetAmount) -> Result<XReserveS
     Ok(XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(MAX_SUPPLY).expect("the test max supply is valid"))
         .token_supply(token_supply)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(1)])
         .pauser_holders(vec![test_account_id(2)])
         .unpauser_holders(vec![test_account_id(3)])

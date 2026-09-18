@@ -44,7 +44,7 @@ fn the_dev_fixture_round_trips() {
             members.len(),
             1,
             "the {} fixture seeds one holder",
-            role.as_str(),
+            role.as_str()
         );
         assert_eq!(
             members[0].to_hex(),
@@ -61,11 +61,10 @@ fn a_bech32_account_id_is_accepted() {
     let hex = role_id_hex(Role::Owner);
     let id = AccountId::from_hex(hex).expect("the fixture id is valid hex");
     let mut fixture = Fixture::new();
-    fixture.json["accounts"]["owner"] =
-        serde_json::Value::from(vec![id.to_bech32(NetworkId::Testnet)]);
+    fixture.json["accounts"]["owner"] = serde_json::Value::from(id.to_bech32(NetworkId::Testnet));
     assert_eq!(
         fixture.config().accounts.owner,
-        vec![id],
+        id,
         "the bech32 form must decode to the same id as the hex form",
     );
 }
@@ -75,7 +74,7 @@ fn a_bech32_account_id_is_accepted() {
 fn a_malformed_account_id_is_rejected() {
     for bad_id in ["0xnothex", "definitely-not-bech32"] {
         let mut fixture = Fixture::new();
-        fixture.json["accounts"]["owner"] = serde_json::Value::from(vec![bad_id]);
+        fixture.json["accounts"]["owner"] = serde_json::Value::from(bad_id);
         let err = fixture
             .parse()
             .expect_err("a malformed account id must be rejected");

@@ -50,8 +50,6 @@ pub enum XReserveStablecoinBuilderError {
     /// no other role, or a single signer gains a high-consequence power. `collides_with` names
     /// the offending role.
     PauserNotIsolated { collides_with: &'static str },
-    /// A role was configured with no members; every seeded role needs at least one holder.
-    EmptyRole { role: &'static str },
     /// A role lists the same member twice; each holder appears once per role.
     DuplicateRoleMember { role: &'static str },
     /// The build-seeded attester allowlist lists a key twice. Carries the storage-map error.
@@ -103,9 +101,6 @@ impl fmt::Display for XReserveStablecoinBuilderError {
                 f,
                 "a DOM_PAUSER holder must hold no other role, but one collides with {collides_with}"
             ),
-            Self::EmptyRole { role } => {
-                write!(f, "the {role} role needs at least one seeded member")
-            }
             Self::DuplicateRoleMember { role } => {
                 write!(f, "the {role} role lists the same member twice")
             }

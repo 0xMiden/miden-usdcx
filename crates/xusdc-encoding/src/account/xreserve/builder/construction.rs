@@ -254,7 +254,7 @@ pub fn build_faucet_account(
     init_seed: [u8; 32],
     max_supply: AssetAmount,
     token_supply: AssetAmount,
-    owners: Vec<AccountId>,
+    owner: AccountId,
     attest_admin_holders: Vec<AccountId>,
     pauser_holders: Vec<AccountId>,
     unpauser_holders: Vec<AccountId>,
@@ -265,7 +265,7 @@ pub fn build_faucet_account(
     XReserveStablecoinBuilder::builder()
         .max_supply(max_supply)
         .token_supply(token_supply)
-        .owners(owners)
+        .owner(owner)
         .attest_admin_holders(attest_admin_holders)
         .pauser_holders(pauser_holders)
         .unpauser_holders(unpauser_holders)

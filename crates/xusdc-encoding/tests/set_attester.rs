@@ -181,7 +181,7 @@ async fn set_attester_requires_attest_admin_not_admin() -> Result<()> {
     let components = XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::new(1_000_000)?)
         .token_supply(AssetAmount::ZERO)
-        .owners(vec![test_account_id(1)])
+        .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
         .pauser_holders(vec![test_account_id(2)])
         .unpauser_holders(vec![test_account_id(3)])

@@ -57,10 +57,12 @@ impl Fixture {
     pub fn new() -> Self {
         let mut accounts = serde_json::Map::new();
         for role in Role::ALL {
-            accounts.insert(
-                role.as_str().to_string(),
-                serde_json::Value::from(vec![role_id_hex(role)]),
-            );
+            let value = if role == Role::Owner {
+                serde_json::Value::from(role_id_hex(role))
+            } else {
+                serde_json::Value::from(vec![role_id_hex(role)])
+            };
+            accounts.insert(role.as_str().to_string(), value);
         }
         let json = serde_json::json!({
             "accounts": accounts,

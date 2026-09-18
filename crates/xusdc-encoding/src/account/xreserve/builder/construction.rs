@@ -254,22 +254,22 @@ pub fn build_faucet_account(
     init_seed: [u8; 32],
     max_supply: AssetAmount,
     token_supply: AssetAmount,
-    owner: AccountId,
-    attest_admin_holder: AccountId,
-    pauser_holder: AccountId,
-    unpauser_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    owners: Vec<AccountId>,
+    attest_admin_holders: Vec<AccountId>,
+    pauser_holders: Vec<AccountId>,
+    unpauser_holders: Vec<AccountId>,
+    blocklist_manager_holders: Vec<AccountId>,
     fee_parameters: FeeParameters,
     domain: u32,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
         .max_supply(max_supply)
         .token_supply(token_supply)
-        .owner(owner)
-        .attest_admin_holder(attest_admin_holder)
-        .pauser_holder(pauser_holder)
-        .unpauser_holder(unpauser_holder)
-        .blocklist_manager_holder(blocklist_manager_holder)
+        .owners(owners)
+        .attest_admin_holders(attest_admin_holders)
+        .pauser_holders(pauser_holders)
+        .unpauser_holders(unpauser_holders)
+        .blocklist_manager_holders(blocklist_manager_holders)
         .fee_parameters(fee_parameters)
         .domain(domain)
         .build()?

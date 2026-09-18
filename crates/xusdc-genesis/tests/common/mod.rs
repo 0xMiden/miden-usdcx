@@ -59,7 +59,7 @@ impl Fixture {
         for role in Role::ALL {
             accounts.insert(
                 role.as_str().to_string(),
-                serde_json::Value::from(role_id_hex(role)),
+                serde_json::Value::from(vec![role_id_hex(role)]),
             );
         }
         let json = serde_json::json!({

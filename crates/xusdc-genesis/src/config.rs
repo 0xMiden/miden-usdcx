@@ -59,31 +59,32 @@ pub struct GenesisToolConfig {
     pub output_dir: Option<PathBuf>,
 }
 
-/// The role holders' account ids, each given as `0x`-prefixed hex or as bech32.
+/// The role holders' account ids: each role takes a list of ids (one or more holders), each id
+/// given as `0x`-prefixed hex or as bech32.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleAccounts {
-    #[serde(deserialize_with = "account_id")]
-    pub owner: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub attest_admin: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub pauser: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub unpauser: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub blocklist_manager: AccountId,
+    #[serde(deserialize_with = "account_ids")]
+    pub owner: Vec<AccountId>,
+    #[serde(deserialize_with = "account_ids")]
+    pub attest_admin: Vec<AccountId>,
+    #[serde(deserialize_with = "account_ids")]
+    pub pauser: Vec<AccountId>,
+    #[serde(deserialize_with = "account_ids")]
+    pub unpauser: Vec<AccountId>,
+    #[serde(deserialize_with = "account_ids")]
+    pub blocklist_manager: Vec<AccountId>,
 }
 
 impl RoleAccounts {
-    /// Returns the account id configured for `role`.
-    pub fn get(&self, role: Role) -> AccountId {
+    /// Returns the account ids configured for `role`.
+    pub fn get(&self, role: Role) -> &[AccountId] {
         match role {
-            Role::Owner => self.owner,
-            Role::AttestAdmin => self.attest_admin,
-            Role::Pauser => self.pauser,
-            Role::Unpauser => self.unpauser,
-            Role::BlocklistManager => self.blocklist_manager,
+            Role::Owner => &self.owner,
+            Role::AttestAdmin => &self.attest_admin,
+            Role::Pauser => &self.pauser,
+            Role::Unpauser => &self.unpauser,
+            Role::BlocklistManager => &self.blocklist_manager,
         }
     }
 }
@@ -135,12 +136,16 @@ fn asset_amount<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AssetAmoun
     AssetAmount::new(u64::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
-/// Deserializes an account id from its hex or bech32 string.
-fn account_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AccountId, D::Error> {
-    let text = String::deserialize(deserializer)?;
-    AccountId::parse(&text)
-        .map(|(id, _network)| id)
-        .map_err(D::Error::custom)
+/// Deserializes a list of account ids from their hex or bech32 strings.
+fn account_ids<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<AccountId>, D::Error> {
+    Vec::<String>::deserialize(deserializer)?
+        .iter()
+        .map(|text| {
+            AccountId::parse(text)
+                .map(|(id, _network)| id)
+                .map_err(D::Error::custom)
+        })
+        .collect()
 }
 
 /// Deserializes attester keys from their 33-byte compressed SEC1 form.

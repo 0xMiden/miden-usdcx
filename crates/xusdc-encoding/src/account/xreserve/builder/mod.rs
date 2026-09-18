@@ -117,23 +117,23 @@ pub const USDCX_DECIMALS: u8 = 6;
 #[derive(Debug)]
 pub struct XReserveStablecoinBuilder {
     faucet: FungibleFaucet,
-    /// The administrator: seeded as the sole member of the built-in `ADMIN` role, which is what
+    /// The administrators: seeded as the members of the built-in `ADMIN` role, which is what
     /// gates every unmapped authority-gated procedure (the
     /// stock `set_min_burn_amount` / stock `set_max_supply` / the policy setters) under
-    /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating it is a
-    /// grant and a revoke of `ADMIN` through the standard role-action note.
-    owner: AccountId,
-    /// The seeded `ATTEST_ADMIN` role member, authorized to call `set_attester`.
-    attest_admin_holder: AccountId,
-    /// The seeded `DOM_PAUSER` role member, authorized to pause the faucet.
-    pauser_holder: AccountId,
-    /// The seeded `DOM_UNPAUSER` role member, authorized to unpause the faucet.
-    unpauser_holder: AccountId,
-    /// The seeded `BLK_MANAGER` role member — the EXTERNAL entity that administers the transfer
-    /// blocklist (block/unblock) and holds NO other admin capability. Its concrete
-    /// account id is supplied at deploy time; the built-in `ADMIN` rotates/revokes it via
+    /// `Authority::RbacControlled`. It is the account's ONLY authority handle; rotating a member
+    /// is a grant and a revoke of `ADMIN` through the standard role-action note.
+    owners: Vec<AccountId>,
+    /// The seeded `ATTEST_ADMIN` role members, authorized to call `set_attester`.
+    attest_admin_holders: Vec<AccountId>,
+    /// The seeded `DOM_PAUSER` role members, authorized to pause the faucet.
+    pauser_holders: Vec<AccountId>,
+    /// The seeded `DOM_UNPAUSER` role members, authorized to unpause the faucet.
+    unpauser_holders: Vec<AccountId>,
+    /// The seeded `BLK_MANAGER` role members — the EXTERNAL entities that administer the transfer
+    /// blocklist (block/unblock) and hold NO other admin capability. Their concrete
+    /// account ids are supplied at deploy time; the built-in `ADMIN` rotates/revokes them via
     /// the standard role-action note.
-    blocklist_manager_holder: AccountId,
+    blocklist_manager_holders: Vec<AccountId>,
     /// Parameters used to price notes and identify the network fee asset.
     fee_parameters: FeeParameters,
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
@@ -180,11 +180,11 @@ impl XReserveStablecoinBuilder {
     pub fn new(
         max_supply: AssetAmount,
         token_supply: AssetAmount,
-        owner: AccountId,
-        attest_admin_holder: AccountId,
-        pauser_holder: AccountId,
-        unpauser_holder: AccountId,
-        blocklist_manager_holder: AccountId,
+        owners: Vec<AccountId>,
+        attest_admin_holders: Vec<AccountId>,
+        pauser_holders: Vec<AccountId>,
+        unpauser_holders: Vec<AccountId>,
+        blocklist_manager_holders: Vec<AccountId>,
         fee_parameters: FeeParameters,
         domain: u32,
         #[builder(default)] attesters: Vec<PublicKey>,
@@ -201,13 +201,28 @@ impl XReserveStablecoinBuilder {
         }
         let faucet_extension = XReserveFaucetExtension::new(domain, &attesters)
             .map_err(XReserveStablecoinBuilderError::AttesterAllowlist)?;
+        for (role, members) in [
+            ("ADMIN", &owners),
+            ("ATTEST_ADMIN", &attest_admin_holders),
+            ("DOM_PAUSER", &pauser_holders),
+            ("DOM_UNPAUSER", &unpauser_holders),
+            ("BLK_MANAGER", &blocklist_manager_holders),
+        ] {
+            if members.is_empty() {
+                return Err(XReserveStablecoinBuilderError::EmptyRole { role });
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if !members.iter().all(|member| seen.insert(member)) {
+                return Err(XReserveStablecoinBuilderError::DuplicateRoleMember { role });
+            }
+        }
         Ok(Self {
             faucet: build_usdcx_faucet(max_supply, token_supply)?,
-            owner,
-            attest_admin_holder,
-            pauser_holder,
-            unpauser_holder,
-            blocklist_manager_holder,
+            owners,
+            attest_admin_holders,
+            pauser_holders,
+            unpauser_holders,
+            blocklist_manager_holders,
             fee_parameters,
             min_burn_amount,
             faucet_extension,
@@ -228,50 +243,31 @@ impl XReserveStablecoinBuilder {
     pub fn build_components(
         &self,
     ) -> Result<Vec<AccountComponent>, XReserveStablecoinBuilderError> {
-        // BLK_MANAGER must not collide with any other role holder.
-        if self.blocklist_manager_holder == self.owner {
-            return Err(
-                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "ADMIN",
-                },
-            );
+        let overlaps = |left: &[AccountId], right: &[AccountId]| {
+            left.iter().any(|member| right.contains(member))
+        };
+        // No BLK_MANAGER member may hold any other role.
+        for (collides_with, holders) in [
+            ("ADMIN", &self.owners),
+            ("ATTEST_ADMIN", &self.attest_admin_holders),
+            ("DOM_PAUSER", &self.pauser_holders),
+            ("DOM_UNPAUSER", &self.unpauser_holders),
+        ] {
+            if overlaps(&self.blocklist_manager_holders, holders) {
+                return Err(
+                    XReserveStablecoinBuilderError::BlocklistManagerNotIsolated { collides_with },
+                );
+            }
         }
-        if self.blocklist_manager_holder == self.attest_admin_holder {
-            return Err(
-                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "ATTEST_ADMIN",
-                },
-            );
-        }
-        if self.blocklist_manager_holder == self.pauser_holder {
-            return Err(
-                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "DOM_PAUSER",
-                },
-            );
-        }
-        if self.blocklist_manager_holder == self.unpauser_holder {
-            return Err(
-                XReserveStablecoinBuilderError::BlocklistManagerNotIsolated {
-                    collides_with: "DOM_UNPAUSER",
-                },
-            );
-        }
-        // DOM_PAUSER must not hold another role; BLK_MANAGER collisions were checked above.
-        if self.pauser_holder == self.owner {
-            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
-                collides_with: "ADMIN",
-            });
-        }
-        if self.pauser_holder == self.attest_admin_holder {
-            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
-                collides_with: "ATTEST_ADMIN",
-            });
-        }
-        if self.pauser_holder == self.unpauser_holder {
-            return Err(XReserveStablecoinBuilderError::PauserNotIsolated {
-                collides_with: "DOM_UNPAUSER",
-            });
+        // No DOM_PAUSER member may hold another role; BLK_MANAGER collisions were checked above.
+        for (collides_with, holders) in [
+            ("ADMIN", &self.owners),
+            ("ATTEST_ADMIN", &self.attest_admin_holders),
+            ("DOM_UNPAUSER", &self.unpauser_holders),
+        ] {
+            if overlaps(&self.pauser_holders, holders) {
+                return Err(XReserveStablecoinBuilderError::PauserNotIsolated { collides_with });
+            }
         }
         let xreserve_component = AccountComponent::from(self.faucet_extension.clone());
         let burn_policy_component = Self::burn_policy_component();
@@ -308,25 +304,25 @@ impl XReserveStablecoinBuilder {
         components.push(BlocklistManager.into());
         components.push(ConstantFeeManager::for_basic_constant_fee_policy().into());
         components.push(seeded_dom_roles_rbac(
-            self.owner,
-            self.attest_admin_holder,
-            self.pauser_holder,
-            self.unpauser_holder,
-            self.blocklist_manager_holder,
+            &self.owners,
+            &self.attest_admin_holders,
+            &self.pauser_holders,
+            &self.unpauser_holders,
+            &self.blocklist_manager_holders,
         ));
         components.push(XReserveAdminAuthority::new().into());
         Ok(components)
     }
 }
 
-/// Seeds all five roles with one member each and direct `ADMIN` administration.
+/// Seeds all five roles with their configured members and direct `ADMIN` administration.
 /// Construction failures are invariants, so this mirrors the stock `.expect()` pattern.
 fn seeded_dom_roles_rbac(
-    owner: AccountId,
-    attest_admin_holder: AccountId,
-    pauser_holder: AccountId,
-    unpauser_holder: AccountId,
-    blocklist_manager_holder: AccountId,
+    owners: &[AccountId],
+    attest_admin_holders: &[AccountId],
+    pauser_holders: &[AccountId],
+    unpauser_holders: &[AccountId],
+    blocklist_manager_holders: &[AccountId],
 ) -> AccountComponent {
     let pauser =
         RoleSymbol::new(DOM_PAUSER_ROLE).expect("DOM_PAUSER is a fixed valid role symbol (≤12)");
@@ -339,11 +335,11 @@ fn seeded_dom_roles_rbac(
     let admin = RoleBasedAccessControl::admin_role();
 
     RoleBasedAccessControl::builder()
-        .role(RoleConfig::new(pauser).with_member(pauser_holder))
-        .role(RoleConfig::new(attest_admin).with_member(attest_admin_holder))
-        .role(RoleConfig::new(unpauser).with_member(unpauser_holder))
-        .role(RoleConfig::new(admin).with_member(owner))
-        .role(RoleConfig::new(blk_manager).with_member(blocklist_manager_holder))
+        .role(RoleConfig::new(pauser).with_members(pauser_holders.iter().copied()))
+        .role(RoleConfig::new(attest_admin).with_members(attest_admin_holders.iter().copied()))
+        .role(RoleConfig::new(unpauser).with_members(unpauser_holders.iter().copied()))
+        .role(RoleConfig::new(admin).with_members(owners.iter().copied()))
+        .role(RoleConfig::new(blk_manager).with_members(blocklist_manager_holders.iter().copied()))
         .build()
         .expect("the seeded DOM-roles RBAC configuration should be valid")
         .into()

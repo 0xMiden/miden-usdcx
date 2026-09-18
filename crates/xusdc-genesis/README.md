@@ -26,11 +26,11 @@ JSON, unknown fields rejected:
 ```json
 {
   "accounts": {
-    "owner":             "0x6aeeb7cba03918516870e95568b77b",
-    "attest_admin":      "0x... or bech32",
-    "pauser":            "0x... or bech32",
-    "unpauser":          "0x... or bech32",
-    "blocklist_manager": "0x... or bech32"
+    "owner":             ["0x6aeeb7cba03918516870e95568b77b"],
+    "attest_admin":      ["0x... or bech32"],
+    "pauser":            ["0x... or bech32", "0x... several holders allowed"],
+    "unpauser":          ["0x... or bech32"],
+    "blocklist_manager": ["0x... or bech32"]
   },
   "faucet": {
     "seed": [7, 7, "... 32 bytes total ..."],
@@ -45,7 +45,8 @@ JSON, unknown fields rejected:
 }
 ```
 
-`accounts.<role>` is that role's account id, as `0x`-prefixed hex or as bech32. `faucet.seed`
+`accounts.<role>` lists that role's holders — one or more account ids, each as `0x`-prefixed hex
+or as bech32; every listed holder is seeded as a member of the role. `faucet.seed`
 is the faucet's 32-byte account seed as a JSON byte array; `token_supply` is the initial supply
 in base units (6 decimals); the supply cap is not configurable and is set to the maximum asset
 amount; `domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the

@@ -91,3 +91,58 @@ fn the_configured_used_nonces_are_recorded_as_consumed() {
         );
     }
 }
+
+/// A role configured with several holders parses and builds: every listed pauser is seeded as a
+/// member of the built faucet's DOM_PAUSER role.
+#[test]
+fn a_multi_holder_role_builds_with_every_member_seeded() {
+    use miden_protocol::account::{AccountId, RoleSymbol};
+
+    let extra_pauser = "0x2bb51b585b2a98916aebb827cc5899";
+    let mut fixture = Fixture::new();
+    let existing = fixture.json["accounts"]["pauser"][0].clone();
+    fixture.json["accounts"]["pauser"] = serde_json::Value::from(vec![
+        existing
+            .as_str()
+            .expect("the fixture pauser is a string")
+            .to_string(),
+        extra_pauser.to_string(),
+    ]);
+    let config = fixture.config();
+    let faucet = build_faucet(&config).expect("the two-pauser fixture must build");
+
+    let role = RoleSymbol::new("DOM_PAUSER").expect("DOM_PAUSER is a valid role symbol");
+    for pauser in &config.accounts.pauser {
+        let key = Word::from([
+            Felt::ZERO,
+            Felt::from(&role),
+            pauser.suffix(),
+            pauser.prefix().as_felt(),
+        ]);
+        assert_eq!(
+            faucet
+                .storage()
+                .get_map_item(
+                    miden_standards::account::access::RoleBasedAccessControl::role_membership_slot(
+                    ),
+                    StorageMapKey::new(key),
+                )
+                .expect("the faucet installs the role-membership slot"),
+            Word::from([1u32, 0, 0, 0]),
+            "every configured pauser must be seeded as a DOM_PAUSER member",
+        );
+    }
+    let _: AccountId = config.accounts.pauser[1];
+}
+
+/// A role configured with an empty list is refused by the builder with the role named.
+#[test]
+fn an_empty_role_is_rejected_at_build() {
+    let mut fixture = Fixture::new();
+    fixture.json["accounts"]["pauser"] = serde_json::Value::from(Vec::<String>::new());
+    let err = build_faucet(&fixture.config()).expect_err("an empty role must not build");
+    assert!(
+        format!("{err:#}").contains("needs at least one seeded member"),
+        "the error must name the empty-role cause, got: {err:#}",
+    );
+}

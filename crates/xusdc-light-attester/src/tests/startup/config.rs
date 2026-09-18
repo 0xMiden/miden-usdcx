@@ -1,7 +1,7 @@
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::Config;
+use crate::config::{Config, MidenNetwork};
 
 use super::{config_toml, create_store_parent, startup_anchor, CONFIG_FILE};
 
@@ -31,6 +31,36 @@ fn assert_config_error(config: &str, expected_error: &str) {
     std::fs::write(&path, config).unwrap();
     let error = Config::load(&path).expect_err("invalid config must be rejected");
     assert_eq!(error.to_string(), expected_error);
+}
+
+#[test]
+fn miden_network_is_required_and_explicit() {
+    let tempdir = tempfile::tempdir().unwrap();
+    create_store_parent(&tempdir);
+    let path = tempdir.path().join(CONFIG_FILE);
+    let devnet = config_toml(1);
+
+    std::fs::write(&path, &devnet).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().miden_network(),
+        MidenNetwork::Devnet
+    );
+
+    let testnet = replace_setting(&devnet, "miden_network", "miden_network = \"testnet\"");
+    std::fs::write(&path, testnet).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().miden_network(),
+        MidenNetwork::Testnet
+    );
+
+    assert_config_error(
+        &remove_setting(&devnet, "miden_network"),
+        "failed to parse config",
+    );
+    assert_config_error(
+        &replace_setting(&devnet, "miden_network", "miden_network = \"mainnet\""),
+        "failed to parse config",
+    );
 }
 
 #[test]

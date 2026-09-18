@@ -34,7 +34,7 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
         .context("min_burn_amount is not a valid asset amount")?;
     XReserveStablecoinBuilder::builder()
         .max_supply(AssetAmount::MAX)
-        .token_supply(AssetAmount::new(faucet_config.token_supply).context("invalid token_supply")?)
+        .token_supply(faucet_config.token_supply)
         .owner(config.accounts.owner)
         .attest_admin_holder(config.accounts.attest_admin)
         .pauser_holder(config.accounts.pauser)

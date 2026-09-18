@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
 use serde::de::{Deserializer, Error as _};
@@ -94,7 +95,10 @@ impl RoleAccounts {
 pub struct FaucetConfig {
     /// The faucet's 32-byte account seed, as a JSON array of bytes.
     pub seed: [u8; 32],
-    pub token_supply: u64,
+    /// The initial supply, validated as an [`AssetAmount`] at parse time so it cannot exceed
+    /// the hardcoded supply cap.
+    #[serde(deserialize_with = "asset_amount")]
+    pub token_supply: AssetAmount,
     /// The Circle domain id.
     pub domain: u32,
     pub min_burn_amount: Option<u64>,
@@ -124,6 +128,11 @@ impl GenesisToolConfig {
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         serde_json::from_str(text).map_err(ConfigError::Parse)
     }
+}
+
+/// Deserializes an asset amount from its base-unit u64, rejecting out-of-range values.
+fn asset_amount<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AssetAmount, D::Error> {
+    AssetAmount::new(u64::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
 /// Deserializes an account id from its hex or bech32 string.

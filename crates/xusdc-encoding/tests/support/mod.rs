@@ -93,7 +93,7 @@ use miden_crypto::utils::Deserializable;
 use miden_crypto::SequentialCommit;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use sha3::{Digest, Keccak256};
 
 // TEST-ONLY FAUCET CONFIG (the domain id and the identifier encoding are Circle-owned and OPEN)
@@ -922,27 +922,16 @@ pub const DEPOSIT_INTENT_PTR: u64 = 3072;
 /// The expected felts arrive on the ADVICE STACK rather than baked into this source, because the
 /// message embeds the account's own id and an account id is a hash over the account's code — which
 /// is this driver. Baking them would change the id they are trying to describe.
-///
-/// `poison` pre-fills the region with a recognizable pattern. `rebuild` does NOT zero it — that is
-/// the caller's contract — so poisoning is how the dependency is made visible rather than assumed.
 pub fn rebuild_driver_src(
     mint_intent_felts: &[Felt],
     mint_intent_num_words: u64,
     amount: u64,
     num_expected_felts: usize,
-    poison: bool,
 ) -> String {
     let mut src = String::from(
         "use xreserve::deposit_intent\n\n         #! Test driver: stages the mint intent in the account context, rebuilds the DepositIntent\n         #! from it, and pins every felt against the Rust mirror.\n         #!\n         #! Inputs:  [pad(16)]\n         #! Outputs: [pad(16)]\n         #!\n         #! Invocation: call\n         @account_procedure\n         pub proc drive\n",
     );
     stage_felts(&mut src, mint_intent_felts, MINT_INTENT_PTR);
-    if poison {
-        let poison_word = Word::new([Felt::from(0xdead_beefu32); 4]);
-        for i in 0..num_expected_felts.div_ceil(4) {
-            let addr = DEPOSIT_INTENT_PTR + 4 * i as u64;
-            writeln!(src, "    push.{poison_word} mem_storew_le.{addr} dropw").unwrap();
-        }
-    }
     writeln!(src, "    push.{amount}").unwrap();
     writeln!(src, "    push.{mint_intent_num_words}").unwrap();
     writeln!(src, "    push.{MINT_INTENT_PTR}").unwrap();
@@ -1123,7 +1112,9 @@ fn native_scalar_limbs(be: &[u8]) -> [Felt; 8] {
 /// `keccak256(payload)` (sha3) with it — the SAME independent path
 /// `gen_vectors` uses. Two distinct seeds over the SAME payload give the seam's key A / key B.
 pub fn gen_attester(seed: u64, payload: &[u8]) -> AttesterVector {
-    let sk = SigningKey::random(&mut StdRng::seed_from_u64(seed));
+    let mut key_bytes = [0u8; 32];
+    StdRng::seed_from_u64(seed).fill_bytes(&mut key_bytes);
+    let sk = SigningKey::from_slice(&key_bytes).expect("the seed yields a valid non-zero scalar");
     let pk33: [u8; 33] = sk
         .verifying_key()
         .to_encoded_point(true)

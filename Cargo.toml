@@ -55,7 +55,7 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 # wide Circle request shapes and must not drift onto a different builder.
 bon = "3"
 sha3 = "0.10"
-rand = "0.8"
+rand = "0.10"
 
 # Circle-facing HTTP (the relayer's `circle::client` info/attestation-fetch drivers) + the offline
 # mock Circle server its contract tests run against. Both are pinned here, not in the crate, so the

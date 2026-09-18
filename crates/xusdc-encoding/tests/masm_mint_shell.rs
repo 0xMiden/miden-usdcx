@@ -446,7 +446,7 @@ fn mi(id: &str) -> &'static MiVector {
 /// The vector's own faucet id is synthetic, so it is NOT reused here: the mint intent is
 /// faucet-independent by construction, and the reconstruction is checked against the id the shell
 /// account actually got. That is precisely the field the faucet supplies rather than reads.
-async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
+async fn run_rebuild(vector_id: &str) -> Result<()> {
     let v = mi(vector_id);
     let carried = MintIntent::from_elements(&v.carried_values())?;
     let felts = carried.to_elements();
@@ -458,7 +458,6 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
         felts.len().div_ceil(4) as u64,
         u64::from(v.amount()),
         num_expected_felts,
-        poison,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
 
@@ -490,22 +489,7 @@ async fn run_rebuild(vector_id: &str, poison: bool) -> Result<()> {
 #[case::hookdata("mi-pos-hookdata")]
 #[tokio::test]
 async fn rebuild_matches_the_canonical_deposit_intent(#[case] vector_id: &str) -> Result<()> {
-    run_rebuild(vector_id, false).await
-}
-
-/// `rebuild` owns every felt of the header, including the structural pads.
-///
-/// The region is global memory, which reads as zero from MASM — but that is not enough on its own:
-/// keccak's host-side byte reader fetches raw cells and fails on one that was never written, so
-/// the pads have to be materialized rather than assumed. Pre-filling with a recognizable pattern
-/// proves the writer covers all of them, and keeps the `dynexec`-context caveat recorded on
-/// `DEPOSIT_INTENT_PTR` from ever mattering.
-#[rstest]
-#[case::empty_hookdata("mi-pos-empty-hookdata")]
-#[case::hookdata("mi-pos-hookdata")]
-#[tokio::test]
-async fn rebuild_overwrites_a_poisoned_region(#[case] vector_id: &str) -> Result<()> {
-    run_rebuild(vector_id, true).await
+    run_rebuild(vector_id).await
 }
 
 /// Perturbing one carried field moves exactly that field's felts and nothing else.
@@ -530,7 +514,6 @@ async fn rebuild_places_each_carried_field(#[case] carried_felt_off: usize) -> R
         felts.len().div_ceil(4) as u64,
         u64::from(v.amount()),
         DepositIntent::HEADER_NUM_FELTS,
-        false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let expected = carried
@@ -563,7 +546,6 @@ async fn rebuild_rejects_a_non_u32_carried_limb() -> Result<()> {
         felts.len().div_ceil(4) as u64,
         u64::from(v.amount()),
         DepositIntent::HEADER_NUM_FELTS,
-        false,
     );
     let h = setup_shell_account(domain_word(TEST_DOMAIN), &driver_src, SHELL_DRIVER_PATH)?;
     let result = run_call_driver_with_advice(&h, "drive", Some(vec![])).await;

@@ -7,11 +7,13 @@
 
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageSlot,
-    StorageSlotName,
+    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap,
+    StorageMapKey, StorageSlot, StorageSlotName,
 };
 use miden_protocol::asset::{AssetAmount, AssetCallbacks, TokenSymbol};
 use miden_protocol::block::FeeParameters;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
+use miden_protocol::errors::StorageMapError;
 use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::vm::Package;
 use miden_protocol::Word;
@@ -29,6 +31,9 @@ use super::{
 /// neither of which depends on this string (the byte-identity suite proves it).
 const XRESERVE_COMPONENT_LABEL: &str = "xusdc-xreserve";
 const BURN_POLICY_COMPONENT_LABEL: &str = "xusdc-burn-policy";
+
+/// The allowlist row the attestation check accepts (the MASM `ATTESTER_ENABLED_MARKER`).
+const ATTESTER_ENABLED_MARKER: [u32; 4] = [1, 0, 0, 0];
 
 /// What the faucet adds on top of the stock fungible faucet, assembled at build time from
 /// `asm/components/faucet_extension/`: the attestation mint policy and the attester allowlist
@@ -74,14 +79,28 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
 /// The xUSDC faucet's extension of the stock [`FungibleFaucet`] component:
 /// - the attestation-gated mint policy
 /// - the attester administration
+#[derive(Debug, Clone)]
 pub struct XReserveFaucetExtension {
     domain: u32,
+    attesters: StorageMap,
 }
 
 impl XReserveFaucetExtension {
-    /// Instantiates a new [`XReserveFaucetExtension`].
-    pub fn new(domain: u32) -> Self {
-        Self { domain }
+    /// Instantiates a new [`XReserveFaucetExtension`] for `domain` with every key in `attesters`
+    /// allowlisted under its [`PublicKey::to_commitment`], so the faucet accepts their
+    /// attestations from its first block.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageMapError::DuplicateKey`] if a key is listed twice.
+    pub fn new(domain: u32, attesters: &[PublicKey]) -> Result<Self, StorageMapError> {
+        let attesters = StorageMap::with_entries(attesters.iter().map(|key| {
+            (
+                StorageMapKey::new(key.to_commitment()),
+                Word::from(ATTESTER_ENABLED_MARKER),
+            )
+        }))?;
+        Ok(Self { domain, attesters })
     }
 
     // PUBLIC ACCESSORS
@@ -118,8 +137,9 @@ impl From<XReserveFaucetExtension> for AccountComponent {
                     Word::from([faucet_ext.domain, 0, 0, 0]),
                 ),
                 StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
-                StorageSlot::with_empty_map(
+                StorageSlot::with_map(
                     XReserveFaucetExtension::xreserve_attesters_slot().clone(),
+                    faucet_ext.attesters,
                 ),
             ],
             AccountComponentMetadata::new(XRESERVE_COMPONENT_LABEL),
@@ -186,7 +206,9 @@ impl XReserveStablecoinBuilder {
 /// than a runtime reject), then composes it into the attestation-gated keyless network account via
 /// [`XReserveStablecoinBuilder`]. It is the single entry point that turns deploy parameters into the
 /// deployable account, so account construction is traceable from the library root (the agglayer
-/// `create_bridge_account` pattern). `init_seed` seeds the account id.
+/// `create_bridge_account` pattern). `init_seed` seeds the account id. The optional inputs (the
+/// min-burn floor and the build-seeded attesters) keep their defaults here and are set through
+/// [`XReserveStablecoinBuilder::builder`].
 #[allow(clippy::too_many_arguments)]
 pub fn build_faucet_account(
     init_seed: [u8; 32],

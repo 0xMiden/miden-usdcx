@@ -131,23 +131,20 @@ fn load_config() -> Result<RelayerConfig, RelayerError> {
     })
 }
 
-/// A 128-bit seed for the note serial numbers, from OS entropy.
+/// A random seed for the note serial numbers: four uniform felts from an OS-seeded
+/// cryptographic rng.
 ///
 /// The serial number is what makes a re-mint of the same DepositIntent a DISTINCT note rather than
 /// a collision, so it must NOT be reproducible across restarts — which is exactly the opposite of
 /// what a test wants, and why the RNG is a parameter of the context rather than a global here.
-///
-/// Built from `u32`s: every one is a felt exactly, so the seed is the entropy that was drawn rather
-/// than that entropy silently reduced modulo the field.
 fn entropy_seed() -> Word {
-    use rand::TryRng;
+    use rand::RngExt;
 
-    let mut rng = rand::rngs::SysRng;
-    let mut next = || rng.try_next_u32().expect("the os rng must yield entropy");
+    let mut rng = rand::rng();
     Word::from([
-        Felt::from(next()),
-        Felt::from(next()),
-        Felt::from(next()),
-        Felt::from(next()),
+        rng.random::<Felt>(),
+        rng.random::<Felt>(),
+        rng.random::<Felt>(),
+        rng.random::<Felt>(),
     ])
 }

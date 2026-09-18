@@ -62,16 +62,34 @@ fn a_bech32_account_id_is_accepted() {
     );
 }
 
-/// An account id that parses as neither hex nor bech32 is rejected.
+/// Asserts a parse rejection whose message names the actual cause, so the test cannot pass on
+/// an unrelated schema violation.
+fn assert_parse_error_contains(err: ConfigError, needle: &str) {
+    assert_matches!(err, ConfigError::Parse(source) => {
+        assert!(
+            source.to_string().contains(needle),
+            "the parse error must name the cause `{needle}`, got: {source}",
+        );
+    });
+}
+
+/// An account id that parses as neither hex nor bech32 is rejected, with the error naming the
+/// failed parse.
 #[test]
 fn a_malformed_account_id_is_rejected() {
-    for bad_id in ["0xnothex", "definitely-not-bech32"] {
+    for (bad_id, cause) in [
+        ("0xnothex", "failed to parse hex string into account ID"),
+        (
+            "definitely-not-bech32",
+            "failed to decode bech32 string into account ID",
+        ),
+    ] {
         let mut fixture = Fixture::new();
         fixture.json["accounts"]["owner"] = serde_json::Value::from(bad_id);
         let err = fixture
             .parse()
             .expect_err("a malformed account id must be rejected");
-        assert_matches!(err, ConfigError::Parse(_));
+        assert_parse_error_contains(err, cause);
     }
 }
 
@@ -107,13 +125,16 @@ fn an_absent_used_nonce_list_is_empty() {
 /// wrong-length key, and a key with an invalid SEC1 tag byte.
 #[test]
 fn a_malformed_attester_key_is_rejected() {
-    for bad_key in [vec![2u8; 32], vec![5u8; 33]] {
+    for (bad_key, cause) in [
+        (vec![2u8; 32], "unexpected end of file"),
+        (vec![5u8; 33], "Invalid public key"),
+    ] {
         let mut fixture = Fixture::new();
         fixture.json["faucet"]["attesters"][0] = serde_json::Value::from(bad_key);
         let err = fixture
             .parse()
             .expect_err("a malformed attester key must be rejected");
-        assert_matches!(err, ConfigError::Parse(_));
+        assert_parse_error_contains(err, cause);
     }
 }
 
@@ -126,7 +147,7 @@ fn an_out_of_range_token_supply_is_rejected() {
     let err = fixture
         .parse()
         .expect_err("an out-of-range token supply must be rejected");
-    assert_matches!(err, ConfigError::Parse(_));
+    assert_parse_error_contains(err, "exceeds the max allowed amount");
 }
 
 /// A faucet seed that is not exactly 32 bytes is a schema violation.
@@ -137,7 +158,7 @@ fn a_wrong_length_seed_is_rejected() {
     let err = fixture
         .parse()
         .expect_err("a wrong-length seed must be rejected");
-    assert_matches!(err, ConfigError::Parse(_));
+    assert_parse_error_contains(err, "invalid length 4, expected an array of length 32");
 }
 
 /// An unknown field anywhere in the document is a schema violation (`deny_unknown_fields`).

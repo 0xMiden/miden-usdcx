@@ -2,10 +2,11 @@
 resolver = "2"
 members = [
   "crates/xusdc-encoding",
+  "crates/xusdc-genesis",
   "crates/xreserve-deposit-relayer",
   "crates/withdrawal-listener-attester",
 ]
-# PARKED: `crates/xusdc-validation` sits outside the workspace. The three members above resolve
+# PARKED: `crates/xusdc-validation` sits outside the workspace. The members above resolve
 # the protocol family from the published crates.io `=0.16.1` release, but the validation crate
 # still carries the `=0.16.0-alpha.4` protocol pins (via the alpha `miden-client`) and predates
 # the current encoding API, so it cannot build alongside the rest. A released `miden-client`
@@ -34,6 +35,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1" }
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 rstest = "0.26"
 assert_matches = "1.5"
 

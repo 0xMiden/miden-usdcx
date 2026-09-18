@@ -24,6 +24,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 tokio-util = "0.7"
 toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 http = "1"

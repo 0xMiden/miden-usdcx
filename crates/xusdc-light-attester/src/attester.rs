@@ -7,6 +7,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, warn};
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -135,11 +136,17 @@ impl Attester {
             match self.run_one_cycle().await {
                 Ok(report) => {
                     if let Err(error) = report.discover {
-                        eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
+                        warn!(
+                            error = %error,
+                            "discovery failed; new signing paused for this cycle"
+                        );
                     }
                 }
                 Err(error) => {
-                    eprintln!("cycle stopped; retrying after the pause between cycles: {error:?}")
+                    error!(
+                        error = %error,
+                        "cycle stopped; retrying after the pause between cycles"
+                    );
                 }
             }
             pause = if self.circle.rate_limited() {
@@ -341,9 +348,10 @@ impl Attester {
                 Some(burn) => validated.push(burn),
                 None => {
                     self.store.refuse_burn(note_id)?;
-                    eprintln!(
-                        "refused burn: withdrawal payload does not decode: note={} transaction={}",
-                        note_id, burn_tx_id
+                    warn!(
+                        note_id = %note_id,
+                        burn_transaction_id = %burn_tx_id,
+                        "refused burn: withdrawal payload does not decode"
                     );
                 }
             }
@@ -378,7 +386,11 @@ impl Attester {
                 if let Some(reason) = burn_hold(&error) {
                     self.store.hold_burn(note_id, reason)?;
                 }
-                eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
+                warn!(
+                    note_id = %note_id,
+                    error = %error,
+                    "withdrawal failed before submission"
+                );
                 first_error.get_or_insert(error);
             }
         }

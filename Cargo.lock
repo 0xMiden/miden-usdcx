@@ -6608,6 +6608,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "xusdc-encoding",
 ]
 

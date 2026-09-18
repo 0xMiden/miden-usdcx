@@ -13,6 +13,8 @@ use miden_client::rpc::{
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockNumber, SignedBlock};
 
+use crate::config::MidenNetwork;
+
 /// Node-reported scan target and withdrawal pacing limit; neither is authenticated evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanLimits {
@@ -54,11 +56,19 @@ pub struct MidenChainReader {
 }
 
 impl MidenChainReader {
-    pub fn devnet() -> Self {
-        let grpc = GrpcClient::new(&Endpoint::devnet(), DEFAULT_GRPC_TIMEOUT_MS);
+    pub fn for_network(network: MidenNetwork) -> Self {
+        let endpoint = endpoint_for_network(network);
+        let grpc = GrpcClient::new(&endpoint, DEFAULT_GRPC_TIMEOUT_MS);
         Self {
             rpc: VerifyingRpcClient::new(grpc),
         }
+    }
+}
+
+fn endpoint_for_network(network: MidenNetwork) -> Endpoint {
+    match network {
+        MidenNetwork::Devnet => Endpoint::devnet(),
+        MidenNetwork::Testnet => Endpoint::testnet(),
     }
 }
 
@@ -149,5 +159,22 @@ fn is_missing_account(error: &RpcError) -> bool {
                 ..
             }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_network_uses_the_sdk_endpoint() {
+        assert_eq!(
+            endpoint_for_network(MidenNetwork::Devnet),
+            Endpoint::devnet()
+        );
+        assert_eq!(
+            endpoint_for_network(MidenNetwork::Testnet),
+            Endpoint::testnet()
+        );
     }
 }

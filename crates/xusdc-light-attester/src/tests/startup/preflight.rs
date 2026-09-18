@@ -7,9 +7,9 @@ use crate::config::Config;
 use crate::signer::{DevelopmentSigner, Signer};
 
 use super::{
-    config_toml, create_store_parent, development_signers, load_config, ready_circle,
-    replace_setting, start, CircleState, FakeCircle, ObservedRequest, TestChain, CONFIG_FILE,
-    REQUEST_TIMEOUT, SIGNING_KEY_ONE, SIGNING_KEY_TWO,
+    create_store_parent, development_signers, load_config, ready_circle, start, CircleState,
+    FakeCircle, ObservedRequest, TestArgs, TestChain, REQUEST_TIMEOUT, SIGNING_KEY_ONE,
+    SIGNING_KEY_TWO,
 };
 
 async fn start_with_signing_keys(
@@ -18,15 +18,13 @@ async fn start_with_signing_keys(
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let config = replace_setting(
-        &config_toml(1),
-        "expected_signing_public_keys_hex",
-        &format!("expected_signing_public_keys_hex = {expected:?}"),
-    );
-    let path = tempdir.path().join(CONFIG_FILE);
-    std::fs::write(&path, config).unwrap();
+    let mut args = TestArgs::new(&tempdir, 1);
+    args.remove("--expected-signing-public-key");
+    for key in expected {
+        args.append("--expected-signing-public-key", key);
+    }
     let result = Attester::start(
-        Config::load(&path).unwrap(),
+        args.load(),
         Box::new(TestChain::anchor_only()),
         ready_circle(),
         signers,
@@ -42,7 +40,6 @@ async fn invalid_configured_signing_keys_are_rejected() {
     let invalid_hex = format!("0x{}", "gg".repeat(33));
     let invalid_point = format!("0x02{}", "ff".repeat(32));
     for expected in [
-        &[SIGNING_KEY_ONE][..],
         &[SIGNING_KEY_ONE, &invalid_hex][..],
         &[SIGNING_KEY_ONE, "0x00"][..],
         &[SIGNING_KEY_ONE, &invalid_point][..],

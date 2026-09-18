@@ -1,7 +1,5 @@
 //! Authenticated sequential discovery and loop-boundary tests.
 
-use std::path::PathBuf;
-
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
@@ -17,47 +15,46 @@ use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
 
-use super::startup::start as start_attester;
+use super::startup::{start as start_attester, TestArgs};
 use super::support::{
     development_signers, faucet_account_id, note, ready_circle, scan_limits, test_note,
     transaction, BlockFactory, ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
-const SIGNING_KEY_ONE: &str =
-    "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-const SIGNING_KEY_TWO: &str =
-    "0x02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+pub(super) fn test_args(
+    tempdir: &tempfile::TempDir,
+    deployment_block: u32,
+    anchor: &ProvenBlock,
+    finality_depth: u32,
+) -> TestArgs {
+    let mut args = TestArgs::new(tempdir, deployment_block);
+    args.replace("--request-timeout", "100ms");
+    args.replace("--poll-interval", "100ms");
+    args.replace("--faucet-account-id", faucet_account_id().to_hex());
+    args.replace(
+        "--trusted-anchor-block",
+        anchor.header().block_num().as_u32().to_string(),
+    );
+    args.replace(
+        "--trusted-anchor-commitment",
+        anchor.header().commitment().to_hex(),
+    );
+    args.replace(
+        "--minimum-finality-depth-blocks",
+        finality_depth.to_string(),
+    );
+    args.replace("--store-path", tempdir.path().join("state.sqlite3"));
+    args
+}
 
-pub(super) fn write_config(
+pub(super) fn test_config(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
     anchor: &SignedBlock,
     finality_depth: u32,
 ) -> Config {
-    let path = tempdir.path().join("attester.toml");
-    let store_path = PathBuf::from("state.sqlite3");
-    let config = format!(
-        "miden_rpc_url = \"https://rpc.devnet.miden.io\"\n\
-         circle_request_timeout_ms = 100\n\
-         faucet_account_id_hex = \"{}\"\n\
-         circle_api_base_url = \"https://circle.example.invalid\"\n\
-         use_circle_forwarding = false\n\
-         withdrawal_limit = 10_000_000_000_000\n\
-         poll_interval_ms = 100\n\
-         faucet_deployment_block = {deployment_block}\n\
-         trusted_anchor_block = {}\n\
-         trusted_anchor_commitment_hex = \"{}\"\n\
-         minimum_finality_depth_blocks = {finality_depth}\n\
-         expected_signing_public_keys_hex = [\"{SIGNING_KEY_ONE}\", \"{SIGNING_KEY_TWO}\"]\n\
-         store_path = {:?}\n",
-        faucet_account_id().to_hex(),
-        anchor.header().block_num().as_u32(),
-        anchor.header().commitment().to_hex(),
-        store_path,
-    );
-    std::fs::write(&path, config).unwrap();
-    Config::load(&path).unwrap()
+    test_args(tempdir, deployment_block, anchor, finality_depth).load()
 }
 
 pub(super) async fn start(
@@ -67,7 +64,7 @@ pub(super) async fn start(
     scan_limits: ScanLimits,
 ) -> (Attester, ChainControls) {
     let anchor = blocks[0].clone();
-    let config = write_config(tempdir, deployment_block, &anchor, 1);
+    let config = test_config(tempdir, deployment_block, &anchor, 1);
     let (chain, controls) = TestChain::new(blocks, scan_limits);
     let attester = start_attester(config, chain, ready_circle()).await.unwrap();
     (attester, controls)
@@ -264,7 +261,7 @@ async fn burns_are_discovered_safely() {
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 1, &factory.blocks()[0], 2);
+    let config = test_config(&tempdir, 1, &factory.blocks()[0], 2);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(3, 3));
     let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
     attester.discover_burns().await.unwrap();
@@ -723,7 +720,7 @@ async fn bad_blocks_are_rejected() {
     let mut served_factory = BlockFactory::new();
     let served_anchor = served_factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 0, &configured_anchor, 1);
+    let config = test_config(&tempdir, 0, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![served_anchor], scan_limits(1, 0));
     assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
@@ -737,7 +734,7 @@ async fn bad_blocks_are_rejected() {
     );
     let tampered_anchor = SignedBlock::new_unchecked(header, tampered_body, signatures);
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 0, &configured_anchor, 1);
+    let config = test_config(&tempdir, 0, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![tampered_anchor], scan_limits(1, 0));
     assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
@@ -745,7 +742,7 @@ async fn bad_blocks_are_rejected() {
     factory.push(Vec::new(), Vec::new());
     let later_anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 0, &later_anchor, 1);
+    let config = test_config(&tempdir, 0, &later_anchor, 1);
     let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
     assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
@@ -790,7 +787,7 @@ async fn bad_blocks_are_rejected() {
 
         let tempdir = tempfile::tempdir().unwrap();
         let anchor = blocks[0].clone();
-        let config = write_config(&tempdir, deployment_block, &anchor, 1);
+        let config = test_config(&tempdir, deployment_block, &anchor, 1);
         let (chain, _) = TestChain::new(blocks, scan_limits(3, 2));
         let chain = if missing { chain.missing_at(1) } else { chain };
         let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
@@ -866,7 +863,7 @@ async fn bad_blocks_are_rejected() {
             ));
         }
         let tempdir = tempfile::tempdir().unwrap();
-        let config = write_config(&tempdir, 1, &blocks[0], 10);
+        let config = test_config(&tempdir, 1, &blocks[0], 10);
         let (chain, _) = TestChain::new(blocks, scan_limits(12, 12));
         let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
         let error = attester

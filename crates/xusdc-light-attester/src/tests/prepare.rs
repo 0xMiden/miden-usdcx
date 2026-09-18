@@ -6,18 +6,15 @@ use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use serde_json::{json, Value};
 
 use crate::circle::{read_prepared, CircleClient, CircleError, PrepareBatch, RawResponse};
-use crate::config::Config;
 
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::validation::validated_burn;
 use super::verify::serial;
 
 fn client() -> CircleClient {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let path = tempdir.path().join("attester.toml");
-    std::fs::write(&path, config_toml(1)).unwrap();
-    CircleClient::new(&Config::load(&path).unwrap()).unwrap()
+    CircleClient::new(&TestArgs::new(&tempdir, 1).load()).unwrap()
 }
 
 /// Every wire field comes from the right burn value, and the salt is the note serial.

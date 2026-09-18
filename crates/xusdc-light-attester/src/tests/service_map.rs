@@ -16,7 +16,7 @@ use crate::signer::{Signer, SignerError, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted};
 use crate::verify::VerifyError;
 
-use super::discovery::write_config;
+use super::discovery::test_config;
 use super::submit::{reply, Ledger, ScriptedCircle};
 use super::support::{
     development_signers, faucet_account_id, scan_limits, test_note, transaction, BlockFactory,
@@ -152,7 +152,7 @@ async fn invalid_burns_are_not_signed() {
     );
     blocks.push(vec![], vec![]);
     let directory = tempfile::tempdir().unwrap();
-    let config = write_config(&directory, 0, &blocks.blocks()[0], 1);
+    let config = test_config(&directory, 0, &blocks.blocks()[0], 1);
     let (circle, requests) = ScriptedCircle::new(directory.path().join("state.sqlite3"), vec![]);
     let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 1));
     let (signers, calls) = signers(None);

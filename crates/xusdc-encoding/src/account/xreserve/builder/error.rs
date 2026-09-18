@@ -41,15 +41,17 @@ pub enum XReserveStablecoinBuilderError {
     /// rejected at construction (the post-deploy twin is the `XReserveMinBurnAmountNote`
     /// factory's floor refusal). Carries the offending value.
     MinBurnSizeBelowFloor(u64),
-    /// The `blocklist_manager_holder` (the seeded `BLK_MANAGER` member) collides with `ADMIN`,
-    /// `ATTEST_ADMIN`, `DOM_PAUSER` or `DOM_UNPAUSER`. The transfer-blocklist administrator must
-    /// be an external entity with no other faucet-admin capability. `collides_with` names the
-    /// offending role.
+    /// A `blocklist_manager_holders` member (a seeded `BLK_MANAGER` member) collides with
+    /// `ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER` or `DOM_UNPAUSER`. The transfer-blocklist
+    /// administrators must be external entities with no other faucet-admin capability.
+    /// `collides_with` names the offending role.
     BlocklistManagerNotIsolated { collides_with: &'static str },
-    /// The `pauser_holder` collides with another role holder. The 1-of-N pause holder must hold
+    /// A `pauser_holders` member collides with another role's holder. A pause holder must hold
     /// no other role, or a single signer gains a high-consequence power. `collides_with` names
     /// the offending role.
     PauserNotIsolated { collides_with: &'static str },
+    /// A role lists the same member twice; each holder appears once per role.
+    DuplicateRoleMember { role: &'static str },
     /// The build-seeded attester allowlist lists a key twice. Carries the storage-map error.
     AttesterAllowlist(StorageMapError),
     /// The mint-policy descriptor rejected its construction (`MintPolicy::custom` validates
@@ -91,14 +93,17 @@ impl fmt::Display for XReserveStablecoinBuilderError {
             ),
             Self::BlocklistManagerNotIsolated { collides_with } => write!(
                 f,
-                "the BLK_MANAGER holder (transfer-blocklist administrator) must be an external entity \
-                 with no other faucet-admin capability, but it collides with the {collides_with} — \
+                "a BLK_MANAGER holder (transfer-blocklist administrator) must be an external entity \
+                 with no other faucet-admin capability, but one collides with the {collides_with} — \
                  F4-reversal two-way capability isolation is violated"
             ),
             Self::PauserNotIsolated { collides_with } => write!(
                 f,
-                "the DOM_PAUSER holder must hold no other role, but it collides with {collides_with}"
+                "a DOM_PAUSER holder must hold no other role, but one collides with {collides_with}"
             ),
+            Self::DuplicateRoleMember { role } => {
+                write!(f, "the {role} role lists the same member twice")
+            }
             Self::AttesterAllowlist(_) => {
                 write!(f, "the build-seeded attester allowlist lists a key twice")
             }

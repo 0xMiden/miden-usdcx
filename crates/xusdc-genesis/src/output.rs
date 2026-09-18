@@ -36,12 +36,13 @@ pub fn render_listing(faucet: &Account, config: &GenesisToolConfig) -> String {
     let _ = writeln!(out, "  devnet:  {}", id.to_bech32(NetworkId::Devnet));
     let _ = writeln!(out, "role accounts:");
     for role in Role::ALL {
-        let _ = writeln!(
-            out,
-            "  {}: {}",
-            role.as_str(),
-            config.accounts.get(role).to_hex()
-        );
+        let members: Vec<String> = config
+            .accounts
+            .get(role)
+            .iter()
+            .map(|id| id.to_hex())
+            .collect();
+        let _ = writeln!(out, "  {}: {}", role.as_str(), members.join(", "));
     }
     out
 }

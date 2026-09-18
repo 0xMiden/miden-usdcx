@@ -13,8 +13,9 @@ use xusdc_encoding::xreserve::encoding::DepositNonce;
 // ROLES
 // ================================================================================================
 
-/// The five faucet role holders the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`,
-/// `DOM_PAUSER`, `DOM_UNPAUSER`, `BLK_MANAGER`).
+/// The five faucet roles the `XReserveStablecoinBuilder` seeds (`ADMIN`, `ATTEST_ADMIN`,
+/// `DOM_PAUSER`, `DOM_UNPAUSER`, `BLK_MANAGER`). `ADMIN` has exactly one holder; the four
+/// operational roles take zero or more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Owner,
@@ -38,10 +39,10 @@ impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Owner => "owner",
-            Role::AttestAdmin => "attest_admin",
-            Role::Pauser => "pauser",
-            Role::Unpauser => "unpauser",
-            Role::BlocklistManager => "blocklist_manager",
+            Role::AttestAdmin => "attest_admins",
+            Role::Pauser => "pausers",
+            Role::Unpauser => "unpausers",
+            Role::BlocklistManager => "blocklist_managers",
         }
     }
 }
@@ -59,31 +60,33 @@ pub struct GenesisToolConfig {
     pub output_dir: Option<PathBuf>,
 }
 
-/// The role holders' account ids, each given as `0x`-prefixed hex or as bech32.
+/// The role holders' account ids, each id given as `0x`-prefixed hex or as bech32. `owner` is
+/// the single `ADMIN` holder; the four operational roles take a list of zero or more holders
+/// (absent means empty — the role is populated later through the standard role-action note).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleAccounts {
     #[serde(deserialize_with = "account_id")]
     pub owner: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub attest_admin: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub pauser: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub unpauser: AccountId,
-    #[serde(deserialize_with = "account_id")]
-    pub blocklist_manager: AccountId,
+    #[serde(default, deserialize_with = "account_ids")]
+    pub attest_admins: Vec<AccountId>,
+    #[serde(default, deserialize_with = "account_ids")]
+    pub pausers: Vec<AccountId>,
+    #[serde(default, deserialize_with = "account_ids")]
+    pub unpausers: Vec<AccountId>,
+    #[serde(default, deserialize_with = "account_ids")]
+    pub blocklist_managers: Vec<AccountId>,
 }
 
 impl RoleAccounts {
-    /// Returns the account id configured for `role`.
-    pub fn get(&self, role: Role) -> AccountId {
+    /// Returns the account ids configured for `role`.
+    pub fn get(&self, role: Role) -> &[AccountId] {
         match role {
-            Role::Owner => self.owner,
-            Role::AttestAdmin => self.attest_admin,
-            Role::Pauser => self.pauser,
-            Role::Unpauser => self.unpauser,
-            Role::BlocklistManager => self.blocklist_manager,
+            Role::Owner => std::slice::from_ref(&self.owner),
+            Role::AttestAdmin => &self.attest_admins,
+            Role::Pauser => &self.pausers,
+            Role::Unpauser => &self.unpausers,
+            Role::BlocklistManager => &self.blocklist_managers,
         }
     }
 }
@@ -142,6 +145,18 @@ fn account_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<AccountId, D
     AccountId::parse(&text)
         .map(|(id, _network)| id)
         .map_err(D::Error::custom)
+}
+
+/// Deserializes a list of account ids from their hex or bech32 strings.
+fn account_ids<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<AccountId>, D::Error> {
+    Vec::<String>::deserialize(deserializer)?
+        .iter()
+        .map(|text| {
+            AccountId::parse(text)
+                .map(|(id, _network)| id)
+                .map_err(D::Error::custom)
+        })
+        .collect()
 }
 
 /// Decodes a hex string (an optional `0x` prefix) into bytes.

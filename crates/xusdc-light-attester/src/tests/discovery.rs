@@ -503,17 +503,17 @@ fn burns_and_scan_position_are_saved_together() {
     assert_eq!(store.scan_state(), Ok(after_child.clone()));
 
     assert_eq!(
-        store.refuse_burn(burn.note_id(), BurnRefusal::AmountMismatch),
+        store.refuse_burn(burn.note_id(), BurnRefusal::WrongTag),
         Ok(())
     );
     assert_eq!(
-        store.refuse_burn(burn.note_id(), BurnRefusal::AmountMismatch),
+        store.refuse_burn(burn.note_id(), BurnRefusal::WrongTag),
         Err(StoreError::Conflict),
         "a refused burn is no longer pending work"
     );
     for (id, reason) in [
         (burn.note_id(), BurnRefusal::WrongTag),
-        (second_candidate.note_id(), BurnRefusal::AmountMismatch),
+        (second_candidate.note_id(), BurnRefusal::WrongTag),
     ] {
         assert_eq!(store.refuse_burn(id, reason), Err(StoreError::Conflict));
     }
@@ -558,7 +558,7 @@ fn burns_and_scan_position_are_saved_together() {
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .unwrap();
-    assert_eq!(refusal, ("REFUSED".into(), "amount_mismatch".into()));
+    assert_eq!(refusal, ("REFUSED".into(), "wrong_tag".into()));
     drop(connection);
 
     let changed_anchor = TrustedAnchor {

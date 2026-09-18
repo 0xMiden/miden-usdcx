@@ -279,7 +279,7 @@ fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreErro
             refusal_reason TEXT CHECK (refusal_reason IN (
                 'wrong_script', 'wrong_tag', 'wrong_attachments', 'invalid_routing',
                 'wrong_target', 'wrong_asset', 'stored_asset_mismatch',
-                'invalid_withdrawal', 'amount_mismatch'
+                'invalid_withdrawal'
             )),
             CHECK ((status != 'REFUSED' AND refusal_reason IS NULL)
                 OR (status = 'REFUSED' AND refusal_reason IS NOT NULL)),

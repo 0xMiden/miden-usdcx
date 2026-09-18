@@ -22,9 +22,6 @@ pub(crate) enum BurnRefusal {
     WrongAsset,
     StoredAssetMismatch,
     InvalidWithdrawal,
-    // Retained in the persisted refusal vocabulary; current production validation does not emit it.
-    #[allow(dead_code)]
-    AmountMismatch,
 }
 
 impl BurnRefusal {
@@ -38,7 +35,6 @@ impl BurnRefusal {
             Self::WrongAsset => "wrong_asset",
             Self::StoredAssetMismatch => "stored_asset_mismatch",
             Self::InvalidWithdrawal => "invalid_withdrawal",
-            Self::AmountMismatch => "amount_mismatch",
         }
     }
 }

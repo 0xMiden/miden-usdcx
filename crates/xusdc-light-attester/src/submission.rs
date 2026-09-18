@@ -3,6 +3,7 @@
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
+use tracing::warn;
 
 use crate::attester::Attester;
 use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
@@ -197,17 +198,14 @@ impl Attester {
             || saved.last_error.is_some()
             || saved.status == SubmissionStatus::Failed
         {
-            eprintln!(
-                "withdrawal note={} id={} status={:?} HTTP={:?} hold={:?}: {}",
-                saved.note_id,
-                saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
-                saved.status,
-                saved.last_http_status,
-                saved.hold_reason,
-                saved
-                    .last_error
-                    .as_deref()
-                    .unwrap_or("Circle omitted the failure reason")
+            warn!(
+                note_id = %saved.note_id,
+                withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                status = ?saved.status,
+                http_status = ?saved.last_http_status,
+                hold_reason = ?saved.hold_reason,
+                has_error = saved.last_error.is_some(),
+                "withdrawal submission needs attention"
             );
         }
         Ok(())

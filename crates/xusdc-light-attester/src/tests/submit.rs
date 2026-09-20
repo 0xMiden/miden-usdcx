@@ -14,13 +14,13 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use crate::attester::Attester;
+use crate::burn::{DiscoveredBurn, ValidatedBurn};
 use crate::circle::{
     read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
-use crate::validation::ValidatedBurn;
 use crate::verify::{rebuild_for_test, verify_prepared_response, SignedWithdrawal};
 
 use super::discovery;
@@ -163,7 +163,7 @@ impl Ledger {
         factory.push(
             burns
                 .iter()
-                .map(|b| OutputNote::Public(b.burn.note.clone()))
+                .map(|b| OutputNote::Public(b.burn.note().clone()))
                 .collect(),
             vec![],
         );
@@ -171,8 +171,16 @@ impl Ledger {
             faucet_account_id(),
             &[burns[0].burn.nullifier(), burns[1].burn.nullifier()],
         );
-        burns[0].burn.burn_tx_id = shared.id();
-        burns[1].burn.burn_tx_id = shared.id();
+        for burn in &mut burns[..2] {
+            burn.burn = DiscoveredBurn::try_new(
+                burn.burn.note().clone(),
+                burn.burn.creation_block(),
+                burn.burn.consumption_block(),
+                shared.id(),
+                faucet_account_id(),
+            )
+            .unwrap();
+        }
         let transactions = vec![
             shared,
             transaction(faucet_account_id(), &[burns[2].burn.nullifier()]),
@@ -216,7 +224,7 @@ impl Ledger {
 
     async fn signed_with_max_height(&self, index: usize, height: Option<&str>) -> SignedWithdrawal {
         let burn = &self.burns[index];
-        let mut prepared = batch(&burn.burn.note.as_note().serial_num().to_hex(), 1_000, 9);
+        let mut prepared = batch(&burn.burn.note().as_note().serial_num().to_hex(), 1_000, 9);
         if let Some(height) = height {
             prepared.burn_intents[0].max_block_height = height.into();
             rebuild_for_test(&mut prepared, false).unwrap();
@@ -391,7 +399,7 @@ async fn submit_sends_checked_request() {
             let body: Value = serde_json::from_slice(body).unwrap();
             let expected_intent = serde_json::to_value(
                 batch(
-                    &ledger.burns[0].burn.note.as_note().serial_num().to_hex(),
+                    &ledger.burns[0].burn.note().as_note().serial_num().to_hex(),
                     1_000,
                     9,
                 )
@@ -739,8 +747,8 @@ async fn conflicts_are_checked() {
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;
     assert_eq!(
-        ledger.burns[0].burn.burn_tx_id,
-        ledger.burns[1].burn.burn_tx_id
+        ledger.burns[0].burn.burn_tx_id(),
+        ledger.burns[1].burn.burn_tx_id()
     );
     let rejected = json!({"message": "operator must investigate", "code": "unrecognized"});
     let (mut attester, requests) = ledger

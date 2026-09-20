@@ -13,8 +13,8 @@ use tokio::time::Instant;
 use xusdc_encoding::account::xreserve::USDCX_DECIMALS;
 use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
+use crate::burn::ValidatedBurn;
 use crate::config::Config;
-use crate::validation::ValidatedBurn;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

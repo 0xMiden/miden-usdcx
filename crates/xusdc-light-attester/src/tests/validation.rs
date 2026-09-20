@@ -21,8 +21,8 @@ use xusdc_encoding::note::xreserve_burn::{
 };
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
-use crate::store::{DiscoveredBurn, StoreError};
-use crate::validation::{validate_burn, BurnRefusal};
+use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn, ValidatedBurn};
+use crate::store::StoreError;
 
 use super::discovery::start;
 use super::support::{faucet_account_id, scan_limits, transaction, word, BlockFactory};
@@ -112,12 +112,9 @@ fn discovered(note: Note) -> DiscoveredBurn {
     let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap() else {
         panic!("the fixture constructs a public note")
     };
-    DiscoveredBurn {
-        note,
-        creation_block: BlockNumber::from(1u32),
-        consumption_block: BlockNumber::from(2u32),
-        burn_tx_id,
-    }
+    BurnCandidate::try_new(note, BlockNumber::from(1u32), faucet_account_id())
+        .unwrap()
+        .into_discovered(BlockNumber::from(2u32), burn_tx_id)
 }
 
 /// Accepts valid request formats, refuses each proven content violation, and processes only
@@ -130,15 +127,27 @@ async fn burn_notes_are_validated() {
 }
 
 fn check_note_content_cases() {
-    use BurnRefusal::*;
-    type Case = (&'static str, fn(&mut NoteFixture), Option<BurnRefusal>);
+    #[derive(Clone, Copy)]
+    enum Expected {
+        CandidateRejected,
+        Refused(BurnRefusal),
+        Accepted,
+    }
+
+    use BurnRefusal::{InvalidWithdrawal, WrongTag};
+    use Expected::{Accepted, CandidateRejected, Refused};
+    type Case = (&'static str, fn(&mut NoteFixture), Expected);
     let cases: &[Case] = &[
-        ("hand-built valid note", |_| {}, None),
-        ("reversed attachments", |n| n.attachments.reverse(), None),
+        ("hand-built valid note", |_| {}, Accepted),
+        (
+            "reversed attachments",
+            |n| n.attachments.reverse(),
+            Accepted,
+        ),
         (
             "unknown execution time",
             |n| n.attachments[0] = routing(faucet_account_id(), NoteExecutionHint::None),
-            None,
+            Accepted,
         ),
         (
             "after-block hint",
@@ -148,7 +157,7 @@ fn check_note_content_cases() {
                     NoteExecutionHint::after_block(BlockNumber::from(1u32)),
                 )
             },
-            None,
+            Accepted,
         ),
         (
             "block-slot hint",
@@ -158,12 +167,12 @@ fn check_note_content_cases() {
                     NoteExecutionHint::on_block_slot(3, 1, 0),
                 )
             },
-            None,
+            Accepted,
         ),
         (
             "routing padding is ignored",
             |n| n.edit_attachment(0, |w| w[0][3] = Felt::ONE),
-            None,
+            Accepted,
         ),
         (
             "withdrawal padding is ignored",
@@ -174,7 +183,7 @@ fn check_note_content_cases() {
                     w[2][3] = Felt::ONE;
                 })
             },
-            None,
+            Accepted,
         ),
         (
             "other destination",
@@ -184,7 +193,7 @@ fn check_note_content_cases() {
                 payload.dest_recipient = ForeignChainAddress::new([0; 32]);
                 n.set_items(payload);
             },
-            None,
+            Accepted,
         ),
         (
             "no new minimum",
@@ -193,37 +202,37 @@ fn check_note_content_cases() {
                 n.assets = vec![asset];
                 n.storage = asset.as_elements().to_vec();
             },
-            None,
+            Accepted,
         ),
         (
             "wrong script",
             |n| n.script = P2idNote::script(),
-            Some(WrongScript),
+            CandidateRejected,
         ),
-        ("wrong tag", |n| n.tag ^= 1, Some(WrongTag)),
+        ("wrong tag", |n| n.tag ^= 1, Refused(WrongTag)),
         (
             "missing withdrawal",
             |n| {
                 n.attachments.pop();
             },
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "missing routing",
             |n| {
                 n.attachments.remove(0);
             },
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "duplicate routing",
             |n| n.attachments[1] = n.attachments[0].clone(),
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "duplicate withdrawal",
             |n| n.attachments[0] = n.attachments[1].clone(),
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "extra attachment",
@@ -233,7 +242,7 @@ fn check_note_content_cases() {
                     Word::empty(),
                 ))
             },
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "wrong withdrawal scheme",
@@ -244,24 +253,24 @@ fn check_note_content_cases() {
                 )
                 .unwrap()
             },
-            Some(WrongAttachments),
+            CandidateRejected,
         ),
         (
             "routing has extra word",
             |n| n.edit_attachment(0, |w| w.push(Word::empty())),
-            Some(InvalidRouting),
+            CandidateRejected,
         ),
         (
             "routing hint cannot decode",
             |n| n.edit_attachment(0, |w| w[0][2] = Felt::from(255u32)),
-            Some(InvalidRouting),
+            CandidateRejected,
         ),
         (
             "wrong target",
             |n| n.attachments[0] = routing(sender(), NoteExecutionHint::Always),
-            Some(WrongTarget),
+            CandidateRejected,
         ),
-        ("no carried asset", |n| n.assets.clear(), Some(WrongAsset)),
+        ("no carried asset", |n| n.assets.clear(), CandidateRejected),
         (
             "NFT instead of fungible",
             |n| {
@@ -269,12 +278,12 @@ fn check_note_content_cases() {
                 n.assets = vec![asset];
                 n.storage = asset.as_elements().to_vec();
             },
-            Some(WrongAsset),
+            CandidateRejected,
         ),
         (
             "fungible plus NFT",
             |n| n.assets.push(nft()),
-            Some(WrongAsset),
+            CandidateRejected,
         ),
         (
             "wrong issuer",
@@ -283,24 +292,24 @@ fn check_note_content_cases() {
                 n.assets = vec![asset];
                 n.storage = asset.as_elements().to_vec();
             },
-            Some(WrongAsset),
+            CandidateRejected,
         ),
         (
             "short stored asset",
             |n| {
                 n.storage.pop();
             },
-            Some(StoredAssetMismatch),
+            CandidateRejected,
         ),
         (
             "extra stored asset field",
             |n| n.storage.push(Felt::ZERO),
-            Some(StoredAssetMismatch),
+            CandidateRejected,
         ),
         (
             "different stored asset",
             |n| n.storage = fungible(faucet_account_id(), 99).as_elements().to_vec(),
-            Some(StoredAssetMismatch),
+            CandidateRejected,
         ),
         (
             "short withdrawal",
@@ -309,7 +318,7 @@ fn check_note_content_cases() {
                     w.pop();
                 })
             },
-            Some(InvalidWithdrawal),
+            CandidateRejected,
         ),
         (
             "long withdrawal",
@@ -318,31 +327,40 @@ fn check_note_content_cases() {
                     w.resize(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS + 1, Word::empty())
                 })
             },
-            Some(InvalidWithdrawal),
+            CandidateRejected,
         ),
         (
             "withdrawal cannot decode",
             |n| n.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
-            Some(InvalidWithdrawal),
+            Refused(InvalidWithdrawal),
         ),
     ];
 
-    // Construct every adversarial note before the first TODO can stop this red gate.
+    // Construct every adversarial note before evaluating the matrix.
     let cases: Vec<_> = cases
         .iter()
-        .map(|(name, edit, refusal)| {
+        .map(|(name, edit, expected)| {
             let mut fixture = NoteFixture::new();
             edit(&mut fixture);
-            let expected = refusal.map_or_else(
-                || {
-                    let [Asset::Fungible(asset)] = fixture.assets.as_slice() else {
-                        panic!("accepted fixture carries one fungible asset")
-                    };
-                    Ok((fixture.items.clone(), u64::from(asset.amount())))
-                },
-                Err,
-            );
-            (*name, discovered(fixture.note(10)), expected)
+            let accepted = matches!(expected, Accepted).then(|| {
+                let [Asset::Fungible(asset)] = fixture.assets.as_slice() else {
+                    panic!("accepted fixture carries one fungible asset")
+                };
+                (fixture.items.clone(), u64::from(asset.amount()))
+            });
+            let note = fixture.note(10);
+            let burn_tx_id = transaction(faucet_account_id(), &[note.nullifier()]).id();
+            let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap()
+            else {
+                panic!("the fixture constructs a public note")
+            };
+            (
+                *name,
+                BurnCandidate::try_new(note, BlockNumber::from(1u32), faucet_account_id()),
+                burn_tx_id,
+                *expected,
+                accepted,
+            )
         })
         .collect();
     let factory_note = XReserveBurnNote::create(
@@ -353,30 +371,38 @@ fn check_note_content_cases() {
         &mut RandomCoin::new(word(8)),
     )
     .unwrap();
+    let validated = ValidatedBurn::try_from(discovered(factory_note)).unwrap();
     assert_eq!(
-        validate_burn(
-            discovered(factory_note),
-            faucet_account_id(),
-            BurnNote::script_root()
-        )
-        .map(|burn| (burn.items, burn.amount)),
-        Ok((items(), 100)),
+        (validated.items, validated.amount),
+        (items(), 100),
         "real xUSDC note factory"
     );
-    for (name, burn, expected) in cases {
-        assert_eq!(
-            validate_burn(burn, faucet_account_id(), BurnNote::script_root())
-                .map(|burn| (burn.items, burn.amount)),
-            expected,
-            "{name}"
-        );
+    for (name, candidate, burn_tx_id, expected, accepted) in cases {
+        match expected {
+            CandidateRejected => assert!(candidate.is_err(), "{name}"),
+            Refused(reason) => {
+                let burn = candidate
+                    .expect(name)
+                    .into_discovered(BlockNumber::from(2u32), burn_tx_id);
+                assert_eq!(ValidatedBurn::try_from(burn).unwrap_err(), reason, "{name}");
+            }
+            Accepted => {
+                let burn = candidate
+                    .expect(name)
+                    .into_discovered(BlockNumber::from(2u32), burn_tx_id);
+                let burn = ValidatedBurn::try_from(burn).expect(name);
+                assert_eq!((burn.items, burn.amount), accepted.unwrap(), "{name}");
+            }
+        }
     }
 }
 
 async fn ready_burns_are_processed(fail_refusal_write: bool) {
     let good = discovered(NoteFixture::new().note(20));
     let mut invalid = NoteFixture::new();
-    invalid.attachments[0] = routing(sender(), NoteExecutionHint::Always);
+    invalid.edit_attachment(1, |words| {
+        words[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()
+    });
     let invalid = discovered(invalid.note(21));
     let mut young = NoteFixture::new();
     young.tag ^= 1;
@@ -385,9 +411,9 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
     factory.push(Vec::new(), Vec::new());
     factory.push(
         vec![
-            OutputNote::Public(invalid.note.clone()),
-            OutputNote::Public(good.note.clone()),
-            OutputNote::Public(young.note.clone()),
+            OutputNote::Public(invalid.note().clone()),
+            OutputNote::Public(good.note().clone()),
+            OutputNote::Public(young.note().clone()),
         ],
         Vec::new(),
     );
@@ -395,8 +421,14 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
         faucet_account_id(),
         &[invalid.nullifier(), good.nullifier()],
     );
-    let mut expected_good = good.clone();
-    expected_good.burn_tx_id = consuming_tx.id();
+    let expected_good = DiscoveredBurn::try_new(
+        good.note().clone(),
+        good.creation_block(),
+        good.consumption_block(),
+        consuming_tx.id(),
+        faucet_account_id(),
+    )
+    .unwrap();
     factory.push(Vec::new(), vec![consuming_tx]);
     factory.push(
         Vec::new(),
@@ -474,7 +506,7 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
             if fail_refusal_write {
                 None
             } else {
-                Some("wrong_target")
+                Some("invalid_withdrawal")
             },
         ),
     ] {

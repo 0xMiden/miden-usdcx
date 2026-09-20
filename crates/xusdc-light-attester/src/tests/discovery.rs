@@ -13,11 +13,10 @@ use miden_protocol::Word;
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 
 use crate::attester::{Attester, DiscoverError};
-use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
-use crate::validation::BurnRefusal;
 
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,

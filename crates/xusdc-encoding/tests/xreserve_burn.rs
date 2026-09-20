@@ -25,7 +25,9 @@ mod support;
 use miden_processor::crypto::random::RandomCoin;
 use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_protocol::note::{NoteAttachmentScheme, NoteAttachments, NoteTag, NoteType};
+use miden_protocol::note::{
+    NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteTag, NoteType,
+};
 use miden_protocol::transaction::RawOutputNote;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
@@ -33,8 +35,8 @@ use miden_testing::{Auth, MockChain};
 use miden_tx::LocalTransactionProver;
 use support::*;
 use xusdc_encoding::note::xreserve_burn::{
-    XReserveBurnNote, FIXED_XUSDC_BURN_TAG, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
-    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+    XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::vectors::load;
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
@@ -229,6 +231,32 @@ fn burn_note_payload_schema() {
     assert_eq!(
         decoded, items,
         "attachment payload decode == input items (DC-7 order)"
+    );
+
+    let attachment = note
+        .attachments()
+        .iter()
+        .find(|attachment| {
+            attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
+        })
+        .unwrap();
+    assert_eq!(
+        XUsdcBurnAttachment::try_from(attachment).unwrap().items(),
+        &items,
+        "the shared attachment decoder owns the off-chain read path",
+    );
+    let mut words = attachment.content().as_words().to_vec();
+    words[2][1] = Felt::ONE;
+    words[2][2] = Felt::ONE;
+    words[2][3] = Felt::ONE;
+    let nonzero_padding =
+        NoteAttachment::with_words(attachment.attachment_scheme(), words).unwrap();
+    assert_eq!(
+        XUsdcBurnAttachment::try_from(&nonzero_padding)
+            .unwrap()
+            .items(),
+        &items,
+        "the three word-padding felts are deliberately ignored",
     );
 
     // NoteAssets carries the burned xUSDC FungibleAsset with the separately supplied amount.

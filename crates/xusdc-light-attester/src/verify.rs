@@ -113,7 +113,7 @@ pub(crate) fn verify_prepared_response(
         B256::from(EthEmbeddedAccountId::from_account_id(config.faucet_account_id()).to_bytes32());
     let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64());
 
-    if B256::from(burn.burn.note.as_note().serial_num().as_bytes()) != spec.salt {
+    if B256::from(burn.burn.note().as_note().serial_num().as_bytes()) != spec.salt {
         return Err(VerifyError::UnknownSalt);
     }
     if spec.destinationDomain != burn.items.dest_domain {
@@ -127,7 +127,7 @@ pub(crate) fn verify_prepared_response(
     }
     // The Miden sender belongs in the hook, not Circle's sourceDepositor field.
     let sender =
-        EthEmbeddedAccountId::from_account_id(burn.burn.note.as_note().metadata().sender());
+        EthEmbeddedAccountId::from_account_id(burn.burn.note().as_note().metadata().sender());
     if hook.remote_depositor != B256::from(sender.to_bytes32()) {
         return Err(VerifyError::WrongBurnField("remoteDepositor"));
     }
@@ -164,7 +164,7 @@ pub(crate) fn verify_prepared_response(
     Ok(VerifiedWithdrawal {
         batch: VerifiedBatch {
             note_id: burn.burn.note_id(),
-            burn_tx_id: burn.burn.burn_tx_id,
+            burn_tx_id: burn.burn.burn_tx_id(),
             intent: raw,
             digest,
         },

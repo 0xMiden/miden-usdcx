@@ -11,7 +11,7 @@ use serde_json::json;
 use xusdc_encoding::account::xreserve::USDCX_DECIMALS;
 use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
-use crate::validation::ValidatedBurn;
+use crate::burn::ValidatedBurn;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

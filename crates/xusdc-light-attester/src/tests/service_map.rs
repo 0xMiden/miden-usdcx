@@ -146,7 +146,7 @@ async fn invalid_burns_are_not_signed() {
     let mut blocks = BlockFactory::new(faucet_account_id());
     blocks.push(vec![invalid.output], vec![]);
     blocks.push(
-        vec![OutputNote::Public(young.burn.note.clone())],
+        vec![OutputNote::Public(young.burn.note().clone())],
         vec![transaction(faucet_account_id(), &[invalid.nullifier])],
     );
     blocks.push(

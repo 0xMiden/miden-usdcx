@@ -11,6 +11,8 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
+use crate::burn::{BurnCandidate, DiscoveredBurn};
+
 const DISCOVERED: &str = "DISCOVERED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,42 +34,6 @@ pub(crate) struct ScanState {
     pub(crate) authenticated_parent: Option<BlockHeader>,
 }
 
-/// A public stock-burn-note output retained until the faucet consumes it. A future archive
-/// operation must preserve the nullifier-to-note mapping; age alone is never a safe deletion rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BurnCandidate {
-    pub(crate) note: PublicOutputNote,
-    pub(crate) creation_block: BlockNumber,
-}
-
-impl BurnCandidate {
-    pub(crate) fn note_id(&self) -> NoteId {
-        self.note.id()
-    }
-
-    pub(crate) fn nullifier(&self) -> Nullifier {
-        self.note.as_note().nullifier()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DiscoveredBurn {
-    pub(crate) note: PublicOutputNote,
-    pub(crate) creation_block: BlockNumber,
-    pub(crate) consumption_block: BlockNumber,
-    pub(crate) burn_tx_id: TransactionId,
-}
-
-impl DiscoveredBurn {
-    pub(crate) fn note_id(&self) -> NoteId {
-        self.note.id()
-    }
-
-    pub(crate) fn nullifier(&self) -> Nullifier {
-        self.note.as_note().nullifier()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum StoreError {
     #[error("attester store is invalid")]
@@ -83,6 +49,7 @@ pub(crate) enum StoreError {
 pub(crate) struct Store {
     connection: rusqlite::Connection,
     initial_cursor: ScanCursor,
+    faucet_account_id: AccountId,
 }
 
 impl Store {
@@ -126,6 +93,7 @@ impl Store {
         Ok(Self {
             connection,
             initial_cursor,
+            faucet_account_id,
         })
     }
 
@@ -134,12 +102,12 @@ impl Store {
     }
 
     pub(crate) fn candidates(&self) -> Result<Vec<BurnCandidate>, StoreError> {
-        load_candidates(&self.connection)
+        load_candidates(&self.connection, self.faucet_account_id)
     }
 
     #[cfg(test)]
     pub(crate) fn discovered_burns(&self) -> Result<Vec<DiscoveredBurn>, StoreError> {
-        load_burns(&self.connection)
+        load_burns(&self.connection, self.faucet_account_id)
     }
 
     pub(crate) fn save_scan_progress(
@@ -381,19 +349,22 @@ fn validate_discovery_records(
     initial_cursor: ScanCursor,
 ) -> Result<(), StoreError> {
     if candidates.iter().any(|candidate| {
-        candidate.creation_block < initial_cursor.next_block
-            || candidate.creation_block >= cursor.next_block
+        candidate.creation_block() < initial_cursor.next_block
+            || candidate.creation_block() >= cursor.next_block
     }) || burns.iter().any(|burn| {
-        burn.creation_block < initial_cursor.next_block
-            || burn.creation_block >= burn.consumption_block
-            || burn.consumption_block >= cursor.next_block
+        burn.creation_block() < initial_cursor.next_block
+            || burn.creation_block() >= burn.consumption_block()
+            || burn.consumption_block() >= cursor.next_block
     }) {
         return Err(StoreError::Conflict);
     }
     Ok(())
 }
 
-fn load_candidates(connection: &rusqlite::Connection) -> Result<Vec<BurnCandidate>, StoreError> {
+fn load_candidates(
+    connection: &rusqlite::Connection,
+    faucet_account_id: AccountId,
+) -> Result<Vec<BurnCandidate>, StoreError> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block
@@ -415,16 +386,23 @@ fn load_candidates(connection: &rusqlite::Connection) -> Result<Vec<BurnCandidat
     for row in rows {
         let (note_id, nullifier, note, creation_block) = row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
-        candidates.push(BurnCandidate {
-            note,
-            creation_block: decode_block_number(creation_block)?,
-        });
+        candidates.push(
+            BurnCandidate::try_new(
+                note,
+                decode_block_number(creation_block)?,
+                faucet_account_id,
+            )
+            .map_err(|_| StoreError::Invalid)?,
+        );
     }
     Ok(candidates)
 }
 
 #[allow(dead_code)]
-fn load_burns(connection: &rusqlite::Connection) -> Result<Vec<DiscoveredBurn>, StoreError> {
+fn load_burns(
+    connection: &rusqlite::Connection,
+    faucet_account_id: AccountId,
+) -> Result<Vec<DiscoveredBurn>, StoreError> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
@@ -456,12 +434,16 @@ fn load_burns(connection: &rusqlite::Connection) -> Result<Vec<DiscoveredBurn>, 
         if status != DISCOVERED || consumption_block <= creation_block {
             return Err(StoreError::Invalid);
         }
-        burns.push(DiscoveredBurn {
-            note,
-            creation_block,
-            consumption_block,
-            burn_tx_id,
-        });
+        burns.push(
+            DiscoveredBurn::try_new(
+                note,
+                creation_block,
+                consumption_block,
+                burn_tx_id,
+                faucet_account_id,
+            )
+            .map_err(|_| StoreError::Invalid)?,
+        );
     }
     Ok(burns)
 }
@@ -472,8 +454,8 @@ fn insert_candidate(
 ) -> Result<(), StoreError> {
     let note_id = candidate.note_id().to_bytes();
     let nullifier = candidate.nullifier().to_bytes();
-    let note = candidate.note.to_bytes();
-    let creation_block = i64::from(candidate.creation_block.as_u32());
+    let note = candidate.note().to_bytes();
+    let creation_block = i64::from(candidate.creation_block().as_u32());
 
     // A promoted note cannot become a candidate again.
     let overlaps_burn = exists(
@@ -498,10 +480,10 @@ fn insert_candidate(
 fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(), StoreError> {
     let note_id = burn.note_id().to_bytes();
     let nullifier = burn.nullifier().to_bytes();
-    let note = burn.note.to_bytes();
-    let creation_block = i64::from(burn.creation_block.as_u32());
-    let consumption_block = i64::from(burn.consumption_block.as_u32());
-    let burn_tx_id = burn.burn_tx_id.to_bytes();
+    let note = burn.note().to_bytes();
+    let creation_block = i64::from(burn.creation_block().as_u32());
+    let consumption_block = i64::from(burn.consumption_block().as_u32());
+    let burn_tx_id = burn.burn_tx_id().to_bytes();
 
     let overlaps_candidate = exists(
         transaction,

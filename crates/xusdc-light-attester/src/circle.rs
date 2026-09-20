@@ -14,8 +14,8 @@ use tokio::time::Instant;
 use xusdc_encoding::account::xreserve::USDCX_DECIMALS;
 use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
+use crate::burn::ValidatedBurn;
 use crate::config::Config;
-use crate::validation::ValidatedBurn;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -128,7 +128,7 @@ impl CircleClient {
         use_circle_forwarding: bool,
     ) -> Result<UnverifiedPrepareResponse, CircleError> {
         let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
-        let note = burn.burn.note.as_note();
+        let note = burn.burn.note().as_note();
         let amount = burn.amount;
         let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
         // Circle takes whole-USDC decimal strings, not smallest-unit integers.

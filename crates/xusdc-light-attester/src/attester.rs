@@ -6,17 +6,14 @@ use std::time::Instant;
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
-use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::note::Nullifier;
 use miden_protocol::transaction::OutputNote;
 
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
-use crate::store::{
-    BurnCandidate, DiscoveredBurn, ScanCursor, ScanState, Store, StoreError, TrustedAnchor,
-};
-use miden_standards::note::BurnNote;
+use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
 
 #[derive(Debug)]
 pub struct RunError;
@@ -59,7 +56,6 @@ pub struct Attester {
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
     circle: Box<dyn CircleApi>,
-    burn_note_script_root: NoteScriptRoot,
     trusted_anchor_block: Option<ProvenBlock>,
 }
 
@@ -70,7 +66,6 @@ impl Attester {
         chain: Box<dyn ChainReader>,
         circle: Box<dyn CircleApi>,
     ) -> anyhow::Result<Self> {
-        let burn_note_script_root = BurnNote::script_root();
         let trusted_anchor = TrustedAnchor {
             block_num: config.trusted_anchor_block(),
             commitment: config.trusted_anchor_commitment(),
@@ -131,7 +126,6 @@ impl Attester {
             store,
             chain,
             circle,
-            burn_note_script_root,
             trusted_anchor_block,
         })
     }
@@ -276,7 +270,6 @@ impl Attester {
         let (new_burn_notes, new_burns) = find_burns_in_block(
             block,
             self.config.faucet_account_id(),
-            self.burn_note_script_root,
             burn_notes_by_nullifier,
         );
         // Save this block atomically; a later RPC failure must not discard its progress.
@@ -329,12 +322,12 @@ fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = Blo
 fn find_burns_in_block(
     block: &ProvenBlock,
     faucet_account_id: miden_protocol::account::AccountId,
-    burn_note_script_root: NoteScriptRoot,
     burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
 ) -> (Vec<BurnCandidate>, Vec<DiscoveredBurn>) {
     let mut new_burn_notes = Vec::new();
     let mut new_burns = Vec::new();
     let block_num = block.header().block_num();
+    // Discovery observes public notes retained in committed block output batches.
     for (_, output_note) in block
         .body()
         .output_note_batches()
@@ -344,13 +337,9 @@ fn find_burns_in_block(
         let OutputNote::Public(note) = output_note else {
             continue;
         };
-        // Tags are forgeable. The full public note is selected by its authenticated script root.
-        if note.recipient().script().root() != burn_note_script_root {
+        let Ok(candidate) = BurnCandidate::try_new(note.clone(), block_num, faucet_account_id)
+        else {
             continue;
-        }
-        let candidate = BurnCandidate {
-            note: note.clone(),
-            creation_block: block_num,
         };
         burn_notes_by_nullifier.insert(candidate.nullifier(), candidate.clone());
         new_burn_notes.push(candidate);
@@ -365,12 +354,7 @@ fn find_burns_in_block(
         }
         for input_note in transaction.input_notes().iter() {
             if let Some(candidate) = burn_notes_by_nullifier.remove(&input_note.nullifier()) {
-                new_burns.push(DiscoveredBurn {
-                    note: candidate.note,
-                    creation_block: candidate.creation_block,
-                    consumption_block: block_num,
-                    burn_tx_id: transaction.id(),
-                });
+                new_burns.push(candidate.into_discovered(block_num, transaction.id()));
             }
         }
     }

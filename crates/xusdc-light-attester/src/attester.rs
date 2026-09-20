@@ -7,13 +7,11 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use tokio_util::sync::CancellationToken;
 
-use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor, INVALID};
-use crate::validation::{validate_burn, ValidatedBurn};
-use miden_standards::note::BurnNote;
 
 #[derive(Debug)]
 pub struct RunError;
@@ -285,11 +283,7 @@ impl Attester {
         for burn in burns {
             let note_id = burn.note_id();
             let burn_tx_id = burn.burn_tx_id();
-            match validate_burn(
-                burn,
-                self.config.faucet_account_id(),
-                BurnNote::script_root(),
-            ) {
+            match validate_burn(burn) {
                 Ok(burn) => validated.push(burn),
                 Err(reason) => {
                     self.store.refuse_burn(note_id, reason)?;

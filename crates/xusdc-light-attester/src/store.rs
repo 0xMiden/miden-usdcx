@@ -14,8 +14,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
-use crate::burn::{BurnCandidate, DiscoveredBurn};
-use crate::validation::BurnRefusal;
+use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
 
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
@@ -277,9 +276,7 @@ fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreErro
             burn_tx_id BLOB,
             status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
             refusal_reason TEXT CHECK (refusal_reason IN (
-                'wrong_script', 'wrong_tag', 'wrong_attachments', 'invalid_routing',
-                'wrong_target', 'wrong_asset', 'stored_asset_mismatch',
-                'invalid_withdrawal'
+                'wrong_tag', 'invalid_withdrawal'
             )),
             CHECK ((status != 'REFUSED' AND refusal_reason IS NULL)
                 OR (status = 'REFUSED' AND refusal_reason IS NOT NULL)),

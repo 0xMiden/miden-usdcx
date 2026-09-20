@@ -131,9 +131,9 @@ impl Store {
         };
         // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
         let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
-        Ok(load_burns(&self.connection)?
+        Ok(load_burns(&self.connection, self.faucet_account_id)?
             .into_iter()
-            .filter(|burn| burn.consumption_block <= last_ready_block)
+            .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
     }
 

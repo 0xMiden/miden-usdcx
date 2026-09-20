@@ -7,6 +7,7 @@ use miden_protocol::note::NoteType;
 use miden_protocol::Word;
 use miden_standards::note::BurnNote;
 
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
 
@@ -122,16 +123,21 @@ fn create_populated_store(path: &Path) -> (Vec<ProvenBlock>, BurnCandidate, Disc
     let pending = note(BurnNote::script(), NoteType::Public, 1, 60);
     let consumed = note(BurnNote::script(), NoteType::Public, 1, 61);
     let tx = transaction(faucet_account_id(), &[consumed.nullifier]);
-    let candidate = BurnCandidate {
-        note: pending.public_note.unwrap(),
-        creation_block: 1u32.into(),
-    };
-    let burn = DiscoveredBurn {
-        note: consumed.public_note.unwrap(),
-        creation_block: 1u32.into(),
-        consumption_block: 2u32.into(),
-        burn_tx_id: tx.id(),
-    };
+    let candidate = BurnCandidate::try_new(
+        pending.public_note.unwrap(),
+        1u32.into(),
+        faucet_account_id(),
+    )
+    .unwrap();
+    let consumed_candidate = BurnCandidate::try_new(
+        consumed.public_note.unwrap(),
+        1u32.into(),
+        faucet_account_id(),
+    )
+    .unwrap();
+    let burn = consumed_candidate
+        .clone()
+        .into_discovered(2u32.into(), tx.id());
     let mut factory = BlockFactory::new(faucet_account_id());
     factory.push(Vec::new(), Vec::new());
     let anchor = factory.push(vec![pending.output, consumed.output], Vec::new());
@@ -150,13 +156,7 @@ fn create_populated_store(path: &Path) -> (Vec<ProvenBlock>, BurnCandidate, Disc
     .unwrap();
     store
         .save_scan_progress(
-            &[
-                candidate.clone(),
-                BurnCandidate {
-                    note: burn.note.clone(),
-                    creation_block: burn.creation_block,
-                },
-            ],
+            &[candidate.clone(), consumed_candidate],
             &[],
             &ScanState {
                 cursor: ScanCursor {

@@ -4,14 +4,15 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::{
     BlockBody, BlockHeader, BlockNumber, BlockProof, BlockSignatures, FeeParameters, ProvenBlock,
     ValidatorKeys,
 };
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
 use miden_protocol::note::{
-    Note, NoteAssets, NoteId, NoteRecipient, NoteScript, NoteStorage, NoteTag, NoteType, Nullifier,
-    PartialNoteMetadata,
+    Note, NoteAssets, NoteAttachment, NoteAttachments, NoteId, NoteRecipient, NoteScript,
+    NoteStorage, NoteTag, NoteType, Nullifier, PartialNoteMetadata,
 };
 use miden_protocol::testing::validator_keys::{random_validator_set, sign_all};
 use miden_protocol::transaction::{
@@ -20,7 +21,10 @@ use miden_protocol::transaction::{
 };
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use reqwest::{Method, StatusCode};
+use xusdc_encoding::note::xreserve_burn::XUsdcBurnAttachment;
+use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{CircleError, HttpTransport, RawResponse};
@@ -288,11 +292,39 @@ impl BlockFactory {
 }
 
 pub(super) fn note(script: NoteScript, note_type: NoteType, tag: u32, serial: u64) -> TestNote {
-    let note = Note::new(
-        NoteAssets::default(),
-        PartialNoteMetadata::new(faucet_account_id(), note_type).with_tag(NoteTag::new(tag)),
-        NoteRecipient::new(word(serial), script, NoteStorage::default()),
-    );
+    let note = if script.root() == BurnNote::script_root() {
+        let asset = FungibleAsset::new(faucet_account_id(), 100).unwrap();
+        Note::with_attachments(
+            NoteAssets::new(vec![asset.into()]).unwrap(),
+            PartialNoteMetadata::new(faucet_account_id(), note_type).with_tag(NoteTag::new(tag)),
+            NoteRecipient::new(
+                word(serial),
+                script,
+                NoteStorage::new(Asset::Fungible(asset).as_elements().to_vec()).unwrap(),
+            ),
+            NoteAttachments::new(vec![
+                NoteAttachment::from(
+                    NetworkAccountTarget::new(faucet_account_id(), NoteExecutionHint::Always)
+                        .unwrap(),
+                ),
+                NoteAttachment::from(&XUsdcBurnAttachment::new(XReserveBurnItems {
+                    dest_domain: 9,
+                    dest_recipient: ForeignChainAddress::new([serial as u8; 32]),
+                })),
+            ])
+            .unwrap(),
+        )
+    } else {
+        Note::new(
+            NoteAssets::default(),
+            PartialNoteMetadata::new(faucet_account_id(), note_type).with_tag(NoteTag::new(tag)),
+            NoteRecipient::new(word(serial), script, NoteStorage::default()),
+        )
+    };
+    test_note(note)
+}
+
+pub(super) fn test_note(note: Note) -> TestNote {
     let id = note.id();
     let nullifier = note.nullifier();
     let output = RawOutputNote::Full(note).into_output_note().unwrap();

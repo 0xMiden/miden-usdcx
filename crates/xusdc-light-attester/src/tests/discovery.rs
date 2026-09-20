@@ -12,11 +12,10 @@ use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P
 use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, DiscoverError};
-use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor, CONFLICT, INVALID};
-use crate::validation::BurnRefusal;
 
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,

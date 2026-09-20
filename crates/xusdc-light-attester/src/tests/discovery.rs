@@ -6,21 +6,20 @@ use std::sync::Arc;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, ProvenBlock};
-use miden_protocol::note::NoteType;
+use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
 use miden_protocol::Word;
-use miden_standards::note::{BurnNote, P2idNote};
+use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 
 use crate::attester::{Attester, DiscoverError};
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
-use crate::store::{
-    BurnCandidate, DiscoveredBurn, ScanCursor, ScanState, Store, StoreError, TrustedAnchor,
-};
+use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
 
 use super::support::{
-    faucet_account_id, note, ready_circle, scan_limits, transaction, BlockFactory, ChainControls,
-    TestChain,
+    faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
+    ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -91,12 +90,46 @@ async fn burns_are_discovered_safely() {
         xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG,
         5,
     );
+    let wrong_target = {
+        let burn = note(BurnNote::script(), NoteType::Public, 9, 50);
+        let (assets, metadata, recipient, attachments) =
+            burn.public_note.unwrap().into_note().into_parts();
+        test_note(Note::with_attachments(
+            assets,
+            metadata.into_partial_metadata(),
+            recipient,
+            NoteAttachments::new(vec![
+                NoteAttachment::from(
+                    NetworkAccountTarget::new(
+                        AccountId::from_hex(OTHER_ACCOUNT_ID).unwrap(),
+                        NoteExecutionHint::Always,
+                    )
+                    .unwrap(),
+                ),
+                attachments.get(1).unwrap().clone(),
+            ])
+            .unwrap(),
+        ))
+    };
+    let missing_withdrawal = {
+        let burn = note(BurnNote::script(), NoteType::Public, 9, 51);
+        let (assets, metadata, recipient, attachments) =
+            burn.public_note.unwrap().into_note().into_parts();
+        test_note(Note::with_attachments(
+            assets,
+            metadata.into_partial_metadata(),
+            recipient,
+            NoteAttachments::new(vec![attachments.get(0).unwrap().clone()]).unwrap(),
+        ))
+    };
     factory.push(
         vec![
             burn_one.output.clone(),
             burn_two.output.clone(),
             private_burn.output,
             spoofed_tag.output,
+            wrong_target.output,
+            missing_withdrawal.output,
         ],
         Vec::new(),
     );
@@ -144,13 +177,16 @@ async fn burns_are_discovered_safely() {
     let candidates = attester.store.candidates().unwrap();
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].note_id(), unconsumed.id);
-    assert_eq!(candidates[0].note, unconsumed.public_note.clone().unwrap());
+    assert_eq!(
+        candidates[0].note(),
+        &unconsumed.public_note.clone().unwrap()
+    );
 
     let mut burns = attester.store.discovered_burns().unwrap();
     burns.sort_by_key(DiscoveredBurn::note_id);
     assert_eq!(burns.len(), 2);
-    assert_eq!(burns[0].burn_tx_id, consuming_tx_id);
-    assert_eq!(burns[1].burn_tx_id, consuming_tx_id);
+    assert_eq!(burns[0].burn_tx_id(), consuming_tx_id);
+    assert_eq!(burns[1].burn_tx_id(), consuming_tx_id);
     assert_eq!(
         burns
             .iter()
@@ -162,8 +198,8 @@ async fn burns_are_discovered_safely() {
             ids
         }
     );
-    assert_eq!(burns[0].note.id(), burns[0].note_id());
-    assert_eq!(burns[1].note.id(), burns[1].note_id());
+    assert_eq!(burns[0].note().id(), burns[0].note_id());
+    assert_eq!(burns[1].note().id(), burns[1].note_id());
 
     drop(attester);
     let (mut attester, restart_controls) =
@@ -232,10 +268,12 @@ fn burns_and_scan_position_are_saved_together() {
     .unwrap();
 
     let burn_note = note(BurnNote::script(), NoteType::Public, 1, 20);
-    let candidate = BurnCandidate {
-        note: burn_note.public_note.clone().unwrap(),
-        creation_block: BlockNumber::GENESIS,
-    };
+    let candidate = BurnCandidate::try_new(
+        burn_note.public_note.clone().unwrap(),
+        BlockNumber::GENESIS,
+        faucet_account_id(),
+    )
+    .unwrap();
     let after_anchor = ScanState {
         cursor: ScanCursor {
             next_block: BlockNumber::from(1u32),
@@ -271,17 +309,16 @@ fn burns_and_scan_position_are_saved_together() {
     }
 
     let second_note = note(BurnNote::script(), NoteType::Public, 2, 21);
-    let second_candidate = BurnCandidate {
-        note: second_note.public_note.unwrap(),
-        creation_block: BlockNumber::from(1u32),
-    };
+    let second_candidate = BurnCandidate::try_new(
+        second_note.public_note.unwrap(),
+        BlockNumber::from(1u32),
+        faucet_account_id(),
+    )
+    .unwrap();
     let tx = transaction(faucet_account_id(), &[candidate.nullifier()]);
-    let burn = DiscoveredBurn {
-        note: candidate.note.clone(),
-        creation_block: candidate.creation_block,
-        consumption_block: BlockNumber::from(1u32),
-        burn_tx_id: tx.id(),
-    };
+    let burn = candidate
+        .clone()
+        .into_discovered(BlockNumber::from(1u32), tx.id());
     let header = child.header();
     let wrong_parent = ScanState {
         authenticated_parent: Some(BlockHeader::new(
@@ -314,11 +351,14 @@ fn burns_and_scan_position_are_saved_together() {
     assert!(store.discovered_burns().unwrap().is_empty());
 
     // Both heights pass the temporal bounds, but promotion must retain the candidate's height.
-    let mismatched_promotion = DiscoveredBurn {
-        note: second_candidate.note.clone(),
-        burn_tx_id: transaction(faucet_account_id(), &[second_candidate.nullifier()]).id(),
-        ..burn.clone()
-    };
+    let mismatched_promotion = DiscoveredBurn::try_new(
+        second_candidate.note().clone(),
+        burn.creation_block(),
+        burn.consumption_block(),
+        transaction(faucet_account_id(), &[second_candidate.nullifier()]).id(),
+        faucet_account_id(),
+    )
+    .unwrap();
     assert_eq!(
         store.save_scan_progress(
             std::slice::from_ref(&second_candidate),
@@ -350,14 +390,18 @@ fn burns_and_scan_position_are_saved_together() {
         Err(StoreError::Conflict)
     );
 
-    let conflicting_burn = DiscoveredBurn {
-        burn_tx_id: transaction(
+    let conflicting_burn = DiscoveredBurn::try_new(
+        burn.note().clone(),
+        burn.creation_block(),
+        burn.consumption_block(),
+        transaction(
             faucet_account_id(),
             &[candidate.nullifier(), second_candidate.nullifier()],
         )
         .id(),
-        ..burn.clone()
-    };
+        faucet_account_id(),
+    )
+    .unwrap();
     let after_grandchild = ScanState {
         cursor: ScanCursor {
             next_block: BlockNumber::from(3u32),
@@ -486,10 +530,12 @@ fn burns_and_scan_position_are_saved_together() {
     .unwrap();
     assert_eq!(
         store.save_scan_progress(
-            &[BurnCandidate {
-                creation_block: BlockNumber::from(1u32),
-                ..candidate.clone()
-            }],
+            &[BurnCandidate::try_new(
+                candidate.note().clone(),
+                BlockNumber::from(1u32),
+                faucet_account_id(),
+            )
+            .unwrap()],
             &[],
             &ScanState {
                 cursor: ScanCursor {
@@ -651,8 +697,8 @@ async fn bad_blocks_are_rejected() {
         }
     );
     assert_eq!(
-        attester.store.candidates().unwrap()[0].note,
-        saved_note.public_note.unwrap()
+        attester.store.candidates().unwrap()[0].note(),
+        &saved_note.public_note.unwrap()
     );
 
     let mut factory = BlockFactory::new(faucet_account_id());

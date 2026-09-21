@@ -5878,9 +5878,12 @@ dependencies = [
  "hex",
  "miden-protocol",
  "miden-standards",
+ "rand 0.10.2",
+ "rstest",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "xusdc-encoding",
 ]
 

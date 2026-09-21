@@ -1,14 +1,24 @@
-//! Shared test fixture: the dev config JSON (mutable, so tests can inject malformed values).
+//! Shared test fixtures: the dev config JSON (mutable, so tests can inject malformed values),
+//! the nonces JSON, and the accounts the commands take as inputs.
 
 // Each test binary compiles its own copy of this module and exercises a different subset of it.
 #![allow(dead_code)]
 
+use miden_protocol::account::auth::AuthSecretKey;
+use miden_protocol::account::{Account, AccountFile};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
-use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
+use xusdc_genesis::accounts::{build_faucet, new_distributor_with};
+use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role, UsedNoncesFile};
 
 /// The dev faucet seed (`0x07` repeated).
 pub const FAUCET_SEED: [u8; 32] = [7; 32];
+
+/// The dev distributor seed (`0x0d` repeated).
+pub const DISTRIBUTOR_SEED: [u8; 32] = [0x0d; 32];
+
+/// The dev token supply, in base units.
+pub const TOKEN_SUPPLY: u64 = 250_000_000;
 
 /// Two known-valid attester keys in the 33-byte compressed SEC1 form: the secp256k1 generator
 /// point and its double.
@@ -25,7 +35,7 @@ pub const ATTESTER_KEY_BYTES: [[u8; 33]; 2] = [
     ],
 ];
 
-/// Two fixture deposit nonces, recorded as consumed at build time.
+/// Two fixture deposit nonces, the `record-nonces` input.
 pub const USED_NONCE_BYTES: [[u8; 32]; 2] = [[0x55; 32], [0x66; 32]];
 
 /// The `0x`-prefixed hex string of `bytes` — the config's byte encoding.
@@ -74,11 +84,10 @@ impl Fixture {
             "accounts": accounts,
             "faucet": {
                 "seed": to_hex(&FAUCET_SEED),
-                "token_supply": 250_000_000u64,
+                "token_supply": TOKEN_SUPPLY,
                 "domain": 7,
                 "verification_base_fee": 500,
                 "attesters": [to_hex(&ATTESTER_KEY_BYTES[0]), to_hex(&ATTESTER_KEY_BYTES[1])],
-                "used_nonces": [to_hex(&USED_NONCE_BYTES[0]), to_hex(&USED_NONCE_BYTES[1])],
             },
         });
         Self { json }
@@ -93,4 +102,34 @@ impl Fixture {
     pub fn config(&self) -> GenesisToolConfig {
         self.parse().expect("the fixture config must parse")
     }
+}
+
+/// The nonces JSON listing both fixture nonces, mutable so tests can inject malformed values.
+pub struct NoncesFixture {
+    pub json: serde_json::Value,
+}
+
+impl NoncesFixture {
+    pub fn new() -> Self {
+        let json = serde_json::json!({
+            "used_nonces": [to_hex(&USED_NONCE_BYTES[0]), to_hex(&USED_NONCE_BYTES[1])],
+        });
+        Self { json }
+    }
+
+    /// Parses the (possibly mutated) nonces JSON.
+    pub fn parse(&self) -> Result<UsedNoncesFile, ConfigError> {
+        UsedNoncesFile::from_json(&self.json.to_string())
+    }
+}
+
+/// The genesis faucet built from the dev config.
+pub fn genesis_faucet() -> Account {
+    build_faucet(&Fixture::new().config()).expect("the dev fixture must build")
+}
+
+/// A fresh (undeployed) distributor with an ECDSA key, deterministic in its seed.
+pub fn fresh_distributor() -> AccountFile {
+    new_distributor_with(DISTRIBUTOR_SEED, AuthSecretKey::new_ecdsa_k256_keccak())
+        .expect("the distributor must compose")
 }

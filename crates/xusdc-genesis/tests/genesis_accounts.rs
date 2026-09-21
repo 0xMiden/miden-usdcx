@@ -66,30 +66,21 @@ fn the_configured_attesters_are_allowlisted_in_storage() {
     }
 }
 
-/// The built faucet records every configured deposit nonce as consumed.
+/// The built faucet records the configured token supply as issued: `prefund` hands exactly
+/// that amount to the distributor.
 #[test]
-fn the_configured_used_nonces_are_recorded_as_consumed() {
+fn the_faucet_records_the_configured_supply() {
     let fixture = Fixture::new();
     let config = fixture.config();
     let faucet = build_faucet(&config).expect("the dev fixture must build");
 
-    assert!(
-        !config.faucet.used_nonces.is_empty(),
-        "the fixture must exercise a non-empty nonce list",
+    let recorded = miden_standards::account::faucets::FungibleFaucet::try_from(&faucet)
+        .expect("the built faucet is a fungible faucet");
+    assert_eq!(
+        recorded.token_supply(),
+        config.faucet.token_supply,
+        "the configured supply must be the faucet's recorded issuance",
     );
-    for nonce in &config.faucet.used_nonces {
-        assert_eq!(
-            faucet
-                .storage()
-                .get_map_item(
-                    XReserveFaucetExtension::used_nonces_slot(),
-                    nonce.to_storage_map_key(),
-                )
-                .expect("the faucet installs the nonce registry slot"),
-            Word::from([1u32, 0, 0, 0]),
-            "the built faucet must record every configured nonce as consumed",
-        );
-    }
 }
 
 /// A role configured with several holders parses and builds: every listed pauser is seeded as a

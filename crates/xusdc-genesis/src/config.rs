@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde::de::{Deserializer, Error as _};
-use serde::Deserialize;
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 // ROLES
@@ -52,29 +53,50 @@ impl Role {
 
 /// The tool config: the role holders' account ids, the [`FaucetConfig`], and the optional
 /// default output directory (`--out-dir` overrides it). Unknown fields are rejected.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// The config serializes back to the same schema, with the byte fields as `0x`-prefixed hex and
+/// the unset optional fields omitted, so a caller that builds it in Rust can write out exactly
+/// the config it ran.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenesisToolConfig {
     pub accounts: RoleAccounts,
     pub faucet: FaucetConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_dir: Option<PathBuf>,
 }
 
 /// The role holders' account ids, each id given as `0x`-prefixed hex or as bech32. `owner` is
 /// the single `ADMIN` holder; the four operational roles take a list of zero or more holders
 /// (absent means empty — the role is populated later through the standard role-action note).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleAccounts {
-    #[serde(deserialize_with = "account_id")]
+    #[serde(deserialize_with = "account_id", serialize_with = "account_id_hex")]
     pub owner: AccountId,
-    #[serde(default, deserialize_with = "account_ids")]
+    #[serde(
+        default,
+        deserialize_with = "account_ids",
+        serialize_with = "account_ids_hex"
+    )]
     pub attest_admins: Vec<AccountId>,
-    #[serde(default, deserialize_with = "account_ids")]
+    #[serde(
+        default,
+        deserialize_with = "account_ids",
+        serialize_with = "account_ids_hex"
+    )]
     pub pausers: Vec<AccountId>,
-    #[serde(default, deserialize_with = "account_ids")]
+    #[serde(
+        default,
+        deserialize_with = "account_ids",
+        serialize_with = "account_ids_hex"
+    )]
     pub unpausers: Vec<AccountId>,
-    #[serde(default, deserialize_with = "account_ids")]
+    #[serde(
+        default,
+        deserialize_with = "account_ids",
+        serialize_with = "account_ids_hex"
+    )]
     pub blocklist_managers: Vec<AccountId>,
 }
 
@@ -93,28 +115,40 @@ impl RoleAccounts {
 
 /// The faucet's account seed and the `XReserveStablecoinBuilder` inputs that are not role
 /// account ids; amounts are base units.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FaucetConfig {
     /// The faucet's 32-byte account seed, as a hex string.
-    #[serde(deserialize_with = "seed")]
+    #[serde(deserialize_with = "seed", serialize_with = "seed_hex")]
     pub seed: [u8; 32],
     /// The initial supply, validated as an [`AssetAmount`] at parse time so it cannot exceed
     /// the hardcoded supply cap.
-    #[serde(deserialize_with = "asset_amount")]
+    #[serde(
+        deserialize_with = "asset_amount",
+        serialize_with = "asset_amount_base_units"
+    )]
     pub token_supply: AssetAmount,
     /// The Circle domain id.
     pub domain: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_burn_amount: Option<u64>,
     pub verification_base_fee: u32,
     /// The deposit attesters allowlisted at build time, each as the hex string of the key's 33
     /// compressed SEC1 bytes; empty means the allowlist is seeded later through `set_attester`
     /// notes.
-    #[serde(default, deserialize_with = "attesters")]
+    #[serde(
+        default,
+        deserialize_with = "attesters",
+        serialize_with = "attesters_hex"
+    )]
     pub attesters: Vec<PublicKey>,
     /// The Circle deposit nonces the genesis state already honours, each as the hex string of its
     /// 32 bytes; each is recorded as consumed at build time so the relayer cannot mint it again.
-    #[serde(default, deserialize_with = "used_nonces")]
+    #[serde(
+        default,
+        deserialize_with = "used_nonces",
+        serialize_with = "used_nonces_hex"
+    )]
     pub used_nonces: Vec<DepositNonce>,
 }
 
@@ -191,6 +225,50 @@ fn used_nonces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Deposit
         .iter()
         .map(|text| hex_array::<D::Error, 32>(text).map(DepositNonce::new))
         .collect()
+}
+
+// SERIALIZERS
+// ================================================================================================
+
+/// Encodes bytes as a `0x`-prefixed hex string, the config's byte encoding.
+fn to_hex(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
+}
+
+/// Serializes an asset amount as its base-unit u64.
+fn asset_amount_base_units<S: Serializer>(
+    amount: &AssetAmount,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u64(amount.as_u64())
+}
+
+/// Serializes an account id as its `0x`-prefixed hex string.
+fn account_id_hex<S: Serializer>(id: &AccountId, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&id.to_hex())
+}
+
+/// Serializes a list of account ids as their `0x`-prefixed hex strings.
+fn account_ids_hex<S: Serializer>(ids: &[AccountId], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(ids.iter().map(|id| id.to_hex()))
+}
+
+/// Serializes the faucet seed as the hex string of its 32 bytes.
+fn seed_hex<S: Serializer>(seed: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&to_hex(seed))
+}
+
+/// Serializes attester keys as the hex strings of their 33-byte compressed SEC1 form.
+fn attesters_hex<S: Serializer>(keys: &[PublicKey], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(keys.iter().map(|key| to_hex(&key.to_bytes())))
+}
+
+/// Serializes deposit nonces as the hex strings of their 32 bytes.
+fn used_nonces_hex<S: Serializer>(
+    nonces: &[DepositNonce],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(nonces.iter().map(|nonce| to_hex(nonce.as_bytes())))
 }
 
 // ERRORS

@@ -10,9 +10,9 @@ use miden_protocol::address::NetworkId;
 
 use crate::config::{GenesisToolConfig, Role};
 
-/// The faucet's `.mac` file name. The network operator's genesis config references it as
-/// `native_faucet` (see the crate README for the recipe).
-const FAUCET_MAC_FILE: &str = "usdcx-faucet.mac";
+/// The faucet's `.mac` file name: the value of the `native_faucet` key in the network operator's
+/// genesis config (see the crate README for the recipe).
+pub const FAUCET_MAC_FILE: &str = "usdcx-faucet.mac";
 
 /// Writes the tool's one file output into `out_dir` (created if absent): the faucet as a
 /// protocol `AccountFile`.

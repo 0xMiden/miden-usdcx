@@ -5,3 +5,5 @@
 pub mod accounts;
 pub mod config;
 pub mod output;
+
+pub use output::FAUCET_MAC_FILE;

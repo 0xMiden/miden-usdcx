@@ -55,6 +55,28 @@ fn the_dev_fixture_round_trips() {
     }
 }
 
+/// The parsed config serializes back to the fixture JSON, so a config built in Rust can be
+/// written out and re-read by the CLI unchanged: the byte fields come back as `0x` hex, and the
+/// optional fields are omitted when unset and present when set.
+#[test]
+fn the_config_serializes_back_to_its_json() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        serde_json::to_value(fixture.config()).expect("the config must serialize"),
+        fixture.json,
+        "the serialized config must equal the fixture JSON, unset optional fields omitted",
+    );
+
+    let mut fixture = Fixture::new();
+    fixture.json["faucet"]["min_burn_amount"] = serde_json::Value::from(1u64);
+    fixture.json["output_dir"] = serde_json::Value::from("out");
+    assert_eq!(
+        serde_json::to_value(fixture.config()).expect("the config must serialize"),
+        fixture.json,
+        "the optional fields must serialize when set",
+    );
+}
+
 /// A bech32 account id parses to the same id as its hex form.
 #[test]
 fn a_bech32_account_id_is_accepted() {

@@ -101,9 +101,8 @@ impl ChainReader for MidenChainReader {
                 .get_status_unversioned()
                 .await
                 .map_err(ChainError::Rpc)?;
-            // Ask from genesis so the request stays valid when the independently authenticated
-            // scan cursor is ahead of the node-reported proven-chain tip. The returned height only
-            // delays withdrawal readiness; discovery authenticates each full block separately.
+            // Query from genesis because the latest proven block may be behind our scan position.
+            // Use the returned height only to delay withdrawals; verify every scanned block separately.
             let proven = self
                 .rpc
                 .sync_chain_mmr(BlockNumber::GENESIS, SyncTarget::ProvenChainTip)

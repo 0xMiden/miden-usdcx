@@ -3,13 +3,14 @@
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::note::xreserve_burn::{
-    XReserveBurnNote, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
-    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+    XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
+use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InvalidBurnCandidate;
@@ -146,4 +147,68 @@ impl DiscoveredBurn {
     pub(crate) fn nullifier(&self) -> Nullifier {
         self.note.as_note().nullifier()
     }
+}
+
+/// A durable reason why a consumed, structurally valid burn cannot become a withdrawal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BurnRefusal {
+    WrongTag,
+    InvalidWithdrawal,
+}
+
+impl BurnRefusal {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::WrongTag => "wrong_tag",
+            Self::InvalidWithdrawal => "invalid_withdrawal",
+        }
+    }
+}
+
+/// A consumed burn whose Circle withdrawal fields decoded successfully.
+///
+/// This local validation is not permission to sign.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ValidatedBurn {
+    pub(crate) burn: DiscoveredBurn,
+    pub(crate) items: XReserveBurnItems,
+    pub(crate) amount: u64,
+}
+
+impl TryFrom<DiscoveredBurn> for ValidatedBurn {
+    type Error = BurnRefusal;
+
+    fn try_from(burn: DiscoveredBurn) -> Result<Self, Self::Error> {
+        validate_burn(burn)
+    }
+}
+
+pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnRefusal> {
+    let note = burn.note().as_note();
+    if note.metadata().tag() != NoteTag::new(FIXED_XUSDC_BURN_TAG) {
+        return Err(BurnRefusal::WrongTag);
+    }
+
+    let withdrawal = note
+        .attachments()
+        .iter()
+        .find(|attachment| {
+            attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
+        })
+        .ok_or(BurnRefusal::InvalidWithdrawal)?;
+    let items = XUsdcBurnAttachment::try_from(withdrawal)
+        .map_err(|_| BurnRefusal::InvalidWithdrawal)?
+        .items()
+        .clone();
+    let [Asset::Fungible(asset)] = note.assets().as_slice() else {
+        return Err(BurnRefusal::InvalidWithdrawal);
+    };
+    let amount = u64::from(asset.amount());
+
+    Ok(ValidatedBurn {
+        burn,
+        items,
+        amount,
+    })
 }

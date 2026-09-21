@@ -11,9 +11,10 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
-use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
 
 const DISCOVERED: &str = "DISCOVERED";
+const REFUSED: &str = "REFUSED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScanCursor {
@@ -110,9 +111,27 @@ impl Store {
         load_candidates(&self.connection, self.faucet_account_id)
     }
 
+    /// Records a proven-invalid burn without changing its evidence or scan progress.
+    #[allow(dead_code)]
+    pub(crate) fn refuse_burn(
+        &mut self,
+        note_id: NoteId,
+        reason: BurnRefusal,
+    ) -> Result<(), StoreError> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE burns SET status = ?1, refusal_reason = ?2
+             WHERE note_id = ?3 AND status = ?4 AND refusal_reason IS NULL",
+                params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
+            )
+            .map_err(classify_error)?;
+        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+    }
+
     #[cfg(test)]
     pub(crate) fn discovered_burns(&self) -> Result<Vec<DiscoveredBurn>, StoreError> {
-        load_burns(&self.connection, self.faucet_account_id)
+        load_burns(&self.connection, self.faucet_account_id, true)
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
@@ -131,7 +150,7 @@ impl Store {
         };
         // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
         let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
-        Ok(load_burns(&self.connection, self.faucet_account_id)?
+        Ok(load_burns(&self.connection, self.faucet_account_id, false)?
             .into_iter()
             .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
@@ -218,21 +237,10 @@ fn initialize_store(
                 nullifier BLOB NOT NULL UNIQUE,
                 note BLOB NOT NULL,
                 creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295)
-            ) STRICT;
-
-            CREATE TABLE burns (
-                note_id BLOB PRIMARY KEY,
-                nullifier BLOB NOT NULL UNIQUE,
-                note BLOB NOT NULL,
-                creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295),
-                consumption_block INTEGER NOT NULL
-                    CHECK (consumption_block > creation_block
-                           AND consumption_block <= 4294967295),
-                burn_tx_id BLOB NOT NULL,
-                status TEXT NOT NULL CHECK (status = 'DISCOVERED')
             ) STRICT;",
         )
         .map_err(classify_error)?;
+    create_burns_table(&transaction)?;
     transaction
         .execute(
             "INSERT INTO attester_state (
@@ -254,6 +262,28 @@ fn initialize_store(
     transaction.commit().map_err(classify_error)
 }
 
+fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    connection
+        .execute_batch(
+            "CREATE TABLE burns (
+            note_id BLOB PRIMARY KEY,
+            nullifier BLOB NOT NULL UNIQUE,
+            note BLOB NOT NULL,
+            creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295),
+            consumption_block INTEGER NOT NULL
+                CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
+            burn_tx_id BLOB NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('DISCOVERED', 'REFUSED')),
+            refusal_reason TEXT CHECK (refusal_reason IN (
+                'wrong_tag', 'invalid_withdrawal'
+            )),
+            CHECK ((status = 'DISCOVERED' AND refusal_reason IS NULL)
+                OR (status = 'REFUSED' AND refusal_reason IS NOT NULL))
+        ) STRICT;",
+        )
+        .map_err(classify_error)
+}
+
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
@@ -264,7 +294,6 @@ fn validate_store(
 
     // Stored chain state becomes the next run's trust base, so reject any malformed or
     // internally inconsistent row before using it.
-
     let row_count = connection
         .query_row("SELECT COUNT(*) FROM attester_state", [], |row| {
             row.get::<_, i64>(0)
@@ -324,8 +353,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreE
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block FROM burn_candidates LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-            FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
+            refusal_reason FROM burns LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }
@@ -425,19 +454,20 @@ fn load_candidates(
     Ok(candidates)
 }
 
-#[allow(dead_code)]
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
+    include_refused: bool,
 ) -> Result<Vec<DiscoveredBurn>, StoreError> {
     let mut statement = connection
         .prepare(
-            "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-             FROM burns",
+            "SELECT note_id, nullifier, note, creation_block, consumption_block,
+                    burn_tx_id FROM burns
+             WHERE ?1 OR status != 'REFUSED'",
         )
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map([include_refused], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -445,22 +475,18 @@ fn load_burns(
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, String>(6)?,
             ))
         })
         .map_err(classify_error)?;
 
     let mut burns = Vec::new();
     for row in rows {
-        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status) =
+        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id) =
             row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         let creation_block = decode_block_number(creation_block)?;
         let consumption_block = decode_block_number(consumption_block)?;
         let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
-        if status != DISCOVERED || consumption_block <= creation_block {
-            return Err(StoreError::Invalid);
-        }
         burns.push(
             DiscoveredBurn::try_new(
                 note,

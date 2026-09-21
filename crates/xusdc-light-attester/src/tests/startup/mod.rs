@@ -14,7 +14,7 @@ use miden_protocol::account::AccountId;
 use reqwest::{Method, StatusCode};
 use tempfile::TempDir;
 
-use crate::attester::{Attester, StartError};
+use crate::attester::Attester;
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleError, HttpTransport, RawResponse};
 use crate::config::Config;
@@ -152,6 +152,6 @@ pub(super) async fn start(
     config: Config,
     chain: ChainState,
     circle: Box<dyn HttpTransport>,
-) -> Result<Attester, StartError> {
+) -> anyhow::Result<Attester> {
     Attester::start(config, Box::new(FakeChain(chain)), circle).await
 }

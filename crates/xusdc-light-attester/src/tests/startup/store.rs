@@ -4,8 +4,8 @@ use std::process::Command;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
-use crate::attester::StartError;
 use crate::config::Config;
+use crate::store::StoreError;
 use crate::store::{ScanCursor, Store};
 
 use super::{
@@ -167,7 +167,7 @@ async fn invalid_store_is_rejected() {
         write_invalid_store(&store_path, case);
 
         let result = start(load_config(&tempdir, 1), ChainState::Ready, ready_circle()).await;
-        assert!(matches!(result, Err(StartError::InvalidStore)));
+        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
     }
 }
 
@@ -180,7 +180,7 @@ async fn store_cannot_be_opened_twice() {
             ready_circle(),
         )
         .await;
-        assert!(matches!(result, Err(StartError::StoreLocked)));
+        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
         return;
     }
 

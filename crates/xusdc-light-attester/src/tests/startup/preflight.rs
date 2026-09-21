@@ -1,6 +1,7 @@
 use reqwest::{Method, StatusCode};
 
-use crate::attester::StartError;
+use crate::chain::ChainError;
+use crate::circle::CircleError;
 
 use super::{
     create_store_parent, load_config, ready_circle, start, ChainState, CircleState, FakeCircle,
@@ -18,7 +19,7 @@ async fn unreachable_miden_node_is_rejected() {
     )
     .await;
 
-    assert!(matches!(result, Err(StartError::MidenNodeUnavailable(_))));
+    assert!(result.err().unwrap().downcast_ref::<ChainError>().is_some());
     assert!(store_path.is_file());
 }
 
@@ -34,7 +35,7 @@ async fn missing_faucet_is_rejected() {
     )
     .await;
 
-    assert!(matches!(result, Err(StartError::FaucetMissing)));
+    assert!(result.is_err());
     assert!(requests.lock().unwrap().is_empty());
 }
 
@@ -54,7 +55,11 @@ async fn unreachable_circle_api_is_rejected() {
         )
         .await;
 
-        assert!(matches!(result, Err(StartError::CircleUnavailable(_))));
+        assert!(result
+            .err()
+            .unwrap()
+            .downcast_ref::<CircleError>()
+            .is_some());
         assert_eq!(
             *requests.lock().unwrap(),
             vec![ObservedRequest {

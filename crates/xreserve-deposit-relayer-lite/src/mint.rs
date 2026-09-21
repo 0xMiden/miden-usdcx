@@ -9,8 +9,9 @@ use std::str::FromStr;
 use anyhow::{ensure, Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
-use miden_protocol::crypto::rand::{random_word, RandomCoin};
+use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
+use miden_protocol::{Felt, Word};
 use tracing::error;
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
@@ -53,6 +54,26 @@ impl FromStr for AttesterPublicKey {
     }
 }
 
+/// A 128-bit seed for the note serial numbers, from a cryptographic generator the operating system
+/// seeds with its own entropy.
+///
+/// The serial number is what makes a re-mint of the same DepositIntent a DISTINCT note rather than
+/// a collision, so it must NOT be reproducible across restarts.
+///
+/// Built from `u32`s: every one is a felt exactly, so the seed is the entropy that was drawn rather
+/// than that entropy silently reduced modulo the field.
+fn entropy_seed() -> Word {
+    use rand::Rng;
+
+    let mut rng = rand::rng();
+    Word::from([
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+        Felt::from(rng.next_u32()),
+    ])
+}
+
 /// Builds mint notes for one faucet from the attestations of one remote domain.
 ///
 /// Every identity is validated when the command line is parsed, so an invalid configuration
@@ -75,7 +96,7 @@ impl Minter {
             usdcx_faucet: config.faucet_account_id,
             attester: config.attester_public_key.clone(),
             remote_domain: config.remote_domain,
-            rng: RandomCoin::new(random_word()),
+            rng: RandomCoin::new(entropy_seed()),
         }
     }
 

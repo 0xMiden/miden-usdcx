@@ -6,7 +6,7 @@ use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
-use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
+use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role, UsedNoncesFile};
 
 use crate::common::{
     attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, ATTESTER_KEY_BYTES, TOKEN_SUPPLY,
@@ -257,6 +257,27 @@ fn the_nonces_fixture_parses() {
         USED_NONCE_BYTES.map(DepositNonce::new),
         "the nonces must decode from their configured bytes",
     );
+}
+
+/// The checked-in nonces template does not parse as it is, and parses once its placeholder is
+/// filled.
+#[test]
+fn the_nonces_template_parses_once_its_placeholder_is_filled() {
+    let text =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/nonces.template.json"))
+            .expect("the template is readable");
+    assert!(
+        UsedNoncesFile::from_json(&text).is_err(),
+        "the unfilled template must not parse",
+    );
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&text).expect("the template is valid JSON");
+    json["used_nonces"] = serde_json::json!([to_hex(&USED_NONCE_BYTES[0])]);
+    assert_no_placeholders(&json, "nonces");
+
+    let nonces = UsedNoncesFile::from_json(&json.to_string()).expect("the filled template parses");
+    assert_eq!(nonces.used_nonces, [DepositNonce::new(USED_NONCE_BYTES[0])]);
 }
 
 /// A nonce that is not exactly 32 bytes is a schema violation.

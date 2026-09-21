@@ -11,19 +11,28 @@ The config names the five role holders the `XReserveStablecoinBuilder` seeds —
 id (hex or bech32). At launch the distributor doubles as the bootstrap `ADMIN`: put its id in
 `accounts.owner` and leave the operational roles empty; they are assigned once the network runs.
 
+## Install
+
+```sh
+cargo install --path crates/xusdc-genesis --locked    # add --force to reinstall after pulling
+```
+
+`xusdc-genesis` is then on `PATH`; `cargo run -p xusdc-genesis --` from the repo works the same.
+
 ## Usage
 
 Every command works in the current directory: it reads its inputs under their well-known names
 (each `--flag` below can point elsewhere) and writes one new file. No command overwrites an
-existing file, so a re-run needs the old output moved away first. Start from a copy of the
-crate's template, then run the four commands in launch order:
+existing file, so a re-run needs the old output moved away first. Start from copies of the
+crate's two templates, then run the four commands in launch order:
 
 ```sh
 cp <repo>/crates/xusdc-genesis/config.template.json config.json    # then replace every <...> value
-cargo run -p xusdc-genesis -- new-distributor [--auth-scheme ecdsa-k256-keccak|falcon512-poseidon2]
-cargo run -p xusdc-genesis -- faucet [--config config.json]
-cargo run -p xusdc-genesis -- prefund [--faucet usdcx-faucet.mac] [--distributor distributor.mac]
-cargo run -p xusdc-genesis -- record-nonces [--faucet usdcx-faucet.mac] [--nonces nonces.json]
+cp <repo>/crates/xusdc-genesis/nonces.template.json nonces.json    # then list the deposit nonces
+xusdc-genesis new-distributor [--auth-scheme ecdsa-k256-keccak|falcon512-poseidon2]
+xusdc-genesis faucet [--config config.json]
+xusdc-genesis prefund [--faucet usdcx-faucet.mac] [--distributor distributor.mac]
+xusdc-genesis record-nonces [--faucet usdcx-faucet.mac] [--nonces nonces.json]
 ```
 
 1. `new-distributor` generates a fresh public basic wallet with a new signing key (ECDSA
@@ -97,7 +106,8 @@ empty or absent the allowlist is seeded later through `set_attester` notes.
 
 ## Nonces file
 
-`nonces.json`, unknown fields rejected; the list is required and must not be empty:
+`nonces.json`, from `nonces.template.json`; unknown fields rejected; the list is required and
+must not be empty:
 
 ```json
 {

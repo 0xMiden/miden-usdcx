@@ -45,7 +45,10 @@ struct RawConfig {
     use_circle_forwarding: bool,
     #[serde(default)]
     max_withdrawal_fee: u64,
-    withdrawal_limit_24h: u64,
+    withdrawal_limit: u64,
+    #[serde(default = "default_withdrawal_window_hours")]
+    withdrawal_window_hours: u64,
+    withdrawal_cap_error_message: Option<String>,
     poll_interval_ms: u64,
     faucet_deployment_block: u32,
     trusted_anchor_block: u32,
@@ -56,14 +59,15 @@ struct RawConfig {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct Config {
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
     use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
-    withdrawal_limit_24h: u64,
+    withdrawal_limit: u64,
+    withdrawal_window_ms: i64,
+    withdrawal_cap_error_message: Option<String>,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -73,7 +77,10 @@ pub struct Config {
     store_path: PathBuf,
 }
 
-#[allow(dead_code)]
+fn default_withdrawal_window_hours() -> u64 {
+    24
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let encoded = fs::read_to_string(path)
@@ -83,6 +90,23 @@ impl Config {
         let max_withdrawal_fee = AssetAmount::new(raw.max_withdrawal_fee).map_err(|source| {
             ConfigError::with_source("maximum withdrawal fee is invalid", source)
         })?;
+        let withdrawal_window_ms = raw
+            .withdrawal_window_hours
+            .checked_mul(3_600_000)
+            .filter(|milliseconds| *milliseconds > 0)
+            .and_then(|milliseconds| i64::try_from(milliseconds).ok())
+            .ok_or_else(|| {
+                ConfigError::invalid("withdrawal window must be positive and fit in milliseconds")
+            })?;
+        if raw
+            .withdrawal_cap_error_message
+            .as_deref()
+            .is_some_and(|message| message.trim().is_empty())
+        {
+            return Err(ConfigError::invalid(
+                "withdrawal cap error message must not be empty",
+            ));
+        }
 
         if raw.circle_request_timeout_ms == 0 {
             return Err(ConfigError::invalid(
@@ -160,7 +184,9 @@ impl Config {
             circle_api_base_url,
             use_circle_forwarding: raw.use_circle_forwarding,
             max_withdrawal_fee,
-            withdrawal_limit_24h: raw.withdrawal_limit_24h,
+            withdrawal_limit: raw.withdrawal_limit,
+            withdrawal_window_ms,
+            withdrawal_cap_error_message: raw.withdrawal_cap_error_message,
             poll_interval: Duration::from_millis(raw.poll_interval_ms),
             faucet_deployment_block: BlockNumber::from(raw.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(raw.trusted_anchor_block),
@@ -191,8 +217,16 @@ impl Config {
         self.max_withdrawal_fee
     }
 
-    pub(crate) fn withdrawal_limit_24h(&self) -> u64 {
-        self.withdrawal_limit_24h
+    pub(crate) fn withdrawal_limit(&self) -> u64 {
+        self.withdrawal_limit
+    }
+
+    pub(crate) fn withdrawal_window_ms(&self) -> i64 {
+        self.withdrawal_window_ms
+    }
+
+    pub(crate) fn withdrawal_cap_error_message(&self) -> Option<&str> {
+        self.withdrawal_cap_error_message.as_deref()
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

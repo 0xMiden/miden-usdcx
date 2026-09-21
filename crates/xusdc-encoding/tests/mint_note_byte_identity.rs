@@ -19,13 +19,11 @@
 //! `typing_builder_byte_identity.rs`. A single felt of drift — a reordered attachment section, a
 //! dropped pad felt, a different serial derivation — flips one of them RED and names which.
 //!
-//! Re-freezing is a reviewed act, and the anchors below were last re-captured when two moves met on
-//! this branch. `localToken` and `localDepositor` widened from a 20-byte address to the wire form's
-//! full bytes32, so the carried payload gained four felts and the transport attachment is one word
-//! longer — everything hashed over it moves, while the recipient recipe, which depends on neither
-//! field, does not. The protocol-release migration then moved the recipient recipe itself, so the
-//! id, the nullifier and the serialization move with it too; that move is confined to the protocol's
-//! own derivation and changes nothing this crate ENCODES.
+//! Re-freezing is a reviewed act, and the anchors below were last re-captured on the protocol
+//! v0.17.0-rc.5 migration: the P2ID recipe the recipient embeds moved with the protocol's
+//! note-script rework, so the id, the nullifier and the serialization move with it, and the
+//! serialized form gained the protocol's new version bytes. The attachment words and their
+//! commitment — the bytes this crate ENCODES — did not move.
 //!
 //! The vector payload is used verbatim except for `remoteToken`, which is spliced to a deterministic
 //! PUBLIC faucet id: the routing attachment can only bind a public network account, and the
@@ -63,26 +61,26 @@ struct Anchors {
 /// `mi-pos-empty-hookdata` + the `att-1` attestation.
 const GOLDEN_EMPTY_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-empty-hookdata",
-    note_id: "0xc65a724dce0b5971fef901aef725bf4ba7336916687c456c8b32dbeca58d9a48",
-    nullifier: "0xde2ed6bad214d0706c143c18b0da5a3b0c8251f08734caa4dd416afb83e7193b",
+    note_id: "0x4cfe334cf3d28fd65a0cba228e543e59a11992fc1b95cc42e4bc5654a5be604b",
+    nullifier: "0xbc678c2b193275ce09af6b661e15458b9cbda5c26bd5cdae3f3f73d75583cd88",
     recipient_digest:
-        "Word([1176885386095760737, 7141309783470215903, 6490412469362834449, 13801756655587511038])",
+        "Word([2238847437286058676, 9940813624765626549, 5894512297591712141, 6654504467450020224])",
     attachments_commitment:
         "Word([353043364000201756, 2103906947509450114, 2847978362983062168, 17438370209489194753])",
-    serialized: "843 bytes, digest Word([3449811486011593845, 3010906410555033109, 2351261109202290426, 13121967357539788815])",
+    serialized: "860 bytes, digest Word([13227256643789209165, 7421342565579071121, 13867472912855175441, 1696488499270051521])",
     attachments: "[scheme=4 words=16, scheme=2 words=1]",
 };
 
 /// `mi-pos-hookdata` (ten bytes of hookData) + the `att-2` attestation.
 const GOLDEN_HOOKDATA: Anchors = Anchors {
     vector: "mi-pos-hookdata",
-    note_id: "0x505661a0fcbbb216de2d9e2a88ba7aa085108008287105e6e2453e1e8f706031",
-    nullifier: "0x4d386aa89f6213d633af237c668734c7d58bb1735597d66c30a5f146ddc9c9b0",
+    note_id: "0xe4fc7c5fcb1b232f8062b4c4aa06d12e21818f67212e25e269d7cc8d2d261fd5",
+    nullifier: "0xbde759f5f188c9627b5278522cd19b3878879724697c58bd49e8a2aec0a7c6dc",
     recipient_digest:
-        "Word([18431265869439854198, 15724352411530353910, 5436862375304751880, 17786228380689675318])",
+        "Word([6918311846619156983, 7998153661032130718, 17890870146669276851, 13393816309602948115])",
     attachments_commitment:
         "Word([17867121675036495872, 14584486229891685892, 2103155763186269017, 7340241149790238384])",
-    serialized: "875 bytes, digest Word([14022250953414160237, 4242439243791055096, 15476406379804288216, 14674034305943930482])",
+    serialized: "892 bytes, digest Word([13563863070255213944, 786461589394534408, 758505738137364404, 12926656985559063800])",
     attachments: "[scheme=4 words=17, scheme=2 words=1]",
 };
 

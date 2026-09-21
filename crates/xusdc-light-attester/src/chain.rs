@@ -13,7 +13,7 @@ use miden_client::rpc::{
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockNumber, ProvenBlock};
 
-/// Node-reported limits used only to decide how far a discovery pass may scan.
+/// Node-reported scan target and withdrawal pacing limit; neither is authenticated evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanLimits {
     pub latest_committed_block: BlockNumber,
@@ -41,7 +41,6 @@ pub trait ChainReader: Send + Sync {
 
     fn scan_limits(
         &self,
-        last_verified_block: BlockNumber,
     ) -> Pin<Box<dyn Future<Output = Result<ScanLimits, ChainError>> + Send + '_>>;
 
     fn block_by_number(
@@ -95,7 +94,6 @@ impl ChainReader for MidenChainReader {
 
     fn scan_limits(
         &self,
-        last_verified_block: BlockNumber,
     ) -> Pin<Box<dyn Future<Output = Result<ScanLimits, ChainError>> + Send + '_>> {
         Box::pin(async move {
             let status = self
@@ -103,11 +101,11 @@ impl ChainReader for MidenChainReader {
                 .get_status_unversioned()
                 .await
                 .map_err(ChainError::Rpc)?;
-            // This response supplies a conservative lag boundary only. Discovery authenticates
-            // every block it scans instead of treating this endpoint as proof.
+            // Query from genesis because the latest proven block may be behind our scan position.
+            // Use the returned height only to delay withdrawals; verify every scanned block separately.
             let proven = self
                 .rpc
-                .sync_chain_mmr(last_verified_block, SyncTarget::ProvenChainTip)
+                .sync_chain_mmr(BlockNumber::GENESIS, SyncTarget::ProvenChainTip)
                 .await
                 .map_err(ChainError::Rpc)?;
 

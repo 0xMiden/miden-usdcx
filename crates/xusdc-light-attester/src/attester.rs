@@ -23,14 +23,14 @@ pub struct RunError;
 pub enum DiscoverError {
     #[error("Miden chain read failed")]
     Chain(#[source] ChainError),
-    /// The authenticated chain or its reported finality moved behind durable state. Recovery is a
+    /// The authenticated chain changed or its reported tip moved behind durable state. Recovery is a
     /// deliberate operator action: stop, preserve the database, independently establish the
     /// canonical chain, and assess already-submitted Circle withdrawals before re-pinning.
     #[error("Miden chain diverged from the persisted authenticated chain")]
     ChainDiverged,
     #[error("attester store failed")]
     Store(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("the finality bound cannot be represented by the next-block cursor")]
+    #[error("the scan height cannot be represented by the next-block cursor")]
     CursorOverflow,
 }
 
@@ -207,22 +207,12 @@ impl Attester {
             .map_or(self.config.trusted_anchor_block(), BlockHeader::block_num);
         let scan_limits = self
             .chain
-            .scan_limits(last_verified_block_number)
+            .scan_limits()
             .await
             .map_err(DiscoverError::Chain)?;
 
-        // Node-reported heights limit our scan; only block validation can authenticate its data.
-        let Some(last_depth_safe_block) = scan_limits
-            .latest_committed_block
-            .checked_sub(self.config.minimum_finality_depth_blocks())
-        else {
-            return if saved_scan.authenticated_parent.is_some() {
-                Err(DiscoverError::ChainDiverged)
-            } else {
-                Ok(None)
-            };
-        };
-        let last_block_to_scan = std::cmp::min(scan_limits.proof_lag_block, last_depth_safe_block);
+        // Scan every available block. Withdrawal readiness separately requires verified depth.
+        let last_block_to_scan = scan_limits.latest_committed_block;
         if last_block_to_scan < last_verified_block_number {
             return Err(DiscoverError::ChainDiverged);
         }
@@ -233,6 +223,7 @@ impl Attester {
             return Err(DiscoverError::CursorOverflow);
         }
 
+        // This bound also keeps the parent and predeployment child() calls below overflow.
         Ok(Some(last_block_to_scan))
     }
 
@@ -275,6 +266,13 @@ impl Attester {
         block: &ProvenBlock,
         burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
     ) -> Result<(), DiscoverError> {
+        let next_block = block
+            .header()
+            .block_num()
+            .as_u32()
+            .checked_add(1)
+            .map(BlockNumber::from)
+            .ok_or(DiscoverError::CursorOverflow)?;
         let (new_burn_notes, new_burns) = find_burns_in_block(
             block,
             self.config.faucet_account_id(),
@@ -285,9 +283,7 @@ impl Attester {
             &new_burn_notes,
             &new_burns,
             &ScanState {
-                cursor: ScanCursor {
-                    next_block: block.header().block_num().child(),
-                },
+                cursor: ScanCursor { next_block },
                 authenticated_parent: Some(block.header().clone()),
             },
         )?;

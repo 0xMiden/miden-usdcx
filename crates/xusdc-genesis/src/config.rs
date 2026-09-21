@@ -51,14 +51,13 @@ impl Role {
 // CONFIG
 // ================================================================================================
 
-/// The tool config: the role holders' account ids, the [`FaucetConfig`], and the optional
-/// default output directory (`--out-dir` overrides it). Unknown fields are rejected.
+/// The tool config: the role holders' account ids and the [`FaucetConfig`]. Unknown fields are
+/// rejected. The crate's `config.template.json` is its placeholder form.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenesisToolConfig {
     pub accounts: RoleAccounts,
     pub faucet: FaucetConfig,
-    pub output_dir: Option<PathBuf>,
 }
 
 /// The role holders' account ids, each id given as `0x`-prefixed hex or as bech32. `owner` is
@@ -207,7 +206,7 @@ fn attesters<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PublicKey
     Vec::<String>::deserialize(deserializer)?
         .iter()
         .map(|text| {
-            PublicKey::read_from_bytes(&hex_bytes::<D::Error>(text)?).map_err(D::Error::custom)
+            PublicKey::read_from_bytes(&hex_array::<D::Error, 33>(text)?).map_err(D::Error::custom)
         })
         .collect()
 }

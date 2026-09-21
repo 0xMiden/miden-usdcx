@@ -22,7 +22,7 @@ use miden_protocol::transaction::{
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
-use reqwest::{Method, StatusCode};
+use reqwest::{header::HeaderMap, Method, StatusCode};
 use xusdc_encoding::note::xreserve_burn::XUsdcBurnAttachment;
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
@@ -154,9 +154,10 @@ impl ChainReader for TestChain {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum CircleState {
     Response(StatusCode),
+    ResponseBody(StatusCode, Vec<u8>),
     TransportError,
 }
 
@@ -165,6 +166,8 @@ pub(super) struct ObservedRequest {
     pub(super) method: Method,
     pub(super) url: String,
     pub(super) timeout: Option<Duration>,
+    pub(super) headers: HeaderMap,
+    pub(super) body: Vec<u8>,
 }
 
 pub(super) struct FakeCircle {
@@ -194,11 +197,21 @@ impl HttpTransport for FakeCircle {
             method: request.method().clone(),
             url: request.url().to_string(),
             timeout: request.timeout().copied(),
+            headers: request.headers().clone(),
+            body: request
+                .body()
+                .map(|body| {
+                    body.as_bytes()
+                        .expect("test requests have buffered bodies")
+                        .to_vec()
+                })
+                .unwrap_or_default(),
         });
-        let state = self.state;
+        let state = self.state.clone();
         Box::pin(async move {
             match state {
-                CircleState::Response(status) => Ok(RawResponse::new(status)),
+                CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
+                CircleState::ResponseBody(status, body) => Ok(RawResponse::new(status, body)),
                 CircleState::TransportError => Err(CircleError::Unavailable),
             }
         })

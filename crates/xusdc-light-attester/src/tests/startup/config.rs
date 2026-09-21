@@ -121,6 +121,7 @@ fn invalid_config_is_rejected() {
         "circle_request_timeout_ms",
         "faucet_account_id_hex",
         "circle_api_base_url",
+        "use_circle_forwarding",
         "poll_interval_ms",
         "faucet_deployment_block",
         "trusted_anchor_block",

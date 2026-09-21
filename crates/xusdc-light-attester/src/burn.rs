@@ -11,6 +11,7 @@ use xusdc_encoding::note::xreserve_burn::{
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
+use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InvalidBurnCandidate;
@@ -201,6 +202,9 @@ pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnR
         .map_err(|_| BurnRefusal::InvalidWithdrawal)?
         .items()
         .clone();
+    if items.dest_domain == MIDEN_DOMAIN {
+        return Err(BurnRefusal::InvalidWithdrawal);
+    }
     let [Asset::Fungible(asset)] = note.assets().as_slice() else {
         return Err(BurnRefusal::InvalidWithdrawal);
     };

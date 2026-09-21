@@ -6,8 +6,6 @@ poll_interval_ms = 1000
 faucet_deployment_block = 0
 
 # Placeholder only: replace both values with one checkpoint verified out of band.
-# For a new store, pin at faucet_deployment_block or shortly before it, never after.
-# An older anchor adds repeated block checks until scanning first saves progress.
 trusted_anchor_block = 0
 trusted_anchor_commitment_hex = "0x0100000000000000020000000000000003000000000000000400000000000000"
 minimum_finality_depth_blocks = 1

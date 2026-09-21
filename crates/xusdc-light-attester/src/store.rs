@@ -42,8 +42,8 @@ pub(crate) struct ScanState {
 
 pub(crate) struct Store {
     connection: rusqlite::Connection,
-    // Historical records are bounded by the stored anchor, not today's deployment fallback.
-    anchor_block: BlockNumber,
+    /// Where this store started scanning, saved when it was created.
+    initial_cursor: ScanCursor,
     faucet_account_id: AccountId,
 }
 
@@ -91,7 +91,7 @@ impl Store {
 
         Ok(Self {
             connection,
-            anchor_block: trusted_anchor.block_num,
+            initial_cursor,
             faucet_account_id,
         })
     }
@@ -338,7 +338,7 @@ fn load_scan_state(
             .map(decode_header)
             .transpose()?,
     };
-    validate_scan_state(&state, anchor_block)?;
+    validate_scan_state(&state, initial_cursor)?;
     Ok(state)
 }
 
@@ -350,14 +350,6 @@ fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> anyhow:
         None if state.cursor != initial_cursor => Err(anyhow!(INVALID)),
         _ => Ok(()),
     }
-    if let Some(parent) = &state.authenticated_parent {
-        if parent.block_num() < anchor_block
-            || state.cursor.next_block.checked_sub(1) != Some(parent.block_num())
-        {
-            return Err(StoreError::Invalid);
-        }
-    }
-    Ok(())
 }
 
 fn validate_discovery_records(
@@ -367,9 +359,10 @@ fn validate_discovery_records(
     initial_cursor: ScanCursor,
 ) -> anyhow::Result<()> {
     if candidates.iter().any(|candidate| {
-        candidate.creation_block() < anchor_block || candidate.creation_block() >= cursor.next_block
+        candidate.creation_block() < initial_cursor.next_block
+            || candidate.creation_block() >= cursor.next_block
     }) || burns.iter().any(|burn| {
-        burn.creation_block() < anchor_block
+        burn.creation_block() < initial_cursor.next_block
             || burn.creation_block() >= burn.consumption_block()
             || burn.consumption_block() >= cursor.next_block
     }) {

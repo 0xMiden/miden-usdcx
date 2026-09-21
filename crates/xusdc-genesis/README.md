@@ -33,13 +33,13 @@ JSON, unknown fields rejected:
     "blocklist_managers": ["0x... or bech32"]
   },
   "faucet": {
-    "seed": [7, 7, "... 32 bytes total ..."],
+    "seed": "0x0707... (32 bytes of hex)",
     "token_supply": 250000000,
     "domain": 10007,
     "min_burn_amount": 1,
     "verification_base_fee": 500,
-    "attesters": [[2, 121, "... 33 bytes total ..."]],
-    "used_nonces": [[85, 133, "... 32 bytes total ..."]]
+    "attesters": ["0x0279... (33 bytes of hex)"],
+    "used_nonces": ["0x5585... (32 bytes of hex)"]
   },
   "output_dir": "optional/out/dir"
 }
@@ -49,15 +49,16 @@ JSON, unknown fields rejected:
 each list zero or more holders (absent means empty — the role is then populated later through
 the standard role-action note). Every id is `0x`-prefixed hex or bech32, and every listed
 holder is seeded as a member of its role. `faucet.seed`
-is the faucet's 32-byte account seed as a JSON byte array; `token_supply` is the initial supply
+is the faucet's 32-byte account seed as a hex string (the `0x` prefix is optional on every
+byte-string field); `token_supply` is the initial supply
 in base units (6 decimals); the supply cap is not configurable and is set to the maximum asset
 amount; `domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the
-deposit attester public keys to allowlist at build time, each as a JSON byte array of the key's
+deposit attester public keys to allowlist at build time, each as the hex string of the key's
 33 compressed SEC1 bytes; when empty or absent the allowlist is seeded later through
 `set_attester` notes.
 
 `used_nonces` (optional) lists the Circle deposit nonces whose deposits the genesis state already
-honours - the balances seeded at genesis are backed by them - each as a JSON byte array of the
+honours - the balances seeded at genesis are backed by them - each as the hex string of the
 nonce's 32 bytes. The faucet records them as consumed, so the relayer cannot mint them a second
 time. The nonces do not feed the id: run the tool once without them to learn the faucet id, make
 the deposits against that id, then add their nonces and run it again. The second run prints the

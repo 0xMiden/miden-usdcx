@@ -18,9 +18,6 @@ use miden_standards::note::{
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
-/// The faucet max supply used by the production-faucet fixture.
-const MAX_SUPPLY: u64 = 1_000_000;
-
 fn forbidden_root() -> Word {
     NetworkAccountConfigNote::script_root().as_word()
 }
@@ -110,7 +107,7 @@ fn auth_component_materializes_the_exact_fee_enabled_allowlist() -> Result<()> {
 /// The built faucet contains the same ten-root allowlist as the auth component.
 #[test]
 fn built_account_materializes_the_exact_fee_enabled_allowlist() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let account = pf
         .mock_chain

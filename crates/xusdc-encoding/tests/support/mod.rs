@@ -545,14 +545,12 @@ fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<
 /// optional `min_burn_amount` and the build-seeded `attesters`. Returns the constructor's typed
 /// verdict; the outer `Result` carries fixture setup failures only.
 pub fn production_builder_verdict_with_attesters(
-    max_supply: u64,
     token_supply: u64,
     domain: u32,
     min_burn_amount: Option<AssetAmount>,
     attesters: Vec<PublicKey>,
 ) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
     Ok(XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(max_supply).context("invalid max_supply")?)
         .token_supply(AssetAmount::new(token_supply).context("invalid token_supply")?)
         .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(1)])
@@ -568,34 +566,20 @@ pub fn production_builder_verdict_with_attesters(
 
 /// [`production_builder_verdict_with_attesters`] with an empty allowlist.
 pub fn production_builder_verdict(
-    max_supply: u64,
     token_supply: u64,
     domain: u32,
     min_burn_amount: Option<AssetAmount>,
 ) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
-    production_builder_verdict_with_attesters(
-        max_supply,
-        token_supply,
-        domain,
-        min_burn_amount,
-        Vec::new(),
-    )
+    production_builder_verdict_with_attesters(token_supply, domain, min_burn_amount, Vec::new())
 }
 
-pub fn production_builder(
-    max_supply: u64,
-    token_supply: u64,
-    domain: u32,
-) -> Result<XReserveStablecoinBuilder> {
-    production_builder_verdict(max_supply, token_supply, domain, None)?
+pub fn production_builder(token_supply: u64, domain: u32) -> Result<XReserveStablecoinBuilder> {
+    production_builder_verdict(token_supply, domain, None)?
         .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
 }
 
-pub fn production_component_set(
-    max_supply: u64,
-    token_supply: u64,
-) -> Result<Vec<AccountComponent>> {
-    production_builder_outcome(max_supply, token_supply, None)?
+pub fn production_component_set(token_supply: u64) -> Result<Vec<AccountComponent>> {
+    production_builder_outcome(token_supply, None)?
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
 }
 
@@ -634,7 +618,6 @@ pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
 /// search). `min_burn_size = None` keeps the builder default. The mint policy is not a builder
 /// input — it is hard-wired to the attestation policy, the production shape.
 pub fn production_builder_outcome(
-    max_supply: u64,
     token_supply: u64,
     min_burn_size: Option<u64>,
 ) -> Result<std::result::Result<Vec<AccountComponent>, XReserveStablecoinBuilderError>> {
@@ -643,7 +626,7 @@ pub fn production_builder_outcome(
         .transpose()
         .context("invalid min_burn_size")?;
     Ok(
-        production_builder_verdict(max_supply, token_supply, TEST_DOMAIN, min_burn_amount)?
+        production_builder_verdict(token_supply, TEST_DOMAIN, min_burn_amount)?
             .and_then(|builder| builder.build_components()),
     )
 }
@@ -1637,7 +1620,7 @@ pub fn setup_guarded_mint_account(
         GuardSelection::ProductionAttestation => {
             let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
                 .context("the fixture domain word element 0 must be a u32")?;
-            let components = production_builder(max_supply, token_supply, domain_u32)
+            let components = production_builder(token_supply, domain_u32)
                 .context("building the production attestation faucet")?
                 .build_components()
                 .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
@@ -2685,6 +2668,8 @@ pub struct ProductionFaucet {
     pub recipient_id: AccountId,
     pub producer_id: AccountId,
     pub seeded_notes: Vec<Note>,
+    /// The build-time token supply, the fail-closure baseline a rejected mint must not move.
+    pub build_token_supply: u64,
 }
 
 /// Builds the production-component-set faucet fixture. `seed_notes_for` receives the recipient
@@ -2693,16 +2678,14 @@ pub struct ProductionFaucet {
 /// `XReserveStablecoinBuilder::build_components` returns — proving the real-note mint needs no
 /// test-only component.
 pub fn setup_production_faucet(
-    max_supply: u64,
     token_supply: u64,
     seed_notes_for: impl FnOnce(AccountId, AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
-    setup_production_faucet_with_attesters(max_supply, token_supply, Vec::new(), seed_notes_for)
+    setup_production_faucet_with_attesters(token_supply, Vec::new(), seed_notes_for)
 }
 
 /// [`setup_production_faucet`] with `attesters` allowlisted at build time.
 pub fn setup_production_faucet_with_attesters(
-    max_supply: u64,
     token_supply: u64,
     attesters: Vec<PublicKey>,
     seed_notes_for: impl FnOnce(AccountId, AccountId) -> Vec<Note>,
@@ -2716,16 +2699,11 @@ pub fn setup_production_faucet_with_attesters(
 
     // The builder builds the fixed-identity USDCx faucet and assembles the one valid xreserve
     // component internally, so the fixture supplies only the supply parameters and the attesters.
-    let components = production_builder_verdict_with_attesters(
-        max_supply,
-        token_supply,
-        TEST_DOMAIN,
-        None,
-        attesters,
-    )?
-    .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
-    .build_components()
-    .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
+    let components =
+        production_builder_verdict_with_attesters(token_supply, TEST_DOMAIN, None, attesters)?
+            .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))?
+            .build_components()
+            .map_err(|e| anyhow::anyhow!("composing the production faucet: {e}"))?;
 
     // Build the keyless network account with the production allowlists and test fee policy.
     let account = add_network_faucet_account(&mut mc, components)
@@ -2744,6 +2722,7 @@ pub fn setup_production_faucet_with_attesters(
         recipient_id: recipient.id(),
         producer_id: producer.id(),
         seeded_notes,
+        build_token_supply: token_supply,
     })
 }
 

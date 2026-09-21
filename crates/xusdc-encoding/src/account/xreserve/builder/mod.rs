@@ -149,7 +149,7 @@ impl XReserveStablecoinBuilder {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Creates a builder from the faucet supply parameters (`max_supply` / `token_supply`), the
+    /// Creates a builder from the initial `token_supply`, the
     /// `owner` (the seeded `ADMIN` member that gates every unmapped authority-gated procedure), the
     /// `attest_admin_holder`, `pauser_holder` and `unpauser_holder` seeded as the sole members of
     /// `ATTEST_ADMIN`, `DOM_PAUSER` and `DOM_UNPAUSER`, and the
@@ -160,8 +160,9 @@ impl XReserveStablecoinBuilder {
     /// composition time.
     ///
     /// The faucet is NOT a parameter: it has a fixed identity — name `USDCx`, symbol
-    /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` — so the
-    /// builder BUILDS it here from `max_supply` / `token_supply`, and the mutability invariant, the
+    /// [`USDCX_TOKEN_SYMBOL`], [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`],
+    /// and `is_max_supply_mutable(true)` — so the
+    /// builder BUILDS it here from `token_supply`, and the cap, the mutability invariant, the
     /// decimals and the symbol are guaranteed BY CONSTRUCTION. There is no way to hand the
     /// builder an immutable or mis-configured faucet. The `xreserve` component is likewise not a
     /// parameter — there is exactly one valid value (the shipped MASM), so the builder assembles it
@@ -179,7 +180,6 @@ impl XReserveStablecoinBuilder {
     /// twice.
     #[builder]
     pub fn new(
-        max_supply: AssetAmount,
         token_supply: AssetAmount,
         owner: AccountId,
         attest_admin_holders: Vec<AccountId>,
@@ -214,7 +214,7 @@ impl XReserveStablecoinBuilder {
             }
         }
         Ok(Self {
-            faucet: build_usdcx_faucet(max_supply, token_supply)?,
+            faucet: build_usdcx_faucet(token_supply)?,
             owner,
             attest_admin_holders,
             pauser_holders,

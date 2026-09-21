@@ -68,8 +68,6 @@ fn member_marker() -> Word {
     Word::from([1u32, 0, 0, 0])
 }
 
-const MAX_SUPPLY: u64 = 1_000_000;
-
 fn note_rng(seed: u64) -> RandomCoin {
     RandomCoin::new(Word::from([
         Felt::from(seed as u32),
@@ -141,7 +139,7 @@ fn stock_revoke_role_note<R: FeltRng>(
 /// allowlisted) but TRAPS at the proc's authority gate — the layered-auth proof.
 #[tokio::test]
 async fn set_attester_admin_note_admin_writes_and_nonadmin_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -238,7 +236,7 @@ fn expected_min_burn() -> Word {
 /// `[new_min,0,0,0]` into the STOCK `MinBurnAmount` slot.
 #[tokio::test]
 async fn min_burn_administrator_writes_slot() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -271,7 +269,7 @@ async fn min_burn_administrator_writes_slot() -> Result<()> {
 
 /// A min-burn note from a sender without ADMIN PASSES auth but TRAPS at the authority gate.
 async fn assert_min_burn_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -306,7 +304,7 @@ async fn min_burn_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written min burn size.
 #[tokio::test]
 async fn min_burn_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -345,7 +343,7 @@ async fn min_burn_note_args_are_inert() -> Result<()> {
 /// DOM_PAUSER-sent pause PASSES auth (allowlisted) + the proc's DOM_PAUSER gate and sets is_paused=1.
 #[tokio::test]
 async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -371,7 +369,7 @@ async fn pause_dom_pauser_sets_is_paused() -> Result<()> {
 /// A non-DOM_PAUSER pause note PASSES auth but TRAPS at the proc's role gate — including the OWNER
 /// (Circle model: the administrator has NO pause path).
 async fn assert_pause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -401,7 +399,7 @@ async fn pause_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the pause effect.
 #[tokio::test]
 async fn pause_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -432,7 +430,7 @@ async fn pause_note_args_are_inert() -> Result<()> {
 /// A production faucet paused by a SEEDED DOM_PAUSER pause note (brought up on-chain), so an unpause
 /// tx has a 1 -> 0 `is_paused` transition to observe. Placeholder PUBLIC routing target (routing-only).
 async fn paused_faucet() -> Result<(MockChain, AccountId)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, faucet_id| {
+    let pf = setup_production_faucet(0, |_, faucet_id| {
         vec![stock_pause_note(test_account_id(2), faucet_id, 60)
             .expect("building the seeded pause note")]
     })
@@ -480,7 +478,7 @@ async fn unpause_dom_unpauser_clears_is_paused() -> Result<()> {
 
 /// An unpause note without DOM_UNPAUSER PASSES auth but TRAPS at the role gate (owner included).
 async fn assert_unpause_nonpauser_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -546,7 +544,7 @@ async fn assert_grant_role_authorized(
     role: RoleSymbol,
     seed: u64,
 ) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -591,7 +589,7 @@ async fn grant_role_administrator_authorized() -> Result<()> {
 /// A third party without ADMIN PASSES auth but TRAPS at the role-administration gate.
 #[tokio::test]
 async fn grant_role_third_party_traps() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -617,7 +615,7 @@ async fn grant_role_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the granted membership.
 #[tokio::test]
 async fn grant_role_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -665,7 +663,7 @@ const NEW_MAX_SUPPLY: u64 = 2_000_000;
 /// max-supply-mutable + unpaused) and writes word[1] (max_supply) of the token_config slot.
 #[tokio::test]
 async fn set_max_supply_administrator_writes_cap() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -691,7 +689,7 @@ async fn set_max_supply_administrator_writes_cap() -> Result<()> {
 
 /// A set_max_supply note from a sender without ADMIN PASSES auth but TRAPS at the Authority gate.
 async fn assert_set_max_supply_nonadmin_traps(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -726,7 +724,7 @@ async fn set_max_supply_third_party_traps() -> Result<()> {
 /// NOTE_ARGS-inert: an executor-supplied NOTE_ARGS word does NOT change the written cap.
 #[tokio::test]
 async fn set_max_supply_note_args_are_inert() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -762,7 +760,7 @@ async fn faucet_with_granted_role(
     grantor: AccountId,
     grant_seed: u64,
 ) -> Result<(MockChain, AccountId, Account, AccountId)> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -906,7 +904,7 @@ async fn revoke_role_note_args_are_inert() -> Result<()> {
 /// admits the standard role root, the role's administration gate passes, and its admin field moves.
 #[tokio::test]
 async fn set_role_admin_administrator_authorized() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -964,7 +962,7 @@ async fn set_role_admin_administrator_authorized() -> Result<()> {
 
 /// A sender without ADMIN cannot re-point the administration of a seeded role.
 async fn assert_set_role_admin_rejected(sender: AccountId, seed: u64) -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1018,7 +1016,7 @@ async fn set_role_admin_third_party_rejects() -> Result<()> {
 /// target argument it could be pointed at anyone else.
 #[tokio::test]
 async fn renounce_role_holder_clears_own_membership() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;
@@ -1062,7 +1060,7 @@ async fn renounce_role_holder_clears_own_membership() -> Result<()> {
 /// membership to clear, so the refusal is the membership assertion, not an admin gate.
 #[tokio::test]
 async fn renounce_role_non_holder_rejects() -> Result<()> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let chain = pf.mock_chain;
     let faucet_id = pf.faucet_id;

@@ -103,7 +103,6 @@ const SECOND_MINT_AMOUNT: u64 = 250;
 /// rejects any nonzero fee).
 const MAX_FEE_RAW: u64 = 1;
 
-const MAX_SUPPLY: u64 = 1_000_000;
 const NEW_MAX_SUPPLY: u64 = 500_000;
 const MIN_BURN: u64 = 10;
 const BURN_LOW: u64 = 5; // < MIN_BURN -> the stock MinBurnAmount reject
@@ -348,7 +347,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
     // seeded here in the order the indices below list, per the header's mechanics. `route` is the
     // routing-only faucet target the factories stamp into tags/attachments; consume-by-id never
     // reads it, so the pre-build dummy id is sound.
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    let mut pf = setup_production_faucet(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;
@@ -1048,7 +1047,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
 /// helper level.
 #[tokio::test]
 async fn second_mint_to_distinct_recipient() -> Result<()> {
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    let mut pf = setup_production_faucet(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;

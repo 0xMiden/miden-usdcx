@@ -627,7 +627,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
 /// A DOM_PAUSER pause halts the attested mint at the policy dispatcher's stock pause gate.
 #[tokio::test]
 async fn mint_halts_while_paused() -> Result<()> {
-    let mut pf = fixture_with(MAX_SUPPLY, |_, faucet_id| {
+    let mut pf = fixture_with(0, |_, faucet_id| {
         vec![stock_pause_note(dom_pauser(), faucet_id, 953)
             .expect("building the DOM_PAUSER pause note")]
     })?;

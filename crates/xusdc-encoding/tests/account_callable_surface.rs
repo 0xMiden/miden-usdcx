@@ -61,12 +61,10 @@ use miden_standards::account::policies::TokenPolicyManager;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
-const MAX_SUPPLY: u64 = 1_000_000;
-
 /// The committed production faucet ACCOUNT (the real composed, auth-carrying account the network
 /// executes against).
 fn production_account() -> Result<Account> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _faucet_id| Vec::new())
+    let pf = setup_production_faucet(0, |_, _faucet_id| Vec::new())
         .context("building the production network-auth faucet")?;
     let account = pf
         .mock_chain
@@ -194,7 +192,7 @@ fn freeze_and_unfreeze_are_not_admissible_via_either_allowlist() -> Result<()> {
 #[test]
 fn invoke_wrappers_are_live_and_the_asset_is_policed() -> Result<()> {
     let components =
-        production_component_set(MAX_SUPPLY, 0).context("the production composition must build")?;
+        production_component_set(0).context("the production composition must build")?;
 
     // (1) the transfer blocklist is wired → BOTH asset-callback slots are installed, holding the
     // fixed invoke_*_policy wrapper roots.

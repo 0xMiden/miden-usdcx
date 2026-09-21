@@ -77,7 +77,6 @@ fn err_paused() -> MasmError {
 // the DC-14 rows are the ones whose localToken / localDepositor are address-shaped,
 // which the mint transport requires
 const BASE_VECTOR: &str = "mi-pos-empty-hookdata";
-const MINT_MAX_SUPPLY: u64 = 1_000_000_000_000;
 const MINT_AMOUNT: u64 = 250_000_000;
 const MAX_FEE_RAW: u64 = 1;
 
@@ -165,7 +164,7 @@ fn production_pause_fixture() -> Result<GuardedMint> {
 /// notes the caller needs. Everything is seeded at genesis so each admin transaction can be proved
 /// into its own block. The same shape is used by `mint_policy_e2e.rs`.
 fn mint_fixture(extra_notes: impl Fn(AccountId) -> Vec<Note>) -> Result<ProductionFaucet> {
-    setup_production_faucet(MINT_MAX_SUPPLY, 0, |recipient, faucet_id| {
+    setup_production_faucet(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, MINT_AMOUNT, 0, faucet_id)).commitment;
         let route = faucet_id;

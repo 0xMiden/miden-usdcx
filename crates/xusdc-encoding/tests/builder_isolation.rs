@@ -19,7 +19,6 @@ fn builder_with_holders(
     blk_manager: AccountId,
 ) -> Result<XReserveStablecoinBuilder> {
     XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::new(0).context("valid token supply")?)
         .owner(test_account_id(1))
         .attest_admin_holders(vec![attest_admin])
@@ -115,7 +114,6 @@ fn build_seeds_every_member_of_a_multi_holder_role() -> Result<()> {
     let pausers = [test_account_id(2), test_account_id(6)];
     let account = build_faucet_account(
         [7u8; 32],
-        AssetAmount::new(1_000_000).context("valid max supply")?,
         AssetAmount::ZERO,
         test_account_id(1),
         vec![test_account_id(5)],
@@ -143,7 +141,6 @@ fn build_seeds_every_member_of_a_multi_holder_role() -> Result<()> {
 #[test]
 fn build_accepts_an_empty_operational_role() -> Result<()> {
     XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
         .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
@@ -163,7 +160,6 @@ fn build_accepts_an_empty_operational_role() -> Result<()> {
 #[test]
 fn build_rejects_a_duplicate_role_member() -> Result<()> {
     let err = XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
         .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])
@@ -188,7 +184,6 @@ fn build_rejects_a_duplicate_role_member() -> Result<()> {
 #[test]
 fn build_rejects_a_secondary_pauser_colliding_with_another_role() -> Result<()> {
     let err = XReserveStablecoinBuilder::builder()
-        .max_supply(AssetAmount::new(1_000_000).context("valid max supply")?)
         .token_supply(AssetAmount::ZERO)
         .owner(test_account_id(1))
         .attest_admin_holders(vec![test_account_id(5)])

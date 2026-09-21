@@ -252,7 +252,6 @@ impl XReserveStablecoinBuilder {
 #[allow(clippy::too_many_arguments)]
 pub fn build_faucet_account(
     init_seed: [u8; 32],
-    max_supply: AssetAmount,
     token_supply: AssetAmount,
     owner: AccountId,
     attest_admin_holders: Vec<AccountId>,
@@ -263,7 +262,6 @@ pub fn build_faucet_account(
     domain: u32,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
-        .max_supply(max_supply)
         .token_supply(token_supply)
         .owner(owner)
         .attest_admin_holders(attest_admin_holders)
@@ -277,18 +275,18 @@ pub fn build_faucet_account(
 }
 
 /// Builds the fixed-identity USDCx [`FungibleFaucet`]: name `USDCx`, symbol [`USDCX_TOKEN_SYMBOL`],
-/// [`USDCX_DECIMALS`] decimals, and `is_max_supply_mutable(true)` so the deployed `set_max_supply`
+/// [`USDCX_DECIMALS`] decimals, the supply cap at [`AssetAmount::MAX`], and
+/// `is_max_supply_mutable(true)` so the deployed `set_max_supply`
 /// stays operable. The identity fields are constants (the `.expect`s are invariants); setting the
 /// mutability flag here is what guarantees it by construction, replacing the removed runtime reject.
 pub(super) fn build_usdcx_faucet(
-    max_supply: AssetAmount,
     token_supply: AssetAmount,
 ) -> Result<FungibleFaucet, XReserveStablecoinBuilderError> {
     FungibleFaucet::builder()
         .name(TokenName::new("USDCx").expect("USDCx is a valid token name"))
         .symbol(TokenSymbol::new(USDCX_TOKEN_SYMBOL).expect("the USDCX symbol constant is valid"))
         .decimals(USDCX_DECIMALS)
-        .max_supply(max_supply)
+        .max_supply(AssetAmount::MAX)
         .token_supply(token_supply)
         .is_max_supply_mutable(true)
         .build()

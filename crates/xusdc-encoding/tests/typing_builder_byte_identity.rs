@@ -23,18 +23,17 @@ use xusdc_encoding::account::xreserve::{build_faucet_account, XReserveStablecoin
 /// The fixed account seed the anchors were captured at (production uses a random seed; a fixed one
 /// makes the seed-derived id and the whole account commitment deterministic).
 const SEED: [u8; 32] = [7u8; 32];
-const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([14356436069589606644, 16267162229555395330, 14244144358438775028, 694779434740409979])";
+    "Word([6510099079991050005, 124674668738598690, 2039786511193741981, 15331176349321481133])";
 const GOLDEN_CODE_COMMITMENT: &str =
     "Word([12173510844942279610, 2798734683606073516, 8980435499878966036, 18249226465823115597])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([5197584323871301323, 17091733118541207019, 10071380984792085397, 12625665345128719133])";
-const GOLDEN_ACCOUNT_ID: &str = "0x3237e1d205906a711c9f47d67aada5";
+    "Word([537998331999014567, 4399015478608436927, 2140554349343103936, 1744986290364427969])";
+const GOLDEN_ACCOUNT_ID: &str = "0xe7739c1d77aba5b11973600afd8bf7";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -73,8 +72,8 @@ fn assert_matches_golden(account: &Account, path: &str) {
 /// Composes the account from `build_components` and the production auth component at the
 /// fixed seed, with the asset-callback flag derived from the composition (as the deploy path does).
 fn account_via_component_path() -> Account {
-    let components = production_component_set(MAX_SUPPLY, TOKEN_SUPPLY)
-        .expect("the production composition must build");
+    let components =
+        production_component_set(TOKEN_SUPPLY).expect("the production composition must build");
     let has_callbacks = components.iter().any(|c| {
         c.storage_slots().iter().any(|s| {
             s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
@@ -106,7 +105,6 @@ fn account_via_component_path() -> Account {
 fn account_via_crate_root_constructor() -> Account {
     build_faucet_account(
         SEED,
-        AssetAmount::new(MAX_SUPPLY).expect("max supply is a valid asset amount"),
         AssetAmount::new(TOKEN_SUPPLY).expect("token supply is a valid asset amount"),
         test_account_id(1),
         vec![test_account_id(1)],

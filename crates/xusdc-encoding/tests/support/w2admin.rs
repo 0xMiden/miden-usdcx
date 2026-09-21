@@ -202,9 +202,7 @@ pub async fn consume_and_commit_against(
 pub fn admin_faucet(
     seed_notes_for: impl FnOnce(AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
-    setup_production_faucet(1_000_000, 0, |_recipient, faucet_id| {
-        seed_notes_for(faucet_id)
-    })
+    setup_production_faucet(0, |_recipient, faucet_id| seed_notes_for(faucet_id))
 }
 
 /// Consumes a committed note against the production faucet.

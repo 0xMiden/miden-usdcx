@@ -45,7 +45,7 @@ const INIT_IDENTIFIER_PATH: &str = "::xreserve::identifier_init::init_identifier
 /// the mint succeeding is the whole point of the change.
 #[tokio::test]
 async fn a_never_initialized_faucet_mints() -> Result<()> {
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    let mut pf = setup_production_faucet(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
         vec![XReserveSetAttesterNote::create(
@@ -111,7 +111,7 @@ async fn a_never_initialized_faucet_mints() -> Result<()> {
 /// `masm_mint_shell.rs`.)
 #[tokio::test]
 async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Result<()> {
-    let mut pf = setup_production_faucet(MAX_SUPPLY, 0, |recipient, faucet_id| {
+    let mut pf = setup_production_faucet(0, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
         vec![XReserveSetAttesterNote::create(
@@ -229,6 +229,6 @@ fn the_composed_faucet_declares_no_identifier_slot() -> Result<()> {
 /// Composes the production faucet through the shipped fixture and returns the built account, so
 /// its declared storage can be inspected.
 fn production_faucet_account() -> Result<miden_protocol::account::Account> {
-    let pf = setup_production_faucet(MAX_SUPPLY, 0, |_, _| vec![])?;
+    let pf = setup_production_faucet(0, |_, _| vec![])?;
     committed(&pf.mock_chain, pf.faucet_id)
 }

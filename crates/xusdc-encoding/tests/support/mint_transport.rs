@@ -379,12 +379,13 @@ pub fn honest_note(pf: &ProductionFaucet, payload: &[u8], rng_seed: u64) -> Resu
 
 /// The production faucet brought up for minting: attester 1 allowlisted, and nothing else — the
 /// identifier needs no seeding, because the mint path derives it from the faucet's own account id.
+/// `token_supply` is the build-time supply (the cap is fixed at the maximum asset amount);
 /// `extra_notes` seeds additional admin notes (e.g. the pause note).
 pub fn fixture_with(
-    max_supply: u64,
+    token_supply: u64,
     extra_notes: impl Fn(AccountId, AccountId) -> Vec<Note>,
 ) -> Result<ProductionFaucet> {
-    setup_production_faucet(max_supply, 0, |recipient, faucet_id| {
+    setup_production_faucet(token_supply, |recipient, faucet_id| {
         let commitment =
             gen_attester(1, &payload_for(recipient, faucet_id, MINT_AMOUNT, 0)).commitment;
         let mut notes = vec![XReserveSetAttesterNote::create(
@@ -402,7 +403,7 @@ pub fn fixture_with(
 
 /// [`fixture_with`] at the default cap with no extra admin notes.
 pub fn fixture() -> Result<ProductionFaucet> {
-    fixture_with(MAX_SUPPLY, |_, _| vec![])
+    fixture_with(0, |_, _| vec![])
 }
 
 /// Consumes the seeded bring-up notes `0..count`, committing a block each.
@@ -501,7 +502,7 @@ pub fn assert_no_effects(pf: &ProductionFaucet, payload: &[u8]) -> Result<()> {
     );
     assert_eq!(
         committed_token_supply(&pf.mock_chain, pf.faucet_id)?,
-        miden_protocol::asset::AssetAmount::new(0)?,
+        miden_protocol::asset::AssetAmount::new(pf.build_token_supply)?,
         "a rejected mint must not raise supply"
     );
     Ok(())

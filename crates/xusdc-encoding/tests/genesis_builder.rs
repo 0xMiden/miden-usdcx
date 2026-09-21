@@ -18,14 +18,13 @@ use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 /// The fixed account seed, matching the byte-identity suite's anchor seed.
 const SEED: [u8; 32] = [7u8; 32];
-const MAX_SUPPLY: u64 = 1_000_000;
 const TOKEN_SUPPLY: u64 = 0;
 
 /// The genesis build keeps the plain build's id, carries nonce one and no seed, and its
 /// fee-asset slot is rebound from the operator placeholder to the faucet's own asset.
 #[test]
 fn genesis_build_rebinds_the_fee_asset_and_promotes_to_nonce_one() {
-    let builder = production_builder(MAX_SUPPLY, TOKEN_SUPPLY, TEST_DOMAIN)
+    let builder = production_builder(TOKEN_SUPPLY, TEST_DOMAIN)
         .expect("the production builder must construct");
     let genesis = builder
         .build_genesis_account(SEED, &[])
@@ -73,7 +72,7 @@ fn genesis_build_rebinds_the_fee_asset_and_promotes_to_nonce_one() {
 /// The genesis build records every listed nonce as consumed without changing the account id.
 #[test]
 fn genesis_build_records_the_used_nonces_and_keeps_the_id() {
-    let builder = production_builder(MAX_SUPPLY, TOKEN_SUPPLY, TEST_DOMAIN)
+    let builder = production_builder(TOKEN_SUPPLY, TEST_DOMAIN)
         .expect("the production builder must construct");
     let consumed = DepositNonce::new([0x55; 32]);
     let genesis = builder

@@ -14,6 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 miden-standards = { version = "=0.16.1" }

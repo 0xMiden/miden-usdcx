@@ -616,7 +616,7 @@ fn masm_constants_bidirectional() {
 fn rbac_controlled_authority_parity() -> anyhow::Result<()> {
     use miden_standards::account::access::Authority;
 
-    let components = support::production_component_set(1_000_000, 0)?;
+    let components = support::production_component_set(0)?;
     let authority_slot = Authority::authority_slot();
     let word = components
         .iter()

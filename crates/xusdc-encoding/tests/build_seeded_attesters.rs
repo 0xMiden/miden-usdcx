@@ -20,7 +20,7 @@ fn attester_1() -> PublicKey {
 
 /// A production faucet built with attester 1 allowlisted and no admin note seeded.
 fn seeded_fixture() -> Result<ProductionFaucet> {
-    setup_production_faucet_with_attesters(MAX_SUPPLY, 0, vec![attester_1()], |_, _| Vec::new())
+    setup_production_faucet_with_attesters(0, vec![attester_1()], |_, _| Vec::new())
 }
 
 /// The built faucet carries attester 1's enabled row on chain, and an attestation it signed mints
@@ -93,7 +93,6 @@ async fn a_key_the_faucet_was_not_built_with_is_refused() -> Result<()> {
 #[test]
 fn a_key_listed_twice_is_rejected() -> Result<()> {
     let err = production_builder_verdict_with_attesters(
-        1_000_000,
         0,
         TEST_DOMAIN,
         None,

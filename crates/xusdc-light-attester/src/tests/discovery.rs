@@ -694,9 +694,7 @@ async fn bad_blocks_are_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 0, &later_anchor, 1);
     let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    assert!(Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .is_err());
+    assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
     let cases = [
         ("missing", 0u8, 1u32, Expected::ReadFailure),

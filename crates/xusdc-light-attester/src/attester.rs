@@ -28,12 +28,16 @@ pub enum DiscoverError {
     /// canonical chain, and assess already-submitted Circle withdrawals before re-pinning.
     #[error("Miden chain diverged from the persisted authenticated chain")]
     ChainDiverged,
-    #[error("authenticated discovery evidence conflicts with the durable ledger")]
-    ConflictingEvidence,
-    #[error("attester store is invalid")]
-    InvalidStore,
+    #[error("attester store failed")]
+    Store(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("the finality bound cannot be represented by the next-block cursor")]
     CursorOverflow,
+}
+
+impl From<StoreError> for DiscoverError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(Box::new(error))
+    }
 }
 
 #[derive(Debug)]
@@ -156,7 +160,7 @@ impl Attester {
     }
 
     pub(crate) async fn discover_burns(&mut self) -> Result<(), DiscoverError> {
-        let saved_scan = self.store.scan_state().map_err(map_store_error)?;
+        let saved_scan = self.store.scan_state()?;
         let Some(last_block_to_scan) = self.find_last_block_to_scan(&saved_scan).await? else {
             return Ok(());
         };
@@ -165,8 +169,7 @@ impl Attester {
         // Transaction inputs expose nullifiers, so use them to match saved notes to faucet burns.
         let mut burn_notes_by_nullifier = self
             .store
-            .candidates()
-            .map_err(map_store_error)?
+            .candidates()?
             .into_iter()
             .map(|candidate| (candidate.nullifier(), candidate))
             .collect();
@@ -178,7 +181,7 @@ impl Attester {
             let anchor = self
                 .trusted_anchor_block
                 .clone()
-                .ok_or(DiscoverError::InvalidStore)?;
+                .ok_or(StoreError::Invalid)?;
             self.scan_and_save_block(&anchor, &mut burn_notes_by_nullifier)?;
         }
 
@@ -243,7 +246,7 @@ impl Attester {
                 .trusted_anchor_block
                 .as_ref()
                 .map(|block| block.header().clone())
-                .ok_or(DiscoverError::InvalidStore)?,
+                .ok_or(StoreError::Invalid)?,
         };
 
         // The anchor may predate the faucet. Authenticate the intervening headers, but do not
@@ -278,18 +281,17 @@ impl Attester {
             burn_notes_by_nullifier,
         );
         // Save this block atomically; a later RPC failure must not discard its progress.
-        self.store
-            .save_scan_progress(
-                &new_burn_notes,
-                &new_burns,
-                &ScanState {
-                    cursor: ScanCursor {
-                        next_block: block.header().block_num().child(),
-                    },
-                    authenticated_parent: Some(block.header().clone()),
+        self.store.save_scan_progress(
+            &new_burn_notes,
+            &new_burns,
+            &ScanState {
+                cursor: ScanCursor {
+                    next_block: block.header().block_num().child(),
                 },
-            )
-            .map_err(map_store_error)
+                authenticated_parent: Some(block.header().clone()),
+            },
+        )?;
+        Ok(())
     }
 
     async fn fetch_and_verify_block(
@@ -365,13 +367,4 @@ fn find_burns_in_block(
     }
 
     (new_burn_notes, new_burns)
-}
-
-fn map_store_error(error: StoreError) -> DiscoverError {
-    match error {
-        StoreError::Conflict => DiscoverError::ConflictingEvidence,
-        StoreError::Invalid | StoreError::Locked | StoreError::AnchorChanged => {
-            DiscoverError::InvalidStore
-        }
-    }
 }

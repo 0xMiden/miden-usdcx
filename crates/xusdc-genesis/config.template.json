@@ -7,11 +7,11 @@
     "blocklist_managers": []
   },
   "faucet": {
-    "seed": "<32 bytes of hex: the faucet's account seed>",
+    "seed": "0x55534443582d4641554345540000000000000000000000000000000000000000",
     "token_supply": "<base units (6 decimals) deposited with Circle for the distributor>",
     "domain": 10007,
     "min_burn_amount": 1,
-    "verification_base_fee": "<the node genesis.toml [fee_parameters] verification_base_fee>",
+    "verification_base_fee": 7,
     "attesters": ["<33 bytes of hex: a Circle attester key in compressed SEC1 form>"]
   }
 }

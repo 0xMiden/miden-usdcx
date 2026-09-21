@@ -9,8 +9,8 @@ use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
 
 use crate::common::{
-    attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, ATTESTER_KEY_BYTES, FAUCET_SEED,
-    TOKEN_SUPPLY, USED_NONCE_BYTES,
+    attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, ATTESTER_KEY_BYTES, TOKEN_SUPPLY,
+    USED_NONCE_BYTES,
 };
 
 /// The dev fixture parses, and the typed config reflects it.
@@ -208,14 +208,22 @@ fn the_template_parses_once_its_placeholders_are_filled() {
     let mut json: serde_json::Value =
         serde_json::from_str(&text).expect("the template is valid JSON");
     json["accounts"]["owner"] = serde_json::Value::from(role_id_hex(Role::Owner));
-    json["faucet"]["seed"] = serde_json::Value::from(to_hex(&FAUCET_SEED));
     json["faucet"]["token_supply"] = serde_json::Value::from(TOKEN_SUPPLY);
-    json["faucet"]["verification_base_fee"] = serde_json::Value::from(500u64);
     json["faucet"]["attesters"] = serde_json::json!([to_hex(&ATTESTER_KEY_BYTES[0])]);
     assert_no_placeholders(&json, "config");
 
     let config =
         GenesisToolConfig::from_json(&json.to_string()).expect("the filled template parses");
+    let mut seed = [0u8; 32];
+    seed[..12].copy_from_slice(b"USDCX-FAUCET");
+    assert_eq!(
+        config.faucet.seed, seed,
+        "the template pre-fills the faucet seed with the padded ASCII marker"
+    );
+    assert_eq!(
+        config.faucet.verification_base_fee, 7,
+        "the template pre-fills the launch verification base fee"
+    );
     assert_eq!(
         config.faucet.domain, 10007,
         "the template pre-fills the Miden domain"

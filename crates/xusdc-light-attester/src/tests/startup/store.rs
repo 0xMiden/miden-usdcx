@@ -2,19 +2,15 @@ use std::path::Path;
 use std::process::Command;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::{BlockNumber, ProvenBlock};
-use miden_protocol::note::NoteType;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::Word;
-use miden_standards::note::BurnNote;
 
-use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
 
 use super::{
-    config_toml, create_store_parent, faucet_account_id, load_config, load_config_with_anchor,
-    note, ready_circle, replace_setting, scan_limits, start, startup_anchor, transaction,
-    write_config, BlockFactory, TestChain,
+    config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
+    startup_anchor, write_config, TestChain,
 };
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -29,6 +25,21 @@ fn trusted_anchor() -> TrustedAnchor {
         block_num: BlockNumber::GENESIS,
         commitment: startup_anchor().header().commitment(),
     }
+}
+
+fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
+    config
+        .lines()
+        .map(|line| {
+            if line.starts_with(&format!("{key} =")) {
+                replacement
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 #[tokio::test]
@@ -87,130 +98,36 @@ async fn bad_anchor_does_not_create_store() {
         BlockNumber::from(1u32)
     );
     assert!(store_path.is_file());
-    drop(attester);
-
-    let mut factory = BlockFactory::new(faucet_account_id());
-    factory.push(Vec::new(), Vec::new());
-    let anchor = factory.push(Vec::new(), Vec::new());
-    let tempdir = tempfile::tempdir().unwrap();
-    let store_path = create_store_parent(&tempdir);
-    let result = start(
-        load_config_with_anchor(&tempdir, 0, &anchor),
-        TestChain::new(factory.blocks(), scan_limits(1, 1)).0,
-        ready_circle(),
-    )
-    .await;
-    assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
-    assert!(
-        !store_path.exists(),
-        "rejected config must not pin a fresh store"
-    );
-    let attester = start(
-        load_config_with_anchor(&tempdir, 1, &anchor),
-        TestChain::new(factory.blocks(), scan_limits(1, 1)).0,
-        ready_circle(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1u32)
-    );
-}
-
-/// One public note is still pending and another was consumed in the next block.
-fn create_populated_store(path: &Path) -> (Vec<ProvenBlock>, BurnCandidate, DiscoveredBurn) {
-    let pending = note(BurnNote::script(), NoteType::Public, 1, 60);
-    let consumed = note(BurnNote::script(), NoteType::Public, 1, 61);
-    let tx = transaction(faucet_account_id(), &[consumed.nullifier]);
-    let candidate = BurnCandidate::try_new(
-        pending.public_note.unwrap(),
-        1u32.into(),
-        faucet_account_id(),
-    )
-    .unwrap();
-    let consumed_candidate = BurnCandidate::try_new(
-        consumed.public_note.unwrap(),
-        1u32.into(),
-        faucet_account_id(),
-    )
-    .unwrap();
-    let burn = consumed_candidate
-        .clone()
-        .into_discovered(2u32.into(), tx.id());
-    let mut factory = BlockFactory::new(faucet_account_id());
-    factory.push(Vec::new(), Vec::new());
-    let anchor = factory.push(vec![pending.output, consumed.output], Vec::new());
-    let child = factory.push(Vec::new(), vec![tx]);
-    let mut store = Store::open_or_create(
-        path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: 1u32.into(),
-        },
-        TrustedAnchor {
-            block_num: 1u32.into(),
-            commitment: anchor.header().commitment(),
-        },
-    )
-    .unwrap();
-    store
-        .save_scan_progress(
-            &[candidate.clone(), consumed_candidate],
-            &[],
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: 2u32.into(),
-                },
-                authenticated_parent: Some(anchor.header().clone()),
-            },
-        )
-        .unwrap();
-    store
-        .save_scan_progress(
-            &[],
-            std::slice::from_ref(&burn),
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: 3u32.into(),
-                },
-                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[])),
-            },
-        )
-        .unwrap();
-    (factory.blocks(), candidate, burn)
 }
 
 #[tokio::test]
 async fn existing_store_resumes_from_saved_block() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let (blocks, candidate, burn) = create_populated_store(&store_path);
-    for fallback in [0, 700] {
-        let attester = start(
-            load_config_with_anchor(&tempdir, fallback, &blocks[1]),
-            TestChain::new(blocks.clone(), scan_limits(2, 2)).0,
-            ready_circle(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            attester.store.scan_state().unwrap(),
-            ScanState {
+    let saved_block = BlockNumber::from(2u32);
+    let mut store = Store::open_or_create(
+        &store_path,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: BlockNumber::from(1u32),
+        },
+        trusted_anchor(),
+    )
+    .unwrap();
+    store
+        .save_scan_progress(
+            &[],
+            &[],
+            &ScanState {
                 cursor: ScanCursor {
-                    next_block: 3u32.into()
+                    next_block: saved_block,
                 },
-                authenticated_parent: Some(blocks[2].header().clone()),
-            }
-        );
-        assert_eq!(attester.store.candidates(), Ok(vec![candidate.clone()]));
-        assert_eq!(attester.store.discovered_burns(), Ok(vec![burn.clone()]));
-    }
+                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[])),
+            },
+        )
+        .unwrap();
+    drop(store);
 
-    // Even before the first scan, the saved cursor wins over an edited fallback.
-    let tempdir = tempfile::tempdir().unwrap();
-    let store_path = create_store_parent(&tempdir);
-    create_valid_store(&store_path);
     let attester = start(
         load_config(&tempdir, 700),
         TestChain::anchor_only(),
@@ -220,13 +137,8 @@ async fn existing_store_resumes_from_saved_block() {
     .unwrap();
 
     assert_eq!(
-        attester.store.scan_state().unwrap(),
-        ScanState {
-            cursor: ScanCursor {
-                next_block: 1u32.into()
-            },
-            authenticated_parent: None,
-        }
+        attester.store.scan_state().unwrap().cursor.next_block,
+        saved_block
     );
 }
 

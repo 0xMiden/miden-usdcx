@@ -23,7 +23,7 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::policies::BlocklistManager;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use miden_standards::note::{
+use miden_standards::note::config::{
     AllowlistConfigNote, BlocklistConfigNote, PauseConfig, PauseConfigNote, RbacConfigNote,
 };
 use miden_tx::TransactionExecutorError;

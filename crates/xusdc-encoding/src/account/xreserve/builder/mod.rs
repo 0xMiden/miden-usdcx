@@ -30,7 +30,7 @@
 
 use bon::bon;
 use miden_protocol::account::{AccountComponent, AccountId, RoleSymbol};
-use miden_protocol::asset::AssetAmount;
+use miden_protocol::asset::{AssetAmount, AssetId};
 use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_standards::account::access::{
@@ -135,8 +135,10 @@ pub struct XReserveStablecoinBuilder {
     /// account ids are supplied at deploy time; the built-in `ADMIN` rotates/revokes them via
     /// the standard role-action note.
     blocklist_manager_holders: Vec<AccountId>,
-    /// Parameters used to price notes and identify the network fee asset.
+    /// Parameters used to price notes.
     fee_parameters: FeeParameters,
+    /// The network fee asset the fee policies charge in.
+    fee_asset_id: AssetId,
     /// The minimum burn amount stored by [`MinBurnAmount`]. Defaults to [`MIN_BURN_SIZE_FLOOR`]
     /// and is validated at construction.
     min_burn_amount: AssetAmount,
@@ -154,7 +156,7 @@ impl XReserveStablecoinBuilder {
     /// `attest_admin_holder`, `pauser_holder` and `unpauser_holder` seeded as the sole members of
     /// `ATTEST_ADMIN`, `DOM_PAUSER` and `DOM_UNPAUSER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
-    /// transfer-blocklist administrator), the network `fee_parameters`, plus the BUILD-SEEDED
+    /// transfer-blocklist administrator), the network `fee_parameters` and `fee_asset_id`, plus the BUILD-SEEDED
     /// u32 `domain`. The domain is required because a faucet without it would ship a domain
     /// compare that reads an empty slot. `attesters` (default empty) are allowlisted at
     /// composition time.
@@ -187,6 +189,7 @@ impl XReserveStablecoinBuilder {
         unpauser_holders: Vec<AccountId>,
         blocklist_manager_holders: Vec<AccountId>,
         fee_parameters: FeeParameters,
+        fee_asset_id: AssetId,
         domain: u32,
         #[builder(default)] attesters: Vec<PublicKey>,
         min_burn_amount: Option<AssetAmount>,
@@ -221,6 +224,7 @@ impl XReserveStablecoinBuilder {
             unpauser_holders,
             blocklist_manager_holders,
             fee_parameters,
+            fee_asset_id,
             min_burn_amount,
             faucet_extension,
         })

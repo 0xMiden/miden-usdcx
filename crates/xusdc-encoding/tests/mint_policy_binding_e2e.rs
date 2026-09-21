@@ -29,10 +29,11 @@ mod support;
 use anyhow::{Context, Result};
 use miden_protocol::account::AccountId;
 use miden_protocol::errors::tx_kernel::{
-    ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO, ERR_ACCOUNT_ID_UNKNOWN_VERSION,
+    ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO,
+    ERR_ACCOUNT_ID_VERSION_MUST_BE_NONZERO,
 };
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{NoteAttachmentScheme, NoteTag, NoteType};
+use miden_protocol::note::{Note, NoteAttachmentScheme, NoteTag, NoteType};
 use miden_standards::note::{NetworkAccountTarget, P2idNote, P2idNoteStorage};
 use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
@@ -80,7 +81,7 @@ async fn mint_rejects_an_amount_mismatch(
         &AttachmentPlan::default(),
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
+    expect_ecdsa_reject(&mut pf, note, &payload).await
 }
 
 /// A note whose output tag does not target the attested recipient rejects with the tag binding
@@ -168,11 +169,11 @@ async fn mint_rejects_a_private_output_note() -> Result<()> {
     38,
     107
 )]
-// the prefix's low nibble is the account id version, and only version one is supported
-#[case::unsupported_version(
+// the prefix's low nibble is the account id version, and version zero stays invalid
+#[case::zero_version(
     MintIntent::REMOTE_RECIPIENT_FELT_OFF,
-    |id: AccountId| (id.prefix().as_felt().as_canonical_u64() & !0xf) | 2,
-    ERR_ACCOUNT_ID_UNKNOWN_VERSION,
+    |id: AccountId| id.prefix().as_felt().as_canonical_u64() & !0xf,
+    ERR_ACCOUNT_ID_VERSION_MUST_BE_NONZERO,
     39,
     108
 )]
@@ -526,26 +527,11 @@ async fn mint_rejects_a_non_u32_hook_data_len_limb() -> Result<()> {
 /// mis-derived any offset would either mis-attribute the failure or, worse, verify the wrong
 /// bytes. Each case's error identity is exactly the one it had when these were separate
 /// attachments.
-#[rstest]
-#[case::pubkey(
-    ATTESTATION_PUBKEY_FELT_OFF,
-    shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
-    34,
-    101
-)]
-#[case::signature(
-    ATTESTATION_SIGNATURE_FELT_OFF,
-    &ERR_ECDSA_VERIFY_FAILED,
-    35,
-    102
-)]
-#[tokio::test]
-async fn mint_rejects_a_tampered_attestation_sub_region(
-    #[case] felt_off: usize,
-    #[case] expected_err: &'static MasmError,
-    #[case] nonce_variant: u8,
-    #[case] rng_seed: u64,
-) -> Result<()> {
+async fn tampered_sub_region_note(
+    felt_off: usize,
+    nonce_variant: u8,
+    rng_seed: u64,
+) -> Result<(ProductionFaucet, Note, Vec<u8>)> {
     let mut pf = fixture()?;
     bring_up(&mut pf, 1).await?;
     let payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, nonce_variant);
@@ -561,7 +547,27 @@ async fn mint_rejects_a_tampered_attestation_sub_region(
         },
         rng_seed,
     )?;
-    expect_reject(&mut pf, note, &payload, expected_err).await
+    Ok((pf, note, payload))
+}
+
+#[tokio::test]
+async fn mint_rejects_a_tampered_attestation_pubkey() -> Result<()> {
+    let (mut pf, note, payload) =
+        tampered_sub_region_note(ATTESTATION_PUBKEY_FELT_OFF, 34, 101).await?;
+    expect_reject(
+        &mut pf,
+        note,
+        &payload,
+        shell_error_by_name("ERR_XRESERVE_DISALLOWED_PUB_KEY"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn mint_rejects_a_tampered_attestation_signature() -> Result<()> {
+    let (mut pf, note, payload) =
+        tampered_sub_region_note(ATTESTATION_SIGNATURE_FELT_OFF, 35, 102).await?;
+    expect_ecdsa_reject(&mut pf, note, &payload).await
 }
 
 /// A signature limb above `u32::MAX` is refused by name, before the verifier sees it: the
@@ -618,7 +624,7 @@ async fn mint_rejects_a_tampered_intent_byte() -> Result<()> {
         &AttachmentPlan::default(),
         103,
     )?;
-    expect_reject(&mut pf, note, &carried, &ERR_ECDSA_VERIFY_FAILED).await
+    expect_ecdsa_reject(&mut pf, note, &carried).await
 }
 
 // PAUSE HALT — the dispatcher gate (execute_mint_policy runs assert_not_paused FIRST)
@@ -856,7 +862,7 @@ async fn mint_rejects_a_forged_signature_the_host_tries_to_rescue() -> Result<()
     );
     let result =
         consume_note_with_advice(&pf.mock_chain, pf.faucet_id, note.id(), Some(rescue)).await;
-    assert_transaction_executor_error!(result, &ERR_ECDSA_VERIFY_FAILED);
+    assert_ecdsa_verify_reject(result);
 
     assert_no_effects(&pf, &carried)
 }

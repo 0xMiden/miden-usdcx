@@ -32,7 +32,7 @@ use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::PausableStorage;
 use miden_standards::account::faucets::FungibleFaucet;
-use miden_standards::note::{RbacConfig, RbacConfigNote};
+use miden_standards::note::config::{RbacConfig, RbacConfigNote};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use support::*;
 use xusdc_encoding::account::xreserve::{

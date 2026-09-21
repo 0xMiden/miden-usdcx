@@ -18,7 +18,7 @@ use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
-use miden_standards::note::{AllowlistConfigNote, BlocklistConfigNote, PauseConfigNote};
+use miden_standards::note::config::{AllowlistConfigNote, BlocklistConfigNote, PauseConfigNote};
 use support::w2admin::*;
 use support::*;
 use xusdc_encoding::account::xreserve::{XReserveAdminAuthority, XReserveStablecoinBuilder};

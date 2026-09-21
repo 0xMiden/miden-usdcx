@@ -45,7 +45,8 @@ use miden_protocol::note::{Note, NoteId, NoteTag, NoteType};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use miden_standards::note::{P2idNote, P2idNoteStorage, RbacConfig, RbacConfigNote};
+use miden_standards::note::config::{RbacConfig, RbacConfigNote};
+use miden_standards::note::{P2idNote, P2idNoteStorage};
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
 use support::*;
@@ -322,10 +323,8 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
     account
         .vault()
         .assets()
-        .filter_map(|asset| match asset {
-            miden_protocol::asset::Asset::Fungible(f) if f.faucet_id() == faucet_id => {
-                Some(u64::from(f.amount()))
-            }
+        .filter_map(|asset| match asset.as_fungible() {
+            Some(f) if f.faucet_id() == faucet_id => Some(u64::from(f.amount())),
             _ => None,
         })
         .sum()

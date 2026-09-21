@@ -62,7 +62,7 @@ fn allowlisted_keys(component: &AccountComponent, slot: &StorageSlotName) -> BTr
 #[test]
 fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result<()> {
     let component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()
@@ -84,7 +84,7 @@ fn auth_component_tx_script_allowlist_is_exactly_the_expiration_root() -> Result
 #[test]
 fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
     let component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

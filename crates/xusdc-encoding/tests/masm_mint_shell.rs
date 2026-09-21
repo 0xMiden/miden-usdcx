@@ -322,7 +322,7 @@ async fn forged_signature_rejects() -> Result<()> {
         SHELL_DRIVER_PATH,
     )?;
     let result = run_call_driver(&h, "drive").await;
-    assert_transaction_executor_error!(result, &ERR_ECDSA_VERIFY_FAILED);
+    assert_ecdsa_verify_reject(result);
     Ok(())
 }
 
@@ -369,7 +369,7 @@ async fn mismatched_attestation_arrangements_reject() -> Result<()> {
     let mixed_src = paired_driver_src(&preimage, len_bytes, &a, &b);
     let h1 = setup_attestation_account(allowlist_a, &mixed_src, SHELL_DRIVER_PATH)?;
     let r1 = run_call_driver(&h1, "drive").await;
-    assert_transaction_executor_error!(r1, &ERR_ECDSA_VERIFY_FAILED);
+    assert_ecdsa_verify_reject(r1);
 
     // arrangement 2: B's key and B's own valid signature, but B was never allowlisted
     let b_only_src = paired_driver_src(&preimage, len_bytes, &b, &b);

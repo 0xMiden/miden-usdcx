@@ -26,6 +26,7 @@ fn builder_with_holders(
         .unpauser_holders(vec![unpauser])
         .blocklist_manager_holders(vec![blk_manager])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()
         .context("the fixed-identity USDCx faucet builds")
@@ -121,6 +122,7 @@ fn build_seeds_every_member_of_a_multi_holder_role() -> Result<()> {
         vec![test_account_id(3)],
         vec![test_account_id(4)],
         test_fee_parameters(),
+        test_fee_asset_id(),
         TEST_DOMAIN,
     )
     .context("a two-pauser composition must build")?;
@@ -148,6 +150,7 @@ fn build_accepts_an_empty_operational_role() -> Result<()> {
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()
         .context("an empty DOM_PAUSER role must construct")?
@@ -167,6 +170,7 @@ fn build_rejects_a_duplicate_role_member() -> Result<()> {
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()
         .expect_err("a duplicated role member must be rejected");
@@ -191,6 +195,7 @@ fn build_rejects_a_secondary_pauser_colliding_with_another_role() -> Result<()> 
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()
         .context("the two-pauser builder constructs")?

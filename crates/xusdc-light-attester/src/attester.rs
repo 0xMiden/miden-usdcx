@@ -43,14 +43,11 @@ impl From<StoreError> for DiscoverError {
 pub use crate::submission::SubmitError;
 
 #[derive(Debug)]
-pub struct PollError;
-
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct CycleReport {
     pub discover: Result<(), DiscoverError>,
     pub submit: Result<(), SubmitError>,
-    pub poll: Result<(), PollError>,
+    pub poll: Result<(), SubmitError>,
 }
 
 #[allow(dead_code)]
@@ -339,9 +336,16 @@ impl Attester {
         todo!()
     }
 
-    async fn poll_withdrawal_statuses(&mut self, now: Instant) -> Result<(), PollError> {
-        let _ = now;
-        todo!()
+    pub(crate) async fn poll_withdrawal_statuses(&mut self) -> Result<(), SubmitError> {
+        // Each saved ID gets one GET; the shared handler persists its outcome before we continue.
+        for saved in self
+            .store
+            .submissions_to_poll()
+            .map_err(SubmitError::from)?
+        {
+            self.advance_submission(saved).await?;
+        }
+        Ok(())
     }
 }
 

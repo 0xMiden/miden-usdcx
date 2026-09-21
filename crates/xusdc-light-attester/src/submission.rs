@@ -86,7 +86,10 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    async fn advance_submission(&mut self, mut saved: SavedSubmission) -> Result<(), SubmitError> {
+    pub(crate) async fn advance_submission(
+        &mut self,
+        mut saved: SavedSubmission,
+    ) -> Result<(), SubmitError> {
         let mut response = self.send_saved_request(&mut saved).await;
         if saved.withdrawal_id.is_none()
             && response
@@ -131,10 +134,21 @@ impl Attester {
 
     fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {
         self.store.save_submission_outcome(saved)?;
-        if saved.hold_reason.is_some() || saved.last_error.is_some() {
+        if saved.hold_reason.is_some()
+            || saved.last_error.is_some()
+            || saved.status == SubmissionStatus::Failed
+        {
             eprintln!(
-                "withdrawal {}: {:?}, hold={:?}",
-                saved.note_id, saved.status, saved.hold_reason
+                "withdrawal note={} id={} status={:?} HTTP={:?} hold={:?}: {}",
+                saved.note_id,
+                saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                saved.status,
+                saved.last_http_status,
+                saved.hold_reason,
+                saved
+                    .last_error
+                    .as_deref()
+                    .unwrap_or("Circle omitted the failure reason")
             );
         }
         Ok(())
@@ -179,8 +193,7 @@ impl SavedSubmission {
 
     fn read_response(&mut self, response: RawResponse) {
         let lookup = self.withdrawal_id.is_some();
-        if response.status.is_server_error() || (lookup && response.status == StatusCode::NOT_FOUND)
-        {
+        if response.status.is_server_error() {
             self.last_error = Some(format!("Circle returned HTTP {}", response.status));
             return;
         }
@@ -190,6 +203,7 @@ impl SavedSubmission {
             StatusCode::CREATED
         };
         if response.status != expected_status {
+            // GET 404 for a saved ID needs operator review, not endless lookup retries.
             // Circle rejects both blocked burners and exhausted capacity at POST with HTTP 400.
             // TODO: distinguish their exact codes/messages before automating capacity retries.
             self.hold(

@@ -3,6 +3,8 @@ circle_request_timeout_ms = 10000
 faucet_account_id_hex = "0xbb405fd9fe431bd1135a292de098cb"
 circle_api_base_url = "https://xreserve-api-testnet.circle.com"
 use_circle_forwarding = false
+# Maximum fee per withdrawal, in smallest USDC units. Zero permits only fee-free withdrawals.
+max_withdrawal_fee = 0
 poll_interval_ms = 1000
 faucet_deployment_block = 0
 

@@ -1,5 +1,5 @@
-//! The `.mac` file boundary: what each writer emits, that nothing is ever overwritten, and that a
-//! key-bearing file is private.
+//! The `.mac` file boundary — nothing is ever overwritten, a key-bearing file is private — and
+//! the id listing.
 
 mod common;
 
@@ -7,8 +7,7 @@ use miden_protocol::account::AccountFile;
 use miden_protocol::utils::serde::Serializable;
 use xusdc_encoding::xreserve::encoding::{EthEmbeddedAccountId, EthEmbeddedAccountIdExt};
 use xusdc_genesis::output::{
-    read_account_file, render_ids, write_account_file, write_distributor, write_faucet,
-    DISTRIBUTOR_MAC_FILE, FAUCET_MAC_FILE,
+    read_account_file, render_ids, write_account_file, DISTRIBUTOR_MAC_FILE, FAUCET_MAC_FILE,
 };
 
 use crate::common::{fresh_distributor, genesis_faucet};
@@ -37,35 +36,31 @@ fn render_ids_prints_the_bytes32_wire_form_of_the_id() {
     );
 }
 
-/// `write_faucet` emits exactly one file, the keyless faucet `.mac`.
+/// A keyless faucet file round-trips through the file boundary.
 #[test]
-fn write_faucet_emits_only_the_keyless_faucet_file() {
+fn the_faucet_file_round_trips_without_keys() {
+    let faucet = genesis_faucet();
     let dir = tempfile::tempdir().expect("a temp dir is available");
-    let path = write_faucet(&genesis_faucet(), dir.path()).expect("the faucet must write");
+    let path = dir.path().join(FAUCET_MAC_FILE);
+    write_account_file(&AccountFile::new(faucet.clone(), Vec::new()), &path)
+        .expect("the faucet must write");
 
-    assert_eq!(path, dir.path().join(FAUCET_MAC_FILE));
-    assert_eq!(
-        std::fs::read_dir(dir.path())
-            .expect("the out dir is readable")
-            .count(),
-        1,
-        "the faucet .mac is the only file emitted",
-    );
     let file = read_account_file(&path).expect("the faucet file must load");
+    assert_eq!(file.account, faucet);
     assert!(
         file.auth_secret_keys.is_empty(),
         "the faucet file carries no keys"
     );
 }
 
-/// `write_distributor` emits the distributor with its key, readable by its owner only.
+/// The distributor file keeps its key and is readable by its owner only.
 #[test]
-fn write_distributor_keeps_the_key_and_is_private() {
+fn the_distributor_file_keeps_the_key_and_is_private() {
     let distributor = fresh_distributor();
     let dir = tempfile::tempdir().expect("a temp dir is available");
-    let path = write_distributor(&distributor, dir.path()).expect("the distributor must write");
+    let path = dir.path().join(DISTRIBUTOR_MAC_FILE);
+    write_account_file(&distributor, &path).expect("the distributor must write");
 
-    assert_eq!(path, dir.path().join(DISTRIBUTOR_MAC_FILE));
     let file = read_account_file(&path).expect("the distributor file must load");
     assert_eq!(file.account, distributor.account);
     assert_eq!(

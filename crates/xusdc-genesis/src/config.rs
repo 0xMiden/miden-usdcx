@@ -51,14 +51,13 @@ impl Role {
 // CONFIG
 // ================================================================================================
 
-/// The tool config: the role holders' account ids, the [`FaucetConfig`], and the optional
-/// default output directory (`--out-dir` overrides it). Unknown fields are rejected.
+/// The tool config: the role holders' account ids and the [`FaucetConfig`]. Unknown fields are
+/// rejected. The crate's `config.template.json` is its placeholder form.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenesisToolConfig {
     pub accounts: RoleAccounts,
     pub faucet: FaucetConfig,
-    pub output_dir: Option<PathBuf>,
 }
 
 /// The role holders' account ids, each id given as `0x`-prefixed hex or as bech32. `owner` is

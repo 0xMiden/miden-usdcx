@@ -1,0 +1,17 @@
+{
+  "accounts": {
+    "owner": "<the distributor id printed by new-distributor, hex or bech32>",
+    "attest_admins": [],
+    "pausers": [],
+    "unpausers": [],
+    "blocklist_managers": []
+  },
+  "faucet": {
+    "seed": "<32 bytes of hex: the faucet's account seed>",
+    "token_supply": "<base units (6 decimals) deposited with Circle for the distributor>",
+    "domain": 10007,
+    "min_burn_amount": 1,
+    "verification_base_fee": "<the node genesis.toml [fee_parameters] verification_base_fee>",
+    "attesters": ["<33 bytes of hex: a Circle attester key in compressed SEC1 form>"]
+  }
+}

@@ -6,10 +6,11 @@ use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
-use xusdc_genesis::config::{ConfigError, Role};
+use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role};
 
 use crate::common::{
-    attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, TOKEN_SUPPLY, USED_NONCE_BYTES,
+    attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, ATTESTER_KEY_BYTES, FAUCET_SEED,
+    TOKEN_SUPPLY, USED_NONCE_BYTES,
 };
 
 /// The dev fixture parses, and the typed config reflects it.
@@ -21,7 +22,6 @@ fn the_dev_fixture_round_trips() {
     assert_eq!(config.faucet.domain, 7);
     assert_eq!(config.faucet.verification_base_fee, 500);
     assert!(config.faucet.min_burn_amount.is_none());
-    assert!(config.output_dir.is_none());
     assert_eq!(
         config
             .faucet
@@ -163,6 +163,69 @@ fn an_unknown_field_is_rejected() {
             .parse()
             .expect_err("an unknown field must be rejected");
         assert_parse_error_contains(err, "unknown field");
+    }
+}
+
+// TEMPLATE
+// ================================================================================================
+
+/// Fails on any string value that is still a `<...>` placeholder.
+fn assert_no_placeholders(value: &serde_json::Value, path: &str) {
+    match value {
+        serde_json::Value::String(text) => {
+            assert!(
+                !text.starts_with('<'),
+                "the placeholder at {path} must be filled by the test, got: {text}",
+            );
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                assert_no_placeholders(item, &format!("{path}[{index}]"));
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                assert_no_placeholders(field, &format!("{path}.{name}"));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The checked-in template does not parse as it is (its placeholders force the operator to
+/// fill it), and parses once every placeholder is filled — so its placeholders sit exactly at
+/// the fields the schema has, with the pre-filled values intact.
+#[test]
+fn the_template_parses_once_its_placeholders_are_filled() {
+    let text =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.template.json"))
+            .expect("the template is readable");
+    assert!(
+        GenesisToolConfig::from_json(&text).is_err(),
+        "the unfilled template must not parse",
+    );
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&text).expect("the template is valid JSON");
+    json["accounts"]["owner"] = serde_json::Value::from(role_id_hex(Role::Owner));
+    json["faucet"]["seed"] = serde_json::Value::from(to_hex(&FAUCET_SEED));
+    json["faucet"]["token_supply"] = serde_json::Value::from(TOKEN_SUPPLY);
+    json["faucet"]["verification_base_fee"] = serde_json::Value::from(500u64);
+    json["faucet"]["attesters"] = serde_json::json!([to_hex(&ATTESTER_KEY_BYTES[0])]);
+    assert_no_placeholders(&json, "config");
+
+    let config =
+        GenesisToolConfig::from_json(&json.to_string()).expect("the filled template parses");
+    assert_eq!(
+        config.faucet.domain, 10007,
+        "the template pre-fills the Miden domain"
+    );
+    assert_eq!(config.faucet.min_burn_amount, Some(1));
+    for role in Role::ALL.into_iter().filter(|role| *role != Role::Owner) {
+        assert!(
+            config.accounts.get(role).is_empty(),
+            "the template leaves the operational roles for the bootstrap admin to assign",
+        );
     }
 }
 

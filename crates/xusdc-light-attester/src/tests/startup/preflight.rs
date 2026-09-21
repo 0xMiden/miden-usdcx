@@ -3,7 +3,6 @@ use reqwest::{Method, StatusCode};
 use crate::attester::Attester;
 use crate::chain::ChainError;
 use crate::circle::{CircleApi, CircleClient, CircleError, REQUEST_GAP};
-use crate::config::Config;
 use crate::signer::{DevelopmentSigner, Signer};
 
 use super::{

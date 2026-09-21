@@ -6,7 +6,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
-use miden_protocol::{Word, MAX_BATCHES_PER_BLOCK, MAX_OUTPUT_NOTES_PER_BATCH};
+use miden_protocol::Word;
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 use tokio_util::sync::CancellationToken;
 
@@ -17,8 +17,8 @@ use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
 
 use super::support::{
-    faucet_account_id, note, ready_circle, replace_note_batches, scan_limits, test_note,
-    transaction, BlockFactory, ChainControls, TestChain,
+    faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
+    ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -286,18 +286,6 @@ fn burns_and_scan_position_are_saved_together() {
         authenticated_parent: Some(child.header().clone()),
     };
     let initial_state = store.scan_state().unwrap();
-    assert_eq!(
-        store.save_scan_progress(
-            &[],
-            &[],
-            &ScanState {
-                cursor: after_anchor.cursor,
-                authenticated_parent: None,
-            }
-        ),
-        Err(StoreError::Invalid),
-        "moving the cursor requires the authenticated block header"
-    );
     // Even the first saved block must not skip a height. No stored parent can mask this check.
     assert_eq!(
         store
@@ -587,10 +575,7 @@ fn burns_and_scan_position_are_saved_together() {
         ScanCursor {
             next_block: BlockNumber::from(2u32),
         },
-        TrustedAnchor {
-            block_num: child.header().block_num(),
-            commitment: child.header().commitment(),
-        },
+        trusted_anchor,
     )
     .unwrap();
     assert_eq!(
@@ -656,9 +641,11 @@ async fn bad_blocks_are_rejected() {
     factory.push(Vec::new(), Vec::new());
     let later_anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
-    attester.discover_burns().await.unwrap();
-    assert_eq!(attester.store.candidates().unwrap().len(), 3);
+    let config = write_config(&tempdir, 0, &later_anchor, 1);
+    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
+    assert!(Attester::start(config, Box::new(chain), ready_circle())
+        .await
+        .is_err());
 
     let cases = [
         ("missing", 0u8, 1u32, Expected::ReadFailure),

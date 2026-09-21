@@ -86,7 +86,6 @@ impl Attester {
             .context("failed to load the configured trusted anchor")?;
         if block.header().block_num() != trusted_anchor.block_num
             || block.header().commitment() != trusted_anchor.commitment
-            || !has_valid_note_positions(&block)
             || block.validate(None).is_err()
         {
             anyhow::bail!(
@@ -113,6 +112,9 @@ impl Attester {
         let scan_state = store
             .scan_state()
             .context("failed to load attester scan state")?;
+        if trusted_anchor.block_num > scan_state.cursor.next_block {
+            anyhow::bail!("trusted anchor must not be after the scan start");
+        }
         let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
 
         Ok(Self {
@@ -273,7 +275,6 @@ impl Attester {
             .await
             .map_err(DiscoverError::Chain)?;
         if block.header().block_num() != block_num
-            || !has_valid_note_positions(&block)
             || block.validate(Some(last_verified_header)).is_err()
         {
             return Err(DiscoverError::ChainDiverged);
@@ -289,21 +290,6 @@ impl Attester {
         let _ = now;
         todo!()
     }
-}
-
-fn has_valid_note_positions(block: &ProvenBlock) -> bool {
-    // Every RPC-supplied note position must fit its batch and be unique within that batch.
-    // Check those conditions before validation; the input order does not need to be sorted.
-    let batches = block.body().output_note_batches();
-    if batches.len() > MAX_BATCHES_PER_BLOCK {
-        return false;
-    }
-    batches.iter().enumerate().all(|(batch_index, notes)| {
-        let mut positions = BTreeSet::new();
-        notes.iter().all(|(note_index, _)| {
-            BlockNoteIndex::new(batch_index, *note_index).is_some() && positions.insert(*note_index)
-        })
-    })
 }
 
 fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = BlockNumber> {

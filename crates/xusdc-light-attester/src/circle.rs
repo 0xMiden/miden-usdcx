@@ -1,4 +1,4 @@
-//! Circle reachability and prepare requests. Responses are not trusted for signing.
+//! Circle requests. Prepared authorizations and submission identities are checked separately.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use reqwest::{StatusCode, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use xusdc_encoding::account::xreserve::USDCX_DECIMALS;
 use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
 use crate::burn::ValidatedBurn;
+use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -30,8 +31,8 @@ pub enum CircleError {
 
 #[derive(Debug)]
 pub struct RawResponse {
-    status: StatusCode,
-    body: Vec<u8>,
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
 }
 
 impl RawResponse {
@@ -116,6 +117,46 @@ impl CircleClient {
         }
     }
 
+    pub(crate) fn submission_endpoint(&self) -> Result<String, CircleError> {
+        self.base_url
+            .join("/v1/withdraw")
+            .map(|url| url.to_string())
+            .map_err(|_| CircleError::Unavailable)
+    }
+
+    pub(crate) async fn post_submission(
+        &self,
+        saved: &SavedSubmission,
+    ) -> Result<RawResponse, CircleError> {
+        let url = Url::parse(&saved.endpoint).map_err(|_| CircleError::Unavailable)?;
+        let mut request = reqwest::Request::new(reqwest::Method::POST, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        request.headers_mut().insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        // A retry must send the saved authorization, not rebuild it from today's config.
+        *request.body_mut() = Some(saved.body.clone().into());
+        self.transport.execute(request).await
+    }
+
+    pub(crate) async fn get_withdrawal(
+        &self,
+        saved: &SavedSubmission,
+        id: &str,
+    ) -> Result<RawResponse, CircleError> {
+        let mut url = Url::parse(&saved.endpoint)
+            .and_then(|url| url.join("/v1/withdrawal/"))
+            .map_err(|_| CircleError::Unavailable)?;
+        url.path_segments_mut()
+            .map_err(|_| CircleError::Unavailable)?
+            .pop_if_empty()
+            .push(id);
+        let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        self.transport.execute(request).await
+    }
+
     /// Decodes Circle's reply only. Its contents must be verified before signing.
     #[allow(dead_code)]
     pub(crate) async fn prepare_withdrawal(
@@ -187,7 +228,7 @@ pub(crate) struct UnverifiedPrepareBatch {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BurnIntent {
     pub(crate) max_block_height: String,
@@ -196,7 +237,7 @@ pub(crate) struct BurnIntent {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TransferSpec {
     pub(crate) version: u32,
@@ -216,7 +257,7 @@ pub(crate) struct TransferSpec {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StructuredHookData {
     pub(crate) remote_domain: u32,
@@ -224,4 +265,30 @@ pub(crate) struct StructuredHookData {
     pub(crate) remote_token: String,
     pub(crate) forwarding_contract_address: String,
     pub(crate) forwarding_calldata: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WithdrawalResponse {
+    pub(crate) withdrawal_id: String,
+    // Circle's field name stays burnTxId; for Miden its value is the burn note ID.
+    #[serde(rename = "burnTxId")]
+    pub(crate) burn_note_id: String,
+    pub(crate) status: String,
+    pub(crate) use_circle_forwarding: bool,
+    pub(crate) transfer_spec_hashes: Vec<String>,
+    pub(crate) failure_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ConflictResponse {
+    pub(crate) conflict: Option<WithdrawalConflict>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WithdrawalConflict {
+    pub(crate) withdrawal_id: Option<String>,
+    #[serde(rename = "burnTxId")]
+    pub(crate) burn_note_id: Option<String>,
 }

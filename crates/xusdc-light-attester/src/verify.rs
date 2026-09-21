@@ -1,16 +1,18 @@
 //! Checks Circle's prepared authorization against the burns, then signs only the checked digest.
 
-use alloy_primitives::{Address, Bytes, Signature, B256, U256};
+use alloy_primitives::{keccak256, Address, Bytes, Signature, B256, U256};
 use alloy_sol_types::{eip712_domain, SolStruct};
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::TransactionId;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
+use serde::Deserialize;
+use serde_json::json;
 use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
 use crate::burn::ValidatedBurn;
 use crate::circle::{BurnIntent, UnverifiedPrepareResponse};
 use crate::config::Config;
 use crate::signer::{Signer, SignerError};
+use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
 const BURN_INTENT_MAGIC: [u8; 4] = 0x070a_fbc2u32.to_be_bytes();
 const BURN_INTENT_SET_MAGIC: [u8; 4] = 0xe999_239bu32.to_be_bytes();
@@ -77,6 +79,7 @@ pub(crate) enum VerifyError {
 #[derive(Debug)]
 pub(crate) struct VerifiedWithdrawal {
     batch: VerifiedBatch,
+    use_circle_forwarding: bool,
 }
 
 impl VerifiedWithdrawal {
@@ -96,15 +99,15 @@ impl VerifiedWithdrawal {
                 batch: self.batch,
                 signatures: [first, second],
             },
+            use_circle_forwarding: self.use_circle_forwarding,
         })
     }
 }
 
 #[derive(Debug)]
 struct VerifiedBatch {
-    // Several notes may share a transaction ID; the note ID identifies the burn's store row.
+    // Circle's request key and the local ledger key are both the burn note ID.
     note_id: NoteId,
-    burn_tx_id: TransactionId,
     intent: BurnIntent,
     digest: B256,
 }
@@ -112,6 +115,59 @@ struct VerifiedBatch {
 #[derive(Debug)]
 pub(crate) struct SignedWithdrawal {
     batch: SignedBatch,
+    use_circle_forwarding: bool,
+}
+
+impl SignedWithdrawal {
+    pub(crate) fn submission(&self, endpoint: String) -> Result<SavedSubmission, SubmitError> {
+        let signed = &self.batch;
+        let batch = &signed.batch;
+        let (intent, _) = parse_intent(&batch.intent).map_err(|_| SubmitError::InvalidRequest)?;
+        let transfer_spec_hash =
+            transfer_spec_hash(&intent.spec).map_err(|_| SubmitError::InvalidRequest)?;
+        let body = serde_json::to_vec(&json!({
+            "batches": [{
+                "burnIntents": [&batch.intent],
+                "burnSignatures": signed.signatures.map(|signature| signature.to_string()),
+                // For Miden, Circle's burnTxId is the burn note ID, not the transaction ID.
+                "burnTxId": batch.note_id.to_hex(),
+                "useCircleForwarding": self.use_circle_forwarding,
+            }],
+        }))
+        .map_err(SubmitError::Encoding)?;
+        Ok(SavedSubmission {
+            note_id: batch.note_id,
+            endpoint,
+            body,
+            transfer_spec_hash,
+            use_circle_forwarding: self.use_circle_forwarding,
+            status: SubmissionStatus::Submitting,
+            withdrawal_id: None,
+            hold_reason: None,
+            last_http_status: None,
+            last_response: None,
+            last_error: None,
+        })
+    }
+}
+
+pub(crate) fn validate_saved_request(saved: &SavedSubmission) -> bool {
+    #[derive(Deserialize)]
+    struct Request {
+        batches: [Batch; 1],
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Batch {
+        #[serde(rename = "burnTxId")]
+        burn_note_id: String,
+        use_circle_forwarding: bool,
+    }
+    let Ok(Request { batches: [batch] }) = serde_json::from_slice(&saved.body) else {
+        return false;
+    };
+    batch.burn_note_id == saved.note_id.to_hex()
+        && batch.use_circle_forwarding == saved.use_circle_forwarding
 }
 
 #[derive(Debug)]
@@ -191,10 +247,10 @@ pub(crate) fn verify_prepared_response(
     Ok(VerifiedWithdrawal {
         batch: VerifiedBatch {
             note_id: burn.burn.note_id(),
-            burn_tx_id: burn.burn.burn_tx_id(),
             intent: raw,
             digest,
         },
+        use_circle_forwarding: config.use_circle_forwarding(),
     })
 }
 
@@ -333,6 +389,13 @@ fn signing_hash(intent: eip712::BurnIntent, as_set: bool) -> B256 {
     } else {
         intent.eip712_signing_hash(&domain)
     }
+}
+
+fn transfer_spec_hash(spec: &eip712::TransferSpec) -> Result<B256, VerifyError> {
+    // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID.
+    // Its correspondence to REST transferSpecHashes still awaits a live withdrawal response.
+    // https://github.com/circlefin/evm-gateway-contracts/blob/ee628dc35ee67bc8ad30ba0606cc70888688a3f1/src/lib/TransferSpecLib.sol#L372-L466
+    Ok(keccak256(encode_transfer_spec(spec)?))
 }
 
 // Keeps semantic test mutations self-consistent; this is not an independent reference vector.

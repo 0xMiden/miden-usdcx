@@ -11,7 +11,7 @@ use miden_protocol::transaction::OutputNote;
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{CircleClient, HttpTransport};
+use crate::circle::{CircleClient, CircleError, HttpTransport};
 use crate::config::Config;
 use crate::signer::{Signer, SigningPublicKey};
 use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, StoreError, TrustedAnchor};

@@ -7,7 +7,7 @@ pub mod config;
 pub mod signer;
 pub(crate) mod store;
 
-pub use attester::{Attester, CycleReport, RunError, StartError};
+pub use attester::{Attester, CycleReport, RunError};
 
 #[cfg(test)]
 mod tests;

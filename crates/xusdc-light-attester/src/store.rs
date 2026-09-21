@@ -14,10 +14,12 @@ pub(crate) struct ScanCursor {
     pub(crate) next_block: BlockNumber,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[allow(dead_code)]
 pub(crate) enum StoreError {
+    #[error("attester store is invalid")]
     Invalid,
+    #[error("attester store is locked by another process")]
     Locked,
 }
 

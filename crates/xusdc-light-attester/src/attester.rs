@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::CircleApi;
+use crate::circle::{CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::{Signer, SignerPair};
 use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};

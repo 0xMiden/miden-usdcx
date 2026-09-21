@@ -82,11 +82,12 @@ fn main() -> Result<()> {
 fn build_registry() -> Result<InMemoryPackageRegistry> {
     let mut registry = InMemoryPackageRegistry::default();
 
-    for package in CoreLibrary::default().packages().into_iter().chain([
+    for package in [
+        CoreLibrary::default().package(),
         ProtocolLib::default().package(),
         TransactionKernel::package(),
         StandardsLib::default().package(),
-    ]) {
+    ] {
         registry.cache_package(package).into_diagnostic()?;
     }
 

@@ -21,7 +21,7 @@ use miden_protocol::account::{Account, AccountId, RoleSymbol, StorageMapKey};
 use miden_protocol::note::Note;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::RoleBasedAccessControl;
-use miden_standards::note::{RbacConfig, RbacConfigNote};
+use miden_standards::note::config::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use support::w2admin::*;
 use support::*;

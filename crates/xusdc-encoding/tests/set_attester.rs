@@ -186,6 +186,7 @@ async fn set_attester_requires_attest_admin_not_admin() -> Result<()> {
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()?
         .build_components()?;

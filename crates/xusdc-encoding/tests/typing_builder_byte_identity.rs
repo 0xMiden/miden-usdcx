@@ -14,7 +14,7 @@
 mod support;
 
 use miden_protocol::account::{Account, AccountType, AssetCallbackFlag, StorageSlotName};
-use miden_protocol::asset::{AssetAmount, AssetCallbacks};
+use miden_protocol::asset::AssetAmount;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Hasher, Word};
 use support::*;
@@ -28,12 +28,12 @@ const TOKEN_SUPPLY: u64 = 0;
 // Account commitments for the production composition at SEED. The fixed seed makes both
 // construction paths deterministic.
 const GOLDEN_STATE_COMMITMENT: &str =
-    "Word([6510099079991050005, 124674668738598690, 2039786511193741981, 15331176349321481133])";
+    "Word([3761824734861386326, 12325685540386273200, 14220374606693925608, 5533494090975425178])";
 const GOLDEN_CODE_COMMITMENT: &str =
-    "Word([12173510844942279610, 2798734683606073516, 8980435499878966036, 18249226465823115597])";
+    "Word([3257295153679543755, 8365363417772629577, 15841314220791118988, 5142984343480963693])";
 const GOLDEN_STORAGE_DIGEST: &str =
-    "Word([537998331999014567, 4399015478608436927, 2140554349343103936, 1744986290364427969])";
-const GOLDEN_ACCOUNT_ID: &str = "0xe7739c1d77aba5b11973600afd8bf7";
+    "Word([6994355362702279286, 5085285272639048371, 14779426451499966959, 1023592045724266048])";
+const GOLDEN_ACCOUNT_ID: &str = "0xb898e9d66f8558711752f3d251977c";
 
 /// A deterministic digest over the account's storage slots (name + serialized slot), so a
 /// storage-only drift is caught independently of the code commitment.
@@ -74,25 +74,12 @@ fn assert_matches_golden(account: &Account, path: &str) {
 fn account_via_component_path() -> Account {
     let components =
         production_component_set(TOKEN_SUPPLY).expect("the production composition must build");
-    let has_callbacks = components.iter().any(|c| {
-        c.storage_slots().iter().any(|s| {
-            s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
-                || s.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
-        })
-    });
-    let flag = if has_callbacks {
-        AssetCallbackFlag::Enabled
-    } else {
-        AssetCallbackFlag::Disabled
-    };
-    let mut builder = Account::builder(SEED)
-        .account_type(AccountType::Public)
-        .with_asset_callbacks(flag);
+    let mut builder = Account::builder(SEED).account_type(AccountType::Public);
     for component in components {
         builder = builder.with_component(component);
     }
     builder = builder.with_components(
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .expect("the auth component must build"),
     );
     builder
@@ -112,6 +99,7 @@ fn account_via_crate_root_constructor() -> Account {
         vec![test_account_id(3)],
         vec![test_account_id(4)],
         test_fee_parameters(),
+        test_fee_asset_id(),
         TEST_DOMAIN,
     )
     .expect("the crate-root faucet-account constructor must build the account")

@@ -19,7 +19,10 @@ use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
-use miden_protocol::note::{Note, NoteAttachment, NoteAttachmentScheme, NoteId, NoteTag};
+use miden_protocol::note::{
+    Note, NoteAssets, NoteAttachment, NoteAttachmentScheme, NoteAttachments, NoteId, NoteRecipient,
+    NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+};
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{
@@ -295,9 +298,10 @@ fn transport_attachment(
     .map_err(|e| anyhow::anyhow!("transport attachment: {e}"))
 }
 
-/// Builds the (possibly tampered) stock mint note. `sig_over` lets the forged-signature case sign
+/// Builds the (possibly tampered) mint note. `sig_over` lets the forged-signature case sign
 /// a DIFFERENT byte string than the carried payload; `attester_seed` selects the keypair (seed 1
-/// is the allowlisted attester).
+/// is the allowlisted attester). The protocol note is assembled directly — `MintNote::new` would
+/// re-add a dropped routing attachment, which would make the attachment negatives unrepresentable.
 #[allow(clippy::too_many_arguments)]
 pub fn tampered_mint_note(
     pf: &ProductionFaucet,
@@ -317,37 +321,44 @@ pub fn tampered_mint_note(
         .tag
         .unwrap_or_else(|| NoteTag::with_account_target(storage.recipient));
     let mint_storage = if storage.public {
-        MintNoteStorage::new_fungible_public(recipient_recipe, asset, tag)
+        MintNoteStorage::new_public(recipient_recipe, asset, tag)
             .map_err(|e| anyhow::anyhow!("public mint storage: {e}"))?
     } else {
-        MintNoteStorage::new_fungible_private(recipient_recipe.digest(), asset, tag)
+        MintNoteStorage::new_private(recipient_recipe.digest(), asset, tag)
     };
-    let mut builder = MintNote::builder()
-        .sender(pf.producer_id)
-        .mint_storage(mint_storage)
-        .serial_number(note_rng(rng_seed).draw_word());
+    let mut attachments: Vec<NoteAttachment> = Vec::new();
     if plan.transport {
-        builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
+        attachments.push(transport_attachment(payload, &key_source, plan)?);
         if plan.duplicate_transport {
-            builder = builder.attachment(transport_attachment(payload, &key_source, plan)?);
+            attachments.push(transport_attachment(payload, &key_source, plan)?);
         }
     }
     if plan.target {
-        builder = builder.attachment(NoteAttachment::from(
+        attachments.push(NoteAttachment::from(
             NetworkAccountTarget::new(pf.faucet_id, NoteExecutionHint::Always)
                 .map_err(|e| anyhow::anyhow!("routing attachment: {e}"))?,
         ));
     }
     if let Some(scheme) = plan.extra_scheme {
-        builder = builder.attachment(NoteAttachment::with_word(
+        attachments.push(NoteAttachment::with_word(
             NoteAttachmentScheme::new(scheme).expect("extra scheme is valid"),
             Word::empty(),
         ));
     }
-    let mint_note = builder
-        .build()
-        .map_err(|e| anyhow::anyhow!("building the tampered mint note: {e}"))?;
-    Ok(Note::from(mint_note))
+    let metadata = PartialNoteMetadata::new(pf.producer_id, NoteType::Public)
+        .with_tag(NoteTag::with_account_target(pf.faucet_id));
+    let recipient = NoteRecipient::new(
+        note_rng(rng_seed).draw_word(),
+        MintNote::script(),
+        NoteStorage::from(mint_storage),
+    );
+    Ok(Note::with_attachments(
+        NoteAssets::default(),
+        metadata,
+        recipient,
+        NoteAttachments::new(attachments)
+            .map_err(|e| anyhow::anyhow!("building the tampered mint note's attachments: {e}"))?,
+    ))
 }
 
 /// The honest storage plan: the attested recipient, the attested amount, the derived tag, public.
@@ -460,7 +471,7 @@ pub async fn consume_note_with_advice(
         .build_transaction(faucet_id)
         .authenticated_input_note(note_id);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack.into()));
     }
     ctx.build()
         .expect("building the consume tx")
@@ -549,5 +560,18 @@ pub async fn expect_reject(
     emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
     let result = consume_note(&pf.mock_chain, pf.faucet_id, note.id()).await;
     assert_transaction_executor_error!(result, expected);
+    assert_no_effects(pf, payload)
+}
+
+/// Emits the note and consumes it, expecting the ECDSA verification reject
+/// ([`ECDSA_VERIFY_REJECT_RENDERING`]), then proves fail-closure.
+pub async fn expect_ecdsa_reject(
+    pf: &mut ProductionFaucet,
+    note: Note,
+    payload: &[u8],
+) -> Result<()> {
+    emit_note_with_attachments(&mut pf.mock_chain, pf.producer_id, &note).await?;
+    let result = consume_note(&pf.mock_chain, pf.faucet_id, note.id()).await;
+    assert_ecdsa_verify_reject(result);
     assert_no_effects(pf, payload)
 }

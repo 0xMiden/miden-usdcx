@@ -12,9 +12,8 @@ use anyhow::{Context, Result};
 use miden_protocol::account::{AccountComponent, StorageSlotContent, StorageSlotName};
 use miden_protocol::Word;
 use miden_standards::account::auth::{AuthNetworkAccount, NetworkAccountNoteAllowlist};
-use miden_standards::note::{
-    ConstantFeePolicyConfigNote, FeeSponsorshipNote, NetworkAccountConfigNote,
-};
+use miden_standards::note::config::{ConstantFeePolicyConfigNote, NetworkAccountConfigNote};
+use miden_standards::note::FeeSponsorshipNote;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
@@ -77,7 +76,7 @@ fn builder_allowlist_exposes_only_the_fee_config_surface() {
 #[test]
 fn auth_component_materializes_the_exact_fee_enabled_allowlist() -> Result<()> {
     let component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

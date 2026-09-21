@@ -6,7 +6,7 @@ use miden_protocol::account::{
     Account, AccountBuilder, AccountFile, AccountId, AccountIdVersion, AccountType,
     AssetCallbackFlag,
 };
-use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_protocol::block::FeeParameters;
 use miden_protocol::errors::{AccountError, AssetError, AssetVaultError, AuthSchemeError};
 use miden_protocol::{Felt, ZERO};
@@ -23,7 +23,7 @@ use crate::config::GenesisToolConfig;
 // FAUCET
 // ================================================================================================
 
-/// The dummy fee faucet id the fee parameters carry while the faucet's own id is derived.
+/// The dummy fee faucet id the fee asset names while the faucet's own id is derived.
 fn placeholder_fee_faucet_id() -> AccountId {
     AccountId::dummy(
         [0; 15],
@@ -36,10 +36,7 @@ fn placeholder_fee_faucet_id() -> AccountId {
 /// Builds the genesis faucet from the config, with the supply cap at [`AssetAmount::MAX`].
 pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
     let faucet_config = &config.faucet;
-    let fee_parameters = FeeParameters::new(
-        placeholder_fee_faucet_id(),
-        faucet_config.verification_base_fee,
-    );
+    let fee_parameters = FeeParameters::new(faucet_config.verification_base_fee);
     let min_burn_amount = faucet_config
         .min_burn_amount
         .map(AssetAmount::new)
@@ -53,6 +50,7 @@ pub fn build_faucet(config: &GenesisToolConfig) -> Result<Account> {
         .unpauser_holders(config.accounts.unpausers.clone())
         .blocklist_manager_holders(config.accounts.blocklist_managers.clone())
         .fee_parameters(fee_parameters)
+        .fee_asset_id(AssetId::new_fungible(placeholder_fee_faucet_id()))
         .domain(faucet_config.domain)
         .attesters(faucet_config.attesters.clone())
         .maybe_min_burn_amount(min_burn_amount)
@@ -127,7 +125,7 @@ pub fn prefund_distributor(
     let asset = FungibleAsset::new(faucet.id(), supply.as_u64()).map_err(PrefundError::Asset)?;
     let (id, mut vault, storage, code, _nonce, _seed) = account.clone().into_parts();
     vault
-        .add_asset(Asset::Fungible(asset))
+        .add_asset(Asset::from(asset))
         .map_err(PrefundError::Vault)?;
     let prefunded =
         Account::new(id, vault, storage, code, Felt::ONE, None).map_err(PrefundError::Account)?;

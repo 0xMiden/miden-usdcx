@@ -7,13 +7,15 @@
 
 use std::collections::BTreeSet;
 
+use miden_protocol::asset::AssetId;
 use miden_protocol::block::FeeParameters;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::AuthNetworkAccount;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+use miden_standards::note::config::{
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, PauseConfigNote,
+    RbacConfigNote,
 };
+use miden_standards::note::{BurnNote, FeeSponsorshipNote, MintNote};
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_tx::NetworkNotePricer;
 
@@ -50,15 +52,17 @@ impl XReserveStablecoinBuilder {
         ])
     }
 
-    /// Builds the production `AuthNetworkAccount` component from the network fee parameters. It
-    /// constructs the xUSDC fee schedule through the pricer, admits only
+    /// Builds the production `AuthNetworkAccount` component from the network fee parameters and
+    /// fee asset. It constructs the xUSDC fee schedule through the pricer, admits only
     /// `ExpirationTransactionScript::script_root()` as a transaction script, and excludes the
     /// mutable `NetworkAccountConfigNote` entry point.
     pub fn auth_component(
         fee_parameters: FeeParameters,
+        fee_asset_id: AssetId,
     ) -> Result<AuthNetworkAccount, XReserveStablecoinBuilderError> {
         let fee_policy_manager = NetworkNotePricer::builder()
             .fee_parameters(fee_parameters)
+            .fee_asset_id(fee_asset_id)
             .note_costs(crate::note::costs::note_costs())
             .build()
             .basic_constant_fee_policy_manager(Self::allowed_note_scripts())?;

@@ -25,7 +25,7 @@ use miden_protocol::assembly::mast::MastNodeExt;
 use miden_protocol::note::NoteScriptRoot;
 use miden_protocol::Word;
 use miden_standards::account::auth::AuthNetworkAccount;
-use miden_standards::note::ConstantFeePolicyConfigNote;
+use miden_standards::note::config::ConstantFeePolicyConfigNote;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 
@@ -37,7 +37,7 @@ fn production_components() -> Result<Vec<AccountComponent>> {
     let mut components =
         production_component_set(0).context("the production composition must build")?;
     components.extend(
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .context("the production auth component must build")?,
     );
     Ok(components)
@@ -212,7 +212,7 @@ fn fee_and_mutator_procedures_are_not_admissible_via_either_allowlist() -> Resul
     // the production auth component's materialized tx-script allowlist keys (non-empty values
     // mark membership, matching the MASM `word::eqz` check — the s12 view).
     let auth_component: AccountComponent =
-        XReserveStablecoinBuilder::auth_component(test_fee_parameters())
+        XReserveStablecoinBuilder::auth_component(test_fee_parameters(), test_fee_asset_id())
             .map_err(|e| anyhow::anyhow!("auth_component() must build: {e}"))?
             .into_iter()
             .next()

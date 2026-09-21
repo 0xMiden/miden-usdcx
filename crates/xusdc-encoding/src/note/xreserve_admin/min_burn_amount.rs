@@ -22,7 +22,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
-use miden_standards::note::MinBurnAmountConfigNote;
+use miden_standards::note::config::MinBurnAmountConfigNote;
 
 use crate::account::xreserve::MIN_BURN_SIZE_FLOOR;
 

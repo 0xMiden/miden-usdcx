@@ -30,7 +30,7 @@ use miden_standards::account::access::{
 };
 use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, BlocklistStorage};
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{
+use miden_standards::note::config::{
     BlocklistConfig, BlocklistConfigNote, FaucetMetadataConfig, FaucetMetadataConfigNote,
     PauseConfig, PauseConfigNote,
 };

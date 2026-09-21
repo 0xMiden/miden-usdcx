@@ -21,7 +21,7 @@ use miden_protocol::note::Note;
 use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::interop::eth::EthEmbeddedAccountId;
-use miden_standards::note::{RbacConfig, RbacConfigNote};
+use miden_standards::note::config::{RbacConfig, RbacConfigNote};
 use miden_testing::assert_transaction_executor_error;
 use miden_tx::TransactionExecutorError;
 use support::*;

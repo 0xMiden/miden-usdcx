@@ -43,7 +43,7 @@ use miden_protocol::account::{
     AssetCallbackFlag, RoleSymbol, StorageMap, StorageMapKey, StorageSlot,
 };
 use miden_protocol::assembly::Package;
-use miden_protocol::asset::{Asset, AssetAmount, AssetCallbacks, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::MasmError;
@@ -62,10 +62,11 @@ use miden_standards::account::policies::{
 };
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_standards::note::{
-    BlocklistConfigNote, BurnNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
-    FeeSponsorshipNote, MintNote, PauseConfigNote, RbacConfigNote,
+use miden_standards::note::config::{
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, PauseConfigNote,
+    RbacConfigNote,
 };
+use miden_standards::note::{BurnNote, FeeSponsorshipNote, MintNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{AccountState, Auth, MockChain, MockChainBuilder};
@@ -261,15 +262,29 @@ pub fn err_burn_below_min_burn_amount() -> MasmError {
     )
 }
 
-/// The core library's own ECDSA reject (`miden::core::crypto::dsa::ecdsa_k256_keccak`) — a
-/// signature that is well-formed but does not verify for the presented key and message.
+/// The rendering of the core library's own ECDSA reject (`miden::core::crypto::dsa::
+/// ecdsa_k256_keccak`) — a signature that is well-formed but does not verify for the presented
+/// key and message.
 ///
 /// This identity is upstream's, not the faucet's, and that is forced rather than chosen: the
 /// verifier the faucet calls traps on a failed verification instead of returning a flag, so no
-/// faucet-owned assert ever runs. The reject itself is unchanged — the same inputs are refused,
-/// atomically, with nothing written.
-pub static ERR_ECDSA_VERIFY_FAILED: MasmError =
-    MasmError::from_static_str("ECDSA verification failed: x(VERIFY_POINT) != SIG_R");
+/// faucet-owned assert ever runs. The secp256k1 arithmetic settles through the `uint256`
+/// precompile, so the trap surfaces as that precompile's deferred assertion failure.
+pub const ECDSA_VERIFY_REJECT_RENDERING: &str =
+    "precompile `uint256`: deferred assertion failed: values disagree";
+
+/// Asserts `result` is the trap a failed ECDSA verification produces, by its rendered identity
+/// ([`ECDSA_VERIFY_REJECT_RENDERING`]).
+pub fn assert_ecdsa_verify_reject<T>(result: Result<T, TransactionExecutorError>) {
+    let Err(err) = result else {
+        panic!("a failed ECDSA verification must trap the transaction")
+    };
+    let rendered = format!("{:#}", anyhow::Error::new(err));
+    assert!(
+        rendered.contains(ECDSA_VERIFY_REJECT_RENDERING),
+        "expected the ECDSA verification reject, got: {rendered}"
+    );
+}
 
 /// Looks up an expected faucet-owned MASM error by name. Errors raised inside the LINKED protocol
 /// and standards libraries are not here — a test that expects one names that library's own
@@ -372,7 +387,12 @@ pub fn test_fee_faucet_id() -> AccountId {
 
 /// Returns fee parameters with a zero base fee for behavior tests unrelated to fee collection.
 pub fn test_fee_parameters() -> FeeParameters {
-    FeeParameters::new(test_fee_faucet_id(), 0)
+    FeeParameters::new(0)
+}
+
+/// Returns the test fee asset, issued by [`test_fee_faucet_id`].
+pub fn test_fee_asset_id() -> AssetId {
+    AssetId::new_fungible(test_fee_faucet_id())
 }
 
 /// Returns the default fee policy used by tests.
@@ -397,32 +417,15 @@ pub fn test_fee_policy_manager() -> FeePolicyManager {
         .build()
 }
 
-/// Adds a faucet account to the mock chain from its composed `components`, deriving the immutable
-/// `AssetCallbackFlag` FROM THE COMPOSITION: `Enabled` when a protocol asset-callback slot is present
-/// (a transfer policy is wired — the policed asset), else `Disabled` (basic asset). This
-/// mirrors what a real `AccountBuilder` deploy does. The stock
-/// `MockChainBuilder::add_existing_account_from_components` hardcodes `Disabled`, which would leave a
-/// policed faucet's transfer-policy callbacks silently never firing (an audited foot-gun), so
-/// every PRODUCTION-builder faucet fixture routes through here instead.
+/// Adds a faucet account to the mock chain from its composed `components`. The immutable
+/// `AssetCallbackFlag` is derived by the `AccountBuilder` from the installed callback slots, so a
+/// policed faucet's transfer-policy callbacks fire without any per-fixture flag plumbing.
 pub fn add_faucet_account(
     builder: &mut MockChainBuilder,
     auth: Auth,
     components: Vec<AccountComponent>,
 ) -> Result<Account> {
-    let has_callbacks = components.iter().any(|c| {
-        c.storage_slots().iter().any(|s| {
-            s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
-                || s.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
-        })
-    });
-    let flag = if has_callbacks {
-        AssetCallbackFlag::Enabled
-    } else {
-        AssetCallbackFlag::Disabled
-    };
-    let mut account_builder = Account::builder(rand::random())
-        .account_type(AccountType::Public)
-        .with_asset_callbacks(flag);
+    let mut account_builder = Account::builder(rand::random()).account_type(AccountType::Public);
     for component in components {
         account_builder = account_builder.with_component(component);
     }
@@ -436,7 +439,8 @@ pub fn add_network_faucet_account(
     builder: &mut MockChainBuilder,
     components: Vec<AccountComponent>,
 ) -> Result<Account> {
-    let account = build_network_faucet_account(components, test_fee_parameters())?;
+    let account =
+        build_network_faucet_account(components, test_fee_parameters(), test_fee_asset_id())?;
     builder
         .add_account(account.clone())
         .context("registering the production network faucet account")?;
@@ -447,17 +451,19 @@ pub fn add_network_faucet_account(
 pub fn build_network_faucet_account(
     components: Vec<AccountComponent>,
     fee_parameters: FeeParameters,
+    fee_asset_id: AssetId,
 ) -> Result<Account> {
-    build_network_faucet_account_with_assets(components, fee_parameters, [])
+    build_network_faucet_account_with_assets(components, fee_parameters, fee_asset_id, [])
 }
 
 /// Builds the production network faucet with initial assets and the xUSDC fee policy.
 pub fn build_network_faucet_account_with_assets(
     components: Vec<AccountComponent>,
     fee_parameters: FeeParameters,
+    fee_asset_id: AssetId,
     assets: impl IntoIterator<Item = Asset>,
 ) -> Result<Account> {
-    let auth = XReserveStablecoinBuilder::auth_component(fee_parameters)
+    let auth = XReserveStablecoinBuilder::auth_component(fee_parameters, fee_asset_id)
         .map_err(|e| anyhow::anyhow!("the production auth component must build: {e}"))?;
     build_network_faucet_account_with_auth(components, auth, assets)
 }
@@ -486,20 +492,8 @@ fn build_network_faucet_account_with_auth(
     auth: AuthNetworkAccount,
     assets: impl IntoIterator<Item = Asset>,
 ) -> Result<Account> {
-    let has_callbacks = components.iter().any(|c| {
-        c.storage_slots().iter().any(|s| {
-            s.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
-                || s.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
-        })
-    });
-    let flag = if has_callbacks {
-        AssetCallbackFlag::Enabled
-    } else {
-        AssetCallbackFlag::Disabled
-    };
     let mut account_builder = Account::builder(rand::random())
         .account_type(AccountType::Public)
-        .with_asset_callbacks(flag)
         .with_assets(assets);
     for component in components {
         account_builder = account_builder.with_component(component);
@@ -558,6 +552,7 @@ pub fn production_builder_verdict_with_attesters(
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(test_fee_parameters())
+        .fee_asset_id(test_fee_asset_id())
         .domain(domain)
         .attesters(attesters)
         .maybe_min_burn_amount(min_burn_amount)
@@ -1034,7 +1029,7 @@ pub async fn run_call_driver_with_advice(
         .build_transaction(h.account_id)
         .tx_script(tx_script);
     if let Some(stack) = advice_stack {
-        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_advice_stack(stack.into()));
+        ctx = ctx.extend_advice_inputs(AdviceInputs::default().with_stack(stack.into()));
     }
     ctx.build()
         .expect("building the transaction")

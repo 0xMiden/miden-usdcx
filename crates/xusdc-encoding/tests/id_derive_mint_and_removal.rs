@@ -137,7 +137,7 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
     );
 
     let note = honest_note(&pf, &payload, 2012)?;
-    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await?;
+    expect_ecdsa_reject(&mut pf, note, &payload).await?;
 
     // the discrimination proof: the SAME faucet mints the own-id-bound intent
     let bound = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 33);
@@ -161,13 +161,13 @@ async fn a_foreign_remote_token_rejects_while_the_own_id_intent_mints() -> Resul
 /// The string is part of what a relayer matches on, so a reworded message is a wire change dressed
 /// up as a comment fix. Under `DC-14` a foreign identifier has no error of its own — the faucet
 /// stamps its own id into the message, so the reject arrives as the signature failing over a
-/// preimage Circle never signed. Since the signature verdict moved into the core library's ECDSA
-/// verifier, which traps rather than returning a flag, the frozen string is that verifier's.
+/// preimage Circle never signed. Since the signature verdict settles through the `uint256`
+/// precompile, which traps rather than returning a flag, the frozen string is that precompile's.
 #[test]
 fn the_wrong_identifier_error_text_is_unchanged() {
     assert_eq!(
-        ERR_ECDSA_VERIFY_FAILED.message(),
-        "ECDSA verification failed: x(VERIFY_POINT) != SIG_R",
+        ECDSA_VERIFY_REJECT_RENDERING,
+        "precompile `uint256`: deferred assertion failed: values disagree",
         "the wrong-identifier reject text is frozen"
     );
 }

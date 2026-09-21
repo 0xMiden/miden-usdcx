@@ -27,9 +27,11 @@ cargo run -p xusdc-genesis -- record-nonces --faucet out/2-faucet/usdcx-faucet.m
    secp256k1/keccak by default, Falcon512Poseidon2 on request) and writes it, key included, as
    `distributor.mac`: undeployed (nonce zero, empty vault), exactly what a wallet created with
    `miden-client new-wallet --account-type public` and exported with its keys looks like — that
-   file is accepted in step 3 too. Prints the distributor id (hex + bech32 for
-   mainnet/testnet/devnet). Its id is the recipient of the Circle deposit and goes into the
-   config's `accounts.owner`.
+   file is accepted in step 3 too. Prints the distributor id: hex, bech32 for
+   mainnet/testnet/devnet, and the bytes32 form that is the deposit's `remoteRecipient` on the
+   xReserve side (the id right-aligned in 32 bytes; the layout is `DEV-10`, open with Circle).
+   The id goes into the config's `accounts.owner`. Every command prints its ids in the same
+   four forms.
 2. `faucet` builds the genesis faucet from the config and writes `usdcx-faucet.mac` (nonce one,
    no seed). Prints the faucet id plus the configured role ids. Register this id with Circle and
    make the deposits against it.

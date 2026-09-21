@@ -5,12 +5,37 @@ mod common;
 
 use miden_protocol::account::AccountFile;
 use miden_protocol::utils::serde::Serializable;
+use xusdc_encoding::xreserve::encoding::{EthEmbeddedAccountId, EthEmbeddedAccountIdExt};
 use xusdc_genesis::output::{
-    read_account_file, write_account_file, write_distributor, write_faucet, DISTRIBUTOR_MAC_FILE,
-    FAUCET_MAC_FILE,
+    read_account_file, render_ids, write_account_file, write_distributor, write_faucet,
+    DISTRIBUTOR_MAC_FILE, FAUCET_MAC_FILE,
 };
 
 use crate::common::{fresh_distributor, genesis_faucet};
+
+/// The listing's `bytes32` line is the id in the xReserve wire form: decoding it as a deposit's
+/// recipient field yields the id back.
+#[test]
+fn render_ids_prints_the_bytes32_wire_form_of_the_id() {
+    let id = fresh_distributor().account.id();
+    let listing = render_ids("distributor", id);
+
+    let line = listing
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("bytes32: 0x"))
+        .expect("the listing carries a bytes32 line");
+    let bytes: [u8; 32] = hex::decode(line)
+        .expect("the bytes32 line is hex")
+        .try_into()
+        .expect("the bytes32 line is 32 bytes");
+    assert_eq!(
+        EthEmbeddedAccountId::try_from_bytes32(bytes)
+            .expect("the printed form decodes as an embedded account id")
+            .into_account_id(),
+        id,
+        "the bytes32 line must decode back to the id",
+    );
+}
 
 /// `write_faucet` emits exactly one file, the keyless faucet `.mac`.
 #[test]

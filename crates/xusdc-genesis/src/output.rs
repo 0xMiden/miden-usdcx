@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use miden_protocol::account::{Account, AccountFile, AccountId};
 use miden_protocol::address::NetworkId;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
+use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountId;
 
 use crate::config::{GenesisToolConfig, Role};
 
@@ -72,7 +73,8 @@ fn create_out_dir(out_dir: &Path) -> Result<&Path> {
     Ok(out_dir)
 }
 
-/// Renders an account id under `label`: hex, then its bech32 form on each network.
+/// Renders an account id under `label`: hex, its bech32 form on each network, and its bytes32
+/// form (the id as an xReserve wire field, e.g. the deposit's `remoteRecipient`).
 pub fn render_ids(label: &str, id: AccountId) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{label}");
@@ -80,6 +82,11 @@ pub fn render_ids(label: &str, id: AccountId) -> String {
     let _ = writeln!(out, "  mainnet: {}", id.to_bech32(NetworkId::Mainnet));
     let _ = writeln!(out, "  testnet: {}", id.to_bech32(NetworkId::Testnet));
     let _ = writeln!(out, "  devnet:  {}", id.to_bech32(NetworkId::Devnet));
+    let _ = writeln!(
+        out,
+        "  bytes32: 0x{}",
+        hex::encode(EthEmbeddedAccountId::from_account_id(id).to_bytes32())
+    );
     out
 }
 

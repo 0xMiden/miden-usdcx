@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
+use miden_protocol::Word;
 use reqwest::Url;
 use serde::Deserialize;
 
@@ -42,6 +43,9 @@ struct RawConfig {
     circle_api_base_url: String,
     poll_interval_ms: u64,
     faucet_deployment_block: u32,
+    trusted_anchor_block: u32,
+    trusted_anchor_commitment_hex: String,
+    minimum_finality_depth_blocks: u32,
     expected_signing_public_keys_hex: Vec<String>,
     store_path: PathBuf,
 }
@@ -54,6 +58,9 @@ pub struct Config {
     circle_api_base_url: Url,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
+    trusted_anchor_block: BlockNumber,
+    trusted_anchor_commitment: Word,
+    minimum_finality_depth_blocks: u32,
     expected_signing_public_keys_hex: Vec<String>,
     store_path: PathBuf,
 }
@@ -76,7 +83,11 @@ impl Config {
                 "poll interval must be greater than zero",
             ));
         }
-
+        if raw.minimum_finality_depth_blocks == 0 {
+            return Err(ConfigError::invalid(
+                "minimum finality depth must be greater than zero",
+            ));
+        }
         let faucet_account_id = AccountId::from_hex(&raw.faucet_account_id_hex)
             .map_err(|source| ConfigError::with_source("faucet account id is invalid", source))?;
         if faucet_account_id.to_hex() != raw.faucet_account_id_hex {
@@ -84,6 +95,20 @@ impl Config {
                 "faucet account id must use canonical 0x-prefixed lowercase hex",
             ));
         }
+
+        let trusted_anchor_commitment_hex = raw.trusted_anchor_commitment_hex.as_bytes();
+        if trusted_anchor_commitment_hex.len() != 66
+            || !trusted_anchor_commitment_hex.starts_with(b"0x")
+            || !trusted_anchor_commitment_hex[2..]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            return Err(ConfigError::invalid(
+                "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
+            ));
+        }
+        let trusted_anchor_commitment = Word::parse(&raw.trusted_anchor_commitment_hex)
+            .map_err(|_| ConfigError::invalid("trusted anchor commitment is invalid"))?;
 
         let circle_api_base_url = Url::parse(&raw.circle_api_base_url)
             .map_err(|source| ConfigError::with_source("Circle API base URL is invalid", source))?;
@@ -124,6 +149,9 @@ impl Config {
             circle_api_base_url,
             poll_interval: Duration::from_millis(raw.poll_interval_ms),
             faucet_deployment_block: BlockNumber::from(raw.faucet_deployment_block),
+            trusted_anchor_block: BlockNumber::from(raw.trusted_anchor_block),
+            trusted_anchor_commitment,
+            minimum_finality_depth_blocks: raw.minimum_finality_depth_blocks,
             expected_signing_public_keys_hex: raw.expected_signing_public_keys_hex,
             store_path,
         })
@@ -147,6 +175,18 @@ impl Config {
 
     pub(crate) fn faucet_deployment_block(&self) -> BlockNumber {
         self.faucet_deployment_block
+    }
+
+    pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {
+        self.trusted_anchor_block
+    }
+
+    pub(crate) fn trusted_anchor_commitment(&self) -> Word {
+        self.trusted_anchor_commitment
+    }
+
+    pub(crate) fn minimum_finality_depth_blocks(&self) -> u32 {
+        self.minimum_finality_depth_blocks
     }
 
     pub(crate) fn expected_signing_public_keys_hex(&self) -> &[String] {

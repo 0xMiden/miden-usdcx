@@ -5,6 +5,11 @@ circle_api_base_url = "https://xreserve-api-testnet.circle.com"
 poll_interval_ms = 1000
 faucet_deployment_block = 0
 
+# Placeholder only: replace both values with one checkpoint verified out of band.
+trusted_anchor_block = 0
+trusted_anchor_commitment_hex = "0x0100000000000000020000000000000003000000000000000400000000000000"
+minimum_finality_depth_blocks = 1
+
 # Public test values only. KMS loading and comparison are intentionally deferred.
 expected_signing_public_keys_hex = [
   "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",

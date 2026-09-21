@@ -5,16 +5,15 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::Word;
 
-use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
 
 use super::{
-    config_toml, create_store_parent, faucet_account_id, load_config, ready_circle,
-    replace_setting, start, startup_anchor, write_config, TestChain,
+    create_store_parent, faucet_account_id, load_config, ready_circle, start, startup_anchor,
+    TestArgs, TestChain,
 };
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
-const LOCK_CHILD_CONFIG: &str = "XUSDC_ATTESTER_LOCK_CHILD_CONFIG";
+const LOCK_CHILD_STORE_PATH: &str = "XUSDC_ATTESTER_LOCK_CHILD_STORE_PATH";
 
 fn other_faucet_account_id() -> AccountId {
     AccountId::from_hex(OTHER_FAUCET_ACCOUNT_ID).unwrap()
@@ -51,23 +50,10 @@ async fn new_store_starts_at_deployment_block() {
 async fn bad_anchor_does_not_create_store() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let config_path = write_config(&tempdir, 1);
-    let bad_config = replace_setting(
-        &config_toml(1),
-        "trusted_anchor_commitment_hex",
-        &format!(
-            "trusted_anchor_commitment_hex = \"{}\"",
-            Word::empty().to_hex()
-        ),
-    );
-    std::fs::write(&config_path, bad_config).unwrap();
+    let mut args = TestArgs::new(&tempdir, 1);
+    args.replace("--trusted-anchor-commitment", Word::empty().to_hex());
 
-    let result = start(
-        Config::load(&config_path).unwrap(),
-        TestChain::anchor_only(),
-        ready_circle(),
-    )
-    .await;
+    let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
     assert!(result.is_err());
     assert!(!store_path.exists());
 
@@ -266,20 +252,18 @@ async fn invalid_store_is_rejected() {
 
 #[tokio::test]
 async fn store_cannot_be_opened_twice() {
-    if let Some(config_path) = std::env::var_os(LOCK_CHILD_CONFIG) {
-        let result = start(
-            Config::load(Path::new(&config_path)).unwrap(),
-            TestChain::anchor_only(),
-            ready_circle(),
-        )
-        .await;
+    if let Some(store_path) = std::env::var_os(LOCK_CHILD_STORE_PATH) {
+        let tempdir = tempfile::tempdir().unwrap();
+        create_store_parent(&tempdir);
+        let mut args = TestArgs::new(&tempdir, 1);
+        args.replace("--store-path", store_path);
+        let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
         assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
         return;
     }
 
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let config_path = write_config(&tempdir, 1);
     let store = Store::open_or_create(
         &store_path,
         faucet_account_id(),
@@ -293,7 +277,7 @@ async fn store_cannot_be_opened_twice() {
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("tests::startup::store::store_cannot_be_opened_twice")
-        .env(LOCK_CHILD_CONFIG, config_path)
+        .env(LOCK_CHILD_STORE_PATH, store_path)
         .status()
         .unwrap();
     drop(store);

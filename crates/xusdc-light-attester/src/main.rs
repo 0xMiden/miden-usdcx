@@ -1,24 +1,21 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use clap::Parser;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::ReqwestTransport;
-use xusdc_attester::config::Config;
+use xusdc_attester::config::{Cli, Config};
 use xusdc_attester::signer::{DevelopmentSigner, Signer};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     init_tracing();
-    let config_path = config_path_from_args()?;
-
-    let config = Config::load(&config_path)
-        .with_context(|| format!("failed to load {}", config_path.display()))?;
+    let config = Config::try_from(Cli::parse()).context("invalid configuration")?;
     let circle_transport =
         ReqwestTransport::new().context("failed to initialize Circle HTTP client")?;
     let signers = development_signers().context("failed to initialize development signers")?;
@@ -71,18 +68,4 @@ fn development_signers() -> Result<[Box<dyn Signer>; 2]> {
         Box::new(load("XUSDC_ATTESTER_SIGNING_KEY_1_HEX")?),
         Box::new(load("XUSDC_ATTESTER_SIGNING_KEY_2_HEX")?),
     ])
-}
-
-fn config_path_from_args() -> Result<PathBuf> {
-    let mut args = std::env::args_os().skip(1);
-    let path = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config.toml"));
-
-    if args.next().is_some() {
-        anyhow::bail!("usage: xusdc-attester [CONFIG_PATH]")
-    } else {
-        Ok(path)
-    }
 }

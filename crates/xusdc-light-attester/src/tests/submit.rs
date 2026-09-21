@@ -18,12 +18,12 @@ use serde_json::{json, Value};
 use crate::attester::Attester;
 use crate::burn::{DiscoveredBurn, ValidatedBurn};
 use crate::circle::{CircleError, HttpTransport, RawResponse, UnverifiedPrepareResponse};
-use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, verify_prepared_response, SignedWithdrawal};
 
 use super::discovery;
+use super::startup::TestArgs;
 use super::support::{
     development_signers, faucet_account_id, scan_limits, transaction, BlockFactory, ChainControls,
     CircleState, ObservedRequest, TestChain,
@@ -149,6 +149,7 @@ impl HttpTransport for ScriptedCircle {
 pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<ProvenBlock>,
+    config: Mutex<TestArgs>,
     pub(super) burns: Vec<ValidatedBurn>,
     pub(super) fresh_indices: Vec<usize>,
 }
@@ -210,9 +211,11 @@ impl Ledger {
                     .unwrap()
             })
             .collect();
+        let config = discovery::test_args(&directory, 1, &blocks[0], 1);
         Self {
             directory,
             blocks,
+            config: Mutex::new(config),
             burns,
             fresh_indices,
         }
@@ -223,17 +226,12 @@ impl Ledger {
     }
 
     pub(super) fn configure(&self, limit: u64, cap_message: bool) {
-        let path = self.directory.path().join("attester.toml");
-        let text = std::fs::read_to_string(&path).unwrap().replace(
-            "withdrawal_limit = 10_000_000_000_000",
-            &format!("withdrawal_limit = {limit}"),
-        );
-        let extra = if cap_message {
-            "\nwithdrawal_cap_error_message = 'synthetic cap rejection'\n"
-        } else {
-            ""
-        };
-        std::fs::write(path, format!("{text}{extra}")).unwrap();
+        let mut config = self.config.lock().unwrap();
+        config.replace("--withdrawal-limit", limit.to_string());
+        config.remove("--withdrawal-cap-error-message");
+        if cap_message {
+            config.append("--withdrawal-cap-error-message", "synthetic cap rejection");
+        }
     }
 
     pub(super) fn stored(&self, sql: &str) -> i64 {
@@ -256,7 +254,7 @@ impl Ledger {
         signers: [Box<dyn Signer>; 2],
     ) -> (Attester, Requests, ChainControls) {
         let (circle, requests) = ScriptedCircle::new(self.path(), replies);
-        let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
+        let config = self.config.lock().unwrap().load();
         let (chain, controls) = TestChain::new(self.blocks.clone(), scan_limits(3, 3));
         let attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
             .await
@@ -300,12 +298,13 @@ impl Ledger {
             prepared.burn_intents[0].max_block_height = height.into();
             rebuild_for_test(&mut prepared, false).unwrap();
         }
+        let config = self.config.lock().unwrap().load();
         verify_prepared_response(
             burn,
             UnverifiedPrepareResponse {
                 batches: vec![prepared],
             },
-            &Config::load(&self.directory.path().join("attester.toml")).unwrap(),
+            &config,
         )
         .unwrap()
         .sign([&TestSigner(1), &TestSigner(2)])
@@ -351,17 +350,18 @@ impl Ledger {
     }
 }
 
-pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<ProvenBlock>) {
+pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<ProvenBlock>, TestArgs) {
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     drop(attester);
-    (ledger.directory, ledger.blocks)
+    let config = ledger.config.into_inner().unwrap();
+    (ledger.directory, ledger.blocks, config)
 }
 
 #[tokio::test]
 async fn malformed_saved_submission_is_rejected_when_loaded() {
-    let (directory, blocks) = submission_store().await;
+    let (directory, blocks, config) = submission_store().await;
     Connection::open(directory.path().join("state.sqlite3"))
         .unwrap()
         .execute("UPDATE submissions SET body = X'00'", [])
@@ -373,10 +373,9 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         requests: requests.clone(),
         store_path: directory.path().join("state.sqlite3"),
     };
-    let config = Config::load(&directory.path().join("attester.toml")).unwrap();
     let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
     let mut attester = Attester::start(
-        config,
+        config.load(),
         Box::new(chain),
         Box::new(circle),
         development_signers(),
@@ -557,12 +556,11 @@ async fn submit_sends_checked_request() {
     let ledger = Ledger::new().await;
     let mut response = ledger.response(0, "created");
     response["useCircleForwarding"] = json!(true);
-    let path = ledger.directory.path().join("attester.toml");
-    let text = std::fs::read_to_string(&path).unwrap().replace(
-        "use_circle_forwarding = false",
-        "use_circle_forwarding = true",
-    );
-    std::fs::write(path, text).unwrap();
+    ledger
+        .config
+        .lock()
+        .unwrap()
+        .replace("--use-circle-forwarding", "true");
     let (mut attester, requests) = ledger.start(vec![reply(201, json!([response]))]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     let body: Value = serde_json::from_slice(&requests.lock().unwrap()[0].body).unwrap();
@@ -665,11 +663,11 @@ async fn retries_use_saved_request() {
             "{name}"
         );
         drop(attester);
-        let config_path = ledger.directory.path().join("attester.toml");
-        let text = std::fs::read_to_string(&config_path)
+        ledger
+            .config
+            .lock()
             .unwrap()
-            .replace("circle.example.invalid", "new-circle.example.invalid");
-        std::fs::write(config_path, text).unwrap();
+            .replace("--circle-url", "https://new-circle.example.invalid");
         let (mut attester, retried) = ledger
             .start(vec![reply(201, json!([ledger.response(0, "created")]))])
             .await;
@@ -897,11 +895,11 @@ async fn held_submissions_do_not_block_others() {
     assert_eq!(held.hold_reason, Some(HoldReason::HttpRejected));
     assert_eq!(held.withdrawal_id.as_deref(), Some(ID));
     drop(attester);
-    let path = ledger.directory.path().join("attester.toml");
-    let text = std::fs::read_to_string(&path)
+    ledger
+        .config
+        .lock()
         .unwrap()
-        .replace("circle.example.invalid", "new-circle.example.invalid");
-    std::fs::write(path, text).unwrap();
+        .replace("--circle-url", "https://new-circle.example.invalid");
     let (mut attester, retry) = ledger
         .start(vec![reply(200, ledger.response(0, "created"))])
         .await;

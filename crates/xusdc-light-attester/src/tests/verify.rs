@@ -10,7 +10,7 @@ use crate::verify::{
     VerifyError,
 };
 
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::validation::validated_burn;
 
 const FIRST_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
@@ -28,13 +28,11 @@ pub(super) fn serial(last: u64) -> Word {
 fn config(fee_ceiling: Option<u64>) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let path = directory.path().join("attester.toml");
-    let mut text = config_toml(1);
+    let mut args = TestArgs::new(&directory, 1);
     if let Some(ceiling) = fee_ceiling {
-        text.push_str(&format!("max_withdrawal_fee = {ceiling}\n"));
+        args.replace("--max-withdrawal-fee", ceiling.to_string());
     }
-    std::fs::write(&path, text).unwrap();
-    Config::load(&path).unwrap()
+    args.load()
 }
 
 pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {

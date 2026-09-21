@@ -8,12 +8,10 @@ use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-use crate::circle::{CircleClient, CircleError, ReqwestTransport, UnverifiedPrepareResponse};
-use crate::config::Config;
-
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::support::{CircleState, FakeCircle, ObservedRequest};
 use super::validation::validated_burn;
+use crate::circle::{CircleClient, CircleError, ReqwestTransport, UnverifiedPrepareResponse};
 
 fn serial(last: u64) -> Word {
     Word::new([
@@ -27,9 +25,7 @@ fn serial(last: u64) -> Word {
 fn client(state: CircleState) -> (CircleClient, Arc<Mutex<Vec<ObservedRequest>>>) {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let path = tempdir.path().join("attester.toml");
-    std::fs::write(&path, config_toml(1)).unwrap();
-    let config = Config::load(&path).unwrap();
+    let config = TestArgs::new(&tempdir, 1).load();
     let (transport, requests) = FakeCircle::new(state);
     (
         CircleClient::new(

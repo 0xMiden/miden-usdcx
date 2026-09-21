@@ -1,12 +1,85 @@
 use reqwest::{Method, StatusCode};
 
+use crate::attester::Attester;
 use crate::chain::ChainError;
 use crate::circle::CircleError;
+use crate::config::Config;
+use crate::signer::{DevelopmentSigner, Signer};
 
 use super::{
-    create_store_parent, load_config, ready_circle, start, CircleState, FakeCircle,
-    ObservedRequest, TestChain, REQUEST_TIMEOUT,
+    config_toml, create_store_parent, development_signers, load_config, ready_circle,
+    replace_setting, start, CircleState, FakeCircle, ObservedRequest, TestChain, CONFIG_FILE,
+    REQUEST_TIMEOUT, SIGNING_KEY_ONE, SIGNING_KEY_TWO,
 };
+
+async fn start_with_signing_keys(
+    expected: &[&str],
+    signers: [Box<dyn Signer>; 2],
+) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store_path = create_store_parent(&tempdir);
+    let config = replace_setting(
+        &config_toml(1),
+        "expected_signing_public_keys_hex",
+        &format!("expected_signing_public_keys_hex = {expected:?}"),
+    );
+    let path = tempdir.path().join(CONFIG_FILE);
+    std::fs::write(&path, config).unwrap();
+    let result = Attester::start(
+        Config::load(&path).unwrap(),
+        Box::new(TestChain::anchor_only()),
+        ready_circle(),
+        signers,
+    )
+    .await
+    .map(|_| ());
+    assert_eq!(store_path.exists(), result.is_ok());
+    result
+}
+
+#[tokio::test]
+async fn invalid_configured_signing_keys_are_rejected() {
+    let invalid_hex = format!("0x{}", "gg".repeat(33));
+    let invalid_point = format!("0x02{}", "ff".repeat(32));
+    for expected in [
+        &[SIGNING_KEY_ONE][..],
+        &[SIGNING_KEY_ONE, &invalid_hex][..],
+        &[SIGNING_KEY_ONE, "0x00"][..],
+        &[SIGNING_KEY_ONE, &invalid_point][..],
+        &[SIGNING_KEY_ONE, SIGNING_KEY_ONE][..],
+    ] {
+        assert!(start_with_signing_keys(expected, development_signers())
+            .await
+            .is_err());
+    }
+}
+
+#[tokio::test]
+async fn invalid_provider_signing_keys_are_rejected() {
+    for duplicate in [true, false] {
+        let [first, _] = development_signers();
+        let [same, _] = development_signers();
+        let other = if duplicate {
+            same
+        } else {
+            Box::new(DevelopmentSigner::from_bytes([3; 32]).unwrap())
+        };
+        assert!(
+            start_with_signing_keys(&[SIGNING_KEY_ONE, SIGNING_KEY_TWO], [first, other])
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn matching_signing_keys_can_be_loaded_in_either_order() {
+    let mut signers = development_signers();
+    signers.swap(0, 1);
+    start_with_signing_keys(&[SIGNING_KEY_ONE, SIGNING_KEY_TWO], signers)
+        .await
+        .unwrap();
+}
 
 #[tokio::test]
 async fn unreachable_miden_node_is_rejected() {

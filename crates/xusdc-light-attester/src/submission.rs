@@ -5,7 +5,8 @@ use miden_protocol::note::NoteId;
 use reqwest::StatusCode;
 
 use crate::attester::Attester;
-use crate::circle::{ConflictResponse, RawResponse, WithdrawalResponse};
+use crate::circle::{CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
+use crate::signer::SignerError;
 use crate::store::StoreError;
 use crate::verify::SignedWithdrawal;
 
@@ -20,6 +21,12 @@ pub enum SubmitError {
     Conflict,
     #[error("could not encode the signed withdrawal")]
     Encoding(#[source] serde_json::Error),
+    #[error("Circle prepare failed")]
+    Prepare(#[from] CircleError),
+    #[error("Circle's prepared withdrawal failed verification")]
+    Verification(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("withdrawal signing failed")]
+    Signing(#[from] SignerError),
 }
 
 /// Failed and expired attempts can be replaced; they do not permanently retire the burn.
@@ -71,8 +78,11 @@ impl Attester {
     }
 
     /// One attempt per queued row; the outer cycle supplies the delay between retries.
-    pub(crate) async fn recover_submissions(&mut self) -> Result<(), SubmitError> {
-        for saved in self.store.submissions_to_recover()? {
+    pub(crate) async fn recover_submissions(
+        &mut self,
+        submissions: Vec<SavedSubmission>,
+    ) -> Result<(), SubmitError> {
+        for saved in submissions {
             self.advance_submission(saved).await?;
         }
         Ok(())

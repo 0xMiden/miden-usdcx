@@ -14,8 +14,8 @@ use crate::circle::HttpTransport;
 use crate::config::Config;
 
 use super::support::{
-    faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle, ObservedRequest,
-    TestChain, FAUCET_ACCOUNT_ID,
+    development_signers, faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle,
+    ObservedRequest, TestChain, FAUCET_ACCOUNT_ID,
 };
 
 const SIGNING_KEY_ONE: &str =
@@ -25,6 +25,21 @@ const SIGNING_KEY_TWO: &str =
 const CONFIG_FILE: &str = "attester.toml";
 const STORE_FILE: &str = "state/checkpoints/withdrawal-cursor.sqlite3";
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(275);
+
+fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
+    config
+        .lines()
+        .map(|line| {
+            if line.starts_with(&format!("{key} =")) {
+                replacement
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
 
 pub(super) fn config_toml(deployment_block: u64) -> String {
     let anchor_commitment = startup_anchor().header().commitment().to_hex();
@@ -66,5 +81,5 @@ pub(super) async fn start(
     chain: TestChain,
     circle: Box<dyn HttpTransport>,
 ) -> anyhow::Result<Attester> {
-    Attester::start(config, Box::new(chain), circle).await
+    Attester::start(config, Box::new(chain), circle, development_signers()).await
 }

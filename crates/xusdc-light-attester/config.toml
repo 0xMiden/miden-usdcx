@@ -1,4 +1,4 @@
-# Development-only startup configuration. The faucet ID is intentionally not deployed.
+# Development-only configuration. The faucet ID is intentionally not deployed.
 circle_request_timeout_ms = 10000
 faucet_account_id_hex = "0xbb405fd9fe431bd1135a292de098cb"
 circle_api_base_url = "https://xreserve-api-testnet.circle.com"
@@ -16,7 +16,8 @@ trusted_anchor_block = 0
 trusted_anchor_commitment_hex = "0x0100000000000000020000000000000003000000000000000400000000000000"
 minimum_finality_depth_blocks = 1
 
-# Public test values only. KMS loading and comparison are intentionally deferred.
+# Public development values. Startup compares these with the two loaded local keys.
+# AWS KMS loading remains deferred.
 expected_signing_public_keys_hex = [
   "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
   "0x02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",

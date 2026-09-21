@@ -292,8 +292,8 @@ impl Attester {
 }
 
 fn has_valid_note_positions(block: &ProvenBlock) -> bool {
-    // The protocol's block validator assumes these positions are valid and panics otherwise.
-    // Check RPC-supplied positions first, without requiring the notes to arrive sorted.
+    // Every RPC-supplied note position must fit its batch and be unique within that batch.
+    // Check those conditions before validation; the input order does not need to be sorted.
     let batches = block.body().output_note_batches();
     if batches.len() > MAX_BATCHES_PER_BLOCK {
         return false;

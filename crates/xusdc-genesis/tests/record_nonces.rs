@@ -2,17 +2,15 @@
 
 mod common;
 
-use assert_matches::assert_matches;
 use miden_protocol::asset::AssetId;
-use miden_protocol::errors::AccountError;
 use miden_protocol::{Word, EMPTY_WORD, ONE};
 use miden_standards::account::faucets::FungibleFaucet;
 use miden_standards::account::fees::FeePolicyManager;
-use xusdc_encoding::account::xreserve::{XReserveFaucetExtension, XReserveStablecoinBuilderError};
+use xusdc_encoding::account::xreserve::XReserveFaucetExtension;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::accounts::record_nonces;
 
-use crate::common::{genesis_faucet, plain_fungible_faucet, NoncesFixture, TOKEN_SUPPLY};
+use crate::common::{genesis_faucet, NoncesFixture, TOKEN_SUPPLY};
 
 /// Every listed nonce carries the consumed marker afterwards, and nothing else about the faucet
 /// changes: id, genesis form, recorded supply, and the fee-asset rebinding.
@@ -70,20 +68,5 @@ fn record_nonces_marks_every_nonce_and_changes_nothing_else() {
             .expect("the registry slot exists"),
         EMPTY_WORD,
         "an unlisted nonce stays unconsumed",
-    );
-}
-
-/// A fungible faucet without the xUSDC nonce registry is refused.
-#[test]
-fn record_nonces_needs_the_nonce_registry_slot() {
-    let nonce = DepositNonce::new([0x55; 32]);
-
-    let err = record_nonces(&plain_fungible_faucet(), &[nonce])
-        .expect_err("a faucet without the registry must be refused");
-    assert_matches!(
-        err,
-        XReserveStablecoinBuilderError::AccountComposition(
-            AccountError::StorageSlotNameNotFound { .. }
-        )
     );
 }

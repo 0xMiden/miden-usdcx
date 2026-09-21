@@ -141,90 +141,45 @@ pub fn prefund_distributor(
 // ================================================================================================
 
 /// Errors [`new_distributor`] returns.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum NewDistributorError {
     /// The requested auth scheme cannot generate a key.
-    Scheme(AuthSchemeError),
+    #[error("generating the distributor's signing key")]
+    Scheme(#[source] AuthSchemeError),
     /// The wallet did not compose.
-    Account(AccountError),
-}
-
-impl core::fmt::Display for NewDistributorError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Scheme(_) => write!(f, "generating the distributor's signing key"),
-            Self::Account(_) => write!(f, "composing the distributor wallet"),
-        }
-    }
-}
-
-impl core::error::Error for NewDistributorError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Scheme(source) => Some(source),
-            Self::Account(source) => Some(source),
-        }
-    }
+    #[error("composing the distributor wallet")]
+    Account(#[source] AccountError),
 }
 
 /// Errors [`prefund_distributor`] returns.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PrefundError {
     /// The faucet input is not a fungible faucet account.
-    NotAFungibleFaucet(FungibleFaucetError),
+    #[error("the faucet file is not a fungible faucet")]
+    NotAFungibleFaucet(#[source] FungibleFaucetError),
     /// The faucet records no token supply, so there is nothing to distribute.
+    #[error("the faucet records no token supply, nothing to distribute")]
     NothingToDistribute,
     /// The distributor is not a public account.
+    #[error("the distributor {} is not a public account", .0.to_hex())]
     DistributorNotPublic(AccountId),
     /// The distributor is not undeployed (nonce zero); it may already be prefunded.
+    #[error(
+        "the distributor {} is not undeployed (nonce {}), prefund runs once per distributor",
+        .id.to_hex(),
+        .nonce.as_canonical_u64()
+    )]
     DistributorNotFresh { id: AccountId, nonce: Felt },
     /// The distributor file carries no signing key.
+    #[error("the distributor file for {} carries no signing key", .0.to_hex())]
     DistributorHasNoSigningKey(AccountId),
     /// The supply is not a valid fungible asset of the faucet.
-    Asset(AssetError),
+    #[error("the token supply is not a valid asset of the faucet")]
+    Asset(#[source] AssetError),
     /// The supply could not be added to the distributor's vault.
-    Vault(AssetVaultError),
+    #[error("adding the token supply to the distributor's vault")]
+    Vault(#[source] AssetVaultError),
     /// The prefunded distributor did not re-assemble.
-    Account(AccountError),
-}
-
-impl core::fmt::Display for PrefundError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotAFungibleFaucet(_) => write!(f, "the faucet file is not a fungible faucet"),
-            Self::NothingToDistribute => {
-                write!(f, "the faucet records no token supply, nothing to distribute")
-            }
-            Self::DistributorNotPublic(id) => {
-                write!(f, "the distributor {} is not a public account", id.to_hex())
-            }
-            Self::DistributorNotFresh { id, nonce } => write!(
-                f,
-                "the distributor {} is not undeployed (nonce {}), prefund runs once per distributor",
-                id.to_hex(),
-                nonce.as_canonical_u64(),
-            ),
-            Self::DistributorHasNoSigningKey(id) => {
-                write!(f, "the distributor file for {} carries no signing key", id.to_hex())
-            }
-            Self::Asset(_) => write!(f, "the token supply is not a valid asset of the faucet"),
-            Self::Vault(_) => write!(f, "adding the token supply to the distributor's vault"),
-            Self::Account(_) => write!(f, "re-assembling the prefunded distributor"),
-        }
-    }
-}
-
-impl core::error::Error for PrefundError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::NotAFungibleFaucet(source) => Some(source),
-            Self::Asset(source) => Some(source),
-            Self::Vault(source) => Some(source),
-            Self::Account(source) => Some(source),
-            Self::NothingToDistribute
-            | Self::DistributorNotPublic(_)
-            | Self::DistributorNotFresh { .. }
-            | Self::DistributorHasNoSigningKey(_) => None,
-        }
-    }
+    #[error("re-assembling the prefunded distributor")]
+    Account(#[source] AccountError),
 }

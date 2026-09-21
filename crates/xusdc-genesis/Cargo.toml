@@ -14,6 +14,7 @@ xusdc-encoding = { path = "../xusdc-encoding" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }

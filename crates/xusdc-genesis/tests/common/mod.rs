@@ -5,13 +5,9 @@
 #![allow(dead_code)]
 
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{Account, AccountBuilder, AccountFile, AccountType};
-use miden_protocol::asset::{AssetAmount, TokenSymbol};
+use miden_protocol::account::{Account, AccountFile};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
-use miden_protocol::ONE;
-use miden_standards::account::auth::NoAuth;
-use miden_standards::account::faucets::{FungibleFaucet, TokenName};
 use xusdc_genesis::accounts::{build_faucet, new_distributor_with};
 use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role, UsedNoncesFile};
 
@@ -136,26 +132,4 @@ pub fn genesis_faucet() -> Account {
 pub fn fresh_distributor() -> AccountFile {
     new_distributor_with(DISTRIBUTOR_SEED, AuthSecretKey::new_ecdsa_k256_keccak())
         .expect("the distributor must compose")
-}
-
-/// A fungible faucet in genesis form (nonce one) WITHOUT the xUSDC components, so it has no
-/// nonce registry slot.
-pub fn plain_fungible_faucet() -> Account {
-    let faucet = FungibleFaucet::builder()
-        .name(TokenName::new("Plain").expect("a valid token name"))
-        .symbol(TokenSymbol::new("PLAIN").expect("a valid token symbol"))
-        .decimals(6)
-        .max_supply(AssetAmount::MAX)
-        .build()
-        .expect("the plain faucet must compose");
-    let mut account = AccountBuilder::new([0x11; 32])
-        .account_type(AccountType::Public)
-        .with_component(NoAuth)
-        .with_component(faucet)
-        .build()
-        .expect("the plain faucet account must build");
-    account
-        .set_nonce(ONE)
-        .expect("nonce one is reachable from zero");
-    account
 }

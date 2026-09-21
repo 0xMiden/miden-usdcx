@@ -223,32 +223,16 @@ fn used_nonces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Deposit
 // ================================================================================================
 
 /// Errors the input-file loaders return.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// The file could not be read.
+    #[error("reading the input file {}", .path.display())]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
     /// The JSON does not match the schema: a malformed value (an account id, an attester key,
     /// the seed, a nonce) or an unknown field.
-    Parse(serde_json::Error),
-}
-
-impl core::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Io { path, .. } => write!(f, "reading the input file {}", path.display()),
-            Self::Parse(_) => write!(f, "the JSON does not match the schema"),
-        }
-    }
-}
-
-impl core::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::Parse(source) => Some(source),
-        }
-    }
+    #[error("the JSON does not match the schema")]
+    Parse(#[source] serde_json::Error),
 }

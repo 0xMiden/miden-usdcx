@@ -5870,6 +5870,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "xusdc-encoding",
 ]
 

@@ -2,28 +2,14 @@
 
 use std::time::Instant;
 
+use anyhow::Context;
 use miden_protocol::note::NoteScriptRoot;
 
-use crate::chain::{ChainError, ChainReader};
-use crate::circle::{CircleClient, CircleError, HttpTransport};
+use crate::chain::ChainReader;
+use crate::circle::{CircleClient, HttpTransport};
 use crate::config::Config;
-use crate::store::{ScanCursor, Store, StoreError};
+use crate::store::{ScanCursor, Store};
 use miden_standards::note::BurnNote;
-
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum StartError {
-    #[error("attester store is invalid")]
-    InvalidStore,
-    #[error("attester store is locked by another process")]
-    StoreLocked,
-    #[error("Miden node is unavailable")]
-    MidenNodeUnavailable(#[source] ChainError),
-    #[error("configured faucet account does not exist")]
-    FaucetMissing,
-    #[error("Circle API is unavailable")]
-    CircleUnavailable(#[source] CircleError),
-}
 
 #[derive(Debug)]
 pub struct RunError;
@@ -60,7 +46,7 @@ impl Attester {
         config: Config,
         chain: Box<dyn ChainReader>,
         circle_transport: Box<dyn HttpTransport>,
-    ) -> Result<Self, StartError> {
+    ) -> anyhow::Result<Self> {
         let burn_note_script_root = BurnNote::script_root();
         let store = Store::open_or_create(
             config.store_path(),
@@ -69,21 +55,18 @@ impl Attester {
                 next_block: config.faucet_deployment_block(),
             },
         )
-        .map_err(|error| match error {
-            StoreError::Invalid => StartError::InvalidStore,
-            StoreError::Locked => StartError::StoreLocked,
-        })?;
+        .context("failed to open attester store")?;
 
         chain
             .check_connection()
             .await
-            .map_err(StartError::MidenNodeUnavailable)?;
+            .context("failed to connect to the Miden node")?;
         if !chain
             .account_exists(&config.faucet_account_id())
             .await
-            .map_err(StartError::MidenNodeUnavailable)?
+            .context("failed to check the configured faucet account")?
         {
-            return Err(StartError::FaucetMissing);
+            anyhow::bail!("configured faucet account does not exist");
         }
 
         // TODO(KMS): compare the configured public keys with the loaded signing keys.
@@ -96,7 +79,7 @@ impl Attester {
         circle
             .check_connection()
             .await
-            .map_err(StartError::CircleUnavailable)?;
+            .context("failed to connect to the Circle API")?;
 
         Ok(Self {
             config,

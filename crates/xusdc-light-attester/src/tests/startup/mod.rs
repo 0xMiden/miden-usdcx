@@ -44,7 +44,8 @@ fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
 pub(super) fn config_toml(deployment_block: u64) -> String {
     let anchor_commitment = startup_anchor().header().commitment().to_hex();
     format!(
-        "circle_request_timeout_ms = {}\n\
+        "miden_network = \"devnet\"\n\
+         circle_request_timeout_ms = {}\n\
          faucet_account_id_hex = \"{FAUCET_ACCOUNT_ID}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          use_circle_forwarding = false\n\

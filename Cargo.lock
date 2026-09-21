@@ -6529,9 +6529,9 @@ dependencies = [
 name = "xusdc-attester"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "alloy-primitives",
  "alloy-sol-types",
+ "anyhow",
  "hex",
  "k256 0.13.4",
  "miden-client",
@@ -6545,6 +6545,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "xusdc-encoding",
 ]
 

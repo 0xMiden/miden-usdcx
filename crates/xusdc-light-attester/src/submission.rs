@@ -3,6 +3,7 @@
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::StatusCode;
+use tracing::{info, warn};
 
 use crate::attester::Attester;
 use crate::circle::{CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
@@ -161,9 +162,9 @@ impl Attester {
             // Only a confirmed cap rejection releases capacity. Discard its signed bytes;
             // after the cooldown it must be prepared and signed again, not replayed stale.
             self.store.record_cap_rejection(saved.note_id)?;
-            eprintln!(
-                "withdrawal note={} waiting after Circle's capacity rejection",
-                saved.note_id
+            info!(
+                note_id = %saved.note_id,
+                "withdrawal waiting after Circle's capacity rejection"
             );
             return Ok(());
         }
@@ -214,17 +215,14 @@ impl Attester {
             || saved.last_error.is_some()
             || saved.status == SubmissionStatus::Failed
         {
-            eprintln!(
-                "withdrawal note={} id={} status={:?} HTTP={:?} hold={:?}: {}",
-                saved.note_id,
-                saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
-                saved.status,
-                saved.last_http_status,
-                saved.hold_reason,
-                saved
-                    .last_error
-                    .as_deref()
-                    .unwrap_or("Circle omitted the failure reason")
+            warn!(
+                note_id = %saved.note_id,
+                withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                status = ?saved.status,
+                http_status = ?saved.last_http_status,
+                hold_reason = ?saved.hold_reason,
+                has_error = saved.last_error.is_some(),
+                "withdrawal submission needs attention"
             );
         }
         Ok(())

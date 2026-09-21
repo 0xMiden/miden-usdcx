@@ -12,6 +12,14 @@ use miden_protocol::Word;
 use reqwest::Url;
 use serde::Deserialize;
 
+/// Public Miden network selected for the normal attester executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MidenNetwork {
+    Devnet,
+    Testnet,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{context}")]
 pub struct ConfigError {
@@ -39,6 +47,7 @@ impl ConfigError {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    miden_network: MidenNetwork,
     circle_request_timeout_ms: u64,
     faucet_account_id_hex: String,
     circle_api_base_url: String,
@@ -60,6 +69,7 @@ struct RawConfig {
 
 #[derive(Debug)]
 pub struct Config {
+    miden_network: MidenNetwork,
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
@@ -74,6 +84,7 @@ pub struct Config {
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
     expected_signing_public_keys_hex: Vec<String>,
+    /// Durable ledger state; deploy it on persistent storage for exactly one attester instance.
     store_path: PathBuf,
 }
 
@@ -179,6 +190,7 @@ impl Config {
         }
 
         Ok(Self {
+            miden_network: raw.miden_network,
             circle_request_timeout: Duration::from_millis(raw.circle_request_timeout_ms),
             faucet_account_id,
             circle_api_base_url,
@@ -195,6 +207,10 @@ impl Config {
             expected_signing_public_keys_hex: raw.expected_signing_public_keys_hex,
             store_path,
         })
+    }
+
+    pub fn miden_network(&self) -> MidenNetwork {
+        self.miden_network
     }
 
     pub(crate) fn circle_request_timeout(&self) -> Duration {

@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use tracing::warn;
+use tracing_subscriber::EnvFilter;
 
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::ReqwestTransport;
@@ -12,6 +14,7 @@ use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    init_tracing();
     let config_path = config_path_from_args()?;
 
     let config = Config::load(&config_path)
@@ -19,10 +22,11 @@ async fn main() -> Result<()> {
     let circle_transport =
         ReqwestTransport::new().context("failed to initialize Circle HTTP client")?;
     let signers = development_signers().context("failed to initialize development signers")?;
+    let miden_network = config.miden_network();
 
     let mut attester = Attester::start(
         config,
-        Box::new(MidenChainReader::devnet()),
+        Box::new(MidenChainReader::for_network(miden_network)),
         Box::new(circle_transport),
         signers,
     )
@@ -38,10 +42,18 @@ async fn main() -> Result<()> {
             signal_flag.store(true, Ordering::Release);
         }
     });
-    eprintln!("attester started with development keys");
+    warn!(?miden_network, "attester started with development signers");
     attester.run(shutdown).await;
     signal_task.abort();
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stdout)
+        .init();
 }
 
 fn development_signers() -> Result<[Box<dyn Signer>; 2]> {

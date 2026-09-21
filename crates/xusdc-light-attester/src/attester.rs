@@ -8,6 +8,7 @@ use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::note::Nullifier;
 use miden_protocol::transaction::OutputNote;
+use tracing::{error, warn};
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -181,10 +182,15 @@ impl Attester {
             match self.run_one_cycle().await {
                 Ok(report) => {
                     if let Err(error) = report.discover {
-                        eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
+                        warn!(
+                            error = %error,
+                            "discovery failed; new signing paused for this cycle"
+                        );
                     }
                 }
-                Err(error) => eprintln!("cycle stopped; retrying after poll interval: {error:?}"),
+                Err(error) => {
+                    error!(error = %error, "cycle stopped; retrying after poll interval");
+                }
             }
             tokio::time::sleep(self.config.poll_interval()).await;
         }
@@ -395,11 +401,11 @@ impl Attester {
                 Ok(burn) => validated.push(burn),
                 Err(reason) => {
                     self.store.refuse_burn(note_id, reason)?;
-                    eprintln!(
-                        "refused burn: note={} transaction={} reason={}",
-                        note_id,
-                        burn_tx_id,
-                        reason.as_str()
+                    warn!(
+                        note_id = %note_id,
+                        burn_transaction_id = %burn_tx_id,
+                        reason = reason.as_str(),
+                        "refused burn"
                     );
                 }
             }
@@ -455,7 +461,11 @@ impl Attester {
                     self.store.hold_burn(note_id, reason)?;
                 }
                 // Transport/server and signing failures remain eligible next cycle.
-                eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
+                warn!(
+                    note_id = %note_id,
+                    error = %error,
+                    "withdrawal failed before submission"
+                );
                 first_error.get_or_insert(error);
             }
         }

@@ -39,7 +39,8 @@ pub(super) fn write_config(
     let path = tempdir.path().join("attester.toml");
     let store_path = PathBuf::from("state.sqlite3");
     let config = format!(
-        "circle_request_timeout_ms = 100\n\
+        "miden_network = \"devnet\"\n\
+         circle_request_timeout_ms = 100\n\
          faucet_account_id_hex = \"{}\"\n\
          circle_api_base_url = \"https://circle.example.invalid\"\n\
          use_circle_forwarding = false\n\

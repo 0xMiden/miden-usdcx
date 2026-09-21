@@ -7,7 +7,6 @@ mod store;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use miden_protocol::block::ProvenBlock;
 use tempfile::TempDir;
 
 use crate::attester::Attester;
@@ -15,8 +14,8 @@ use crate::circle::HttpTransport;
 use crate::config::Config;
 
 use super::support::{
-    faucet_account_id, note, ready_circle, scan_limits, startup_anchor, transaction, BlockFactory,
-    CircleState, FakeCircle, ObservedRequest, TestChain, FAUCET_ACCOUNT_ID,
+    faucet_account_id, ready_circle, startup_anchor, CircleState, FakeCircle, ObservedRequest,
+    TestChain, FAUCET_ACCOUNT_ID,
 };
 
 const SIGNING_KEY_ONE: &str =
@@ -44,21 +43,6 @@ pub(super) fn config_toml(deployment_block: u64) -> String {
     )
 }
 
-fn replace_setting(config: &str, key: &str, replacement: &str) -> String {
-    config
-        .lines()
-        .map(|line| {
-            if line.starts_with(&format!("{key} =")) {
-                replacement
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
-}
-
 fn write_config(tempdir: &TempDir, deployment_block: u32) -> PathBuf {
     let path = tempdir.path().join(CONFIG_FILE);
     std::fs::write(&path, config_toml(u64::from(deployment_block))).unwrap();
@@ -67,29 +51,6 @@ fn write_config(tempdir: &TempDir, deployment_block: u32) -> PathBuf {
 
 fn load_config(tempdir: &TempDir, deployment_block: u32) -> Config {
     Config::load(&write_config(tempdir, deployment_block)).unwrap()
-}
-
-fn load_config_with_anchor(
-    tempdir: &TempDir,
-    deployment_block: u32,
-    anchor: &ProvenBlock,
-) -> Config {
-    let config = replace_setting(
-        &config_toml(u64::from(deployment_block)),
-        "trusted_anchor_block",
-        &format!("trusted_anchor_block = {}", anchor.header().block_num()),
-    );
-    let config = replace_setting(
-        &config,
-        "trusted_anchor_commitment_hex",
-        &format!(
-            "trusted_anchor_commitment_hex = \"{}\"",
-            anchor.header().commitment()
-        ),
-    );
-    let path = tempdir.path().join(CONFIG_FILE);
-    std::fs::write(&path, config).unwrap();
-    Config::load(&path).unwrap()
 }
 
 pub(super) fn create_store_parent(tempdir: &TempDir) -> PathBuf {

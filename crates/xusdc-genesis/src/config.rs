@@ -1,4 +1,5 @@
-//! The tool's input-file schema ([`GenesisToolConfig`]).
+//! The tool's input-file schemas: the faucet config ([`GenesisToolConfig`]) and the consumed
+//! deposit nonces ([`UsedNoncesFile`]).
 
 use std::path::{Path, PathBuf};
 
@@ -6,7 +7,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
-use serde::de::{Deserializer, Error as _};
+use serde::de::{DeserializeOwned, Deserializer, Error as _};
 use serde::Deserialize;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 
@@ -112,26 +113,52 @@ pub struct FaucetConfig {
     /// notes.
     #[serde(default, deserialize_with = "attesters")]
     pub attesters: Vec<PublicKey>,
-    /// The Circle deposit nonces the genesis state already honours, each as the hex string of its
-    /// 32 bytes; each is recorded as consumed at build time so the relayer cannot mint it again.
-    #[serde(default, deserialize_with = "used_nonces")]
-    pub used_nonces: Vec<DepositNonce>,
 }
 
 impl GenesisToolConfig {
     /// Reads and parses the config file at `path`.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        Self::from_json(&text)
+        load_json(path)
     }
 
     /// Parses a config from its JSON text.
     pub fn from_json(text: &str) -> Result<Self, ConfigError> {
         serde_json::from_str(text).map_err(ConfigError::Parse)
     }
+}
+
+// USED NONCES
+// ================================================================================================
+
+/// The `record-nonces` input: the Circle deposit nonces the genesis state already honours (the
+/// balances seeded at genesis are backed by their deposits), each as the hex string of its 32
+/// bytes. Unknown fields are rejected.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsedNoncesFile {
+    #[serde(deserialize_with = "used_nonces")]
+    pub used_nonces: Vec<DepositNonce>,
+}
+
+impl UsedNoncesFile {
+    /// Reads and parses the nonces file at `path`.
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        load_json(path)
+    }
+
+    /// Parses the nonces from their JSON text.
+    pub fn from_json(text: &str) -> Result<Self, ConfigError> {
+        serde_json::from_str(text).map_err(ConfigError::Parse)
+    }
+}
+
+/// Reads and parses the JSON file at `path`.
+fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(ConfigError::Parse)
 }
 
 /// Deserializes an asset amount from its base-unit u64, rejecting out-of-range values.
@@ -196,24 +223,24 @@ fn used_nonces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Deposit
 // ERRORS
 // ================================================================================================
 
-/// Errors the config loader returns.
+/// Errors the input-file loaders return.
 #[derive(Debug)]
 pub enum ConfigError {
-    /// The config file could not be read.
+    /// The file could not be read.
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
     /// The JSON does not match the schema: a malformed value (an account id, an attester key,
-    /// the seed) or an unknown field.
+    /// the seed, a nonce) or an unknown field.
     Parse(serde_json::Error),
 }
 
 impl core::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Io { path, .. } => write!(f, "reading the config file {}", path.display()),
-            Self::Parse(_) => write!(f, "the config JSON does not match the schema"),
+            Self::Io { path, .. } => write!(f, "reading the input file {}", path.display()),
+            Self::Parse(_) => write!(f, "the JSON does not match the schema"),
         }
     }
 }

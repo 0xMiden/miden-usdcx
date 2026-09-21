@@ -49,7 +49,7 @@ mod error;
 mod network_auth;
 
 use construction::build_usdcx_faucet;
-pub use construction::{build_faucet_account, XReserveFaucetExtension};
+pub use construction::{build_faucet_account, record_used_nonces, XReserveFaucetExtension};
 pub use error::XReserveStablecoinBuilderError;
 
 /// Dedicated role symbols mapped to attester administration, pause and unpause by

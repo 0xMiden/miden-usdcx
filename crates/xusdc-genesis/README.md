@@ -1,23 +1,48 @@
 # xusdc-genesis
 
-Builds the genesis xUSDC faucet **offline** — before any network exists — and writes its `.mac`
-account file. The faucet id hashes the account seed plus the code and storage commitments (no
-chain state), so the id the tool prints is the id the network boots with, reproducible from the
-config.
+Builds the genesis xUSDC faucet and its distributor **offline** — before any network exists —
+and writes their `.mac` account files. The faucet id hashes the account seed plus the code and
+storage commitments (no chain state), so the id the tool prints is the id the network boots with,
+reproducible from the config. Recording the consumed deposit nonces and prefunding the
+distributor are later steps that leave the faucet id unchanged.
 
 The config names the five role holders the `XReserveStablecoinBuilder` seeds — **owner**
 (`ADMIN`), **attest_admin**, **pauser**, **unpauser**, **blocklist_manager** — by bare account
-id (hex or bech32).
+id (hex or bech32). At launch the distributor doubles as the bootstrap `ADMIN`: put its id in
+`accounts.owner` and leave the operational roles empty; they are assigned once the network runs.
 
 ## Usage
 
+Four commands, in launch order. No command overwrites an existing file, so give each step its
+own `--out-dir`; the last directory holds the genesis inputs.
+
 ```sh
-cargo run -p xusdc-genesis -- --config <config.json> [--out-dir <dir>]
+cargo run -p xusdc-genesis -- new-distributor --out-dir out/1-distributor [--auth-scheme ecdsa-k256-keccak|falcon512-poseidon2]
+cargo run -p xusdc-genesis -- faucet --config config.json --out-dir out/2-faucet
+cargo run -p xusdc-genesis -- prefund --faucet out/2-faucet/usdcx-faucet.mac --distributor out/1-distributor/distributor.mac --out-dir out/3-prefunded
+cargo run -p xusdc-genesis -- record-nonces --faucet out/2-faucet/usdcx-faucet.mac --nonces nonces.json --out-dir out/4-genesis
 ```
 
-Writes `usdcx-faucet.mac` (nonce one, no seed) into `--out-dir` (or the config's `output_dir`)
-and prints the faucet id (hex + bech32 for mainnet/testnet/devnet) plus the configured role
-ids.
+1. `new-distributor` generates a fresh public basic wallet with a new signing key (ECDSA
+   secp256k1/keccak by default, Falcon512Poseidon2 on request) and writes it, key included, as
+   `distributor.mac`: undeployed (nonce zero, empty vault), exactly what a wallet created with
+   `miden-client new-wallet --account-type public` and exported with its keys looks like — that
+   file is accepted in step 3 too. Prints the distributor id (hex + bech32 for
+   mainnet/testnet/devnet). Its id is the recipient of the Circle deposit and goes into the
+   config's `accounts.owner`.
+2. `faucet` builds the genesis faucet from the config and writes `usdcx-faucet.mac` (nonce one,
+   no seed). Prints the faucet id plus the configured role ids. Register this id with Circle and
+   make the deposits against it.
+3. `prefund` gives the distributor the faucet's whole recorded `token_supply`, promotes it to
+   genesis form (nonce one, no seed) and writes it, key included, as a new `distributor.mac`. It
+   takes no amount: the faucet records the supply as issued, and the distributor's balance must
+   equal it (the faucet's burn path is bounded by that counter). The distributor must be public,
+   undeployed and carry a signing key; the command runs once per distributor.
+4. `record-nonces` records the Circle deposit nonces listed in `nonces.json` as consumed in the
+   faucet and writes a new `usdcx-faucet.mac`. Recording a nonce twice is a no-op, so the file
+   can list every nonce so far. Run it after the deposits, when their nonces are known.
+
+Steps 3 and 4 both read the faucet written by step 2; only step 4 writes a new faucet file.
 
 ## Config
 
@@ -38,8 +63,7 @@ JSON, unknown fields rejected:
     "domain": 10007,
     "min_burn_amount": 1,
     "verification_base_fee": 500,
-    "attesters": ["0x0279... (33 bytes of hex)"],
-    "used_nonces": ["0x5585... (32 bytes of hex)"]
+    "attesters": ["0x0279... (33 bytes of hex)"]
   },
   "output_dir": "optional/out/dir"
 }
@@ -50,31 +74,51 @@ each list zero or more holders (absent means empty — the role is then populate
 the standard role-action note). Every id is `0x`-prefixed hex or bech32, and every listed
 holder is seeded as a member of its role. `faucet.seed`
 is the faucet's 32-byte account seed as a hex string (the `0x` prefix is optional on every
-byte-string field); `token_supply` is the initial supply
-in base units (6 decimals); the supply cap is not configurable and is set to the maximum asset
-amount; `domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the
-deposit attester public keys to allowlist at build time, each as the hex string of the key's
-33 compressed SEC1 bytes; when empty or absent the allowlist is seeded later through
+byte-string field); `token_supply` is the initial supply in base units (6 decimals) — the amount
+deposited with Circle for the distributor; it feeds the faucet id, so it must be final before
+`faucet` runs. The supply cap is not configurable and is set to the maximum asset amount;
+`domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the deposit
+attester public keys to allowlist at build time, each as the hex string of the key's 33
+compressed SEC1 bytes; when empty or absent the allowlist is seeded later through
 `set_attester` notes.
-
-`used_nonces` (optional) lists the Circle deposit nonces whose deposits the genesis state already
-honours - the balances seeded at genesis are backed by them - each as the hex string of the
-nonce's 32 bytes. The faucet records them as consumed, so the relayer cannot mint them a second
-time. The nonces do not feed the id: run the tool once without them to learn the faucet id, make
-the deposits against that id, then add their nonces and run it again. The second run prints the
-same id, and its `.mac` is the one to put into genesis.
 
 `verification_base_fee` is baked into the faucet's fee schedule and MUST equal the
 `[fee_parameters] verification_base_fee` the network operator puts in the node's `genesis.toml`
 — the tool cannot enforce this.
 
+## Nonces file
+
+JSON, unknown fields rejected; the list is required and must not be empty:
+
+```json
+{
+  "used_nonces": ["0x5585... (32 bytes of hex)"]
+}
+```
+
+The Circle deposit nonces whose deposits the genesis state already honours — the prefunded
+balance is backed by them. The faucet records them as consumed, so the relayer cannot mint them
+a second time.
+
 ## Node genesis (the network operator's artifact)
 
-The operator's `genesis.toml` needs only the faucet:
+The operator's `genesis.toml` takes the faucet from step 4 and the distributor from step 3:
 
 ```toml
 native_faucet = "usdcx-faucet.mac"
+
+[[account]]
+path = "distributor.mac"
 ```
+
+The node takes `[[account]]` files as they are (no validation, no nonce bump), which is why
+`prefund` emits the genesis form. Do not list `[[wallet]]` entries holding the xUSDC symbol: the
+node would overwrite the faucet's recorded `token_supply` with their total. `distributor.mac`
+carries the distributor's signing key — keep the genesis directory private; the same file is the
+funding service's `--account-file`.
 
 The role accounts are NOT injected at genesis — their holders deploy them with their first
 transaction.
+
+The `.mac` format follows the protocol version this workspace pins; the node building the
+genesis block must be on the same protocol family.

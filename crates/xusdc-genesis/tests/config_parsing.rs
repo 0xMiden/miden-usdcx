@@ -1,4 +1,4 @@
-//! Config-schema acceptance and rejections.
+//! Schema acceptance and rejections of the two input files: the config and the nonces.
 
 mod common;
 
@@ -8,14 +8,16 @@ use miden_protocol::address::NetworkId;
 use xusdc_encoding::xreserve::encoding::DepositNonce;
 use xusdc_genesis::config::{ConfigError, Role};
 
-use crate::common::{attester_keys, role_id_hex, to_hex, Fixture, USED_NONCE_BYTES};
+use crate::common::{
+    attester_keys, role_id_hex, to_hex, Fixture, NoncesFixture, TOKEN_SUPPLY, USED_NONCE_BYTES,
+};
 
 /// The dev fixture parses, and the typed config reflects it.
 #[test]
 fn the_dev_fixture_round_trips() {
     let fixture = Fixture::new();
     let config = fixture.config();
-    assert_eq!(config.faucet.token_supply.as_u64(), 250_000_000);
+    assert_eq!(config.faucet.token_supply.as_u64(), TOKEN_SUPPLY);
     assert_eq!(config.faucet.domain, 7);
     assert_eq!(config.faucet.verification_base_fee, 500);
     assert!(config.faucet.min_burn_amount.is_none());
@@ -32,11 +34,6 @@ fn the_dev_fixture_round_trips() {
             .map(|key| key.to_commitment())
             .collect::<Vec<_>>(),
         "the attester keys must decode from their configured SEC1 bytes",
-    );
-    assert_eq!(
-        config.faucet.used_nonces,
-        USED_NONCE_BYTES.map(DepositNonce::new),
-        "the used nonces must decode from their configured bytes",
     );
     for role in Role::ALL {
         let members = config.accounts.get(role);
@@ -114,20 +111,6 @@ fn an_absent_attester_list_is_an_empty_allowlist() {
     );
 }
 
-/// An absent used-nonce list parses as no consumed nonces.
-#[test]
-fn an_absent_used_nonce_list_is_empty() {
-    let mut fixture = Fixture::new();
-    fixture.json["faucet"]
-        .as_object_mut()
-        .expect("the faucet section is an object")
-        .remove("used_nonces");
-    assert!(
-        fixture.config().faucet.used_nonces.is_empty(),
-        "an absent used_nonces field must parse as no consumed nonces",
-    );
-}
-
 /// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected: a
 /// wrong-length key, and a key with an invalid SEC1 tag byte.
 #[test]
@@ -169,18 +152,65 @@ fn a_wrong_length_seed_is_rejected() {
     assert_parse_error_contains(err, "expected 32 bytes, got 4");
 }
 
-/// An unknown field anywhere in the document is a schema violation (`deny_unknown_fields`).
+/// An unknown field anywhere in the document is a schema violation (`deny_unknown_fields`);
+/// so is `used_nonces`, which lives in the nonces file, not the config.
 #[test]
 fn an_unknown_field_is_rejected() {
-    let mut fixture = Fixture::new();
-    fixture.json["faucet"]["surprise"] = serde_json::Value::from(1u64);
+    for field in ["surprise", "used_nonces"] {
+        let mut fixture = Fixture::new();
+        fixture.json["faucet"][field] = serde_json::Value::from(1u64);
+        let err = fixture
+            .parse()
+            .expect_err("an unknown field must be rejected");
+        assert_parse_error_contains(err, "unknown field");
+    }
+}
+
+// NONCES FILE
+// ================================================================================================
+
+/// The nonces fixture parses to its typed nonces.
+#[test]
+fn the_nonces_fixture_parses() {
+    let nonces = NoncesFixture::new()
+        .parse()
+        .expect("the nonces fixture must parse");
+    assert_eq!(
+        nonces.used_nonces,
+        USED_NONCE_BYTES.map(DepositNonce::new),
+        "the nonces must decode from their configured bytes",
+    );
+}
+
+/// A nonce that is not exactly 32 bytes is a schema violation.
+#[test]
+fn a_wrong_length_nonce_is_rejected() {
+    let mut fixture = NoncesFixture::new();
+    fixture.json["used_nonces"][1] = serde_json::Value::from(to_hex(&[0x66u8; 4]));
+    let err = fixture
+        .parse()
+        .expect_err("a wrong-length nonce must be rejected");
+    assert_parse_error_contains(err, "expected 32 bytes, got 4");
+}
+
+/// The nonce list is required: a file without it is not a nonces file.
+#[test]
+fn a_missing_nonce_list_is_rejected() {
+    let mut fixture = NoncesFixture::new();
+    fixture.json = serde_json::json!({});
+    let err = fixture
+        .parse()
+        .expect_err("a missing nonce list must be rejected");
+    assert_parse_error_contains(err, "missing field `used_nonces`");
+}
+
+/// An unknown field in the nonces file is a schema violation.
+#[test]
+fn an_unknown_nonces_field_is_rejected() {
+    let mut fixture = NoncesFixture::new();
+    fixture.json["surprise"] = serde_json::Value::from(1u64);
     let err = fixture
         .parse()
         .expect_err("an unknown field must be rejected");
-    assert_matches!(err, ConfigError::Parse(source) => {
-        assert!(
-            source.to_string().contains("unknown field"),
-            "the parse error must name the unknown field, got: {source}",
-        );
-    });
+    assert_parse_error_contains(err, "unknown field");
 }

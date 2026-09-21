@@ -206,8 +206,8 @@ impl XReserveStablecoinBuilder {
     }
 
     /// Builds the faucet for inclusion in a genesis block.
-    /// The account is created with a nonce of one, its own ID as the fee asset, and every
-    /// nonce in `used_nonces` recorded as consumed.
+    /// The account is created with a nonce of one and its own ID as the fee asset. Consumed
+    /// deposit nonces are recorded afterwards with [`record_used_nonces`].
     ///
     /// # Warning
     ///
@@ -216,7 +216,6 @@ impl XReserveStablecoinBuilder {
     pub fn build_genesis_account(
         &self,
         init_seed: [u8; 32],
-        used_nonces: &[DepositNonce],
     ) -> Result<Account, XReserveStablecoinBuilderError> {
         let account = self.build_account(init_seed)?;
         let fee_asset_id = AssetId::new_fungible(account.id());
@@ -227,18 +226,39 @@ impl XReserveStablecoinBuilder {
                 fee_asset_id.to_word(),
             )
             .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
-        for nonce in used_nonces {
-            storage
-                .set_map_item(
-                    XReserveFaucetExtension::used_nonces_slot(),
-                    nonce.to_storage_map_key(),
-                    Word::from(NONCE_USED_MARKER),
-                )
-                .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
-        }
         Account::new(id, vault, storage, code, Felt::ONE, None)
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
     }
+}
+
+/// Records every nonce in `used_nonces` as consumed in the genesis faucet `account` and returns
+/// it in genesis form (nonce one, no seed). Recording a nonce twice is a no-op.
+///
+/// # Errors
+///
+/// [`XReserveStablecoinBuilderError::AccountComposition`] if `account` has no nonce registry
+/// slot, i.e. it is not an xUSDC faucet.
+///
+/// # Warning
+///
+/// The returned account can only be added at genesis. With nonce one and no seed it cannot be
+/// deployed in a transaction.
+pub fn record_used_nonces(
+    account: Account,
+    used_nonces: &[DepositNonce],
+) -> Result<Account, XReserveStablecoinBuilderError> {
+    let (id, vault, mut storage, code, _nonce, _seed) = account.into_parts();
+    for nonce in used_nonces {
+        storage
+            .set_map_item(
+                XReserveFaucetExtension::used_nonces_slot(),
+                nonce.to_storage_map_key(),
+                Word::from(NONCE_USED_MARKER),
+            )
+            .map_err(XReserveStablecoinBuilderError::AccountComposition)?;
+    }
+    Account::new(id, vault, storage, code, Felt::ONE, None)
+        .map_err(XReserveStablecoinBuilderError::AccountComposition)
 }
 
 /// Crate-root constructor for the final xUSDC faucet [`Account`]: builds the fixed-identity USDCx

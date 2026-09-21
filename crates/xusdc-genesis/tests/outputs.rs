@@ -1,29 +1,96 @@
-//! The tool's file output over the dev fixture.
+//! The `.mac` file boundary: what each writer emits, that nothing is ever overwritten, and that a
+//! key-bearing file is private.
 
 mod common;
 
-use xusdc_genesis::accounts::build_faucet;
-use xusdc_genesis::output::write_outputs;
+use miden_protocol::account::AccountFile;
+use miden_protocol::utils::serde::Serializable;
+use xusdc_genesis::output::{
+    read_account_file, write_account_file, write_distributor, write_faucet, DISTRIBUTOR_MAC_FILE,
+    FAUCET_MAC_FILE,
+};
 
-use crate::common::Fixture;
+use crate::common::{fresh_distributor, genesis_faucet};
 
-/// `write_outputs` emits exactly one file — the faucet's `.mac`.
+/// `write_faucet` emits exactly one file, the keyless faucet `.mac`.
 #[test]
-fn write_outputs_emits_only_the_faucet_file() {
-    let fixture = Fixture::new();
-    let faucet = build_faucet(&fixture.config()).expect("the dev fixture must build");
+fn write_faucet_emits_only_the_keyless_faucet_file() {
     let dir = tempfile::tempdir().expect("a temp dir is available");
-    write_outputs(&faucet, dir.path()).expect("the outputs must write");
+    let path = write_faucet(&genesis_faucet(), dir.path()).expect("the faucet must write");
 
-    assert!(
-        dir.path().join("usdcx-faucet.mac").is_file(),
-        "usdcx-faucet.mac must be emitted",
-    );
+    assert_eq!(path, dir.path().join(FAUCET_MAC_FILE));
     assert_eq!(
         std::fs::read_dir(dir.path())
             .expect("the out dir is readable")
             .count(),
         1,
-        "the faucet .mac is the tool's only file output",
+        "the faucet .mac is the only file emitted",
+    );
+    let file = read_account_file(&path).expect("the faucet file must load");
+    assert!(
+        file.auth_secret_keys.is_empty(),
+        "the faucet file carries no keys"
+    );
+}
+
+/// `write_distributor` emits the distributor with its key, readable by its owner only.
+#[test]
+fn write_distributor_keeps_the_key_and_is_private() {
+    let distributor = fresh_distributor();
+    let dir = tempfile::tempdir().expect("a temp dir is available");
+    let path = write_distributor(&distributor, dir.path()).expect("the distributor must write");
+
+    assert_eq!(path, dir.path().join(DISTRIBUTOR_MAC_FILE));
+    let file = read_account_file(&path).expect("the distributor file must load");
+    assert_eq!(file.account, distributor.account);
+    assert_eq!(
+        file.auth_secret_keys.to_bytes(),
+        distributor.auth_secret_keys.to_bytes(),
+        "the key must round-trip through the file",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path)
+            .expect("the file has metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "a key-bearing file is owner-only");
+    }
+}
+
+/// A second write to the same path is refused and leaves the first file intact.
+#[test]
+fn write_account_file_refuses_to_overwrite() {
+    let dir = tempfile::tempdir().expect("a temp dir is available");
+    let path = dir.path().join("account.mac");
+    let first = AccountFile::new(genesis_faucet(), Vec::new());
+    write_account_file(&first, &path).expect("the first write must succeed");
+    let before = std::fs::read(&path).expect("the file is readable");
+
+    let err = write_account_file(&fresh_distributor(), &path)
+        .expect_err("writing over an existing file must be refused");
+    assert!(
+        err.to_string().contains("never overwritten"),
+        "the refusal must say why, got: {err:#}",
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("the file is still readable"),
+        before,
+        "the refused write must not touch the existing file",
+    );
+}
+
+/// A file that is not an account file is rejected with the path named.
+#[test]
+fn read_account_file_names_the_path_on_garbage() {
+    let dir = tempfile::tempdir().expect("a temp dir is available");
+    let path = dir.path().join("garbage.mac");
+    std::fs::write(&path, b"not an account file").expect("the garbage is writable");
+
+    let err = read_account_file(&path).expect_err("garbage must be rejected");
+    assert!(
+        err.to_string().contains("garbage.mac"),
+        "the error must name the file, got: {err:#}",
     );
 }

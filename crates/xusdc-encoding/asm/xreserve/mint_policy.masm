@@ -9,7 +9,7 @@ use miden::protocol::native_account
 use {FUNGIBLE_ASSET_MAX_AMOUNT} from miden::protocol::asset
 use {NOTE_TYPE_PUBLIC} from miden::protocol::note
 use {NETWORK_ACCOUNT_TARGET_ATTACHMENT_SCHEME} from miden::standards::attachments::network_account_target
-use miden::standards::note_tag
+use miden::standards::note::note_tag
 use miden::standards::notes::p2id
 use {ONE_WORD} from miden::standards::utils
 use xreserve::attestation_verify

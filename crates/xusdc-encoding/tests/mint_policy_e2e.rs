@@ -84,7 +84,7 @@ async fn mint_rejects_a_forged_signature() -> Result<()> {
         &AttachmentPlan::default(),
         82,
     )?;
-    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
+    expect_ecdsa_reject(&mut pf, note, &payload).await
 }
 
 /// Removing an attester really revokes them, end to end.
@@ -214,7 +214,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
     payload[REMOTE_DOMAIN_BYTE_OFF..REMOTE_DOMAIN_BYTE_OFF + 4]
         .copy_from_slice(&TEST_WRONG_DOMAIN.to_be_bytes());
     let note = honest_note(&pf, &payload, 83)?;
-    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
+    expect_ecdsa_reject(&mut pf, note, &payload).await
 }
 
 /// A deposit intent whose `remoteToken` is not this faucet's identifier is refused, compared
@@ -231,7 +231,7 @@ async fn mint_rejects_a_wrong_identifier() -> Result<()> {
     payload[REMOTE_TOKEN_BYTE_OFF..REMOTE_TOKEN_BYTE_OFF + 32]
         .copy_from_slice(&EthEmbeddedAccountId::from_account_id(pf.recipient_id).to_bytes32());
     let note = honest_note(&pf, &payload, 84)?;
-    expect_reject(&mut pf, note, &payload, &ERR_ECDSA_VERIFY_FAILED).await
+    expect_ecdsa_reject(&mut pf, note, &payload).await
 }
 
 // AMOUNT AND FEE BOUNDS — checked inside the policy, before anything is minted

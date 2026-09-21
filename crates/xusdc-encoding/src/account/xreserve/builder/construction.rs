@@ -7,10 +7,10 @@
 
 use miden_protocol::account::component::{AccountComponentCode, AccountComponentMetadata};
 use miden_protocol::account::{
-    Account, AccountComponent, AccountId, AccountType, AssetCallbackFlag, StorageMap,
-    StorageMapKey, StorageSlot, StorageSlotName,
+    Account, AccountComponent, AccountId, AccountType, StorageMap, StorageMapKey, StorageSlot,
+    StorageSlotName,
 };
-use miden_protocol::asset::{AssetAmount, AssetCallbacks, AssetId, TokenSymbol};
+use miden_protocol::asset::{AssetAmount, AssetId, TokenSymbol};
 use miden_protocol::block::FeeParameters;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::errors::StorageMapError;
@@ -178,28 +178,14 @@ impl XReserveStablecoinBuilder {
         init_seed: [u8; 32],
     ) -> Result<Account, XReserveStablecoinBuilderError> {
         let components = self.build_components()?;
-        // xUSDC is a policed asset: the transfer blocklist is the active send + receive policy, so
-        // the composition installs the two asset-callback slots and the account id must carry the
-        // Enabled flag for the kernel to dispatch the callbacks. Derived from the composition rather
-        // than hard-coded, so a composition that dropped the policy would flip the flag in lockstep.
-        let has_callbacks = components.iter().any(|component| {
-            component.storage_slots().iter().any(|slot| {
-                slot.name() == AssetCallbacks::on_before_asset_added_to_note_slot()
-                    || slot.name() == AssetCallbacks::on_before_asset_added_to_account_slot()
-            })
-        });
-        let flag = if has_callbacks {
-            AssetCallbackFlag::Enabled
-        } else {
-            AssetCallbackFlag::Disabled
-        };
-        let mut builder = Account::builder(init_seed)
-            .account_type(AccountType::Public)
-            .with_asset_callbacks(flag);
+        let mut builder = Account::builder(init_seed).account_type(AccountType::Public);
         for component in components {
             builder = builder.with_component(component);
         }
-        builder = builder.with_components(Self::auth_component(self.fee_parameters.clone())?);
+        builder = builder.with_components(Self::auth_component(
+            self.fee_parameters.clone(),
+            self.fee_asset_id,
+        )?);
         builder
             .build()
             .map_err(XReserveStablecoinBuilderError::AccountComposition)
@@ -259,6 +245,7 @@ pub fn build_faucet_account(
     unpauser_holders: Vec<AccountId>,
     blocklist_manager_holders: Vec<AccountId>,
     fee_parameters: FeeParameters,
+    fee_asset_id: AssetId,
     domain: u32,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
@@ -269,6 +256,7 @@ pub fn build_faucet_account(
         .unpauser_holders(unpauser_holders)
         .blocklist_manager_holders(blocklist_manager_holders)
         .fee_parameters(fee_parameters)
+        .fee_asset_id(fee_asset_id)
         .domain(domain)
         .build()?
         .build_account(init_seed)

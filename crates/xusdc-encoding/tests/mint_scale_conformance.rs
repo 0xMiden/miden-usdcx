@@ -239,10 +239,8 @@ fn wallet_balance(account: &Account, faucet_id: AccountId) -> u64 {
     account
         .vault()
         .assets()
-        .filter_map(|asset| match asset {
-            miden_protocol::asset::Asset::Fungible(f) if f.faucet_id() == faucet_id => {
-                Some(u64::from(f.amount()))
-            }
+        .filter_map(|asset| match asset.as_fungible() {
+            Some(f) if f.faucet_id() == faucet_id => Some(u64::from(f.amount())),
             _ => None,
         })
         .sum()

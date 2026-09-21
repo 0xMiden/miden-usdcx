@@ -332,9 +332,9 @@ fn main() {
                 "bytes32": hex_bytes(b),
                 "packed_felts": felts_hex(&packed(b)),
                 "expected_key": word_hex(poseidon2_key(b)),
-                "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
+                "cite": "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
                 "derivation": format!(
-                    "{what}; key = Hasher::hash_elements(bytes_to_packed_u32_elements(b)) @ protocol v0.15.3 (gen_vectors)"
+                    "{what}; key = Hasher::hash_elements(bytes_to_packed_u32_elements(b)) @ protocol v0.17.0-rc.5 (gen_vectors)"
                 ),
             })
         })
@@ -351,8 +351,8 @@ fn main() {
         "packed_felts": felts_hex(&packed(&ge_p)),
         "expected_key": word_hex(poseidon2_key(&ge_p)),
         "lossless_error": "LimbOutOfField",
-        "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-        "derivation": "first 8-byte LE limb = u64::MAX >= p, so the fallible native path must reject while Option B hashes; key computed @ v0.15.3",
+        "cite": "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
+        "derivation": "first 8-byte LE limb = u64::MAX >= p, so the fallible native path must reject while Option B hashes; key computed @ v0.17.0-rc.5",
     }));
 
     // ---- amt family -------------------------------------------------------------------
@@ -370,7 +370,7 @@ fn main() {
             &["TV-AMT-3"],
             u256_be_from_u128(max + 1),
             "AmountOverCap",
-            "generated deterministically by gen_vectors @ protocol v0.15.3",
+            "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
             "x = y = 2^63 - 2^31 + 1 = MAX + 1 must reject (no saturation)",
         ),
         {
@@ -382,7 +382,7 @@ fn main() {
                 &["TV-AMT-4"],
                 b,
                 "AmountTooLarge",
-                "generated deterministically by gen_vectors @ protocol v0.15.3",
+                "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
                 "x = 2^130: high-4 limbs nonzero must reject (limb-overflow edge)",
             )
         },
@@ -412,7 +412,7 @@ fn main() {
             "prefix_felt": felt_hex(prefix), "suffix_felt": felt_hex(suffix),
             "cite": "DEV-10 + IMPL-ACCOUNTID-LAYOUT (R-B / Agglayer-mirroring draft, REQUIRES CIRCLE CONFIRMATION)",
             "derivation": format!(
-                "AccountIdBuilder::new().build_with_seed([{}; 32]) @ v0.15.3; R-B layout: bytes[0..16]=0, [16..24]=prefix u64 BE, [24..32]=suffix u64 BE",
+                "AccountIdBuilder::new().build_with_seed([{}; 32]) @ v0.17.0-rc.5; R-B layout: bytes[0..16]=0, [16..24]=prefix u64 BE, [24..32]=suffix u64 BE",
                 n + 1
             ),
         }));
@@ -425,7 +425,7 @@ fn main() {
             "id": "aid-rej-out-of-range", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "AccountIdOutOfRange",
-            "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
+            "cite": "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
             "derivation": "aid-rt-1 R-B bytes32 with byte[0] = 0x01 (non-zero in the leading 16-byte pad)",
         }));
     }
@@ -448,8 +448,8 @@ fn main() {
             "id": "aid-rej-non-canonical", "tv": ["TV-AID-2"],
             "bytes32": hex_bytes(&bad),
             "expected_variant": "NonCanonicalAccountId",
-            "cite": "generated deterministically by gen_vectors @ protocol v0.15.3",
-            "derivation": "R-B layout, zero pad; prefix=suffix=7 (in-field) rejected by AccountId::try_from_elements @ v0.15.3",
+            "cite": "generated deterministically by gen_vectors @ protocol v0.17.0-rc.5",
+            "derivation": "R-B layout, zero pad; prefix=suffix=7 (in-field) rejected by AccountId::try_from_elements @ v0.17.0-rc.5",
         }));
     }
     let recipient_b32: [u8; 32] = r_b_bytes32(&ids[0]);
@@ -777,7 +777,7 @@ fn main() {
             "payload_hex": hex_bytes(&payload),
             "cite": "miden-crypto-0.25.1 dsa/ecdsa_k256_keccak/mod.rs:253,:301 + src/lib.rs:156-170",
             "derivation": format!(
-                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.28.0 (Poseidon2 over the 16 affine pubkey felts)",
+                "k256 SigningKey::random(StdRng seed {seed}); pk = 33B compressed SEC1 wire key, decompressed to affine qx_le_u32[8]||qy_le_u32[8] (16 felts, vm#3342); sig = 65B r||s||v (17 felts, v carried) over keccak256(full {plen}B DepositIntent payload) — raw secp256k1, NOT EIP-712, no struct; digest = 8 felts; commitment = miden-crypto PublicKey::to_commitment @ 0.33.0 (Poseidon2 over the 16 affine pubkey felts)",
                 plen = payload.len(),
             ),
         }));

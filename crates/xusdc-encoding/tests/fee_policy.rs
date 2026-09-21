@@ -23,12 +23,14 @@ use miden_standards::account::fees::{
     BasicConstantFeePolicy, ConstantFeeManager, FeePolicyManager,
 };
 use miden_standards::errors::standards::{
-    ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH, ERR_FEE_MANAGER_INPUT_NOTE_FEE_NOT_COVERED,
+    ERR_FEE_MANAGER_INPUT_NOTE_FEE_NOT_COVERED,
+    ERR_NOTE_ACTIVE_ACCOUNT_IS_NOT_NETWORK_TARGET_ACCOUNT,
 };
-use miden_standards::note::{
-    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, FeeSponsorshipNote,
-    MinBurnAmountConfigNote, MintNote, P2idNote, PauseConfigNote, RbacConfigNote, TxFeeNote,
+use miden_standards::note::config::{
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    MinBurnAmountConfigNote, PauseConfigNote, RbacConfigNote,
 };
+use miden_standards::note::{FeeSponsorshipNote, MintNote, P2idNote, TxFeeNote};
 use miden_testing::{assert_transaction_executor_error, Auth, MockChain};
 use miden_tx::NetworkNotePricer;
 use support::mint_transport::commit;
@@ -66,12 +68,17 @@ fn fee_entry(amount: u64) -> Word {
 
 fn note_pricer() -> NetworkNotePricer {
     NetworkNotePricer::builder()
-        .fee_parameters(FeeParameters::new(fee_faucet_id(), VERIFICATION_BASE_FEE))
+        .fee_parameters(fee_parameters())
+        .fee_asset_id(fee_asset_id())
         .build()
 }
 
 fn fee_parameters() -> FeeParameters {
-    FeeParameters::new(fee_faucet_id(), VERIFICATION_BASE_FEE)
+    FeeParameters::new(VERIFICATION_BASE_FEE)
+}
+
+fn fee_asset_id() -> AssetId {
+    AssetId::new_fungible(fee_faucet_id())
 }
 
 fn production_builder() -> Result<XReserveStablecoinBuilder> {
@@ -87,6 +94,7 @@ fn production_builder_with_supply(token_supply: AssetAmount) -> Result<XReserveS
         .unpauser_holders(vec![test_account_id(3)])
         .blocklist_manager_holders(vec![test_account_id(4)])
         .fee_parameters(fee_parameters())
+        .fee_asset_id(fee_asset_id())
         .domain(TEST_DOMAIN)
         .build()?)
 }
@@ -191,7 +199,7 @@ fn setup_sponsored_config_note(
 ) -> Result<SponsoredConfigFixture> {
     let config_note_fee = note_pricer().price(ConstantFeePolicyConfigNote::script_root())?;
     let components = priced_components()?;
-    let account = build_network_faucet_account(components, fee_parameters())?;
+    let account = build_network_faucet_account(components, fee_parameters(), fee_asset_id())?;
     let mint_fee =
         AssetAmount::new(scheduled_fee(&account, MintNote::script_root())?[0].as_canonical_u64())?;
     let mut builder = MockChain::builder()
@@ -241,7 +249,8 @@ fn setup_sponsored_mint() -> Result<SponsoredMintFixture> {
         .verification_base_fee(VERIFICATION_BASE_FEE);
     let recipient = builder.add_existing_wallet(Auth::IncrNonce)?;
     let producer = add_emitting_wallet(&mut builder, Auth::IncrNonce, [])?;
-    let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
+    let account =
+        build_network_faucet_account(priced_components()?, fee_parameters(), fee_asset_id())?;
     builder.add_account(account.clone())?;
 
     let payload = support::mint_transport::payload_for(
@@ -315,7 +324,7 @@ fn setup_sponsored_burn() -> Result<SponsoredBurnFixture> {
         .fee_faucet_id(fee_faucet_id())
         .verification_base_fee(VERIFICATION_BASE_FEE);
     let components = production_builder_with_supply(amount)?.build_components()?;
-    let account = build_network_faucet_account(components, fee_parameters())?;
+    let account = build_network_faucet_account(components, fee_parameters(), fee_asset_id())?;
     builder.add_account(account.clone())?;
     let burn_asset = FungibleAsset::new(account.id(), amount.as_u64())?;
     let user = add_emitting_wallet(&mut builder, Auth::IncrNonce, [burn_asset.into()])?;
@@ -361,7 +370,8 @@ fn setup_insufficient_fee(sponsored_amount: Option<u64>) -> Result<InsufficientF
     let mut builder = MockChain::builder()
         .fee_faucet_id(fee_faucet_id())
         .verification_base_fee(VERIFICATION_BASE_FEE);
-    let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
+    let account =
+        build_network_faucet_account(priced_components()?, fee_parameters(), fee_asset_id())?;
     builder.add_account(account.clone())?;
     let feature_note = XReserveSetAttesterNote::create(
         test_account_id(1),
@@ -405,7 +415,7 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
     );
 
     let auth_components: Vec<AccountComponent> =
-        XReserveStablecoinBuilder::auth_component(fee_parameters())?
+        XReserveStablecoinBuilder::auth_component(fee_parameters(), fee_asset_id())?
             .into_iter()
             .collect();
     assert_eq!(
@@ -487,7 +497,8 @@ fn production_installs_one_mutable_basic_constant_fee_policy() -> Result<()> {
 
 #[test]
 fn fee_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
-    let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
+    let account =
+        build_network_faucet_account(priced_components()?, fee_parameters(), fee_asset_id())?;
     let pricer = note_pricer();
     let own_fee =
         |cycles| -> Result<u64> { Ok(pricer.fee(TransactionFee::new(cycles)?)?.as_u64()) };
@@ -534,10 +545,6 @@ fn fee_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
                 .price(ConstantFeePolicyConfigNote::script_root())?
                 .as_u64(),
         ),
-        (
-            FeeSponsorshipNote::script_root(),
-            pricer.price(FeeSponsorshipNote::script_root())?.as_u64(),
-        ),
     ] {
         assert_eq!(scheduled_fee(&account, root)?, fee_entry(expected));
         assert!(
@@ -545,6 +552,11 @@ fn fee_policy_prices_standard_and_xusdc_execution_paths() -> Result<()> {
             "the verification base fee must price every checked path"
         );
     }
+    assert_eq!(
+        scheduled_fee(&account, FeeSponsorshipNote::script_root())?,
+        fee_entry(0),
+        "sponsorship notes are exempt from sponsoring themselves and price to zero"
+    );
     Ok(())
 }
 
@@ -663,7 +675,8 @@ async fn sponsored_burn_uses_the_installed_xusdc_fee_schedule() -> Result<()> {
 
 #[tokio::test]
 async fn priced_xusdc_note_requires_complete_sponsorship() -> Result<()> {
-    let account = build_network_faucet_account(priced_components()?, fee_parameters())?;
+    let account =
+        build_network_faucet_account(priced_components()?, fee_parameters(), fee_asset_id())?;
     let required = scheduled_fee_amount(&account, XReserveSetAttesterNote::script_root())?.as_u64();
     assert!(required > 0);
     for sponsored_amount in [None, Some(required - 1)] {
@@ -751,7 +764,10 @@ async fn config_note_for_another_account_cannot_reprice_the_faucet() -> Result<(
         .build()?
         .execute()
         .await;
-    assert_transaction_executor_error!(result, ERR_CONSTANT_FEE_POLICY_CONFIG_ACCOUNT_MISMATCH);
+    assert_transaction_executor_error!(
+        result,
+        ERR_NOTE_ACTIVE_ACCOUNT_IS_NOT_NETWORK_TARGET_ACCOUNT
+    );
     assert_mint_fee_unchanged(&fixture)?;
     Ok(())
 }

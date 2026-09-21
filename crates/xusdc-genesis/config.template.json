@@ -8,10 +8,10 @@
   },
   "faucet": {
     "seed": "0x55534443582d4641554345540000000000000000000000000000000000000000",
-    "token_supply": "<base units (6 decimals) deposited with Circle for the distributor>",
+    "token_supply": 100000000,
     "domain": 10007,
     "min_burn_amount": 1,
     "verification_base_fee": 7,
-    "attesters": ["<33 bytes of hex: a Circle attester key in compressed SEC1 form>"]
+    "attesters": ["<33 bytes of hex: the Circle attester's compressed SEC1 public key>"]
   }
 }

@@ -206,7 +206,7 @@ fn attesters<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PublicKey
     Vec::<String>::deserialize(deserializer)?
         .iter()
         .map(|text| {
-            PublicKey::read_from_bytes(&hex_bytes::<D::Error>(text)?).map_err(D::Error::custom)
+            PublicKey::read_from_bytes(&hex_array::<D::Error, 33>(text)?).map_err(D::Error::custom)
         })
         .collect()
 }

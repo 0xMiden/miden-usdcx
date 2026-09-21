@@ -52,10 +52,11 @@ Steps 3 and 4 both read the faucet written by step 2 and are independent of each
 ## Config
 
 `config.template.json` in this crate is the placeholder form: copy it to `config.json` and
-replace every `<...>` value (the template does not parse until they are). It pre-fills the
-faucet seed (the ASCII of `USDCX-FAUCET` zero-padded to 32 bytes: the seed is public and only
-has to be fixed before `faucet` runs), the Miden domain, the min burn amount, the launch
-`verification_base_fee` of 7, and the empty operational roles. JSON, unknown fields rejected:
+replace every `<...>` value (the template does not parse until they are): the distributor id
+and the attester key. It pre-fills the faucet seed (the ASCII of `USDCX-FAUCET` zero-padded to
+32 bytes: the seed is public and only has to be fixed before `faucet` runs), the launch supply
+of 100 USDC, the Miden domain, the min burn amount, the launch `verification_base_fee` of 7,
+and the empty operational roles. JSON, unknown fields rejected:
 
 ```json
 {
@@ -68,7 +69,7 @@ has to be fixed before `faucet` runs), the Miden domain, the min burn amount, th
   },
   "faucet": {
     "seed": "0x55534443582d4641554345540000000000000000000000000000000000000000",
-    "token_supply": 250000000,
+    "token_supply": 100000000,
     "domain": 10007,
     "min_burn_amount": 1,
     "verification_base_fee": 7,
@@ -82,13 +83,13 @@ each list zero or more holders (absent means empty — the role is then populate
 the standard role-action note). Every id is `0x`-prefixed hex or bech32, and every listed
 holder is seeded as a member of its role. `faucet.seed`
 is the faucet's 32-byte account seed as a hex string (the `0x` prefix is optional on every
-byte-string field); `token_supply` is the initial supply in base units (6 decimals) — the amount
-deposited with Circle for the distributor; it feeds the faucet id, so it must be final before
-`faucet` runs. The supply cap is not configurable and is set to the maximum asset amount;
-`domain` is the Circle domain id, 10007 for Miden. `attesters` (optional) lists the deposit
-attester public keys to allowlist at build time, each as the hex string of the key's 33
-compressed SEC1 bytes; when empty or absent the allowlist is seeded later through
-`set_attester` notes.
+byte-string field); `token_supply` is the initial supply in base units (6 decimals, so
+`100000000` is 100 USDC) — the amount deposited with Circle for the distributor; it feeds the
+faucet id, so it must be final before `faucet` runs. The supply cap is not configurable and is
+set to the maximum asset amount; `domain` is the Circle domain id, 10007 for Miden. `attesters`
+(optional) lists the deposit attester public keys to allowlist at build time, each as the hex
+string of the key's 33 compressed SEC1 bytes (`02` or `03` followed by the x coordinate); when
+empty or absent the allowlist is seeded later through `set_attester` notes.
 
 `verification_base_fee` is baked into the faucet's fee schedule and MUST equal the
 `[fee_parameters] verification_base_fee` the network operator puts in the node's `genesis.toml`

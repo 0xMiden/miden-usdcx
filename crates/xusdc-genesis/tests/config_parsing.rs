@@ -111,12 +111,14 @@ fn an_absent_attester_list_is_an_empty_allowlist() {
     );
 }
 
-/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected: a
-/// wrong-length key, and a key with an invalid SEC1 tag byte.
+/// An attester key that is not a valid 33-byte compressed secp256k1 point is rejected, with a
+/// wrong length named: a 20-byte value, a truncated key, and a key with an invalid SEC1 tag
+/// byte.
 #[test]
 fn a_malformed_attester_key_is_rejected() {
     for (bad_key, cause) in [
-        (to_hex(&[2u8; 32]), "unexpected end of file"),
+        (to_hex(&[0xfcu8; 20]), "expected 33 bytes, got 20"),
+        (to_hex(&[2u8; 32]), "expected 33 bytes, got 32"),
         (to_hex(&[5u8; 33]), "Invalid public key"),
         ("0xzz".to_string(), "Invalid character"),
     ] {
@@ -208,12 +210,16 @@ fn the_template_parses_once_its_placeholders_are_filled() {
     let mut json: serde_json::Value =
         serde_json::from_str(&text).expect("the template is valid JSON");
     json["accounts"]["owner"] = serde_json::Value::from(role_id_hex(Role::Owner));
-    json["faucet"]["token_supply"] = serde_json::Value::from(TOKEN_SUPPLY);
     json["faucet"]["attesters"] = serde_json::json!([to_hex(&ATTESTER_KEY_BYTES[0])]);
     assert_no_placeholders(&json, "config");
 
     let config =
         GenesisToolConfig::from_json(&json.to_string()).expect("the filled template parses");
+    assert_eq!(
+        config.faucet.token_supply.as_u64(),
+        100_000_000,
+        "the template pre-fills the launch supply, 100 USDC in base units"
+    );
     let mut seed = [0u8; 32];
     seed[..12].copy_from_slice(b"USDCX-FAUCET");
     assert_eq!(

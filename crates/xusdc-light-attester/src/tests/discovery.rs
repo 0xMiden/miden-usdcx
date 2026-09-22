@@ -516,6 +516,27 @@ fn burns_and_scan_position_are_saved_together() {
     assert_eq!(store.discovered_burns().unwrap_err().to_string(), INVALID);
     drop(store);
 
+    // The saved header is the next run's trust base, so one that does not decode blocks startup.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute("UPDATE attester_state SET authenticated_parent = x''", [])
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        Store::open_or_create(
+            &path,
+            faucet_account_id(),
+            ScanCursor {
+                next_block: BlockNumber::GENESIS,
+            },
+            trusted_anchor,
+        )
+        .err()
+        .unwrap()
+        .to_string(),
+        INVALID
+    );
+
     let malformed_candidate_path = tempdir.path().join("malformed-candidate.sqlite3");
     drop(
         Store::open_or_create(

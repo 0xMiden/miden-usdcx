@@ -4,6 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
+use miden_objects::prost::Message;
+use miden_objects::{proto, DecodeMessageExt};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, Nullifier};
@@ -137,7 +139,7 @@ impl Store {
         let authenticated_parent = next_state
             .authenticated_parent
             .as_ref()
-            .map(Serializable::to_bytes);
+            .map(|header| proto::blockchain::BlockHeader::from(header).encode_to_vec());
         let updated = transaction
             .execute(
                 "UPDATE attester_state
@@ -314,7 +316,7 @@ fn load_scan_state(
         },
         authenticated_parent: authenticated_parent
             .as_deref()
-            .map(decode_canonical)
+            .map(decode_header)
             .transpose()?,
     };
     validate_scan_state(&state, initial_cursor)?;
@@ -534,6 +536,13 @@ fn decode_note(
         bail!(INVALID);
     }
     Ok(note)
+}
+
+fn decode_header(bytes: &[u8]) -> anyhow::Result<BlockHeader> {
+    proto::blockchain::BlockHeader::decode(bytes)
+        .context(INVALID)?
+        .decode_and_build_unchecked()
+        .context(INVALID)
 }
 
 fn decode_block_number(value: i64) -> anyhow::Result<BlockNumber> {

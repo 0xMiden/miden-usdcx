@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Context;
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::note::Nullifier;
 use miden_protocol::transaction::OutputNote;
 
@@ -60,7 +60,7 @@ pub struct Attester {
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
     circle: Box<dyn CircleApi>,
-    trusted_anchor_block: Option<ProvenBlock>,
+    trusted_anchor_block: Option<SignedBlock>,
 }
 
 #[allow(dead_code)]
@@ -267,7 +267,7 @@ impl Attester {
 
     fn scan_and_save_block(
         &mut self,
-        block: &ProvenBlock,
+        block: &SignedBlock,
         burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
     ) -> Result<(), DiscoverError> {
         let (new_burn_notes, new_burns) = find_burns_in_block(
@@ -293,7 +293,7 @@ impl Attester {
         &self,
         block_num: BlockNumber,
         last_verified_header: &BlockHeader,
-    ) -> Result<ProvenBlock, DiscoverError> {
+    ) -> Result<SignedBlock, DiscoverError> {
         let block = self
             .chain
             .block_by_number(block_num)
@@ -322,7 +322,7 @@ fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = Blo
 }
 
 fn find_burns_in_block(
-    block: &ProvenBlock,
+    block: &SignedBlock,
     faucet_account_id: miden_protocol::account::AccountId,
     burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
 ) -> (Vec<BurnCandidate>, Vec<DiscoveredBurn>) {

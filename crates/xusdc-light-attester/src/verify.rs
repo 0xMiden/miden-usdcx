@@ -1,7 +1,7 @@
 //! Checks Circle's prepared authorization against the burns, then signs only the checked digest.
 
 use alloy_primitives::{keccak256, Address, Bytes, Signature, B256, U256};
-use alloy_sol_types::{eip712_domain, SolStruct};
+use alloy_sol_types::{eip712_domain, SolCall, SolStruct};
 use miden_protocol::note::NoteId;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use serde::Deserialize;
@@ -24,6 +24,9 @@ const TRANSFER_SPEC_MAGIC: [u8; 4] = 0xca85_def7u32.to_be_bytes();
 // bytes4(keccak256("circle.xReserve.WithdrawHookData")), followed by this format version.
 const WITHDRAW_HOOK_DATA_MAGIC: [u8; 4] = 0x6b20_f62au32.to_be_bytes();
 const WITHDRAW_HOOK_DATA_VERSION: u32 = 1;
+// The hook Circle's forwarder passes to CCTP: the ASCII marker "cctp-forward", zero-padded.
+const CCTP_FORWARD_MARKER: [u8; 32] = *b"cctp-forward\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+const CCTP_FAST_FINALITY: u32 = 1000;
 
 // Names and field order are part of Circle's EIP-712 type hashes.
 mod eip712 {
@@ -53,6 +56,23 @@ mod eip712 {
     }
 }
 
+// The CCTP transfer Circle's xReserve contract on Arc executes on the forwarded route; selector
+// and argument layout are TokenMessengerV2's.
+pub(crate) mod cctp {
+    alloy_sol_types::sol! {
+        function depositForBurnWithHook(
+            uint256 amount,
+            uint32 destinationDomain,
+            bytes32 mintRecipient,
+            address burnToken,
+            bytes32 destinationCaller,
+            uint256 maxFee,
+            uint32 minFinalityThreshold,
+            bytes hookData
+        );
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum VerifyError {
     #[error("Circle returned a different number of batches or intents")]
@@ -69,8 +89,10 @@ pub(crate) enum VerifyError {
     WrongSigner,
     #[error("Circle restricted the destination caller")]
     CallerRestricted,
-    #[error("forwarded withdrawals are not supported yet")]
+    #[error("Circle forwarded the withdrawal but no forwarder is configured")]
     Forwarding,
+    #[error("Circle's forwarded route has a wrong {0}")]
+    ForwardedField(&'static str),
     #[error("Circle's signing hash differs from the checked fields")]
     DigestMismatch,
     #[error("Circle's encoded intent differs from the checked fields")]
@@ -226,12 +248,29 @@ impl UnverifiedPrepareResponse {
         if B256::from(burn.burn.note().as_note().serial_num().as_bytes()) != spec.salt {
             return Err(VerifyError::UnknownSalt);
         }
-        if spec.destinationDomain != burn.items.dest_domain {
-            return Err(VerifyError::WrongBurnField("destinationDomain"));
-        }
-        if spec.destinationRecipient.as_slice() != burn.items.dest_recipient.as_bytes() {
-            return Err(VerifyError::WrongBurnField("destinationRecipient"));
-        }
+        // Circle serves some destinations through xReserve on Arc plus a CCTP transfer. On that
+        // route the burn's destination sits in the CCTP calldata and this leg pays the forwarder.
+        let forwarded =
+            hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
+        let cctp_fee = match (forwarded, config.cctp_forwarding()) {
+            (false, _) => {
+                if spec.destinationDomain != burn.items.dest_domain {
+                    return Err(VerifyError::WrongBurnField("destinationDomain"));
+                }
+                if spec.destinationRecipient.as_slice() != burn.items.dest_recipient.as_bytes() {
+                    return Err(VerifyError::WrongBurnField("destinationRecipient"));
+                }
+                if spec.destinationCaller != B256::ZERO {
+                    return Err(VerifyError::CallerRestricted);
+                }
+                U256::ZERO
+            }
+            (true, None) => return Err(VerifyError::Forwarding),
+            (true, Some((fee, forwarder))) => {
+                verify_forwarded_leg(&intent, &hook, burn, fee, forwarder)?;
+                U256::from(fee)
+            }
+        };
         if hook.remote_domain != MIDEN_DOMAIN {
             return Err(VerifyError::WrongBurnField("remoteDomain"));
         }
@@ -255,17 +294,12 @@ impl UnverifiedPrepareResponse {
         // plus a share of the burn.
         let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64())
             + burned_amount * U256::from(config.max_withdrawal_fee_bps()) / U256::from(10_000u64);
-        if intent.maxFee > fee_ceiling {
+        // The ceiling covers both legs: Circle's fee on this one plus the CCTP fee taken on Arc.
+        if intent.maxFee.saturating_add(cctp_fee) > fee_ceiling {
             return Err(VerifyError::FeeTooHigh);
         }
         if spec.sourceSigner != spec.sourceDepositor {
             return Err(VerifyError::WrongSigner);
-        }
-        if spec.destinationCaller != B256::ZERO {
-            return Err(VerifyError::CallerRestricted);
-        }
-        if hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty() {
-            return Err(VerifyError::Forwarding);
         }
 
         // Circle sends the encoded bytes and the hash to sign; we rebuild both from the checked
@@ -290,6 +324,62 @@ impl UnverifiedPrepareResponse {
             use_circle_forwarding: config.use_circle_forwarding(),
         })
     }
+}
+
+/// This leg pays the configured xReserve contract on Arc, which then runs the CCTP transfer given
+/// in the calldata. Every value that binds the withdrawal to the burn therefore has to be read
+/// from that calldata, and the fee it names must be the one we asked Circle for.
+fn verify_forwarded_leg(
+    intent: &eip712::BurnIntent,
+    hook: &HookData,
+    burn: &ValidatedBurn,
+    cctp_fee: u64,
+    forwarder: Address,
+) -> Result<(), VerifyError> {
+    use VerifyError::ForwardedField;
+    let spec = &intent.spec;
+    let forwarder = forwarder.into_word();
+    if spec.destinationRecipient != forwarder {
+        return Err(ForwardedField("destinationRecipient"));
+    }
+    if spec.destinationCaller != forwarder {
+        return Err(ForwardedField("destinationCaller"));
+    }
+    if spec.destinationDomain != spec.sourceDomain {
+        return Err(ForwardedField("destinationDomain"));
+    }
+    let call = cctp::depositForBurnWithHookCall::abi_decode(&hook.forwarding_calldata)
+        .map_err(|_| ForwardedField("forwardingCalldata"))?;
+    // Decoding alone accepts trailing bytes or odd padding, so the calldata must re-encode exactly.
+    if call.abi_encode().as_slice() != hook.forwarding_calldata.as_ref() {
+        return Err(ForwardedField("forwardingCalldata"));
+    }
+    if call.amount != spec.value {
+        return Err(ForwardedField("calldata amount"));
+    }
+    if call.destinationDomain != burn.items.dest_domain {
+        return Err(ForwardedField("calldata destinationDomain"));
+    }
+    if call.mintRecipient.as_slice() != burn.items.dest_recipient.as_bytes() {
+        return Err(ForwardedField("calldata mintRecipient"));
+    }
+    if call.burnToken != Address::from_word(spec.destinationToken) {
+        return Err(ForwardedField("calldata burnToken"));
+    }
+    if call.destinationCaller != B256::ZERO {
+        return Err(ForwardedField("calldata destinationCaller"));
+    }
+    // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
+    if call.maxFee != U256::from(cctp_fee) || call.maxFee >= call.amount {
+        return Err(ForwardedField("calldata maxFee"));
+    }
+    if call.minFinalityThreshold != CCTP_FAST_FINALITY {
+        return Err(ForwardedField("calldata minFinalityThreshold"));
+    }
+    if call.hookData.as_ref() != CCTP_FORWARD_MARKER {
+        return Err(ForwardedField("calldata hookData"));
+    }
+    Ok(())
 }
 
 struct HookData {

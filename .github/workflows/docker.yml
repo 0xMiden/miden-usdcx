@@ -56,6 +56,7 @@ jobs:
             image: miden-usdcx-genesis
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+      DOCKER_PLATFORMS: linux/amd64,linux/arm64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -119,8 +120,17 @@ jobs:
             echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Set up Docker
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
       - name: Set up QEMU
-        if: steps.metadata.outputs.publish == 'true'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
@@ -128,12 +138,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Build image for smoke test
+      - name: Build images for smoke tests
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           load: true
-          platforms: linux/amd64
+          platforms: ${{ env.DOCKER_PLATFORMS }}
           build-args: |
             BIN=${{ matrix.bin }}
             CREATED=${{ steps.metadata.outputs.created }}
@@ -143,12 +153,15 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.bin }}
           cache-to: type=gha,mode=max,scope=${{ matrix.bin }}
 
-      - name: Smoke test genesis image
+      - name: Smoke test genesis images
         env:
           TEST_IMAGE: ${{ matrix.image }}:test
         run: |
-          docker run --rm --network none "${TEST_IMAGE}" --help
-          docker run --rm --network none "${TEST_IMAGE}" new-distributor
+          IFS=',' read -r -a platforms <<< "${DOCKER_PLATFORMS}"
+          for platform in "${platforms[@]}"; do
+            docker run --rm --network none --platform "${platform}" "${TEST_IMAGE}" --help
+            docker run --rm --network none --platform "${platform}" "${TEST_IMAGE}" new-distributor
+          done
 
       - name: Log in to GHCR
         if: steps.metadata.outputs.publish == 'true'
@@ -164,7 +177,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ env.DOCKER_PLATFORMS }}
           build-args: |
             BIN=${{ matrix.bin }}
             CREATED=${{ steps.metadata.outputs.created }}

@@ -162,6 +162,13 @@ impl SavedSubmission {
                 return false;
             }
             if let Some(id) = conflict.withdrawal_id.filter(|id| !id.trim().is_empty()) {
+                if !is_well_formed_id(&id) {
+                    self.hold(
+                        HoldReason::ResponseMismatch,
+                        "conflict names a malformed withdrawal ID",
+                    );
+                    return false;
+                }
                 self.withdrawal_id = Some(id);
                 return true;
             }
@@ -217,7 +224,7 @@ impl SavedSubmission {
             return;
         };
 
-        if withdrawal.withdrawal_id.trim().is_empty()
+        if !is_well_formed_id(&withdrawal.withdrawal_id)
             || !self.matches_note(&withdrawal.burn_note_id)
             || withdrawal.use_circle_forwarding != self.use_circle_forwarding
             || withdrawal.transfer_spec_hashes.len() != 1
@@ -259,4 +266,12 @@ impl SavedSubmission {
     fn matches_note(&self, id: &str) -> bool {
         id.eq_ignore_ascii_case(&self.note_id.to_hex())
     }
+}
+
+/// Circle's withdrawal IDs are UUIDs; the ID becomes a URL path segment, so nothing else passes.
+fn is_well_formed_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }

@@ -635,6 +635,45 @@ async fn retries_use_saved_request() {
     );
 }
 
+/// A withdrawal ID outside Circle's UUID charset is never accepted from a creation or a conflict,
+/// because it would be sent back as a URL path segment.
+#[tokio::test]
+async fn malformed_withdrawal_ids_are_held() {
+    let ledger = Ledger::new().await;
+    let mut response = ledger.response(0, "created");
+    response["withdrawalId"] = json!("../v1/info");
+    let (mut attester, _) = ledger.start(vec![reply(201, json!([response]))]).await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let saved = ledger.record(&attester, 0);
+    assert_eq!(
+        (saved.status, saved.hold_reason, saved.withdrawal_id),
+        (
+            SubmissionStatus::Held,
+            Some(HoldReason::ResponseMismatch),
+            None
+        )
+    );
+
+    let ledger = Ledger::new().await;
+    let (mut attester, requests) = ledger
+        .start(vec![reply(
+            409,
+            json!({"conflict": {"withdrawalId": "../v1/info"}}),
+        )])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let saved = ledger.record(&attester, 0);
+    assert_eq!(
+        (saved.status, saved.hold_reason, saved.withdrawal_id),
+        (
+            SubmissionStatus::Held,
+            Some(HoldReason::ResponseMismatch),
+            None
+        )
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1, "no lookup with a bad ID");
+}
+
 /// A conflict ID is only a lookup handle: GET must prove the saved withdrawal's identity.
 #[tokio::test]
 async fn conflicts_are_checked() {

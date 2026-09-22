@@ -374,5 +374,4 @@ pub(crate) fn canonical_values_for_test(
 }
 
 #[cfg(test)]
-#[path = "tests/signing.rs"]
 mod signing_tests;

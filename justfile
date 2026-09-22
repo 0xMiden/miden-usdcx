@@ -7,5 +7,5 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
-run-relayer-lite *args:
-    cargo run --locked -p xreserve-deposit-relayer-lite -- {{args}}
+run-relayer *args:
+    cargo run --locked -p xreserve-deposit-relayer -- {{args}}

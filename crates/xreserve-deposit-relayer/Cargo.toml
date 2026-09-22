@@ -3,114 +3,32 @@ name = "xreserve-deposit-relayer"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Phase-4 P4-RELAYER (CMP-C1): off-chain deposit-attestation relayer — a liveness service; this slice ships the Circle-facing HTTP half (client, schema, attestation fetch, info) on top of the DepositIntent decoder + attestation envelope"
-
-# The DepositIntent layout, byte offsets, field checks, u32-LE packing, and the 1024-felt
-# NoteStorage bound are OWNED by the shared encoding crate (`xusdc-encoding`) and consumed here
-# BY REFERENCE (single-owner rule). This crate never re-derives an offset or re-implements the codec
-# (the 240-byte header is 60 u32-LE felts, never 240/8 = 30).
-#
-# tokio/serde are the async + serialization deps the crate wires; reqwest is the Circle transport.
-#
-# reqwest is the Circle HTTP transport, and its declaration has to stay offline-resolvable: this
-# repository's gate runs `--locked --offline` against a pinned cargo cache, and Cargo resolves a
-# declared registry package even when it is optional, so a dependency the cache does not carry
-# fails EVERY offline command. The cache carries reqwest 0.13.4 and its hyper/rustls/h2 closure.
-#
-# No Circle endpoint, credential, or Miden domain is committed — the auth scheme and which
-# remote-domain id Circle assigns Miden stay OPEN (REQUIRES CIRCLE CONFIRMATION): the auth header
-# is an injection point fed from config, never a baked-in key, and the base URL is a config value
-# with the documented testnet host as its default.
+description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 
 [dependencies]
 xusdc-encoding = { path = "../xusdc-encoding" }
-# Shared versions live in the root [workspace.dependencies]; crate-specific feature sets are added
-# on top of the workspace version.
-#   tokio  — `sync` for the rate governor's shared windows, `time` for backoff sleeps.
-#   reqwest — the Circle HTTP transport (info discovery, attestation fetch, and the batch poll).
-#             `rustls` is 0.13's TLS feature name (0.12's
-#             was `rustls-tls`); `default-features = false` keeps system OpenSSL out of the graph.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+miden-protocol = { version = "=0.17.0-rc.6" }
+# The client pair is the release-candidate line, one minor behind the protocol pin above only in its
+# own numbering: `0.17.0-rc.2` is the first client built against protocol `0.17.0-rc.6`, so it is the
+# earliest release that resolves against the rest of the workspace.
+miden-client = { version = "=0.17.0-rc.2", default-features = false, features = ["std", "tonic"] }
+miden-client-sqlite-store = { version = "=0.17.0-rc.2" }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-forest = { workspace = true }
+url = "2"
+humantime = "2"
+parse_link_header = { version = "0.4", default-features = false, features = ["url"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Envelope binding (validate::envelope — the raw-keccak attestation-envelope contract):
-#   hex  — decodes the Circle-facing wire strings (payload / messageHash / attestation).
-#   sha3 — recomputes `keccak256(payload)` to bind the envelope's messageHash to the payload. This
-#          is RAW keccak over the FULL payload: no EIP-712 `\x19\x01` domain/struct framing, no
-#          personal-sign prefix, no Poseidon2. It is a LIVENESS check only.
-# k256 is deliberately NOT a library dependency: the relayer never verifies the ECDSA signature
-# off-chain — the attestation is verified ON-CHAIN by the faucet's attestation check (faucet-owned: the attester-allowlist
-# membership gate and the ECDSA verify over the keccak digest). It appears below as a
-# DEV-dependency, for signing the test fixture only.
-hex = { workspace = true }
-sha3 = { workspace = true }
-# The idempotency seam's persistence (`idempotency`): a single-file SQLite database holding the
-# submitted-nonce log and the per-remote-domain `Link` cursor. The dedup this seam exists for is a
-# CLAIM — check-then-insert must be one atomic step even with two observers running — and SQLite's
-# `BEGIN IMMEDIATE` plus a PRIMARY KEY on the nonce give exactly that, where a JSON or bincode
-# file's read-modify-write cannot. Version and features come from the root
-# [workspace.dependencies] (`bundled`: SQLite is compiled from the vendored amalgamation, so the
-# build depends on no system libsqlite3 and cannot drift with the host's version).
-rusqlite = { workspace = true }
-# The Miden-facing half (`miden::mint_note`): `build_mint_note` returns a Miden `Note`, so the
-# protocol types (`AccountId`, `Note`, `FeltRng`) are NAMED in this crate's public API — a library
-# dependency, at the pin the rest of the workspace resolves the protocol family at.
-#
-# The note itself is NOT built here: every byte of its layout belongs to the shared encoding
-# crate's `XUsdcMintNote::create`. This crate names the protocol types only to hand that factory
-# its inputs and hand the caller its output.
-#
-# `miden-client` is deliberately ABSENT. The relayer builds NO advice map: the note carries its
-# attestation as a note ATTACHMENT, and the consuming transaction (the network's ntx-builder — the
-# faucet is a keyless network account) rebuilds the advice map from those attachments. There is no
-# advice provider the relayer can reach, at any protocol version, and the submit leg that would
-# need a client has no v0.16 release to build against.
-miden-protocol = { version = "=0.17.0-rc.6" }
-# OS entropy for the mint note's SERIAL NUMBER (the binary's `entropy_seed`). The serial number is
-# what makes a re-mint of the same DepositIntent a distinct note rather than a collision, so it must
-# not be reproducible across restarts — which is why the RNG is a parameter of `RelayerCtx` (a test
-# seeds it deterministically) and the OS draw happens only in `main`.
-rand = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
-# Exact-variant assertions + parameterized reject tables; versions from the workspace table.
 rstest = { workspace = true }
-assert_matches = { workspace = true }
-# Every idempotency test opens a REAL store on a REAL file (tempfile gives it a directory that is
-# deleted with the test): "durable across a restart" is only provable against a file that a second,
-# independent handle can reopen, so no test reaches for an in-memory database. The corruption cases
-# write past the store's own API — an unknown status string, a foreign `user_version` — through the
-# `rusqlite` declared above, which test targets link like any other dependency.
 tempfile = { workspace = true }
-# The schema-exact mock Circle server the contract tests run against: an axum Router driven IN
-# PROCESS through tower's `ServiceExt::oneshot` and installed as the client's `HttpTransport`. It
-# binds NO socket, because a sandbox that denies `bind(127.0.0.1:0)` would make a loopback server
-# impossible to keep green everywhere. The relayer still BUILDS a real `reqwest::Request` (base-url
-# join, query serialization, auth-header injection) and the mock asserts on exactly that, so the
-# rate governor, the backoff, the status policy, the `Link`-cursor parse and the serde decode are
-# all exercised — only reqwest's own socket write is out of scope. wiremock, httpmock and mockito
-# are socket servers and absent from the pinned cache, so they would break the offline gate. NO
-# Circle endpoint is ever contacted live: the Circle legs are REQUIRES CIRCLE CONFIRMATION and
-# mock-only, and the Miden leg must NOT be faked at all.
-axum = { workspace = true }
-tower = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
-# Partner-held attestation test vector (tests/fixtures): a DETERMINISTIC secp256k1 key SIGNS
-# `keccak256(payload)` — k256 the keypair+signature, rand the seeded (reproducible) RNG. Signing
-# only, in tests only; the Poseidon2 pubkey commitment comes from the shared encoding crate's `PublicKey::to_commitment`
-# (single-owner rule — this crate never re-derives it). Mirrors the shared encoding crate's own in-test attestation vectors.
-k256 = { workspace = true }
-rand = { workspace = true }
-# The `testing` feature on top of the LIBRARY dependency above (same pin; cargo unifies the two).
-# The mint-note tests need account ids of a KNOWN kind — a PUBLIC faucet (the scheme-2 routing
-# attachment can only bind a network account) and a PRIVATE one to prove that path is refused — and
-# `AccountId::dummy` is where the protocol publishes them. The fixture's allowlist key is a Miden
-# `Word` (Poseidon2, via the shared encoding crate's `PublicKey::to_commitment`) and the envelope suite's negative comparator
-# hashes with the protocol `Hasher`, so the protocol types were already named in tests.
-miden-protocol = { version = "=0.17.0-rc.6", features = ["testing"] }
-# TEST-only: `NetworkAccountTarget` — the scheme-2 routing attachment the shared encoding crate puts on the mint note.
-# The delegation tests read the routing target back through the STANDARD's own parser (its
-# `ATTACHMENT_SCHEME` + `TryFrom<&NoteAttachment>`), so the assertion never restates a layout the
-# standard owns.
-miden-standards = { version = "=0.17.0-rc.6" }

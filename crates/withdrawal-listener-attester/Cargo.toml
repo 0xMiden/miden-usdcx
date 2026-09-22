@@ -23,7 +23,7 @@ xusdc-encoding = { path = "../xusdc-encoding" }
 #   tokio            — the service runtime the async Circle transport seam runs on.
 #   reqwest          — the Circle HTTP transport type the `HttpTransport` seam is defined over. This
 #                      slice builds NO driver and makes NO call (that arrives with the Circle drivers); it fixes the seam the
-#                      drivers plug into, mirroring the relayer's.
+#                      drivers plug into.
 #   hex              — renders the burn-evidence 32-byte fields (note id, nullifier) into the 0x-hex
 #                      the Circle wire carries in the burn-evidence package.
 #   bon              — `PrepareBurnIntentInput` has eleven fields, five of them optional, and a
@@ -37,9 +37,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 reqwest = { workspace = true }
 hex = { workspace = true }
 bon = { workspace = true }
-# k256 is a LIBRARY dependency here, and the difference from the relayer is deliberate. The relayer
-# keeps k256 DEV-only because it never verifies a signature off-chain — the attestation is verified
-# ON-CHAIN by the faucet. This service is the mirror image: the burn attester's off-chain secp256k1
+# k256 is a LIBRARY dependency here, and the difference from the deposit relayer is deliberate. That
+# service carries no secp256k1 at all because it never verifies a signature off-chain — the
+# attestation is verified ON-CHAIN by the faucet. This service is the mirror image: the burn attester's off-chain secp256k1
 # ECDSA signature over Circle's `messageHashToSign` IS the product (burn signing happens off-chain
 # over Circle's opaque digest; Circle's own verification is on the source chain), so the signing core
 # is library code. The posture is declared and guarded here, so the signing call site cannot
@@ -53,15 +53,15 @@ k256 = { workspace = true }
 # `messageHashToSign` opaquely (no hashing on the input path).
 sha3 = { workspace = true }
 # The per-burn idempotency ledger's persistence (`idempotency::SubmitLedger`): a single-file SQLite
-# database holding the submitted-burn log. This mirrors the relayer's `idempotency` seam; the two must
-# not drift onto different engines, which is why the version/features come from the root
-# [workspace.dependencies] rather than being re-pinned here.
+# database holding the submitted-burn log. The version/features come from the root
+# [workspace.dependencies] so the later off-chain services cannot drift onto a different engine.
 #
-# The reason is the same one, and it is sharper on this side: the dedup is a CLAIM — check-then-insert
+# The engine is not a preference: the dedup is a CLAIM — check-then-insert
 # must be ONE atomic step even with two observers (two discovery passes, two processes during a deploy
 # overlap) — and SQLite's `BEGIN IMMEDIATE` + a PRIMARY KEY on the burn give exactly that, where a
-# JSON file's read-modify-write cannot. Where the relayer's store is a LIVENESS backstop (the faucet's
-# `usedNonces` assert is the real safety), this ledger has no on-chain backstop behind it: Circle's
+# JSON file's read-modify-write cannot. The deposit relayer needs none of that, because its own
+# progress file is a LIVENESS backstop and replaying a page is harmless (the faucet's `usedNonces`
+# assert is the real safety there). This ledger has no on-chain backstop behind it: Circle's
 # `409` is the only other guard, and the whole point of the idempotency ledger is that a `409` must never be answered by
 # re-sending. The claim IS the safety property here.
 #
@@ -92,8 +92,8 @@ assert_matches = { workspace = true }
 # recovers it (`keccak256(uncompressed pubkey)[12..]`), so a fixture address and a recovered address
 # are the same 20 bytes. `sha3` is a normal (library) dependency now — see [dependencies] — and is
 # available to the tests through it.
-# Declared now, consumed by the Circle drivers. The relayer proved the pattern this crate's
-# `HttpTransport` seam is shaped for: a schema-exact mock Circle server routed by axum and driven IN
+# Declared now, consumed by the Circle drivers. They are the pattern this crate's `HttpTransport`
+# seam is shaped for: a schema-exact mock Circle server routed by axum and driven IN
 # PROCESS through tower's `ServiceExt::oneshot`, installed as the client's transport. It binds NO
 # socket, because the audit/CI sandbox denies `bind(127.0.0.1:0)` (EPERM) — a loopback-server mock
 # could not run in a gate that has to be green in every environment. `rand` seeds the deterministic

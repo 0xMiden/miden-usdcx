@@ -6649,29 +6649,6 @@ dependencies = [
 name = "xreserve-deposit-relayer"
 version = "0.0.0"
 dependencies = [
- "assert_matches",
- "axum",
- "hex",
- "k256 0.13.4",
- "miden-protocol",
- "miden-standards",
- "rand 0.10.2",
- "reqwest",
- "rstest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha3 0.10.9",
- "tempfile",
- "tokio",
- "tower",
- "xusdc-encoding",
-]
-
-[[package]]
-name = "xreserve-deposit-relayer-lite"
-version = "0.0.0"
-dependencies = [
  "anyhow",
  "clap",
  "hex",

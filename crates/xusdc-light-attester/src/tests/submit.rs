@@ -20,8 +20,9 @@ use crate::circle::{
 };
 use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::store::CONFLICT;
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
-use crate::verify::{rebuild_for_test, verify_prepared_response, SignedWithdrawal};
+use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
 use super::support::{
@@ -40,7 +41,16 @@ impl Signer for TestSigner {
     fn public_key(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>> {
-        Box::pin(async { panic!("provider keys are not part of submission") })
+        // Signer 1 holds the key with the lower Ethereum address, so ids follow address order.
+        let key = match self.0 {
+            1 => alloy_primitives::hex!(
+                "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+            ),
+            _ => alloy_primitives::hex!(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+        };
+        Box::pin(async move { Ok(SigningPublicKey(key)) })
     }
     fn sign_digest(
         &self,
@@ -172,7 +182,7 @@ impl Ledger {
             &[burns[0].burn.nullifier(), burns[1].burn.nullifier()],
         );
         for burn in &mut burns[..2] {
-            burn.burn = DiscoveredBurn::try_new(
+            burn.burn = DiscoveredBurn::new(
                 burn.burn.note().clone(),
                 burn.burn.creation_block(),
                 burn.burn.consumption_block(),
@@ -227,13 +237,13 @@ impl Ledger {
         let mut prepared = batch(&burn.burn.note().as_note().serial_num().to_hex(), 1_000, 9);
         if let Some(height) = height {
             prepared.burn_intents[0].max_block_height = height.into();
-            rebuild_for_test(&mut prepared, false).unwrap();
+            rebuild_for_test(&mut prepared).unwrap();
         }
-        verify_prepared_response(
+        UnverifiedPrepareResponse {
+            batches: vec![prepared],
+        }
+        .verify(
             burn,
-            UnverifiedPrepareResponse {
-                batches: vec![prepared],
-            },
             &Config::load(&self.directory.path().join("attester.toml")).unwrap(),
         )
         .unwrap()
@@ -299,7 +309,7 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
 
     assert!(matches!(
         attester.recover_submissions().await,
-        Err(SubmitError::InvalidStore)
+        Err(SubmitError::Store(_))
     ));
     assert!(requests.lock().unwrap().is_empty());
 }
@@ -383,7 +393,7 @@ async fn submit_sends_checked_request() {
             assert!(
                 matches!(
                     attester.submit_signed_withdrawal(&fresh).await,
-                    Err(SubmitError::Conflict)
+                    Err(SubmitError::Store(error)) if error.to_string() == CONFLICT
                 ),
                 "{status}"
             );
@@ -428,7 +438,7 @@ async fn submit_sends_checked_request() {
             assert!(
                 matches!(
                     attester.submit_signed_withdrawal(&fresh).await,
-                    Err(SubmitError::InvalidStore)
+                    Err(SubmitError::Store(_))
                 ),
                 "{status}"
             );
@@ -494,7 +504,7 @@ async fn submit_saves_before_sending() {
     let (mut attester, requests) = ledger.start(vec![]).await;
     assert!(matches!(
         ledger.submit(&mut attester, 0).await,
-        Err(SubmitError::InvalidStore)
+        Err(SubmitError::Store(_))
     ));
     assert!(requests.lock().unwrap().is_empty());
     assert!(attester
@@ -522,7 +532,7 @@ async fn submit_saves_before_sending() {
         .await;
     assert!(matches!(
         attester.submit_signed_withdrawal(&fresh).await,
-        Err(SubmitError::Conflict)
+        Err(SubmitError::Store(error)) if error.to_string() == CONFLICT
     ));
     assert_eq!(ledger.record(&attester, 0), original);
     assert_eq!(
@@ -602,7 +612,7 @@ async fn retries_use_saved_request() {
         .await;
     assert!(matches!(
         ledger.submit(&mut attester, 0).await,
-        Err(SubmitError::InvalidStore)
+        Err(SubmitError::Store(_))
     ));
     assert_eq!(
         ledger.record(&attester, 0).status,
@@ -732,7 +742,7 @@ async fn conflicts_are_checked() {
     let (mut attester, requests) = ledger.start(vec![conflict()]).await;
     assert!(matches!(
         ledger.submit(&mut attester, 0).await,
-        Err(SubmitError::InvalidStore)
+        Err(SubmitError::Store(_))
     ));
     assert_eq!(
         requests.lock().unwrap().len(),

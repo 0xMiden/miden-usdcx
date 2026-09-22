@@ -215,7 +215,7 @@ async fn burns_are_discovered_safely() {
     attester.discover_burns().await.unwrap();
     assert_eq!(
         *restart_controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS]
+        [BlockNumber::GENESIS, BlockNumber::from(6u32)]
     );
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
@@ -781,7 +781,7 @@ async fn bad_blocks_are_rejected() {
         attester.discover_burns().await,
         Err(DiscoverError::CursorOverflow)
     ));
-    assert_eq!(attester.store.scan_state(), Ok(saved_state.clone()));
+    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
     assert!(controls.requests.lock().unwrap().is_empty());
     drop(attester);
     let (mut attester, _) = start(&tempdir, 1, fork_factory.blocks(), scan_limits(3, 0)).await;
@@ -822,7 +822,7 @@ async fn repeated_note_is_skipped() {
     );
     factory.push(vec![burn.output], Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(5, 4)).await;
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(4, 4)).await;
 
     attester.discover_burns().await.unwrap();
 
@@ -856,12 +856,12 @@ async fn raised_deployment_block_keeps_the_saved_scan_start() {
         vec![transaction(faucet_account_id(), &[burn.nullifier])],
     );
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(1, 1)).await;
     attester.discover_burns().await.unwrap();
     assert_eq!(attester.store.candidates().unwrap().len(), 1);
     drop(attester);
 
-    let (mut attester, _) = start(&tempdir, 2, factory.blocks(), scan_limits(3, 2)).await;
+    let (mut attester, _) = start(&tempdir, 2, factory.blocks(), scan_limits(2, 2)).await;
     attester.discover_burns().await.unwrap();
     assert!(attester.store.candidates().unwrap().is_empty());
     assert_eq!(
@@ -917,7 +917,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     let anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 2, &anchor, 1);
-    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(2, 2));
+    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(1, 1));
     let mut attester = Attester::start(config, Box::new(chain), ready_circle())
         .await
         .unwrap();

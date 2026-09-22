@@ -932,7 +932,8 @@ fn load_burns(
                      SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                         AND submissions.status != 'EXPIRED'
                  )
-             ))",
+             ))
+             ORDER BY creation_block, note_id",
         )
         .map_err(classify_error)?;
     let rows = statement

@@ -37,9 +37,13 @@ The Circle domain identifier and the account identifiers depend on the deploymen
 public key must use compressed SEC1 format.
 
 `--miden-data-dir` holds the Miden client's own state: the store it syncs the chain into, and the
-`keystore` directory it reads the relayer account's signing key from. It is durable state, not a
-cache — a transaction submitted just before a restart is still tracked there, so the next run can
-watch it commit instead of submitting the same deposits again.
+`keystore` directory it reads the relayer account's signing key from. The keystore has to survive a
+restart, because without the signing key the relayer cannot mint at all; the store holds a copy of
+the chain state that the client rebuilds from the node if it is lost, so losing the directory costs
+a full re-sync rather than correctness. Nothing in it is read back to resume work: a restart picks
+up from the page recorded in the state file below, fetches that page again and builds fresh mint
+notes for every deposit on it, including any deposit whose mint note was already submitted. The
+faucet refuses the duplicates, so they cost proving time rather than a second mint.
 
 `--state-file` holds a small JSON document recording how far the relayer got:
 

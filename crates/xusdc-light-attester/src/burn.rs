@@ -207,7 +207,10 @@ pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnR
         .map_err(|_| BurnRefusal::InvalidWithdrawal)?
         .items()
         .clone();
-    let [Asset::Fungible(asset)] = note.assets().as_slice() else {
+    let [asset] = note.assets().as_slice() else {
+        return Err(BurnRefusal::InvalidWithdrawal);
+    };
+    let Some(asset) = asset.as_fungible() else {
         return Err(BurnRefusal::InvalidWithdrawal);
     };
     let amount = u64::from(asset.amount());

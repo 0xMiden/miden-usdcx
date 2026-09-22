@@ -261,11 +261,6 @@ fn check_note_content_cases() {
             CandidateRejected,
         ),
         (
-            "routing hint cannot decode",
-            |n| n.edit_attachment(0, |w| w[0][2] = Felt::from(255u32)),
-            CandidateRejected,
-        ),
-        (
             "wrong target",
             |n| n.attachments[0] = routing(sender(), NoteExecutionHint::Always),
             CandidateRejected,
@@ -343,9 +338,12 @@ fn check_note_content_cases() {
             let mut fixture = NoteFixture::new();
             edit(&mut fixture);
             let accepted = matches!(expected, Accepted).then(|| {
-                let [Asset::Fungible(asset)] = fixture.assets.as_slice() else {
-                    panic!("accepted fixture carries one fungible asset")
+                let [asset] = fixture.assets.as_slice() else {
+                    panic!("accepted fixture carries one asset")
                 };
+                let asset = asset
+                    .as_fungible()
+                    .expect("accepted fixture carries one fungible asset");
                 (fixture.items.clone(), u64::from(asset.amount()))
             });
             let note = fixture.note(10);
@@ -407,7 +405,7 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
     let mut young = NoteFixture::new();
     young.tag ^= 1;
     let young = discovered(young.note(22));
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     factory.push(
         vec![

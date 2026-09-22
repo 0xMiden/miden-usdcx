@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
+use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
@@ -376,9 +377,12 @@ impl Attester {
                     return Err(error);
                 }
                 let hold = match &error {
+                    // A 5xx or a 429 from prepare is transient: the burn stays eligible next cycle.
                     SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
                         status, ..
-                    }) if !status.is_server_error() => Some(BurnHoldReason::PrepareRejected),
+                    }) if !status.is_server_error() && *status != StatusCode::TOO_MANY_REQUESTS => {
+                        Some(BurnHoldReason::PrepareRejected)
+                    }
                     SubmitError::Prepare(CircleError::InvalidResponse(_)) => {
                         Some(BurnHoldReason::PrepareRejected)
                     }

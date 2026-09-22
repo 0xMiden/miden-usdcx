@@ -3,7 +3,7 @@
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::attester::Attester;
 use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
@@ -96,8 +96,18 @@ impl Attester {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(SubmitError::InvalidRequest)?;
         let saved = withdrawal.submission(endpoint)?;
+        let previous = self.store.submission(saved.note_id)?;
         // Only a confirmed expired attempt may receive a fresh authorization.
         self.store.save_submission(&saved)?;
+        // Keep the replaced withdrawal's Circle ID in the log.
+        if let Some(previous) = previous {
+            info!(
+                note_id = %saved.note_id,
+                previous_withdrawal_id = previous.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                previous_status = ?previous.status,
+                "replaced an earlier submission"
+            );
+        }
         self.advance_submission(saved, rate_limited).await
     }
 
@@ -167,6 +177,30 @@ impl Attester {
             Some(id) => self.circle.get_withdrawal(saved, id).await,
             None => self.circle.post_submission(saved).await,
         };
+        // One line per attempt, before anything is written, so a failed store write cannot lose
+        // what Circle answered.
+        let method = if saved.withdrawal_id.is_some() {
+            "GET"
+        } else {
+            "POST"
+        };
+        let withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned");
+        match &result {
+            Ok(response) => info!(
+                note_id = %saved.note_id,
+                method,
+                withdrawal_id,
+                http_status = response.status.as_u16(),
+                "Circle answered"
+            ),
+            Err(error) => warn!(
+                note_id = %saved.note_id,
+                method,
+                withdrawal_id,
+                error = %error,
+                "Circle request failed"
+            ),
+        }
         let response = match result {
             Ok(response) => response,
             // A 429 ends Circle traffic for this cycle, before anything is written; Circle's

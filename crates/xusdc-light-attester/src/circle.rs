@@ -30,6 +30,8 @@ pub enum CircleError {
     UnexpectedPrepareStatus { status: StatusCode, body: Vec<u8> },
     #[error("Circle prepare response is malformed")]
     InvalidResponse(#[source] serde_json::Error),
+    #[error("Circle response body exceeds {MAX_RESPONSE_BODY_BYTES} bytes")]
+    BodyTooLarge,
 }
 
 #[derive(Debug)]
@@ -47,6 +49,9 @@ impl RawResponse {
 /// Stop waiting for a Circle connection after 10 s, even when the configured request timeout is
 /// longer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Circle's replies are a few kilobytes; refusing more than 1 MiB keeps an oversized body out of
+/// memory.
+const MAX_RESPONSE_BODY_BYTES: usize = 1 << 20;
 /// Circle allows five requests per second from one IP address; a quarter of a second between two
 /// requests stays below that.
 pub(crate) const REQUEST_GAP: Duration = Duration::from_millis(250);
@@ -187,17 +192,24 @@ async fn request_worker(client: reqwest::Client, mut jobs: mpsc::Receiver<Job>) 
         if job.reply.is_closed() {
             continue;
         }
-        let result = match client.execute(job.request).await {
-            Ok(response) => {
-                let status = response.status();
-                response
-                    .bytes()
-                    .await
-                    .map(|body| RawResponse::new(status, body.to_vec()))
-                    .map_err(CircleError::Transport)
+        let result = async {
+            let mut response = client
+                .execute(job.request)
+                .await
+                .map_err(CircleError::Transport)?;
+            let status = response.status();
+            // Read chunk by chunk and stop once the total passes the cap, so an oversized or
+            // endless reply is refused before it is buffered; the declared length is not trusted.
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
+                if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                    return Err(CircleError::BodyTooLarge);
+                }
+                body.extend_from_slice(&chunk);
             }
-            Err(error) => Err(CircleError::Transport(error)),
-        };
+            Ok(RawResponse::new(status, body))
+        }
+        .await;
         // The gap counts from when this attempt ended, so two dispatches are always further apart.
         next_dispatch = Instant::now() + REQUEST_GAP;
         let _ = job.reply.send(result);

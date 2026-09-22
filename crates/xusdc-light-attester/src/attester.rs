@@ -1,12 +1,10 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
-use miden_protocol::note::Nullifier;
 use miden_protocol::transaction::OutputNote;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -155,20 +153,12 @@ impl Attester {
         };
         let mut last_verified_header = self.load_previous_verified_header(&saved_scan).await?;
 
-        // Transaction inputs expose nullifiers, so use them to match saved notes to faucet burns.
-        let mut burn_notes_by_nullifier = self
-            .store
-            .candidates()?
-            .into_iter()
-            .map(|candidate| (candidate.nullifier(), candidate))
-            .collect();
-
         // The anchor itself needs scanning once when it is also the faucet's deployment block.
         if saved_scan.authenticated_parent.is_none()
             && saved_scan.cursor.next_block == self.config.trusted_anchor_block()
         {
             let anchor = self.trusted_anchor_block.clone().context(INVALID)?;
-            self.scan_and_save_block(&anchor, &mut burn_notes_by_nullifier)?;
+            self.scan_and_save_block(&anchor)?;
         }
 
         let first_block_to_scan = last_verified_header.block_num().child();
@@ -176,7 +166,7 @@ impl Attester {
             let block = self
                 .fetch_and_verify_block(block_num, &last_verified_header)
                 .await?;
-            self.scan_and_save_block(&block, &mut burn_notes_by_nullifier)?;
+            self.scan_and_save_block(&block)?;
             last_verified_header = block.header().clone();
         }
 
@@ -252,16 +242,9 @@ impl Attester {
         Ok(last_verified_header)
     }
 
-    fn scan_and_save_block(
-        &mut self,
-        block: &SignedBlock,
-        burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
-    ) -> Result<(), DiscoverError> {
-        let (new_burn_notes, new_burns) = find_burns_in_block(
-            block,
-            self.config.faucet_account_id(),
-            burn_notes_by_nullifier,
-        );
+    fn scan_and_save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
+        let (new_burn_notes, new_burns) =
+            find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?;
         // Save this block atomically; a later RPC failure must not discard its progress.
         self.store.save_scan_progress(
             &new_burn_notes,
@@ -321,8 +304,8 @@ fn behind_verified_chain(saved_scan: &ScanState) -> Result<Option<BlockNumber>, 
 fn find_burns_in_block(
     block: &SignedBlock,
     faucet_account_id: miden_protocol::account::AccountId,
-    burn_notes_by_nullifier: &mut BTreeMap<Nullifier, BurnCandidate>,
-) -> (Vec<BurnCandidate>, Vec<DiscoveredBurn>) {
+    store: &Store,
+) -> anyhow::Result<(Vec<BurnCandidate>, Vec<DiscoveredBurn>)> {
     let mut new_burn_notes = Vec::new();
     let mut new_burns = Vec::new();
     let block_num = block.header().block_num();
@@ -339,7 +322,6 @@ fn find_burns_in_block(
         let Ok(candidate) = BurnCandidate::new(note.clone(), block_num, faucet_account_id) else {
             continue;
         };
-        burn_notes_by_nullifier.insert(candidate.nullifier(), candidate.clone());
         new_burn_notes.push(candidate);
     }
 
@@ -350,12 +332,22 @@ fn find_burns_in_block(
         if transaction.account_id() != faucet_account_id {
             continue;
         }
+        // Input notes expose nullifiers: match them against this block's notes, then the store.
         for input_note in transaction.input_notes().iter() {
-            if let Some(candidate) = burn_notes_by_nullifier.remove(&input_note.nullifier()) {
-                new_burns.push(candidate.into_discovered(block_num, transaction.id()));
-            }
+            let nullifier = input_note.nullifier();
+            let candidate = match new_burn_notes
+                .iter()
+                .find(|note| note.nullifier() == nullifier)
+            {
+                Some(candidate) => candidate.clone(),
+                None => match store.candidate_by_nullifier(nullifier)? {
+                    Some(candidate) => candidate,
+                    None => continue,
+                },
+            };
+            new_burns.push(candidate.into_discovered(block_num, transaction.id()));
         }
     }
 
-    (new_burn_notes, new_burns)
+    Ok((new_burn_notes, new_burns))
 }

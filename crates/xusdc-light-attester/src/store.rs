@@ -95,8 +95,22 @@ impl Store {
         load_scan_state(&self.connection, self.initial_cursor)
     }
 
+    #[cfg(test)]
     pub(crate) fn candidates(&self) -> anyhow::Result<Vec<BurnCandidate>> {
-        load_candidates(&self.connection, self.faucet_account_id)
+        load_candidates(&self.connection, self.faucet_account_id, "", [])
+    }
+
+    pub(crate) fn candidate_by_nullifier(
+        &self,
+        nullifier: Nullifier,
+    ) -> anyhow::Result<Option<BurnCandidate>> {
+        let mut candidates = load_candidates(
+            &self.connection,
+            self.faucet_account_id,
+            "WHERE nullifier = ?1",
+            [nullifier.to_bytes()],
+        )?;
+        Ok(candidates.pop())
     }
 
     #[cfg(test)]
@@ -352,18 +366,20 @@ fn validate_discovery_records(
     Ok(())
 }
 
-fn load_candidates(
+fn load_candidates<P: Params>(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
+    filter: &str,
+    params: P,
 ) -> anyhow::Result<Vec<BurnCandidate>> {
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT note_id, nullifier, note, creation_block
-             FROM burn_candidates ORDER BY creation_block, note_id",
-        )
+             FROM burn_candidates {filter} ORDER BY creation_block, note_id"
+        ))
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map(params, |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

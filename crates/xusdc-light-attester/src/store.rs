@@ -100,6 +100,15 @@ impl Store {
         load_candidates(&self.connection, self.faucet_account_id, "", [])
     }
 
+    pub(crate) fn note_known(&self, note_id: NoteId) -> anyhow::Result<bool> {
+        exists(
+            &self.connection,
+            "SELECT EXISTS (SELECT 1 FROM burn_candidates WHERE note_id = ?1)
+                 OR EXISTS (SELECT 1 FROM burns WHERE note_id = ?1)",
+            [note_id.to_bytes()],
+        )
+    }
+
     pub(crate) fn candidate_by_nullifier(
         &self,
         nullifier: Nullifier,

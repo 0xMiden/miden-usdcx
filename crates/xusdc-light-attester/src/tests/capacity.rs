@@ -346,7 +346,11 @@ async fn prepare_and_verify_holds_survive_restart_until_released() {
 
 #[tokio::test]
 async fn transient_prepare_failures_retry_next_cycle() {
-    for failure in [CircleState::TransportError, reply(503, json!({}))] {
+    for failure in [
+        CircleState::TransportError,
+        reply(503, json!({})),
+        reply(429, json!({})),
+    ] {
         let ledger = Ledger::new().await;
         let order = &ledger.fresh_indices;
         let (mut attester, requests) = ledger

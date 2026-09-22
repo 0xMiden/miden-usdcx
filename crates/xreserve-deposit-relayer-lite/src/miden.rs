@@ -6,7 +6,7 @@
 //! Until that wait succeeds the page is not done, and the scan's progress does not move past it.
 //!
 //! Every mint transaction is given an expiration block, so the wait always has an answer. A
-//! transaction the chain has passed the expiration block of can no longer be included by anyone:
+//! transaction the chain has reached the expiration block of can no longer be included by anyone:
 //! the wait ends in failure on a fact about the chain rather than on a guess about how long is too
 //! long, and the page is retried.
 
@@ -362,12 +362,13 @@ enum Inclusion {
 /// Reads a submitted transaction's status against the chain it is waiting on.
 ///
 /// A discarded transaction can never commit, so it ends the wait as an error rather than something
-/// to keep polling. A chain that has moved past the transaction's expiration block ends it the same
+/// to keep polling. A chain that has reached the transaction's expiration block ends it the same
 /// way, and for the same reason: no later block can carry the transaction, so waiting on it would
 /// never end. Either way the relay loop retries the page from the cursor.
 ///
-/// The expiration block itself is still a block the transaction may be included in, so only a tip
-/// strictly past it is decisive.
+/// The tip reaching the expiration block is already decisive. The tip is a height the client has
+/// synced, so by the time it reads the expiration block the transaction would have been reported as
+/// committed if that block carried it.
 fn inclusion(
     status: &TransactionStatus,
     chain_tip: BlockNumber,
@@ -376,7 +377,7 @@ fn inclusion(
     match status {
         TransactionStatus::Committed { block_number, .. } => Ok(Inclusion::Included(*block_number)),
         TransactionStatus::Discarded(cause) => bail!("the node discarded it: {cause}"),
-        TransactionStatus::Pending if chain_tip > expiration_block => bail!(
+        TransactionStatus::Pending if chain_tip >= expiration_block => bail!(
             "it expired at block {} and the chain is at {}",
             expiration_block.as_u32(),
             chain_tip.as_u32()
@@ -424,23 +425,24 @@ mod tests {
         );
     }
 
-    /// A pending transaction is waited for while a block that could still carry it is to come —
-    /// including at the expiration block itself, which is the last one that can.
-    #[rstest]
-    #[case::before_expiry(EXPIRATION_BLOCK - 1)]
-    #[case::at_expiry(EXPIRATION_BLOCK)]
-    fn a_pending_transaction_is_waited_for(#[case] chain_tip: u32) {
+    /// A pending transaction is waited for while a block that could still carry it is to come.
+    #[test]
+    fn a_pending_transaction_is_waited_for() {
         assert_eq!(
-            inclusion_at(&TransactionStatus::Pending, chain_tip).unwrap(),
+            inclusion_at(&TransactionStatus::Pending, EXPIRATION_BLOCK - 1).unwrap(),
             Inclusion::Waiting
         );
     }
 
-    /// Once the chain is past the expiration block, no block can carry the transaction, so the
-    /// wait ends rather than running forever.
-    #[test]
-    fn a_pending_transaction_the_chain_has_passed_is_an_error() {
-        let error = inclusion_at(&TransactionStatus::Pending, EXPIRATION_BLOCK + 1).unwrap_err();
+    /// Once the chain has synced the expiration block without the transaction in it, no block can
+    /// carry it any more, so the wait ends rather than running forever.
+    #[rstest]
+    #[case::at_expiry(EXPIRATION_BLOCK)]
+    #[case::past_expiry(EXPIRATION_BLOCK + 1)]
+    fn a_pending_transaction_the_chain_has_reached_the_expiry_of_is_an_error(
+        #[case] chain_tip: u32,
+    ) {
+        let error = inclusion_at(&TransactionStatus::Pending, chain_tip).unwrap_err();
         assert!(
             error.to_string().contains("expired at block 100"),
             "unexpected error: {error}"

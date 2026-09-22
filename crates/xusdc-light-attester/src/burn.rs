@@ -1,7 +1,6 @@
 //! Structurally consumable xUSDC burn evidence discovered on Miden.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
@@ -57,11 +56,12 @@ impl BurnCandidate {
             return Err(InvalidBurnCandidate);
         }
 
-        let [Asset::Fungible(asset)] = burn.assets().as_slice() else {
+        let [asset] = burn.assets().as_slice() else {
             return Err(InvalidBurnCandidate);
         };
-        if asset.faucet_id() != faucet_account_id
-            || burn.storage().items() != Asset::Fungible(*asset).as_elements()
+        if !asset.is_fungible()
+            || asset.faucet_id() != faucet_account_id
+            || burn.storage().items() != asset.as_elements()
         {
             return Err(InvalidBurnCandidate);
         }

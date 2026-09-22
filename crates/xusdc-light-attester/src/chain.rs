@@ -11,7 +11,7 @@ use miden_client::rpc::{
     Endpoint, GrpcClient, GrpcError, NodeRpcClient, RpcEndpoint, RpcError, VerifyingRpcClient,
 };
 use miden_protocol::account::AccountId;
-use miden_protocol::block::{BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockNumber, SignedBlock};
 
 /// Node-reported limits used only to decide how far a discovery pass may scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub trait ChainReader: Send + Sync {
     fn block_by_number(
         &self,
         block_num: BlockNumber,
-    ) -> Pin<Box<dyn Future<Output = Result<ProvenBlock, ChainError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<SignedBlock, ChainError>> + Send + '_>>;
 }
 
 pub struct MidenChainReader {
@@ -121,13 +121,14 @@ impl ChainReader for MidenChainReader {
     fn block_by_number(
         &self,
         block_num: BlockNumber,
-    ) -> Pin<Box<dyn Future<Output = Result<ProvenBlock, ChainError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<SignedBlock, ChainError>> + Send + '_>> {
         Box::pin(async move {
             self.rpc
                 // Block proofs are not used in this protocol version; the caller authenticates
                 // each full block against its already-trusted parent header.
                 .get_block_by_number(block_num, false)
                 .await
+                .map(|(block, _)| block)
                 .map_err(ChainError::Rpc)
         })
     }

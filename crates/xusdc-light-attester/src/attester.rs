@@ -202,15 +202,11 @@ impl Attester {
             .latest_committed_block
             .checked_sub(self.config.minimum_finality_depth_blocks())
         else {
-            return if saved_scan.authenticated_parent.is_some() {
-                Err(DiscoverError::ChainDiverged)
-            } else {
-                Ok(None)
-            };
+            return behind_verified_chain(saved_scan);
         };
         let last_block_to_scan = std::cmp::min(scan_limits.proof_lag_block, last_depth_safe_block);
         if last_block_to_scan < last_verified_block_number {
-            return Err(DiscoverError::ChainDiverged);
+            return behind_verified_chain(saved_scan);
         }
         if last_block_to_scan < saved_scan.cursor.next_block {
             return Ok(None);
@@ -310,6 +306,16 @@ impl Attester {
 
 fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = BlockNumber> {
     (start.as_u32()..=end.as_u32()).map(BlockNumber::from)
+}
+
+/// A scan bound below the verified chain is a divergence once a block has been authenticated;
+/// before that, the node has merely not reached the anchor yet.
+fn behind_verified_chain(saved_scan: &ScanState) -> Result<Option<BlockNumber>, DiscoverError> {
+    if saved_scan.authenticated_parent.is_some() {
+        Err(DiscoverError::ChainDiverged)
+    } else {
+        Ok(None)
+    }
 }
 
 fn find_burns_in_block(

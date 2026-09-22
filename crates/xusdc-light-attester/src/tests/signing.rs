@@ -19,7 +19,16 @@ impl Signer for RecordingSigner {
     fn public_key(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>> {
-        Box::pin(async { panic!("this signing step does not load public keys") })
+        // Signer 1 holds the key with the lower Ethereum address, so ids follow address order.
+        let key = match self.id {
+            1 => alloy_primitives::hex!(
+                "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+            ),
+            _ => alloy_primitives::hex!(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+        };
+        Box::pin(async move { Ok(SigningPublicKey(key)) })
     }
 
     fn sign_digest(
@@ -91,4 +100,49 @@ async fn signing_failure_returns_no_result() {
         ));
         assert_eq!(calls.lock().unwrap().as_slice(), &expected[..fail_at]);
     }
+}
+
+/// Signatures come out in ascending signer-address order however the pair is configured, and two
+/// signers behind one address are rejected before anything is signed.
+#[tokio::test]
+async fn signatures_follow_signer_address_order() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let signers = [1, 2].map(|id| RecordingSigner {
+        id,
+        calls: calls.clone(),
+        fail_at: None,
+    });
+
+    let signed = verified_withdrawal()
+        .sign([&signers[1], &signers[0]])
+        .await
+        .unwrap();
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(
+        signed.batch.signatures[0],
+        Signature::new(U256::from(1), U256::from(1), false)
+    );
+
+    let same = [1, 1].map(|id| RecordingSigner {
+        id,
+        calls: calls.clone(),
+        fail_at: None,
+    });
+    assert!(matches!(
+        verified_withdrawal().sign([&same[0], &same[1]]).await,
+        Err(SignerError)
+    ));
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        2,
+        "nothing is signed for an invalid pair"
+    );
 }

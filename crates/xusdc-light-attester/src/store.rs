@@ -256,7 +256,6 @@ impl Store {
     }
 
     /// The saved submission for `note_id`, if there is one.
-    #[cfg(test)]
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
         Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
     }

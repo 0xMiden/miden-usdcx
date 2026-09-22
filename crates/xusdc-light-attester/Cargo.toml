@@ -7,10 +7,11 @@ description = "Off-chain xUSDC withdrawal attester"
 
 [dependencies]
 anyhow = { workspace = true }
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["k256"] }
 alloy-sol-types = { workspace = true }
 xusdc-encoding = { path = "../xusdc-encoding" }
 hex = { workspace = true }
+k256 = { workspace = true }
 miden-client = { version = "=0.17.0-rc.1", features = ["tonic"] }
 miden-protocol = { version = "=0.17.0-rc.5" }
 miden-standards = { version = "=0.17.0-rc.5" }

@@ -88,11 +88,24 @@ impl VerifiedWithdrawal {
         self.batch.note_id
     }
 
-    /// Keep the checked batch with both signatures; return no partial result on failure.
+    /// Keep the checked batch with both signatures; return no partial result on failure. The
+    /// signatures are ordered by signer address, ascending, the only order Circle's attester
+    /// contract accepts.
     pub(crate) async fn sign(
         self,
         signers: [&dyn Signer; 2],
     ) -> Result<SignedWithdrawal, SignerError> {
+        let mut signers = signers;
+        let addresses = [
+            signer_address(signers[0]).await?,
+            signer_address(signers[1]).await?,
+        ];
+        if addresses[0] == addresses[1] {
+            return Err(SignerError);
+        }
+        if addresses[1] < addresses[0] {
+            signers.swap(0, 1);
+        }
         let first = signers[0].sign_digest(self.batch.digest).await?;
         let second = signers[1].sign_digest(self.batch.digest).await?;
         Ok(SignedWithdrawal {
@@ -102,6 +115,12 @@ impl VerifiedWithdrawal {
             },
         })
     }
+}
+
+async fn signer_address(signer: &dyn Signer) -> Result<Address, SignerError> {
+    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0)
+        .map_err(|_| SignerError)?;
+    Ok(Address::from_public_key(&key))
 }
 
 #[derive(Debug)]

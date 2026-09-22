@@ -1,8 +1,7 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use tokio_util::sync::CancellationToken;
 
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
@@ -30,13 +29,13 @@ async fn main() -> Result<()> {
     .context("startup failed")?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("failed to install SIGTERM handler")?;
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let signal_flag = Arc::clone(&shutdown);
+    let shutdown = CancellationToken::new();
+    let signal_token = shutdown.clone();
     // Besides the Circle request worker, the only spawned task: notify the sequential loop, without
     // interrupting its current cycle.
     let signal_task = tokio::spawn(async move {
         if sigterm.recv().await.is_some() {
-            signal_flag.store(true, Ordering::Release);
+            signal_token.cancel();
         }
     });
     eprintln!(

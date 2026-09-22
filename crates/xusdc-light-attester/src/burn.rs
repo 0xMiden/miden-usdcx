@@ -25,7 +25,7 @@ pub(crate) struct BurnCandidate {
 }
 
 impl BurnCandidate {
-    pub(crate) fn try_new(
+    pub(crate) fn new(
         note: PublicOutputNote,
         creation_block: BlockNumber,
         faucet_account_id: AccountId,
@@ -112,14 +112,14 @@ pub(crate) struct DiscoveredBurn {
 }
 
 impl DiscoveredBurn {
-    pub(crate) fn try_new(
+    pub(crate) fn new(
         note: PublicOutputNote,
         creation_block: BlockNumber,
         consumption_block: BlockNumber,
         burn_tx_id: TransactionId,
         faucet_account_id: AccountId,
     ) -> Result<Self, InvalidBurnCandidate> {
-        BurnCandidate::try_new(note, creation_block, faucet_account_id)
+        BurnCandidate::new(note, creation_block, faucet_account_id)
             .map(|candidate| candidate.into_discovered(consumption_block, burn_tx_id))
     }
 

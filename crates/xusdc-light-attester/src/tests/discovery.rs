@@ -250,7 +250,7 @@ async fn burns_are_discovered_safely() {
     );
 
     // A burn at block 2 needs verified block 4 for depth 2, regardless of reported heights.
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     let burn = note(BurnNote::script(), NoteType::Public, 1, 10);
     factory.push(vec![burn.output], Vec::new());

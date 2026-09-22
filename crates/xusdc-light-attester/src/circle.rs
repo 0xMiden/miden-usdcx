@@ -39,9 +39,15 @@ pub struct ReqwestTransport {
     client: reqwest::Client,
 }
 
+/// Stop waiting for a Circle connection after 10 s, even when the configured request timeout is
+/// longer.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl ReqwestTransport {
     pub fn new() -> Result<Self, CircleError> {
         reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .user_agent(concat!("xusdc-attester/", env!("CARGO_PKG_VERSION")))
             .build()
             .map(|client| Self { client })
             .map_err(CircleError::Transport)

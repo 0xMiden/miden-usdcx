@@ -174,7 +174,10 @@ impl SavedSubmission {
 
     fn read_response(&mut self, response: RawResponse) {
         let lookup = self.withdrawal_id.is_some();
-        if response.status.is_server_error() || (lookup && response.status == StatusCode::NOT_FOUND)
+        // A 5xx or a 429 says nothing final: the row stays queued and the next pass resends it.
+        if response.status.is_server_error()
+            || response.status == StatusCode::TOO_MANY_REQUESTS
+            || (lookup && response.status == StatusCode::NOT_FOUND)
         {
             self.last_error = Some(format!("Circle returned HTTP {}", response.status));
             return;

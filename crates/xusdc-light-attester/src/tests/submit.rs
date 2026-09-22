@@ -551,6 +551,7 @@ async fn retries_use_saved_request() {
             "server error",
             reply(503, json!({"message": "unavailable"})),
         ),
+        ("rate limited", reply(429, json!({"message": "slow down"}))),
         (
             "truncated success",
             CircleState::ResponseBody(StatusCode::CREATED, b"[{".to_vec()),

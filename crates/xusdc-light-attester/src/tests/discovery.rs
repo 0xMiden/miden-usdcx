@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, ProvenBlock};
+use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
 use miden_protocol::Word;
@@ -31,7 +31,7 @@ const SIGNING_KEY_TWO: &str =
 fn write_config(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
-    anchor: &ProvenBlock,
+    anchor: &SignedBlock,
     finality_depth: u32,
 ) -> Config {
     let path = tempdir.path().join("attester.toml");
@@ -59,7 +59,7 @@ fn write_config(
 async fn start(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
-    blocks: Vec<ProvenBlock>,
+    blocks: Vec<SignedBlock>,
     scan_limits: ScanLimits,
 ) -> (Attester, ChainControls) {
     let anchor = blocks[0].clone();
@@ -75,7 +75,7 @@ async fn start(
 /// burn script root, and promotes only faucet transactions that consume known candidates.
 #[tokio::test]
 async fn burns_are_discovered_safely() {
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
 
     let before_deployment = note(BurnNote::script(), NoteType::Public, 1, 1);
@@ -223,7 +223,7 @@ async fn burns_are_discovered_safely() {
     assert!(burns.iter().any(|burn| burn.note_id() == unconsumed.id));
 
     let burn_at_anchor = note(BurnNote::script(), NoteType::Public, 12, 8);
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(vec![burn_at_anchor.output], Vec::new());
     let anchor_consumption = transaction(faucet_account_id(), &[burn_at_anchor.nullifier]);
     factory.push(Vec::new(), vec![anchor_consumption]);
@@ -247,7 +247,7 @@ async fn burns_are_discovered_safely() {
 /// share one transaction; skipped blocks, wrong parents, and repeated evidence change nothing.
 #[test]
 fn burns_and_scan_position_are_saved_together() {
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     let anchor = factory.push(Vec::new(), Vec::new());
     let child = factory.push(Vec::new(), Vec::new());
     let grandchild = factory.push(Vec::new(), Vec::new());
@@ -322,7 +322,6 @@ fn burns_and_scan_position_are_saved_together() {
     let header = child.header();
     let wrong_parent = ScanState {
         authenticated_parent: Some(BlockHeader::new(
-            header.version(),
             Word::empty(),
             header.block_num(),
             header.chain_commitment(),
@@ -330,9 +329,10 @@ fn burns_and_scan_position_are_saved_together() {
             header.nullifier_root(),
             header.note_root(),
             header.tx_commitment(),
-            header.tx_kernel_commitment(),
-            header.validator_keys().clone(),
+            header.validator_config().clone(),
             header.fee_parameters().clone(),
+            header.protocol_config_commitment(),
+            header.next_protocol_config().cloned(),
             header.timestamp(),
         )),
         ..after_child.clone()
@@ -541,9 +541,7 @@ fn burns_and_scan_position_are_saved_together() {
                 cursor: ScanCursor {
                     next_block: BlockNumber::from(3u32),
                 },
-                authenticated_parent: Some(
-                    BlockHeader::mock(2u32, None, None, &[], Word::empty(),)
-                ),
+                authenticated_parent: Some(BlockHeader::mock(2u32, None, None, &[])),
             },
         ),
         Err(StoreError::Conflict)
@@ -559,9 +557,9 @@ async fn bad_blocks_are_rejected() {
         Divergence,
     }
 
-    let mut configured_factory = BlockFactory::new(faucet_account_id());
+    let mut configured_factory = BlockFactory::new();
     let configured_anchor = configured_factory.push(Vec::new(), Vec::new());
-    let mut served_factory = BlockFactory::new(faucet_account_id());
+    let mut served_factory = BlockFactory::new();
     let served_anchor = served_factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 0, &configured_anchor, 1);
@@ -570,7 +568,7 @@ async fn bad_blocks_are_rejected() {
         .await
         .is_err());
 
-    let (header, _, signatures, proof) = configured_anchor.clone().into_parts();
+    let (header, _, signatures) = configured_anchor.clone().into_parts();
     let injected = note(BurnNote::script(), NoteType::Public, 1, 29);
     let tampered_body = BlockBody::new_unchecked(
         Vec::new(),
@@ -578,7 +576,7 @@ async fn bad_blocks_are_rejected() {
         Vec::new(),
         OrderedTransactionHeaders::new_unchecked(Vec::new()),
     );
-    let tampered_anchor = ProvenBlock::new_unchecked(header, tampered_body, signatures, proof);
+    let tampered_anchor = SignedBlock::new_unchecked(header, tampered_body, signatures);
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 0, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![tampered_anchor], scan_limits(1, 0));
@@ -586,7 +584,7 @@ async fn bad_blocks_are_rejected() {
         .await
         .is_err());
 
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     let later_anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
@@ -604,7 +602,7 @@ async fn bad_blocks_are_rejected() {
         ("bad bootstrap body", 4u8, 2u32, Expected::Divergence),
     ];
     for (name, mutation, deployment_block, expected) in cases {
-        let mut factory = BlockFactory::new(faucet_account_id());
+        let mut factory = BlockFactory::new();
         factory.push(Vec::new(), Vec::new());
         factory.push(Vec::new(), Vec::new());
         factory.push(Vec::new(), Vec::new());
@@ -614,7 +612,7 @@ async fn bad_blocks_are_rejected() {
             0 => missing = true,
             1 => blocks[1] = blocks[2].clone(),
             2 | 4 => {
-                let (header, _, signatures, proof) = blocks[1].clone().into_parts();
+                let (header, _, signatures) = blocks[1].clone().into_parts();
                 let injected = note(BurnNote::script(), NoteType::Public, 1, 30);
                 let body = BlockBody::new_unchecked(
                     Vec::new(),
@@ -622,15 +620,14 @@ async fn bad_blocks_are_rejected() {
                     Vec::new(),
                     OrderedTransactionHeaders::new_unchecked(Vec::new()),
                 );
-                blocks[1] = ProvenBlock::new_unchecked(header, body, signatures, proof);
+                blocks[1] = SignedBlock::new_unchecked(header, body, signatures);
             }
             3 => {
-                let (header, body, _, proof) = blocks[1].clone().into_parts();
-                blocks[1] = ProvenBlock::new_unchecked(
+                let (header, body, _) = blocks[1].clone().into_parts();
+                blocks[1] = SignedBlock::new_unchecked(
                     header,
                     body,
                     BlockSignatures::new(Vec::new()).unwrap(),
-                    proof,
                 );
             }
             _ => unreachable!(),
@@ -668,19 +665,14 @@ async fn bad_blocks_are_rejected() {
         );
     }
 
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     let saved_note = note(BurnNote::script(), NoteType::Public, 1, 31);
     let saved_block = factory.push(vec![saved_note.output.clone()], Vec::new());
     factory.push(Vec::new(), Vec::new());
     let mut blocks = factory.blocks();
-    let (header, body, _, proof) = blocks[2].clone().into_parts();
-    blocks[2] = ProvenBlock::new_unchecked(
-        header,
-        body,
-        BlockSignatures::new(Vec::new()).unwrap(),
-        proof,
-    );
+    let (header, body, _) = blocks[2].clone().into_parts();
+    blocks[2] = SignedBlock::new_unchecked(header, body, BlockSignatures::new(Vec::new()).unwrap());
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, _) = start(&tempdir, 1, blocks, scan_limits(3, 2)).await;
     assert!(matches!(
@@ -701,7 +693,7 @@ async fn bad_blocks_are_rejected() {
         &saved_note.public_note.unwrap()
     );
 
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
@@ -747,7 +739,7 @@ async fn bad_blocks_are_rejected() {
 /// A pre-set shutdown flag returns before the first cycle, so no stage runs and no sleep occurs.
 #[tokio::test]
 async fn run_stops_when_shutdown_is_set() {
-    let mut factory = BlockFactory::new(faucet_account_id());
+    let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;

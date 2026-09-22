@@ -271,6 +271,9 @@ impl Attester {
         Ok(block)
     }
 
+    /// Validates the burns that reached the configured waiting depth. A burn whose withdrawal
+    /// payload does not decode is marked refused in the store, for good, so it is never loaded
+    /// again; the rest are returned for submission.
     pub(crate) fn validate_ready_burns(
         &mut self,
         proof_lag_block: BlockNumber,

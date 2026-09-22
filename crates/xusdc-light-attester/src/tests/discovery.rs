@@ -19,8 +19,8 @@ use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALI
 
 use super::startup::start as start_attester;
 use super::support::{
-    faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
-    ChainControls, TestChain,
+    development_signers, faucet_account_id, note, ready_circle, scan_limits, test_note,
+    transaction, BlockFactory, ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -914,7 +914,7 @@ async fn anchor_after_scan_start_leaves_no_store() {
     let config = write_config(&tempdir, 0, &anchor, 1);
     let store_path = config.store_path().to_path_buf();
     let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    let error = Attester::start(config, Box::new(chain), ready_circle())
+    let error = start_attester(config, chain, ready_circle())
         .await
         .err()
         .unwrap();
@@ -926,9 +926,7 @@ async fn anchor_after_scan_start_leaves_no_store() {
 
     let config = write_config(&tempdir, 1, &anchor, 1);
     let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    let attester = Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .unwrap();
+    let attester = start_attester(config, chain, ready_circle()).await.unwrap();
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
         BlockNumber::from(1u32)
@@ -945,9 +943,14 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 2, &anchor, 1);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(1, 1));
-    let mut attester = Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .unwrap();
+    let mut attester = Attester::start(
+        config,
+        Box::new(chain),
+        ready_circle(),
+        development_signers(),
+    )
+    .await
+    .unwrap();
 
     attester.discover_burns().await.unwrap();
 

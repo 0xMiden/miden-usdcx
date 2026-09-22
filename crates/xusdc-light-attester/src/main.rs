@@ -34,9 +34,12 @@ async fn main() -> Result<()> {
     // Besides the Circle request worker, the only spawned task: notify the sequential loop, without
     // interrupting its current cycle.
     let signal_task = tokio::spawn(async move {
-        if sigterm.recv().await.is_some() {
-            signal_token.cancel();
+        tokio::select! {
+            Some(()) = sigterm.recv() => {}
+            Ok(()) = tokio::signal::ctrl_c() => {}
+            else => return,
         }
+        signal_token.cancel();
     });
     eprintln!(
         "attester started with development keys; local rolling-limit enforcement is not implemented yet"

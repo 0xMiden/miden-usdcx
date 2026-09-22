@@ -138,7 +138,7 @@ async fn cycle_runs_in_order() {
 async fn invalid_burns_are_not_signed() {
     let invalid = note(BurnNote::script(), NoteType::Public, 7, 1);
     let young = validated_burn(1_000, serial(8), 9);
-    let mut blocks = BlockFactory::new(faucet_account_id());
+    let mut blocks = BlockFactory::new();
     blocks.push(vec![invalid.output], vec![]);
     blocks.push(
         vec![OutputNote::Public(young.burn.note().clone())],

@@ -31,9 +31,9 @@ fn prepare_sends_the_right_values() {
     let expected_salt = "0x0807060504030201181716151413121128272625242322213837363534333231";
     let other_salt = "0x0807060504030201181716151413121128272625242322213937363534333231";
     let client = client();
-    for forwarding in [false, true] {
+    for forwarding in [None, Some(500_000)] {
         let expected = |value: &str, domain: u32, salt: &str| {
-            json!({
+            let mut batch = json!({
                 "token": "USDC",
                 "remoteDomain": 10007,
                 "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
@@ -41,8 +41,13 @@ fn prepare_sends_the_right_values() {
                 "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
                 "valueIncludingFees": value,
                 "salt": salt,
-                "useCircleForwarding": forwarding,
-            })
+                "useCircleForwarding": forwarding.is_some(),
+            });
+            if forwarding.is_some() {
+                batch["forwardingOptions"] =
+                    json!({"maxFee": "0.500000", "usesFastFinality": true});
+            }
+            batch
         };
         let mut burns: Vec<_> = cases
             .iter()

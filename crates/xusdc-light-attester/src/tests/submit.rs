@@ -153,7 +153,7 @@ impl CircleApi for ScriptedCircle {
     fn prepare_withdrawal<'a>(
         &'a self,
         _burn: &'a ValidatedBurn,
-        _use_circle_forwarding: bool,
+        _cctp_forwarding_max_fee: Option<u64>,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move { read_prepared(self.next_reply(ObservedRequest::Prepare)?) })

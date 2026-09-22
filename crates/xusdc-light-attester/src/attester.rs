@@ -418,7 +418,7 @@ impl Attester {
     async fn withdraw(&mut self, burn: &ValidatedBurn) -> Result<(), SubmitError> {
         let prepared = self
             .circle
-            .prepare_withdrawal(burn, self.config.use_circle_forwarding())
+            .prepare_withdrawal(burn, self.config.cctp_forwarding().map(|(fee, _)| fee))
             .await?;
         let verified = prepared
             .verify(burn, &self.config)

@@ -313,6 +313,30 @@ async fn submission_store_failure_stops_remaining_work() {
     }
 }
 
+/// A chain that moved behind the verified checkpoint stops the cycle before any Circle traffic.
+#[tokio::test]
+async fn diverged_chain_stops_the_cycle() {
+    let ledger = Ledger::new().await;
+    seed(&ledger, &[(0, None), (1, Some("created"))]).await;
+    let replies = vec![
+        accepted(&ledger, 0, "created"),
+        reply(200, ledger.response(1, "finalized")),
+    ];
+    let (signers, calls) = signers(None);
+    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+    *chain.scan_limits.lock().unwrap() = scan_limits(2, 2);
+    let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
+
+    assert!(matches!(
+        attester.run_one_cycle().await,
+        Err(CycleError::Discovery(DiscoverError::ChainDiverged))
+    ));
+    assert_eq!(counts(&calls), [0, 0]);
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(ledger.record(&attester, 0), before[0]);
+    assert_eq!(ledger.record(&attester, 1), before[1]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn discovery_store_failure_stops_work_but_retries() {
     let ledger = Ledger::new().await;

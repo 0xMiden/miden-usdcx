@@ -268,7 +268,7 @@ fn burns_and_scan_position_are_saved_together() {
     .unwrap();
 
     let burn_note = note(BurnNote::script(), NoteType::Public, 1, 20);
-    let candidate = BurnCandidate::try_new(
+    let candidate = BurnCandidate::new(
         burn_note.public_note.clone().unwrap(),
         BlockNumber::GENESIS,
         faucet_account_id(),
@@ -315,7 +315,7 @@ fn burns_and_scan_position_are_saved_together() {
     }
 
     let second_note = note(BurnNote::script(), NoteType::Public, 2, 21);
-    let second_candidate = BurnCandidate::try_new(
+    let second_candidate = BurnCandidate::new(
         second_note.public_note.unwrap(),
         BlockNumber::from(1u32),
         faucet_account_id(),
@@ -360,7 +360,7 @@ fn burns_and_scan_position_are_saved_together() {
     assert!(store.discovered_burns().unwrap().is_empty());
 
     // Both heights pass the temporal bounds, but promotion must retain the candidate's height.
-    let mismatched_promotion = DiscoveredBurn::try_new(
+    let mismatched_promotion = DiscoveredBurn::new(
         second_candidate.note().clone(),
         burn.creation_block(),
         burn.consumption_block(),
@@ -408,7 +408,7 @@ fn burns_and_scan_position_are_saved_together() {
         CONFLICT
     );
 
-    let conflicting_burn = DiscoveredBurn::try_new(
+    let conflicting_burn = DiscoveredBurn::new(
         burn.note().clone(),
         burn.creation_block(),
         burn.consumption_block(),
@@ -561,7 +561,7 @@ fn burns_and_scan_position_are_saved_together() {
     assert_eq!(
         store
             .save_scan_progress(
-                &[BurnCandidate::try_new(
+                &[BurnCandidate::new(
                     candidate.note().clone(),
                     BlockNumber::from(1u32),
                     faucet_account_id(),

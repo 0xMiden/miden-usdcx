@@ -65,7 +65,9 @@ impl Attester {
         self.advance_submission(saved).await
     }
 
-    /// One attempt per queued row; the outer cycle supplies the delay between retries.
+    /// Resends every saved request whose outcome is still unknown, one attempt each, and writes
+    /// Circle's answer back onto its row; the outer cycle supplies the delay between attempts.
+    /// A store write failure stops the pass so no answer is lost unrecorded.
     pub(crate) async fn recover_submissions(&mut self) -> Result<(), SubmitError> {
         for saved in self.store.submissions_to_recover()? {
             self.advance_submission(saved).await?;

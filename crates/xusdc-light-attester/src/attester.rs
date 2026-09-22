@@ -175,7 +175,9 @@ impl Attester {
 
     pub async fn run_one_cycle(&mut self) -> Result<CycleReport, CycleError> {
         let discover = self.discover_burns().await;
-        if let Err(error @ DiscoverError::Store(_)) = discover {
+        // Only an unreachable node keeps the rest of the cycle going: a store failure or a
+        // diverged chain stops everything until an operator has looked.
+        if let Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) = discover {
             return Err(CycleError::Discovery(error));
         }
 

@@ -35,12 +35,7 @@ impl Store {
         faucet_account_id: AccountId,
         initial_cursor: ScanCursor,
     ) -> Result<Self, StoreError> {
-        let existing_length = match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => Some(metadata.len()),
-            Ok(_) => return Err(StoreError::Invalid),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err(StoreError::Invalid),
-        };
+        let exists = path.try_exists().map_err(|_| StoreError::Invalid)?;
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
         connection
@@ -53,10 +48,10 @@ impl Store {
             .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
             .map_err(classify_error)?;
 
-        match existing_length {
-            None => initialize_store(&mut connection, faucet_account_id, initial_cursor)?,
-            Some(0) => return Err(StoreError::Invalid),
-            Some(_) => validate_store(&connection, faucet_account_id)?,
+        if exists {
+            validate_store(&connection, faucet_account_id)?;
+        } else {
+            initialize_store(&mut connection, faucet_account_id, initial_cursor)?;
         }
 
         Ok(Self { connection })

@@ -156,6 +156,10 @@ impl Attester {
                 self.config.withdrawal_limit(),
             )?
         {
+            info!(
+                note_id = %saved.note_id,
+                "saved request waits for capacity before it is sent again"
+            );
             return Ok(());
         }
         self.send_admitted_submission(saved, false).await

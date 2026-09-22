@@ -118,13 +118,27 @@ pub(super) fn discovered_burn(
     serial: Word,
     destination_domain: u32,
 ) -> DiscoveredBurn {
+    discovered_burn_to(
+        amount,
+        serial,
+        destination_domain,
+        core::array::from_fn(|i| i as u8),
+    )
+}
+
+pub(super) fn discovered_burn_to(
+    amount: u64,
+    serial: Word,
+    destination_domain: u32,
+    recipient: [u8; 32],
+) -> DiscoveredBurn {
     let mut fixture = NoteFixture::new();
     let asset = fungible(faucet_account_id(), amount);
     fixture.assets = vec![asset];
     fixture.storage = asset.as_elements().to_vec();
     let mut payload = items();
     payload.dest_domain = CircleDomain::new(destination_domain);
-    payload.dest_recipient = ForeignChainAddress::new(core::array::from_fn(|i| i as u8));
+    payload.dest_recipient = ForeignChainAddress::new(recipient);
     fixture.set_items(payload);
     discovered(fixture.with_serial(serial))
 }

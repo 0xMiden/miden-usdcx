@@ -1,11 +1,11 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
+use tokio_util::sync::CancellationToken;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -126,16 +126,15 @@ impl Attester {
         })
     }
 
-    /// Drives cycles until shutdown. Checks `shutdown` BETWEEN cycles and sleeps the full
-    /// poll interval — no race, so no `select!` needed. Finishes the current cycle before
-    /// returning; the process exits only between cycles.
-    pub async fn run(
-        &mut self,
-        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<(), RunError> {
-        while !shutdown.load(Ordering::Acquire) {
+    /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
+    /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
+    pub async fn run(&mut self, shutdown: CancellationToken) -> Result<(), RunError> {
+        while !shutdown.is_cancelled() {
             let _ = self.run_one_cycle(Instant::now()).await;
-            tokio::time::sleep(self.config.poll_interval()).await;
+            tokio::select! {
+                () = shutdown.cancelled() => {}
+                () = tokio::time::sleep(self.config.poll_interval()) => {}
+            }
         }
 
         Ok(())

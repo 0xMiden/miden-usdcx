@@ -1,10 +1,10 @@
 //! The accounts this tool builds and amends: the genesis xUSDC faucet and its distributor.
 
 use anyhow::{Context, Result};
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
 use miden_protocol::account::{
-    Account, AccountBuilder, AccountFile, AccountId, AccountIdVersion, AccountType,
-    AssetCallbackFlag,
+    Account, AccountBuilder, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
 };
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_protocol::block::FeeParameters;
@@ -107,7 +107,7 @@ pub fn prefund_distributor(
         return Err(PrefundError::NothingToDistribute);
     }
 
-    let account = &distributor.account;
+    let account = distributor.account();
     let id = account.id();
     if !id.is_public() {
         return Err(PrefundError::DistributorNotPublic(id));
@@ -118,7 +118,7 @@ pub fn prefund_distributor(
             nonce: account.nonce(),
         });
     }
-    if distributor.auth_secret_keys.is_empty() {
+    if distributor.auth_secret_keys().is_empty() {
         return Err(PrefundError::DistributorHasNoSigningKey(id));
     }
 
@@ -131,7 +131,7 @@ pub fn prefund_distributor(
         Account::new(id, vault, storage, code, Felt::ONE, None).map_err(PrefundError::Account)?;
     Ok(AccountFile::new(
         prefunded,
-        distributor.auth_secret_keys.clone(),
+        distributor.auth_secret_keys().to_vec(),
     ))
 }
 

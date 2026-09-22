@@ -907,7 +907,7 @@ async fn bad_blocks_are_rejected() {
         attester.discover_burns().await,
         Err(DiscoverError::CursorOverflow)
     ));
-    assert_eq!(attester.store.scan_state(), Ok(saved));
+    assert_eq!(attester.store.scan_state().unwrap(), saved);
     assert!(controls.requests.lock().unwrap().is_empty());
 }
 
@@ -926,7 +926,7 @@ async fn repeated_note_is_skipped() {
     );
     factory.push(vec![burn.output], Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(5, 4)).await;
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(4, 4)).await;
 
     attester.discover_burns().await.unwrap();
 
@@ -956,7 +956,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     let anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let config = write_config(&tempdir, 2, &anchor, 1);
-    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(2, 2));
+    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(1, 1));
     let mut attester = Attester::start(config, Box::new(chain), ready_circle())
         .await
         .unwrap();

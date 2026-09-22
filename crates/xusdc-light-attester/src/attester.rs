@@ -322,6 +322,10 @@ fn find_burns_in_block(
         let Ok(candidate) = BurnCandidate::new(note.clone(), block_num, faucet_account_id) else {
             continue;
         };
+        // The same note published again has the same id and bytes: there is nothing new to save.
+        if store.note_known(candidate.note_id())? {
+            continue;
+        }
         new_burn_notes.push(candidate);
     }
 

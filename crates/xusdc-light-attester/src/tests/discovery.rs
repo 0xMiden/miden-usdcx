@@ -790,6 +790,34 @@ async fn bad_blocks_are_rejected() {
     );
 }
 
+/// Before any block is authenticated, a node still short of the anchor is not a divergence.
+#[tokio::test]
+async fn node_behind_the_anchor_waits_on_a_fresh_store() {
+    let mut factory = BlockFactory::new();
+    factory.push(Vec::new(), Vec::new());
+    factory.push(Vec::new(), Vec::new());
+    let anchor = factory.push(Vec::new(), Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let config = write_config(&tempdir, 2, &anchor, 1);
+    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(2, 2));
+    let mut attester = Attester::start(config, Box::new(chain), ready_circle())
+        .await
+        .unwrap();
+
+    attester.discover_burns().await.unwrap();
+
+    assert_eq!(
+        *controls.requests.lock().unwrap(),
+        [BlockNumber::from(2u32)]
+    );
+    assert!(attester
+        .store
+        .scan_state()
+        .unwrap()
+        .authenticated_parent
+        .is_none());
+}
+
 /// A pre-set shutdown flag returns before the first cycle, so no stage runs and no sleep occurs.
 #[tokio::test]
 async fn run_stops_when_shutdown_is_set() {

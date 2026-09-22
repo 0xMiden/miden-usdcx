@@ -25,7 +25,7 @@ const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
 pub(super) fn test_args(
     tempdir: &tempfile::TempDir,
     deployment_block: u32,
-    anchor: &ProvenBlock,
+    anchor: &SignedBlock,
     finality_depth: u32,
 ) -> TestArgs {
     let mut args = TestArgs::new(tempdir, deployment_block);

@@ -11,6 +11,7 @@ miden-usdcx = { workspace = true }
 miden-client = { workspace = true, features = ["std", "tonic"] }
 miden-protocol = { workspace = true }
 miden-standards = { workspace = true }
+miden-objects = { workspace = true }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }

@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
-use miden_protocol::block::ProvenBlock;
+use miden_protocol::block::SignedBlock;
 use miden_protocol::transaction::OutputNote;
 use reqwest::StatusCode;
 use rusqlite::{Connection, OpenFlags};
@@ -149,7 +149,7 @@ impl CircleApi for ScriptedCircle {
 
 struct Ledger {
     directory: tempfile::TempDir,
-    blocks: Vec<ProvenBlock>,
+    blocks: Vec<SignedBlock>,
     burns: Vec<ValidatedBurn>,
 }
 
@@ -158,7 +158,7 @@ impl Ledger {
         let mut burns: Vec<_> = (0..3)
             .map(|i| validated_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
-        let mut factory = BlockFactory::new(faucet_account_id());
+        let mut factory = BlockFactory::new();
         factory.push(vec![], vec![]);
         factory.push(
             burns
@@ -269,7 +269,7 @@ impl Ledger {
     }
 }
 
-pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<ProvenBlock>) {
+pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<SignedBlock>) {
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
     ledger.submit(&mut attester, 0).await.unwrap();

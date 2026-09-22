@@ -1012,7 +1012,8 @@ fn load_burns(
                      SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                         AND submissions.status != ?2
                  )
-             ))",
+             ))
+             ORDER BY creation_block, note_id",
         )
         .map_err(classify_error)?;
     let expired = SubmissionStatus::Expired.as_ref();

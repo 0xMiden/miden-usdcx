@@ -376,7 +376,7 @@ fn load_candidates(
         let (note_id, nullifier, note, creation_block) = row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         candidates.push(
-            BurnCandidate::try_new(
+            BurnCandidate::new(
                 note,
                 decode_block_number(creation_block)?,
                 faucet_account_id,
@@ -424,7 +424,7 @@ fn load_burns(
             bail!(INVALID);
         }
         burns.push(
-            DiscoveredBurn::try_new(
+            DiscoveredBurn::new(
                 note,
                 creation_block,
                 consumption_block,

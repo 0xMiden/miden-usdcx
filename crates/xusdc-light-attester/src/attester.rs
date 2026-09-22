@@ -330,8 +330,7 @@ fn find_burns_in_block(
         let OutputNote::Public(note) = output_note else {
             continue;
         };
-        let Ok(candidate) = BurnCandidate::try_new(note.clone(), block_num, faucet_account_id)
-        else {
+        let Ok(candidate) = BurnCandidate::new(note.clone(), block_num, faucet_account_id) else {
             continue;
         };
         burn_notes_by_nullifier.insert(candidate.nullifier(), candidate.clone());

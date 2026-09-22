@@ -29,6 +29,8 @@ pub enum CircleError {
     UnexpectedPrepareStatus { status: StatusCode, body: Vec<u8> },
     #[error("Circle prepare response is malformed")]
     InvalidResponse(#[source] serde_json::Error),
+    #[error("Circle response body exceeds {MAX_RESPONSE_BODY_BYTES} bytes")]
+    BodyTooLarge,
 }
 
 #[derive(Debug)]
@@ -46,6 +48,9 @@ impl RawResponse {
 /// Stop waiting for a Circle connection after 10 s, even when the configured request timeout is
 /// longer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Circle's replies are a few kilobytes; refusing more than 1 MiB keeps an oversized body out of
+/// memory.
+const MAX_RESPONSE_BODY_BYTES: usize = 1 << 20;
 /// Circle allows five requests per second from one IP address; a quarter of a second between two
 /// requests stays below that.
 pub(crate) const REQUEST_GAP: Duration = Duration::from_millis(250);
@@ -110,14 +115,22 @@ impl CircleClient {
             start
         };
         tokio::time::sleep_until(start).await;
-        let response = self
+        let mut response = self
             .client
             .execute(request)
             .await
             .map_err(CircleError::Transport)?;
         let status = response.status();
-        let body = response.bytes().await.map_err(CircleError::Transport)?;
-        Ok(RawResponse::new(status, body.to_vec()))
+        // Read chunk by chunk and stop once the total passes the cap, so an oversized or
+        // endless reply is refused before it is buffered; the declared length is not trusted.
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                return Err(CircleError::BodyTooLarge);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(RawResponse::new(status, body))
     }
 
     /// Decodes Circle's reply only. Its contents must be verified before signing.

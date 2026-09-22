@@ -286,6 +286,13 @@ async fn prepare_handles_circle_responses() {
         ),
         "truncated body is a transport error"
     );
+    assert!(
+        matches!(
+            real_http_response(StatusCode::OK, &"0".repeat((1 << 20) + 1), false).await,
+            Err(CircleError::BodyTooLarge)
+        ),
+        "a body over the cap is refused before it is buffered"
+    );
     let error = real_http_response(StatusCode::TEMPORARY_REDIRECT, "redirect body", false)
         .await
         .unwrap_err();
@@ -332,8 +339,9 @@ async fn real_http_response(
             .unwrap();
         let response = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nLocation: {url}/redirected\r\nConnection: close\r\n\r\n{body}", body.len() + usize::from(truncate));
         let mut stream = reader.into_inner();
-        stream.write_all(response.as_bytes()).await.unwrap();
-        stream.shutdown().await.unwrap();
+        // The client may hang up early (an oversized body), so write errors are not failures.
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
     };
     tokio::time::timeout(Duration::from_secs(3), async {
         let ((), result) = tokio::join!(serve, circle.prepare_withdrawal(&burn, false));

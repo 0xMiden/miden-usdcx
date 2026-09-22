@@ -34,11 +34,11 @@ async fn prepare_sends_the_right_values() {
         (9_223_372_034_707_292_160, "9223372034707.292160", 9),
     ];
     let client = client();
-    for forwarding in [false, true] {
+    for forwarding in [None, Some(500_000)] {
         // Apart from the salt, which is each burn's note ID, these expected values are written
         // independently, not produced by the request helpers.
         let expected = |burn: &DiscoveredBurn, value: &str, domain: u32| {
-            json!({
+            let mut batch = json!({
                 "token": "USDC",
                 "remoteDomain": 10007,
                 "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
@@ -46,8 +46,13 @@ async fn prepare_sends_the_right_values() {
                 "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
                 "valueIncludingFees": value,
                 "salt": burn.note_id().to_hex(),
-                "useCircleForwarding": forwarding,
-            })
+                "useCircleForwarding": forwarding.is_some(),
+            });
+            if forwarding.is_some() {
+                batch["forwardingOptions"] =
+                    json!({"maxFee": "0.500000", "usesFastFinality": true});
+            }
+            batch
         };
         let mut burns: Vec<_> = cases
             .iter()
@@ -100,7 +105,7 @@ fn prepare_salt_is_unique_per_burn_and_stable_on_retry() {
     let second = discovered_burn(2_000_000, serial(7), 9);
     assert_ne!(first.note_id(), second.note_id());
     let salt =
-        |burn| serde_json::to_value(PrepareBatch::from_burn(burn, false)).unwrap()["salt"].clone();
+        |burn| serde_json::to_value(PrepareBatch::from_burn(burn, None)).unwrap()["salt"].clone();
     assert_eq!(salt(&first), salt(&first), "retry must keep the salt");
     assert_ne!(
         salt(&first),

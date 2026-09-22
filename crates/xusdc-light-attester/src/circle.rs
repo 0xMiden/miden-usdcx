@@ -96,10 +96,12 @@ pub trait CircleApi: Send + Sync {
 
     /// Asks Circle to prepare the withdrawal of this burn. The reply is only decoded; it must be
     /// verified before anything is signed.
+    /// `cctp_forwarding_max_fee` is present exactly when Circle forwarding is on: it is the fee
+    /// Circle needs up front for the routes it serves through xReserve on Arc plus a CCTP transfer.
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a DiscoveredBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: Option<u64>,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>;
 
     /// Sends the saved withdrawal request to its saved endpoint, exactly as saved.
@@ -177,9 +179,9 @@ impl CircleClient {
     pub(crate) fn prepare_request(
         &self,
         burn: &DiscoveredBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: Option<u64>,
     ) -> Result<reqwest::Request, CircleError> {
-        let batch = PrepareBatch::from_burn(burn, use_circle_forwarding);
+        let batch = PrepareBatch::from_burn(burn, cctp_forwarding_max_fee);
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
@@ -261,11 +263,11 @@ impl CircleApi for CircleClient {
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a DiscoveredBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: Option<u64>,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move {
-            let request = self.prepare_request(burn, use_circle_forwarding)?;
+            let request = self.prepare_request(burn, cctp_forwarding_max_fee)?;
             read_prepared(self.send(request).await?)
         })
     }
@@ -362,21 +364,24 @@ pub(crate) struct PrepareBatch {
     value_including_fees: String,
     salt: String,
     use_circle_forwarding: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    forwarding_options: Option<ForwardingOptions>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardingOptions {
+    max_fee: String,
+    uses_fast_finality: bool,
 }
 
 impl PrepareBatch {
-    pub(crate) fn from_burn(burn: &DiscoveredBurn, use_circle_forwarding: bool) -> Self {
-        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+    pub(crate) fn from_burn(
+        burn: &DiscoveredBurn,
+        cctp_forwarding_max_fee: Option<u64>,
+    ) -> Self {
         let note = burn.note().as_note();
-        let amount = burn.amount();
         let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
-        // Circle takes whole-USDC decimal strings, not smallest-unit integers.
-        let value_including_fees = format!(
-            "{}.{:0width$}",
-            amount / units_per_usdc,
-            amount % units_per_usdc,
-            width = usize::from(USDCX_DECIMALS),
-        );
         // The burn's note ID: unique to this burn and fixed by the note itself, unlike the serial
         // number, which the burner chooses.
         let salt = burn.note_id().to_hex();
@@ -389,11 +394,26 @@ impl PrepareBatch {
                 "0x{}",
                 hex::encode(burn.items().dest_recipient.as_bytes())
             ),
-            value_including_fees,
+            value_including_fees: usdc_decimal(burn.amount()),
             salt,
-            use_circle_forwarding,
+            use_circle_forwarding: cctp_forwarding_max_fee.is_some(),
+            forwarding_options: cctp_forwarding_max_fee.map(|fee| ForwardingOptions {
+                max_fee: usdc_decimal(fee),
+                uses_fast_finality: true,
+            }),
         }
     }
+}
+
+/// Circle takes whole-USDC decimal strings, not smallest-unit integers.
+fn usdc_decimal(units: u64) -> String {
+    let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+    format!(
+        "{}.{:0width$}",
+        units / units_per_usdc,
+        units % units_per_usdc,
+        width = usize::from(USDCX_DECIMALS),
+    )
 }
 
 /// Decoded wire data, not a verified or signable withdrawal.

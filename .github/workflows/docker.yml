@@ -1,0 +1,177 @@
+name: Docker
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate only, or validate and publish
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - publish
+      ref:
+        description: Git tag, branch, or full commit SHA to build
+        required: true
+        type: string
+
+concurrency:
+  group: docker-${{ inputs.ref || github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bin: xusdc-genesis
+            image: miden-usdcx-genesis
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare image metadata
+        id: metadata
+        env:
+          INPUT_REF: ${{ inputs.ref || github.event.release.tag_name }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+
+          publish=false
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            if [[ -z "${INPUT_REF}" ]]; then
+              echo "::error::A Git tag, branch, or full commit SHA is required"
+              exit 1
+            fi
+            case "${INPUT_MODE}" in
+              dry-run) ;;
+              publish) publish=true ;;
+              *)
+                echo "::error::Unsupported Docker mode: ${INPUT_MODE}"
+                exit 1
+                ;;
+            esac
+          elif [[ "${GITHUB_EVENT_NAME}" == release ]]; then
+            publish=true
+          fi
+
+          commit="$(git rev-parse HEAD)"
+          ref="${INPUT_REF:-${commit}}"
+          if [[ "${ref}" == "${commit}" ]]; then
+            tag="sha-${commit:0:12}"
+          elif [[ "${ref}" == "$(git branch --show-current)" ]] ||
+            { git show-ref --verify --quiet "refs/tags/${ref}" &&
+              [[ "$(git rev-parse "refs/tags/${ref}^{commit}")" == "${commit}" ]]; }; then
+            tag="${ref}"
+            if [[ ! "${tag}" =~ ^[0-9A-Za-z_][0-9A-Za-z_.-]{0,127}$ ]]; then
+              echo "::error::The Git ref must be a valid container tag"
+              exit 1
+            fi
+            if [[ "${tag}" == latest || "${tag}" == sha-* ]]; then
+              echo "::error::The latest and sha-* tag namespaces are reserved"
+              exit 1
+            fi
+          else
+            echo "::error::The requested ref does not match the checked-out commit"
+            exit 1
+          fi
+
+          {
+            echo "image=${IMAGE,,}"
+            echo "publish=${publish}"
+            echo "commit=${commit}"
+            echo "tag=${tag}"
+            echo "immutable_tag=sha-${commit:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        if: steps.metadata.outputs.publish == 'true'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          build-args: |
+            BIN=${{ matrix.bin }}
+            CREATED=${{ steps.metadata.outputs.created }}
+            VERSION=${{ steps.metadata.outputs.tag }}
+            COMMIT=${{ steps.metadata.outputs.commit }}
+          tags: ${{ matrix.image }}:test
+          cache-from: type=gha,scope=${{ matrix.bin }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.bin }}
+
+      - name: Smoke test genesis image
+        env:
+          TEST_IMAGE: ${{ matrix.image }}:test
+        run: |
+          docker run --rm --network none "${TEST_IMAGE}" --help
+          docker run --rm --network none "${TEST_IMAGE}" new-distributor
+
+      - name: Log in to GHCR
+        if: steps.metadata.outputs.publish == 'true'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish image
+        if: steps.metadata.outputs.publish == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BIN=${{ matrix.bin }}
+            CREATED=${{ steps.metadata.outputs.created }}
+            VERSION=${{ steps.metadata.outputs.tag }}
+            COMMIT=${{ steps.metadata.outputs.commit }}
+          tags: |
+            ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.tag }}
+            ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.immutable_tag }}
+          cache-from: type=gha,scope=${{ matrix.bin }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.bin }}

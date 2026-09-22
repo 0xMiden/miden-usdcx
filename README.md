@@ -89,6 +89,10 @@ captured Circle response for its two reference tests.
 
 ## Build and test
 
+The genesis tool is also available as a Docker image, published to GHCR on each GitHub release.
+See the [genesis Docker instructions](crates/xusdc-genesis/README.md#docker) for local builds,
+release tags, and running it against a mounted genesis directory.
+
 The MASM is not compiled by a Rust-contract toolchain; it is assembled and **executed** by the test
 suite. Everything below runs offline — the toolchain is pinned in `Cargo.lock` — from the repo root:
 

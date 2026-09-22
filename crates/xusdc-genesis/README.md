@@ -19,6 +19,30 @@ cargo install --path crates/xusdc-genesis --locked    # add --force to reinstall
 
 `xusdc-genesis` is then on `PATH`; `cargo run -p xusdc-genesis --` from the repo works the same.
 
+### Docker
+
+Release image: `ghcr.io/0xmiden/miden-usdcx-genesis:<release-tag>`.
+
+Build locally from the repository root:
+
+```sh
+docker build --tag miden-usdcx-genesis:local .
+```
+
+Mount your genesis directory at `/data` to retain the generated account files, and use your
+own UID/GID so the output files belong to you. Pass the commands and arguments from
+[Usage](#usage) after the image name:
+
+```sh
+docker run --rm --network none \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,src=$(pwd),dst=/data" \
+  miden-usdcx-genesis:local <command> [args...]
+```
+
+For a published image, replace `miden-usdcx-genesis:local` with the release image reference
+above.
+
 ## Usage
 
 Every command works in the current directory: it reads its inputs under their well-known names

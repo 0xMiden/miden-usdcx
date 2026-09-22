@@ -1,0 +1,16 @@
+# Only the workspace inputs are needed to build the Rust binaries and their MASM.
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+
+**/target
+**/.git
+**/.DS_Store
+**/.env*
+**/*.mac
+**/*.log
+**/config.json
+**/nonces.json
+**/local-node-data

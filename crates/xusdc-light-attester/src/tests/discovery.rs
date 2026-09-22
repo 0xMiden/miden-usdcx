@@ -790,6 +790,42 @@ async fn bad_blocks_are_rejected() {
     );
 }
 
+/// A note published again with the same id, before or after the faucet consumed it, is the same
+/// note and is skipped instead of halting discovery.
+#[tokio::test]
+async fn repeated_note_is_skipped() {
+    let mut factory = BlockFactory::new();
+    factory.push(Vec::new(), Vec::new());
+    let burn = note(BurnNote::script(), NoteType::Public, 1, 40);
+    factory.push(vec![burn.output.clone()], Vec::new());
+    factory.push(vec![burn.output.clone()], Vec::new());
+    factory.push(
+        Vec::new(),
+        vec![transaction(faucet_account_id(), &[burn.nullifier])],
+    );
+    factory.push(vec![burn.output], Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(5, 4)).await;
+
+    attester.discover_burns().await.unwrap();
+
+    assert_eq!(
+        attester.store.scan_state().unwrap().cursor.next_block,
+        BlockNumber::from(5u32)
+    );
+    assert!(attester.store.candidates().unwrap().is_empty());
+    assert_eq!(
+        attester
+            .store
+            .discovered_burns()
+            .unwrap()
+            .iter()
+            .map(DiscoveredBurn::note_id)
+            .collect::<Vec<_>>(),
+        [burn.id]
+    );
+}
+
 /// Before any block is authenticated, a node still short of the anchor is not a divergence.
 #[tokio::test]
 async fn node_behind_the_anchor_waits_on_a_fresh_store() {

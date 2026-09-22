@@ -7,8 +7,8 @@
 //!
 //! Composes the `FungibleFaucet`, the attestation mint policy and `set_attester` extension,
 //! a `TokenPolicyManager` whose burn policy checks required attachments and the minimum amount
-//! stored by [`MinBurnAmount`], plus the stock [`PausableManager`], [`BlocklistManager`] and
-//! [`ConstantFeeManager`].
+//! stored by [`MinBurnAmount`], plus the stock [`PausableManager`], [`BlocklistManager`],
+//! [`ConstantFeeManager`] and [`UpgradeManager`].
 //! The RBAC seed holds five roles: `ADMIN`, `ATTEST_ADMIN`, `DOM_PAUSER`, `DOM_UNPAUSER` and
 //! `BLK_MANAGER`. Every role is administered directly by `ADMIN`; there is no ownership component.
 //! The standard role-action note rotates membership and can change role administration at runtime.
@@ -41,6 +41,7 @@ use miden_standards::account::fees::ConstantFeeManager;
 use miden_standards::account::policies::{
     BlocklistManager, BurnPolicy, MinBurnAmount, MintPolicy, TokenPolicyManager, TransferPolicy,
 };
+use miden_standards::account::upgrade::UpgradeManager;
 
 use crate::account::xreserve::XReserveAdminAuthority;
 
@@ -305,6 +306,7 @@ impl XReserveStablecoinBuilder {
         components.push(PausableManager.into());
         components.push(BlocklistManager.into());
         components.push(ConstantFeeManager::for_basic_constant_fee_policy().into());
+        components.push(UpgradeManager.into());
         components.push(seeded_dom_roles_rbac(
             self.owner,
             &self.attest_admin_holders,

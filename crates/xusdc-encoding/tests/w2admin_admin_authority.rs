@@ -18,6 +18,7 @@ use miden_protocol::account::{AccountComponent, RoleSymbol, StorageSlotName};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::access::{Authority, PausableManager};
 use miden_standards::account::policies::BlocklistManager;
+use miden_standards::account::upgrade::UpgradeManager;
 use miden_standards::note::config::{AllowlistConfigNote, BlocklistConfigNote, PauseConfigNote};
 use support::w2admin::*;
 use support::*;
@@ -204,6 +205,16 @@ fn the_emergency_switch_is_not_mapped_to_a_dedicated_role() {
     assert!(
         !roles.contains_key(&Authority::unfreeze_root()),
         "unfreeze must stay unmapped so it resolves to the administrator role"
+    );
+}
+
+/// The upgrade hook stays unmapped as well, so it resolves to the administrator role.
+#[test]
+fn the_upgrade_hook_is_not_mapped_to_a_dedicated_role() {
+    let roles = XReserveAdminAuthority::new().procedure_roles().clone();
+    assert!(
+        !roles.contains_key(&UpgradeManager::upgrade_root()),
+        "upgrade must stay unmapped so it resolves to the administrator role"
     );
 }
 

@@ -5,15 +5,14 @@ use std::sync::{Arc, LazyLock, Mutex};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::{
-    BlockBody, BlockHeader, BlockNumber, BlockProof, BlockSignatures, FeeParameters, ProvenBlock,
-    ValidatorKeys,
+    BlockBody, BlockHeader, BlockNumber, BlockSignatures, FeeParameters, SignedBlock,
+    ValidatorConfig,
 };
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
 use miden_protocol::note::{
     Note, NoteAssets, NoteAttachment, NoteAttachments, NoteId, NoteRecipient, NoteScript,
     NoteStorage, NoteTag, NoteType, Nullifier, PartialNoteMetadata,
 };
-use miden_protocol::testing::validator_keys::{random_validator_set, sign_all};
 use miden_protocol::transaction::{
     InputNoteCommitment, InputNotes, OrderedTransactionHeaders, OutputNote, PublicOutputNote,
     RawOutputNote, TransactionHeader,
@@ -48,7 +47,7 @@ pub(super) fn scan_limits(latest_committed_block: u32, proof_lag_block: u32) -> 
 /// node refuses to serve. Keeping one fake means both test files exercise the same model of the
 /// chain, so a behaviour proved in one file still holds in the other.
 pub(super) struct TestChain {
-    blocks: Vec<ProvenBlock>,
+    blocks: Vec<SignedBlock>,
     scan_limits: Arc<Mutex<ScanLimits>>,
     requests: Arc<Mutex<Vec<BlockNumber>>>,
     scan_limit_requests: Arc<Mutex<Vec<BlockNumber>>>,
@@ -64,7 +63,7 @@ pub(super) struct ChainControls {
 }
 
 impl TestChain {
-    pub(super) fn new(blocks: Vec<ProvenBlock>, scan_limits: ScanLimits) -> (Self, ChainControls) {
+    pub(super) fn new(blocks: Vec<SignedBlock>, scan_limits: ScanLimits) -> (Self, ChainControls) {
         let scan_limits = Arc::new(Mutex::new(scan_limits));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let scan_limit_requests = Arc::new(Mutex::new(Vec::new()));
@@ -143,7 +142,7 @@ impl ChainReader for TestChain {
     fn block_by_number(
         &self,
         block_num: BlockNumber,
-    ) -> Pin<Box<dyn Future<Output = Result<ProvenBlock, ChainError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<SignedBlock, ChainError>> + Send + '_>> {
         self.requests.lock().unwrap().push(block_num);
         let result = if self.missing == Some(block_num) {
             Err(ChainError::Unavailable)
@@ -220,19 +219,17 @@ pub(super) struct TestNote {
 }
 
 pub(super) struct BlockFactory {
-    faucet_account_id: AccountId,
     signers: Vec<SigningKey>,
-    validator_keys: ValidatorKeys,
-    blocks: Vec<ProvenBlock>,
+    validator_config: ValidatorConfig,
+    blocks: Vec<SignedBlock>,
 }
 
 impl BlockFactory {
-    pub(super) fn new(faucet_account_id: AccountId) -> Self {
-        let (signers, validator_keys) = random_validator_set(1);
+    pub(super) fn new() -> Self {
+        let (signers, validator_config) = ValidatorConfig::random_with_signers(1);
         Self {
-            faucet_account_id,
             signers,
-            validator_keys,
+            validator_config,
             blocks: Vec::new(),
         }
     }
@@ -241,7 +238,7 @@ impl BlockFactory {
         &mut self,
         output_notes: Vec<OutputNote>,
         transactions: Vec<TransactionHeader>,
-    ) -> ProvenBlock {
+    ) -> SignedBlock {
         let block_num = BlockNumber::from(self.blocks.len() as u32);
         let output_note_batches = if output_notes.is_empty() {
             Vec::new()
@@ -256,7 +253,6 @@ impl BlockFactory {
         );
         let previous = self.blocks.last();
         let header = BlockHeader::new(
-            0,
             previous.map_or(Word::empty(), |block| block.header().commitment()),
             block_num,
             Word::empty(),
@@ -264,27 +260,27 @@ impl BlockFactory {
             Word::empty(),
             body.compute_block_note_tree().root(),
             body.transactions().commitment(),
+            self.validator_config.clone(),
+            FeeParameters::new(0),
             Word::empty(),
-            self.validator_keys.clone(),
-            FeeParameters::new(self.faucet_account_id, 0),
+            None,
             block_num.as_u32(),
         );
         let signatures = previous.map_or_else(
             || BlockSignatures::new(Vec::new()).unwrap(),
             |parent| {
-                sign_all(
-                    parent.header().validator_keys(),
-                    &self.signers,
-                    header.commitment(),
-                )
+                parent
+                    .header()
+                    .validator_config()
+                    .sign_all(&self.signers, header.commitment())
             },
         );
-        let block = ProvenBlock::new_unchecked(header, body, signatures, BlockProof::new_dummy());
+        let block = SignedBlock::new_unchecked(header, body, signatures);
         self.blocks.push(block.clone());
         block
     }
 
-    pub(super) fn blocks(&self) -> Vec<ProvenBlock> {
+    pub(super) fn blocks(&self) -> Vec<SignedBlock> {
         self.blocks.clone()
     }
 }
@@ -298,7 +294,7 @@ pub(super) fn note(script: NoteScript, note_type: NoteType, tag: u32, serial: u6
             NoteRecipient::new(
                 word(serial),
                 script,
-                NoteStorage::new(Asset::Fungible(asset).as_elements().to_vec()).unwrap(),
+                NoteStorage::new(Asset::from(asset).as_elements().to_vec()).unwrap(),
             ),
             NoteAttachments::new(vec![
                 NoteAttachment::from(
@@ -353,6 +349,7 @@ pub(super) fn transaction(account_id: AccountId, nullifiers: &[Nullifier]) -> Tr
         .unwrap(),
         Vec::new(),
     )
+    .unwrap()
 }
 
 pub(super) fn word(value: u64) -> Word {
@@ -364,13 +361,12 @@ pub(super) fn word(value: u64) -> Word {
     ])
 }
 
-pub(super) fn startup_anchor() -> &'static ProvenBlock {
-    static ANCHOR: LazyLock<ProvenBlock> = LazyLock::new(|| {
+pub(super) fn startup_anchor() -> &'static SignedBlock {
+    static ANCHOR: LazyLock<SignedBlock> = LazyLock::new(|| {
         // The lock test starts a second process; both processes must serve the same test anchor.
         let signer = SigningKey::read_from_bytes(&[1; 32]).unwrap();
         let mut factory = BlockFactory {
-            faucet_account_id: faucet_account_id(),
-            validator_keys: ValidatorKeys::new(vec![signer.public_key()]).unwrap(),
+            validator_config: ValidatorConfig::from_signers(std::slice::from_ref(&signer)),
             signers: vec![signer],
             blocks: Vec::new(),
         };

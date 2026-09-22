@@ -122,7 +122,7 @@ async fn existing_store_resumes_from_saved_block() {
                 cursor: ScanCursor {
                     next_block: saved_block,
                 },
-                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[], Word::empty())),
+                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[])),
             },
         )
         .unwrap();

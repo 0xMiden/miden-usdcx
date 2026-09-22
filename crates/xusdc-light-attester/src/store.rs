@@ -266,7 +266,6 @@ impl Store {
             .ok_or_else(|| anyhow!(CONFLICT))
     }
 
-    #[cfg(test)]
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
         Ok(load_submissions(&self.connection, Some(note_id), None)?.pop())
     }

@@ -76,6 +76,7 @@ impl Attester {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(|_| SubmitError::InvalidRequest)?;
         let (saved, amount) = withdrawal.submission(endpoint)?;
+        let previous = self.store.submission(saved.note_id)?;
         // The final fit check, reservation and exact request become durable together.
         if !self.store.admit_submission(
             &saved,
@@ -85,6 +86,15 @@ impl Attester {
             self.config.withdrawal_limit(),
         )? {
             return Ok(());
+        }
+        // Only an expired or failed attempt can be replaced; keep its Circle id in the log.
+        if let Some(previous) = previous {
+            info!(
+                note_id = %saved.note_id,
+                previous_withdrawal_id = previous.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                previous_status = ?previous.status,
+                "replaced an earlier submission"
+            );
         }
         self.send_admitted_submission(saved, true).await
     }
@@ -203,6 +213,30 @@ impl Attester {
             Some(id) => self.circle.get_withdrawal(saved, id).await,
             None => self.circle.post_submission(saved).await,
         };
+        // One line per attempt, before anything is written, so a failed store write cannot lose
+        // what Circle answered.
+        let method = if saved.withdrawal_id.is_some() {
+            "GET"
+        } else {
+            "POST"
+        };
+        let withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned");
+        match &result {
+            Ok(response) => info!(
+                note_id = %saved.note_id,
+                method,
+                withdrawal_id,
+                http_status = response.status.as_u16(),
+                "Circle answered"
+            ),
+            Err(error) => warn!(
+                note_id = %saved.note_id,
+                method,
+                withdrawal_id,
+                error = %error,
+                "Circle request failed"
+            ),
+        }
         match result {
             Ok(response) => {
                 saved.last_http_status = Some(response.status.as_u16());

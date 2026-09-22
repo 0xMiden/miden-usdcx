@@ -145,6 +145,10 @@ impl Attester {
         todo!()
     }
 
+    /// Scans the blocks that became final since the saved checkpoint. Each block's burn
+    /// candidates and faucet consumptions are saved together with the advanced cursor and the
+    /// block's header, one block per store transaction, so a crash never skips or half-records
+    /// a block.
     pub(crate) async fn discover_burns(&mut self) -> Result<(), DiscoverError> {
         let saved_scan = self.store.scan_state()?;
         let Some(last_block_to_scan) = self.find_last_block_to_scan(&saved_scan).await? else {
@@ -241,6 +245,8 @@ impl Attester {
         Ok(last_verified_header)
     }
 
+    /// Records one authenticated block: its new candidates, the burns its faucet transactions
+    /// consumed, and the checkpoint moved past it, in a single store transaction.
     fn scan_and_save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
         let (new_burn_notes, new_burns) =
             find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?;
@@ -300,6 +306,8 @@ fn behind_verified_chain(saved_scan: &ScanState) -> Result<Option<BlockNumber>, 
     }
 }
 
+/// Collects the block's structurally valid burn notes and the candidates its faucet transactions
+/// consumed. Reads candidates from earlier blocks out of the store and writes nothing.
 fn find_burns_in_block(
     block: &SignedBlock,
     faucet_account_id: miden_protocol::account::AccountId,

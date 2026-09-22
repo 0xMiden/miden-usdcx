@@ -377,6 +377,14 @@ impl Attester {
                 self.config.withdrawal_window_ms(),
                 self.config.withdrawal_limit(),
             )? {
+                if burn.amount > self.config.withdrawal_limit() {
+                    warn!(
+                        note_id = %note_id,
+                        amount = burn.amount,
+                        limit = self.config.withdrawal_limit(),
+                        "burn exceeds the withdrawal limit and waits until it is raised"
+                    );
+                }
                 continue;
             }
             if let Err(error) = self.withdraw(&burn).await {

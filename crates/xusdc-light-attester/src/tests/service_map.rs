@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +10,7 @@ use miden_protocol::note::NoteType;
 use miden_protocol::transaction::OutputNote;
 use miden_standards::note::BurnNote;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, CycleError, DiscoverError, SubmitError};
 use crate::signer::{Signer, SignerError, SigningPublicKey};
@@ -30,7 +31,7 @@ type Counts = [Arc<AtomicUsize>; 2];
 struct CountedSigner {
     inner: Box<dyn Signer>,
     calls: Arc<AtomicUsize>,
-    shutdown: Option<Arc<AtomicBool>>,
+    shutdown: Option<CancellationToken>,
 }
 
 impl Signer for CountedSigner {
@@ -47,14 +48,14 @@ impl Signer for CountedSigner {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::Relaxed);
             if let Some(shutdown) = &self.shutdown {
-                shutdown.store(true, Ordering::Release);
+                shutdown.cancel();
             }
             self.inner.sign_digest(digest).await
         })
     }
 }
 
-fn signers(shutdown: Option<Arc<AtomicBool>>) -> ([Box<dyn Signer>; 2], Counts) {
+fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts) {
     let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let mut index = 0;
     let signers = development_signers().map(|inner| {
@@ -340,7 +341,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
     assert_eq!(ledger.record(&attester, 0), before[0]);
     assert_eq!(ledger.record(&attester, 1), before[1]);
 
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown = CancellationToken::new();
     let mut run = Box::pin(attester.run(shutdown.clone()));
     // Two failed cycles, separated by the configured 100 ms delay; neither ends the service.
     assert!(tokio::time::timeout(Duration::from_millis(150), &mut run)
@@ -348,7 +349,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
         .is_err());
     assert_eq!(*chain.scan_limit_requests.lock().unwrap(), 3);
     assert!(requests.lock().unwrap().is_empty());
-    shutdown.store(true, Ordering::Release);
+    shutdown.cancel();
     run.await;
 }
 
@@ -364,17 +365,16 @@ async fn restart_and_shutdown_do_not_lose_work() {
         .collect();
     let mut replies = fresh_replies(&ledger, &fresh);
     replies.push(reply(200, ledger.response(1, "finalized")));
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown = CancellationToken::new();
     let (signers, calls) = signers(Some(shutdown.clone()));
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let started = tokio::time::Instant::now();
     attester.run(shutdown.clone()).await;
-    assert_eq!(
-        started.elapsed(),
-        Duration::from_millis(100),
-        "sleep the full interval"
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "a cancellation cuts the sleep short"
     );
-    assert!(shutdown.load(Ordering::Acquire));
+    assert!(shutdown.is_cancelled());
     assert_eq!(
         counts(&calls),
         [2, 2],

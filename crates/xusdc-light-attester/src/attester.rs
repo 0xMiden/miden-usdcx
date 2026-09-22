@@ -300,6 +300,9 @@ impl Attester {
         todo!()
     }
 
+    /// Asks Circle once for each submitted withdrawal that has no final status yet and records
+    /// the answer on its row: a final status closes the row, and any other answer or a lost reply
+    /// leaves it for the next pass.
     pub(crate) async fn poll_withdrawal_statuses(&mut self) -> Result<(), SubmitError> {
         // Each saved ID gets one GET; the shared handler persists its outcome before we continue.
         for saved in self

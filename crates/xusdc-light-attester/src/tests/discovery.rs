@@ -15,7 +15,7 @@ use crate::attester::{Attester, DiscoverError};
 use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor, CONFLICT, INVALID};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
 
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
@@ -527,31 +527,39 @@ fn burns_and_scan_position_are_saved_together() {
     );
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
+    store
+        .refuse_burn(burn.note_id(), BurnRefusal::WrongTag)
+        .unwrap();
     assert_eq!(
-        store.refuse_burn(burn.note_id(), BurnRefusal::WrongTag),
-        Ok(())
-    );
-    assert_eq!(
-        store.refuse_burn(burn.note_id(), BurnRefusal::WrongTag),
-        Err(StoreError::Conflict),
+        store
+            .refuse_burn(burn.note_id(), BurnRefusal::WrongTag)
+            .unwrap_err()
+            .to_string(),
+        CONFLICT,
         "a refused burn is no longer pending work"
     );
     for (id, reason) in [
         (burn.note_id(), BurnRefusal::WrongTag),
         (second_candidate.note_id(), BurnRefusal::WrongTag),
     ] {
-        assert_eq!(store.refuse_burn(id, reason), Err(StoreError::Conflict));
+        assert_eq!(
+            store.refuse_burn(id, reason).unwrap_err().to_string(),
+            CONFLICT
+        );
     }
     assert_eq!(
-        store.save_scan_progress(
-            std::slice::from_ref(&candidate),
-            std::slice::from_ref(&burn),
-            &after_child,
-        ),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(
+                std::slice::from_ref(&candidate),
+                std::slice::from_ref(&burn),
+                &after_child,
+            )
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(after_child.clone()));
-    assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+    assert_eq!(store.scan_state().unwrap(), after_child.clone());
+    assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     assert!(store.candidates().unwrap().is_empty());
     assert!(store
         .burns_ready_for_withdrawal(BlockNumber::MAX, 0)

@@ -22,7 +22,6 @@ use xusdc_encoding::note::xreserve_burn::{
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
 use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn, ValidatedBurn};
-use crate::store::StoreError;
 
 use super::discovery::start;
 use super::support::{faucet_account_id, scan_limits, transaction, word, BlockFactory};
@@ -112,7 +111,7 @@ fn discovered(note: Note) -> DiscoveredBurn {
     let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap() else {
         panic!("the fixture constructs a public note")
     };
-    BurnCandidate::try_new(note, BlockNumber::from(1u32), faucet_account_id())
+    BurnCandidate::new(note, BlockNumber::from(1u32), faucet_account_id())
         .unwrap()
         .into_discovered(BlockNumber::from(2u32), burn_tx_id)
 }
@@ -354,7 +353,7 @@ fn check_note_content_cases() {
             };
             (
                 *name,
-                BurnCandidate::try_new(note, BlockNumber::from(1u32), faucet_account_id()),
+                BurnCandidate::new(note, BlockNumber::from(1u32), faucet_account_id()),
                 burn_tx_id,
                 *expected,
                 accepted,
@@ -419,7 +418,7 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
         faucet_account_id(),
         &[invalid.nullifier(), good.nullifier()],
     );
-    let expected_good = DiscoveredBurn::try_new(
+    let expected_good = DiscoveredBurn::new(
         good.note().clone(),
         good.creation_block(),
         good.consumption_block(),
@@ -469,7 +468,10 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
     }
     let result = attester.validate_ready_burns(BlockNumber::from(3u32));
     if fail_refusal_write {
-        assert_eq!(result.unwrap_err(), StoreError::Invalid);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "attester store query failed"
+        );
     } else {
         let validated = result.unwrap();
         assert_eq!(validated.len(), 1);

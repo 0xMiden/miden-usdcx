@@ -17,6 +17,7 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio-util = "0.7"
 toml = "1"
 
 [dev-dependencies]

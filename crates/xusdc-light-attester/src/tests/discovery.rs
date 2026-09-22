@@ -1,8 +1,6 @@
 //! Authenticated sequential discovery and loop-boundary tests.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
@@ -10,6 +8,7 @@ use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
 use miden_protocol::Word;
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
+use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, DiscoverError};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -854,7 +853,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
         .is_none());
 }
 
-/// A pre-set shutdown flag returns before the first cycle, so no stage runs and no sleep occurs.
+/// A token cancelled before the first cycle returns before any stage runs or any sleep starts.
 #[tokio::test]
 async fn run_stops_when_shutdown_is_set() {
     let mut factory = BlockFactory::new();
@@ -862,7 +861,9 @@ async fn run_stops_when_shutdown_is_set() {
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
 
-    attester.run(Arc::new(AtomicBool::new(true))).await.unwrap();
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+    attester.run(shutdown).await.unwrap();
 
     assert!(controls.scan_limit_requests.lock().unwrap().is_empty());
     assert_eq!(*controls.requests.lock().unwrap(), [BlockNumber::GENESIS]);

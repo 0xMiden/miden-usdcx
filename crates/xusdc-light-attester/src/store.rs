@@ -178,7 +178,8 @@ impl Store {
         window_ms: i64,
         limit: u64,
     ) -> anyhow::Result<bool> {
-        can_submit_burn(&self.connection, note_id, amount, now_ms, window_ms, limit)
+        Ok(amount <= limit
+            && can_submit_burn(&self.connection, note_id, amount, now_ms, window_ms, limit)?)
     }
 
     /// The exact signed request and its capacity reservation commit before any POST.
@@ -191,14 +192,16 @@ impl Store {
         limit: u64,
     ) -> anyhow::Result<bool> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        if !can_submit_burn(
-            &transaction,
-            record.note_id,
-            amount,
-            now_ms,
-            window_ms,
-            limit,
-        )? {
+        if amount > limit
+            || !can_submit_burn(
+                &transaction,
+                record.note_id,
+                amount,
+                now_ms,
+                window_ms,
+                limit,
+            )?
+        {
             return Ok(false);
         }
         reserve_capacity(&transaction, record.note_id, amount, now_ms)?;
@@ -208,6 +211,8 @@ impl Store {
     }
 
     /// An uncertain POST may arrive at Circle again, so refresh its existing reservation first.
+    /// The per-burn cap is not applied again here: it was passed at admission, and lowering it
+    /// afterwards must not strand a request Circle may already hold.
     pub(crate) fn renew_submission(
         &mut self,
         note_id: NoteId,
@@ -473,7 +478,6 @@ fn can_submit_burn(
     }
     if hold.is_some()
         || status == REFUSED
-        || amount > limit
         || (status == CAP_REJECTED
             && inside_window(now_ms, admitted_at.context(INVALID)?, window_ms))
     {

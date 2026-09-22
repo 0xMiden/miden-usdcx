@@ -174,6 +174,32 @@ async fn retries_recheck_capacity_without_changing_signed_bytes() {
     assert_eq!(admission(&ledger, 0), 3 * WINDOW);
 }
 
+/// Lowering the limit below an in-flight burn's amount must not strand its uncertain POST.
+#[tokio::test]
+async fn recovery_is_not_gated_by_the_per_burn_cap() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
+    at(&mut attester, WINDOW);
+    ledger.submit(&mut attester, 0).await.unwrap();
+    drop(attester);
+
+    ledger.configure(500, false);
+    let (mut attester, requests) = ledger
+        .start(vec![reply(201, json!([ledger.response(0, "created")]))])
+        .await;
+    at(&mut attester, WINDOW);
+    recover(&mut attester).await.unwrap();
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "the saved request is re-sent"
+    );
+    assert_eq!(
+        ledger.record(&attester, 0).status,
+        SubmissionStatus::Submitted
+    );
+}
+
 #[tokio::test]
 async fn cap_rejection_releases_capacity_but_waits_for_fresh_signing() {
     let ledger = Ledger::new().await;

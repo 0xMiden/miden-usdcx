@@ -324,9 +324,9 @@ impl Store {
             .connection
             .execute(
                 "UPDATE burns SET status = ?1
-             WHERE note_id = ?2 AND status = ?3
+             WHERE note_id = ?2 AND status IN ('DISCOVERED', 'CAP_REJECTED')
                 AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?2)",
-                params![REFUSED, note_id.to_bytes(), DISCOVERED],
+                params![REFUSED, note_id.to_bytes()],
             )
             .map_err(classify_error)?;
         (updated == 1)

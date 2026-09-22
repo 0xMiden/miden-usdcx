@@ -292,7 +292,7 @@ async fn submission_store_failure_stops_remaining_work() {
         let error = attester.run_one_cycle().await.unwrap_err();
         assert!(matches!(
             error,
-            CycleError::Submission(SubmitError::InvalidStore)
+            CycleError::Submission(SubmitError::Store(_))
         ));
         assert!(std::error::Error::source(&error).is_some());
         assert_eq!(counts(&calls), [usize::from(!recovering); 2]);

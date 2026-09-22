@@ -6,7 +6,7 @@ use crate::attester::Attester;
 use crate::circle::CircleError;
 use crate::submission::{SavedSubmission, SubmissionStatus::*, SubmitError};
 
-use super::submit::{poll, recover, reply, Ledger};
+use super::submit::{poll, reply, Ledger};
 use super::support::{CircleState, ObservedRequest};
 
 async fn submitted(ledger: &Ledger, indices: &[usize]) {

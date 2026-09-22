@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
+use miden_objects::prost::Message;
+use miden_objects::proto;
 use miden_protocol::block::SignedBlock;
 use miden_protocol::transaction::OutputNote;
 use miden_protocol::utils::serde::Serializable;
@@ -354,9 +356,10 @@ impl Ledger {
     }
 
     pub(super) fn rewind_empty_block(&self) {
+        let header = proto::blockchain::BlockHeader::from(self.blocks[2].header()).encode_to_vec();
         self.sql(&format!(
             "UPDATE attester_state SET next_block = 3, authenticated_parent = x'{}'",
-            hex::encode(self.blocks[2].header().to_bytes()),
+            hex::encode(header),
         ));
     }
 

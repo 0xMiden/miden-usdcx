@@ -48,12 +48,17 @@ impl CircleCursor {
 
 /// The number of attestations requested per page, within Circle's documented `pageSize` range of
 /// 1 through 1000.
+///
+/// It is also how many mint notes one Miden transaction carries, since the relayer submits a page
+/// as a single transaction — so turning it down buys smaller proofs as well as smaller pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageSize(u16);
 
 impl PageSize {
     const MIN: u16 = 1;
-    const MAX: u16 = 1000;
+    /// The largest page Circle documents, which is also the most mint notes one transaction is
+    /// ever asked to carry. [`crate::miden`] checks that against the protocol's own ceiling.
+    pub const MAX: u16 = 1000;
 }
 
 impl TryFrom<u16> for PageSize {

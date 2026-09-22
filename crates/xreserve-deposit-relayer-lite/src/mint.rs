@@ -168,7 +168,7 @@ mod tests {
     use super::{AttesterPublicKey, Minter, XUsdcMintNote};
     use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
     use crate::config::Config;
-    use crate::miden::{ExpirationDelta, NotesPerTransaction};
+    use crate::miden::ExpirationDelta;
 
     /// The Miden destination domain these tests address payloads to — a placeholder value, since
     /// the real identifier is a Circle-owned decision that is still open.
@@ -240,7 +240,6 @@ mod tests {
                 remote_domain: REMOTE_DOMAIN,
                 miden_node_url: "http://127.0.0.1:57291".parse().unwrap(),
                 miden_data_dir: "unused".into(),
-                notes_per_transaction: NotesPerTransaction::try_from(64).unwrap(),
                 expiration_delta: ExpirationDelta::try_from(64).unwrap(),
                 faucet_account_id: xusdc_dummy_faucet_id(),
                 relayer_account_id: dummy_account_id(0x11),

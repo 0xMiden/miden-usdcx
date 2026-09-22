@@ -9,6 +9,11 @@
 //! transaction the chain has reached the expiration block of can no longer be included by anyone:
 //! the wait ends in failure on a fact about the chain rather than on a guess about how long is too
 //! long, and the page is retried.
+//!
+//! One page is one transaction. That is what makes the retry above clean: a page either lands
+//! whole or lands not at all, so a retry never re-mints a deposit an earlier attempt already got on
+//! chain. An operator who wants smaller proofs turns the page size down, which shrinks the
+//! transaction and the retry unit together.
 
 use std::fmt;
 use std::fs;
@@ -17,7 +22,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient};
@@ -33,6 +38,7 @@ use miden_protocol::MAX_OUTPUT_NOTES_PER_TX;
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
 
+use crate::circle::PageSize;
 use crate::config::Config;
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
@@ -50,67 +56,23 @@ const STORE_FILE: &str = "store.sqlite3";
 /// directory.
 const KEYSTORE_DIR: &str = "keystore";
 
+/// A whole page has to fit in one transaction for the page to be the retry unit, and it always
+/// does: the largest page Circle is asked for is smaller than the most output notes the protocol
+/// lets a transaction create. Raising [`PageSize::MAX`] past that ceiling fails the build here
+/// rather than at the node.
+const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
+
 /// Submits a page of mint notes to Miden and waits for them to be included on chain.
 ///
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
 /// can be exercised without a node.
 pub trait MidenClient: fmt::Debug + Send {
-    /// Submits `notes` from `sender` and returns the identifier of every transaction it took, each
-    /// already included in a block.
+    /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
+    /// included in a block.
     ///
     /// The caller counts the page as handled after this method succeeds. Returning before
-    /// inclusion could move the watermark past deposits whose transactions are later dropped.
-    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<Vec<TransactionId>>;
-}
-
-/// How many mint notes one transaction carries.
-///
-/// A page can hold more notes than one transaction should: the protocol caps a transaction's
-/// output notes outright, and the cost of proving one grows with every note in it. Pages larger
-/// than this are split across several transactions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotesPerTransaction(usize);
-
-impl NotesPerTransaction {
-    const MIN: usize = 1;
-    /// The protocol's own ceiling on the notes one transaction may create.
-    const MAX: usize = MAX_OUTPUT_NOTES_PER_TX;
-
-    /// The count, ready to chunk a page by.
-    pub fn get(self) -> usize {
-        self.0
-    }
-}
-
-impl TryFrom<usize> for NotesPerTransaction {
-    type Error = anyhow::Error;
-
-    fn try_from(value: usize) -> Result<Self> {
-        ensure!(
-            (Self::MIN..=Self::MAX).contains(&value),
-            "notes per transaction must be between {} and {}, got {value}",
-            Self::MIN,
-            Self::MAX
-        );
-        Ok(Self(value))
-    }
-}
-
-impl FromStr for NotesPerTransaction {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        let value: usize = value
-            .parse()
-            .context("the notes per transaction is not a number")?;
-        Self::try_from(value)
-    }
-}
-
-impl fmt::Display for NotesPerTransaction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
+    /// inclusion could move the watermark past deposits whose transaction is later dropped.
+    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId>;
 }
 
 /// How many blocks past the one it was built against a mint transaction may still be included in.
@@ -166,7 +128,6 @@ pub struct NodeClient {
     /// completion on this runtime.
     runtime: tokio::runtime::Runtime,
     client: Client<FilesystemKeyStore>,
-    notes_per_transaction: NotesPerTransaction,
     expiration_delta: ExpirationDelta,
 }
 
@@ -175,7 +136,6 @@ pub struct NodeClient {
 impl fmt::Debug for NodeClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeClient")
-            .field("notes_per_transaction", &self.notes_per_transaction)
             .field("expiration_delta", &self.expiration_delta)
             .finish_non_exhaustive()
     }
@@ -248,12 +208,13 @@ impl NodeClient {
         Ok(Self {
             runtime,
             client,
-            notes_per_transaction: config.notes_per_transaction,
             expiration_delta: config.expiration_delta,
         })
     }
+}
 
-    /// Submits one transaction carrying `notes` and returns once the node has included it.
+impl MidenClient for NodeClient {
+    /// Submits the whole page as one transaction and returns once the node has included it.
     ///
     /// The notes are the transaction's own output notes: the relayer's account creates them, and
     /// the faucet consumes them afterwards on its own.
@@ -267,7 +228,7 @@ impl NodeClient {
             block = Empty,
         ),
     )]
-    fn submit_transaction(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId> {
+    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId> {
         let span = Span::current();
         let request = TransactionRequestBuilder::new()
             .own_output_notes(notes)
@@ -329,24 +290,6 @@ impl NodeClient {
                 }
             }
         })
-    }
-}
-
-impl MidenClient for NodeClient {
-    /// Submits the page as one transaction per [`NotesPerTransaction`] notes, in order, waiting
-    /// for each to be included before starting the next.
-    ///
-    /// A failure part-way leaves the transactions already included on chain. That is safe rather
-    /// than tidy: the page is retried whole, the retry rebuilds every note with a fresh serial
-    /// number, and the faucet's on-chain record of spent deposit nonces refuses the ones that
-    /// already minted.
-    #[instrument(name = "submit_notes", skip_all, fields(notes.count = notes.len()))]
-    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<Vec<TransactionId>> {
-        let mut submitted = Vec::new();
-        for chunk in notes.chunks(self.notes_per_transaction.get()) {
-            submitted.push(self.submit_transaction(sender, chunk.to_vec())?);
-        }
-        Ok(submitted)
     }
 }
 
@@ -487,37 +430,5 @@ mod tests {
             error.contains("not a number of blocks"),
             "unexpected error: {error}"
         );
-    }
-
-    /// The count is accepted across its whole documented range, including the protocol's own
-    /// ceiling on a transaction's output notes.
-    #[rstest]
-    #[case::one(1)]
-    #[case::the_protocol_ceiling(MAX_OUTPUT_NOTES_PER_TX)]
-    fn a_supported_note_count_is_accepted(#[case] value: usize) {
-        assert_eq!(
-            NotesPerTransaction::try_from(value).unwrap().get(),
-            value,
-            "a supported count must survive the round trip"
-        );
-    }
-
-    /// A count that would build an empty or over-full transaction is refused.
-    #[rstest]
-    #[case::zero(0)]
-    #[case::past_the_protocol_ceiling(MAX_OUTPUT_NOTES_PER_TX + 1)]
-    fn an_unsupported_note_count_is_refused(#[case] value: usize) {
-        let error = format!("{:#}", NotesPerTransaction::try_from(value).unwrap_err());
-        assert!(
-            error.contains("notes per transaction"),
-            "unexpected error: {error}"
-        );
-    }
-
-    /// A count that is not a number is refused where it is parsed, not where it is used.
-    #[test]
-    fn a_note_count_that_is_not_a_number_is_refused() {
-        let error = format!("{:#}", "many".parse::<NotesPerTransaction>().unwrap_err());
-        assert!(error.contains("not a number"), "unexpected error: {error}");
     }
 }

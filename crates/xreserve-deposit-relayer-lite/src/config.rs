@@ -6,7 +6,7 @@ use miden_protocol::account::AccountId;
 use url::Url;
 
 use crate::circle::{PageSize, RemoteDomain};
-use crate::miden::{ExpirationDelta, NotesPerTransaction};
+use crate::miden::ExpirationDelta;
 use crate::mint::AttesterPublicKey;
 
 #[derive(Debug, Clone, Parser)]
@@ -17,7 +17,9 @@ pub struct Config {
     #[arg(long)]
     pub circle_url: Url,
 
-    /// The number of attestations in one Circle response, between 1 and 1000.
+    /// The number of attestations in one Circle response, between 1 and 1000. A page is minted as
+    /// a single transaction, so this is also how many mint notes that transaction carries: a
+    /// smaller page is a cheaper proof and a smaller unit of work to redo after a failure.
     #[arg(long)]
     pub page_size: PageSize,
 
@@ -42,11 +44,6 @@ pub struct Config {
     /// account's signing key is read from.
     #[arg(long)]
     pub miden_data_dir: PathBuf,
-
-    /// How many mint notes one transaction carries. A page with more notes than this is split
-    /// across several transactions, which trades a longer proof for each against more of them.
-    #[arg(long, default_value = "64")]
-    pub notes_per_transaction: NotesPerTransaction,
 
     /// How many blocks a submitted mint transaction may still be included in. Once the chain is
     /// past that block the transaction can never land, and the relayer stops waiting and retries

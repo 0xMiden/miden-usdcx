@@ -6,8 +6,14 @@ submits them to Miden.
 ## Status
 
 The service runs against a Miden node. It submits each page of mint notes from the relayer's own
-account and waits for the node to include the transaction in a block before it records the page as
-done, so a page whose transaction never lands is retried rather than skipped.
+account as a single transaction and waits for the node to include it in a block before it records
+the page as done, so a page whose transaction never lands is retried rather than skipped.
+
+A page is one transaction, which is what makes that retry clean: no part of a failed page is
+already on chain, so the retry cannot build a second mint note for a deposit that already minted.
+`--page-size` therefore sets the proof size and the retry unit as well as the Circle request:
+turning it down buys cheaper proofs and less work to redo, at the cost of more requests to walk a
+backlog.
 
 The relayer account must already exist on chain, and its signing key must already be in the
 keystore directory the client is given. Neither is created here.
@@ -25,7 +31,6 @@ just run-relayer-lite \
   --remote-domain 10001 \
   --miden-node-url http://127.0.0.1:57291 \
   --miden-data-dir target/relayer-lite-miden \
-  --notes-per-transaction 64 \
   --expiration-delta 64 \
   --faucet-account-id 0x222222222222221122222222222222 \
   --relayer-account-id 0x111111101111111111111111111111 \

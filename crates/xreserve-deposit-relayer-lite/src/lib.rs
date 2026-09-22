@@ -142,11 +142,11 @@ impl Relayer {
     /// `resume` is the cursor of the page to fetch, which is `None` for the first page of a fresh
     /// scan and the stored progress for the page an interrupted scan stopped at.
     ///
-    /// Malformed attestations are skipped inside [`Minter::build_notes`]. Buildable notes are
-    /// submitted across as many transactions as the configured notes-per-transaction bound
-    /// requires, and the page is done only once [`MidenClient::submit_notes`] confirms that every
-    /// one of them is included on chain — so returning is what entitles the caller to record the
-    /// page as done.
+    /// Malformed attestations are skipped inside [`Minter::build_notes`]. Every buildable note
+    /// goes into one transaction, and the page is done only once [`MidenClient::submit_notes`]
+    /// confirms that transaction is included on chain — so returning is what entitles the caller
+    /// to record the page as done. One page to one transaction is what makes the retry of a failed
+    /// page clean: there is no part of it that could already be on chain.
     ///
     /// # Errors
     ///
@@ -170,7 +170,7 @@ impl Relayer {
             attestations.message_hashes = Empty,
             notes.count = Empty,
             notes.ids = Empty,
-            transaction.ids = Empty,
+            transaction.id = Empty,
         ),
     )]
     fn process_page(
@@ -221,13 +221,10 @@ impl Relayer {
         if notes.is_empty() && !fresh.is_empty() {
             warn!(fresh.count = fresh.len(), "page produced no mint notes");
         } else if !notes.is_empty() {
-            let transactions = self
+            let transaction = self
                 .miden_client
                 .submit_notes(self.minter.mint_account(), notes)?;
-            span.record(
-                "transaction.ids",
-                identifiers(transactions.iter().map(ToString::to_string)).as_str(),
-            );
+            span.record("transaction.id", transaction.to_string().as_str());
             info!("page minted and on chain");
         }
 

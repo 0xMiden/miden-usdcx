@@ -982,7 +982,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     factory.push(Vec::new(), Vec::new());
     let anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 2, &anchor, 1);
+    let config = test_config(&tempdir, 2, &anchor, 1);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(1, 1));
     let mut attester = Attester::start(
         config,

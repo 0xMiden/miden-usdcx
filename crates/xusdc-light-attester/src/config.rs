@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use alloy_primitives::Address;
 use clap::{ArgAction, Parser};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
@@ -49,6 +50,21 @@ pub struct Cli {
     /// Circle charges up to 1.5 basis points on most routes, so leave headroom, for example 3.
     #[arg(long)]
     max_withdrawal_fee_bps: u64,
+
+    /// Fee for the CCTP leg of a forwarded withdrawal, in the smallest USDC unit. Required with
+    /// forwarding on, when Circle reaches Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet
+    /// and EDGE through xReserve on Arc plus a CCTP transfer; rejected with it off. Must stay
+    /// below --max-withdrawal-fee, which on those routes also covers the Gateway leg (about
+    /// 0.02 USDC at 1 USDC on the sandbox). With forwarding on, Ethereum carries a flat fee of
+    /// about 1.0035 USDC: Circle refused a 1 USDC burn there and accepted 5 USDC.
+    #[arg(long)]
+    cctp_forwarding_max_fee: Option<u64>,
+
+    /// 0x-prefixed address of Circle's xReserve contract on Arc for the environment --circle-url
+    /// points at; a forwarded response must name it as recipient and caller. Required with
+    /// forwarding on, rejected with it off.
+    #[arg(long)]
+    cctp_forwarder_address: Option<String>,
 
     /// Rolling withdrawal cap in the smallest USDC unit; zero pauses new submissions.
     #[arg(long)]
@@ -134,6 +150,8 @@ pub struct Config {
     use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
+    /// The CCTP leg's fee and the xReserve contract on Arc, present exactly when forwarding is on.
+    cctp_forwarding: Option<(u64, Address)>,
     withdrawal_limit: u64,
     withdrawal_window_ms: i64,
     withdrawal_cap_error_message: Option<String>,
@@ -156,6 +174,34 @@ impl TryFrom<Cli> for Config {
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee).map_err(|source| {
             ConfigError::with_source("maximum withdrawal fee is invalid", source)
         })?;
+        let cctp_forwarding = match (
+            cli.use_circle_forwarding,
+            cli.cctp_forwarding_max_fee,
+            cli.cctp_forwarder_address,
+        ) {
+            (true, Some(fee), Some(address)) => {
+                let address = address.parse::<Address>().map_err(|source| {
+                    ConfigError::with_source("cctp forwarder address is invalid", source)
+                })?;
+                if fee >= cli.max_withdrawal_fee {
+                    return Err(ConfigError::invalid(
+                        "cctp forwarding max fee must be below the maximum withdrawal fee",
+                    ));
+                }
+                Some((fee, address))
+            }
+            (false, None, None) => None,
+            (true, _, _) => {
+                return Err(ConfigError::invalid(
+                    "cctp forwarding max fee and forwarder address are required when Circle forwarding is on",
+                ))
+            }
+            (false, _, _) => {
+                return Err(ConfigError::invalid(
+                    "cctp forwarding max fee and forwarder address only apply when Circle forwarding is on",
+                ))
+            }
+        };
         let withdrawal_window_ms = cli
             .withdrawal_window_hours
             .checked_mul(3_600_000)
@@ -253,6 +299,7 @@ impl TryFrom<Cli> for Config {
             use_circle_forwarding: cli.use_circle_forwarding,
             max_withdrawal_fee,
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
+            cctp_forwarding,
             withdrawal_limit: cli.withdrawal_limit,
             withdrawal_window_ms,
             withdrawal_cap_error_message: cli.withdrawal_cap_error_message,
@@ -295,6 +342,10 @@ impl Config {
 
     pub(crate) fn max_withdrawal_fee_bps(&self) -> u64 {
         self.max_withdrawal_fee_bps
+    }
+
+    pub(crate) fn cctp_forwarding(&self) -> Option<(u64, Address)> {
+        self.cctp_forwarding
     }
 
     pub(crate) fn withdrawal_limit(&self) -> u64 {

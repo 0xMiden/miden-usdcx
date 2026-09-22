@@ -616,11 +616,16 @@ async fn submit_sends_checked_request() {
     let ledger = Ledger::new().await;
     let mut response = ledger.response(0, "created");
     response["useCircleForwarding"] = json!(true);
-    ledger
-        .config
-        .lock()
-        .unwrap()
-        .replace("--use-circle-forwarding", "true");
+    {
+        let mut config = ledger.config.lock().unwrap();
+        config.replace("--use-circle-forwarding", "true");
+        config.replace("--max-withdrawal-fee", "1000000");
+        config.append("--cctp-forwarding-max-fee", "500000");
+        config.append(
+            "--cctp-forwarder-address",
+            "0x008888878f94c0d87defdf0b07f46b93c1934442",
+        );
+    }
     let (mut attester, requests) = ledger.start(vec![reply(201, json!([response]))]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     let body: Value = match &requests.lock().unwrap()[0] {

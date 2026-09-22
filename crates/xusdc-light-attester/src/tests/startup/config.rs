@@ -204,6 +204,38 @@ fn invalid_config_is_rejected() {
         );
     }
 
+    const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
+    let mut forwarding_without_options = valid.clone();
+    forwarding_without_options.replace("--use-circle-forwarding", "true");
+    assert_config_error(
+        &forwarding_without_options,
+        "cctp forwarding max fee and forwarder address are required when Circle forwarding is on",
+    );
+    let mut options_without_forwarding = valid.clone();
+    options_without_forwarding.append("--cctp-forwarding-max-fee", "1");
+    options_without_forwarding.append("--cctp-forwarder-address", FORWARDER);
+    assert_config_error(
+        &options_without_forwarding,
+        "cctp forwarding max fee and forwarder address only apply when Circle forwarding is on",
+    );
+    let mut forwarding = valid.clone();
+    forwarding.replace("--use-circle-forwarding", "true");
+    forwarding.replace("--max-withdrawal-fee", "1000");
+    forwarding.append("--cctp-forwarding-max-fee", "1000");
+    forwarding.append("--cctp-forwarder-address", FORWARDER);
+    assert_config_error(
+        &forwarding,
+        "cctp forwarding max fee must be below the maximum withdrawal fee",
+    );
+    forwarding.replace("--cctp-forwarding-max-fee", "999");
+    forwarding.replace("--cctp-forwarder-address", "0x1234");
+    assert_config_error(&forwarding, "cctp forwarder address is invalid");
+    forwarding.replace("--cctp-forwarder-address", FORWARDER);
+    assert_eq!(
+        forwarding.load().cctp_forwarding(),
+        Some((999, FORWARDER.parse().unwrap()))
+    );
+
     let mut blank_cap_message = valid.clone();
     blank_cap_message.append("--withdrawal-cap-error-message", "   ");
     assert_config_error(

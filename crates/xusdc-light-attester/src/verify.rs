@@ -145,7 +145,7 @@ impl UnverifiedPrepareResponse {
         if spec.value.is_zero() || spec.value.checked_add(intent.maxFee) != Some(burned_amount) {
             return Err(VerifyError::BadAmount);
         }
-        if intent.maxFee > fee_ceiling.min(burned_amount) {
+        if intent.maxFee > fee_ceiling {
             return Err(VerifyError::FeeTooHigh);
         }
         if spec.sourceSigner != spec.sourceDepositor {

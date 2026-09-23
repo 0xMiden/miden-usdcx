@@ -290,6 +290,40 @@ async fn only_the_configured_post_400_releases_capacity() {
             .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
             .unwrap());
     }
+
+    // The reply to the first POST is lost, so Circle may have accepted it. The limit 400 on the
+    // resend then keeps the signed request queued, and the burn is never signed a second time.
+    let ledger = Ledger::new().await;
+    ledger.configure(1_000, true);
+    let (mut attester, _) = ledger
+        .start(vec![
+            CircleState::TransportError,
+            reply(400, json!({"message": "synthetic cap rejection"})),
+        ])
+        .await;
+    at(&mut attester, WINDOW);
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let sent = ledger.record(&attester, 0);
+    recover(&mut attester).await.unwrap();
+    let saved = ledger.record(&attester, 0);
+    assert_eq!(
+        (saved.status, saved.body, saved.last_error.as_deref()),
+        (
+            SubmissionStatus::Submitting,
+            sent.body,
+            Some("Circle's withdrawal limit is reached")
+        )
+    );
+    assert!(!attester
+        .store
+        .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
+        .unwrap());
+    assert!(!attester
+        .store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .any(|burn| burn.note_id() == saved.note_id));
 }
 
 #[tokio::test]

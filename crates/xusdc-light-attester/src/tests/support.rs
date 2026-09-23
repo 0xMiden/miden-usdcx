@@ -268,6 +268,10 @@ impl CircleApi for FakeCircle {
     fn rate_limited(&self) -> bool {
         self.rate_limited.load(Ordering::Relaxed)
     }
+
+    fn reset_rate_limit(&self) {
+        self.rate_limited.store(false, Ordering::Relaxed);
+    }
 }
 
 pub(super) fn ready_circle() -> Box<dyn CircleApi> {

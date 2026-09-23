@@ -90,6 +90,9 @@ pub trait CircleApi: Send + Sync {
 
     /// Whether Circle has answered 429. The remaining requests then wait for a later cycle.
     fn rate_limited(&self) -> bool;
+
+    /// Forgets an earlier 429 when a new cycle starts.
+    fn reset_rate_limit(&self);
 }
 
 /// Circle's xReserve API over HTTPS. Requests go out at least [`REQUEST_GAP`] apart.
@@ -265,6 +268,10 @@ impl CircleApi for CircleClient {
 
     fn rate_limited(&self) -> bool {
         self.rate_limited.load(Ordering::Relaxed)
+    }
+
+    fn reset_rate_limit(&self) {
+        self.rate_limited.store(false, Ordering::Relaxed);
     }
 }
 

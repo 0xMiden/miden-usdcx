@@ -379,6 +379,47 @@ async fn discovery_store_failure_stops_work_but_retries() {
     run.await;
 }
 
+/// After a 429 the rest of the cycle leaves Circle alone and the pause before the next cycle
+/// doubles; the first cycle without a 429 returns to the poll interval.
+#[tokio::test(start_paused = true)]
+async fn rate_limit_backs_off_until_a_clean_cycle() {
+    let ledger = Ledger::new().await;
+    seed(&ledger, &[(0, None), (1, Some("created"))]).await;
+    let slow_down = || reply(429, json!({"message": "slow down"}));
+    let replies = vec![
+        slow_down(),
+        slow_down(),
+        accepted(&ledger, 0, "finalized"),
+        reply(200, ledger.prepared_response(2)),
+        accepted(&ledger, 2, "finalized"),
+        reply(200, ledger.response(1, "finalized")),
+    ];
+    let (signers, _) = signers(None);
+    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+    let shutdown = CancellationToken::new();
+    let mut run = Box::pin(attester.run(shutdown.clone()));
+    // With a 100 ms poll interval the cycles start at 0, 200, 600 and 700 ms.
+    for (wait_ms, cycles, requests_sent) in [
+        (1, 1, 1),
+        (198, 1, 1),
+        (2, 2, 2),
+        (398, 2, 2),
+        (2, 3, 6),
+        (97, 3, 6),
+        (3, 4, 6),
+    ] {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(wait_ms), &mut run)
+                .await
+                .is_err()
+        );
+        assert_eq!(*chain.scan_limit_requests.lock().unwrap(), cycles);
+        assert_eq!(requests.lock().unwrap().len(), requests_sent);
+    }
+    shutdown.cancel();
+    run.await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn restart_and_shutdown_do_not_lose_work() {
     let ledger = Ledger::new().await;

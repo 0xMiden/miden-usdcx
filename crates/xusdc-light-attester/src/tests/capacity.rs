@@ -280,7 +280,7 @@ async fn failed_cap_cleanup_keeps_the_request_and_reservation() {
     at(&mut attester, WINDOW);
     assert!(matches!(
         ledger.submit(&mut attester, 0).await,
-        Err(SubmitError::InvalidStore)
+        Err(SubmitError::Store(_))
     ));
     assert_eq!(
         ledger.record(&attester, 0).status,

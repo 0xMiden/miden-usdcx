@@ -16,7 +16,7 @@ reqwest = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 toml = "1"
 
 [dev-dependencies]

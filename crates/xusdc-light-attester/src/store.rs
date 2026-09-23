@@ -340,9 +340,7 @@ fn initialize_store(
                 'SUBMITTING', 'SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED', 'HELD'
             )),
             withdrawal_id TEXT,
-            hold_reason TEXT CHECK (hold_reason IN (
-                'http_rejected', 'response_mismatch', 'unknown_status'
-            )),
+            hold_reason TEXT CHECK (hold_reason IN ('http_rejected')),
             last_http_status INTEGER,
             last_response BLOB,
             last_error TEXT
@@ -485,8 +483,6 @@ impl HoldReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::HttpRejected => "http_rejected",
-            Self::ResponseMismatch => "response_mismatch",
-            Self::UnknownStatus => "unknown_status",
         }
     }
 }
@@ -526,8 +522,6 @@ fn load_submissions(
         {
             None => None,
             Some("http_rejected") => Some(HoldReason::HttpRejected),
-            Some("response_mismatch") => Some(HoldReason::ResponseMismatch),
-            Some("unknown_status") => Some(HoldReason::UnknownStatus),
             _ => bail!(INVALID),
         };
         let record = SavedSubmission {

@@ -33,8 +33,6 @@ pub(crate) enum SubmissionStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HoldReason {
     HttpRejected,
-    ResponseMismatch,
-    UnknownStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,18 +159,12 @@ impl SavedSubmission {
                 .as_ref()
                 .is_some_and(|id| !self.matches_note(id))
             {
-                self.hold(
-                    HoldReason::ResponseMismatch,
-                    "conflict names another burn note",
-                );
+                self.last_error = Some("conflict names another burn note".into());
                 return false;
             }
             if let Some(id) = conflict.withdrawal_id.filter(|id| !id.trim().is_empty()) {
                 if !is_well_formed_id(&id) {
-                    self.hold(
-                        HoldReason::ResponseMismatch,
-                        "conflict names a malformed withdrawal ID",
-                    );
+                    self.last_error = Some("conflict names a malformed withdrawal ID".into());
                     return false;
                 }
                 self.withdrawal_id = Some(id);
@@ -187,26 +179,23 @@ impl SavedSubmission {
 
     fn read_response(&mut self, response: RawResponse) {
         let lookup = self.withdrawal_id.is_some();
-        // A 5xx or a 429 says nothing final: the row stays queued and the next pass resends it.
-        if response.status.is_server_error()
-            || response.status == StatusCode::TOO_MANY_REQUESTS
-            || (lookup && response.status == StatusCode::NOT_FOUND)
-        {
-            self.last_error = Some(format!("Circle returned HTTP {}", response.status));
-            return;
-        }
         let expected_status = if lookup {
             StatusCode::OK
         } else {
             StatusCode::CREATED
         };
         if response.status != expected_status {
-            // Circle rejects both blocked burners and exhausted capacity at POST with HTTP 400.
-            // TODO: distinguish their exact codes/messages before automating capacity retries.
-            self.hold(
-                HoldReason::HttpRejected,
-                "HTTP response needs operator review",
-            );
+            // Only a 400 to the POST is a definite no from Circle: a blocked burner or recipient,
+            // or data Circle refuses. Any other answer says nothing final, so the row stays queued
+            // and the next pass sends the same request again.
+            if !lookup && response.status == StatusCode::BAD_REQUEST {
+                self.hold(
+                    HoldReason::HttpRejected,
+                    "HTTP response needs operator review",
+                );
+            } else {
+                self.last_error = Some(format!("Circle returned HTTP {}", response.status));
+            }
             return;
         }
 
@@ -216,10 +205,7 @@ impl SavedSubmission {
             match serde_json::from_slice::<Vec<WithdrawalResponse>>(&response.body) {
                 Ok(mut withdrawals) if withdrawals.len() <= 1 => withdrawals.pop(),
                 Ok(_) => {
-                    self.hold(
-                        HoldReason::ResponseMismatch,
-                        "response contains extra withdrawals",
-                    );
+                    self.last_error = Some("response contains extra withdrawals".into());
                     return;
                 }
                 Err(_) => None,
@@ -241,10 +227,7 @@ impl SavedSubmission {
                 .as_ref()
                 .is_some_and(|id| id != &withdrawal.withdrawal_id)
         {
-            self.hold(
-                HoldReason::ResponseMismatch,
-                "response does not identify the saved withdrawal",
-            );
+            self.last_error = Some("response does not identify the saved withdrawal".into());
             return;
         }
 
@@ -260,10 +243,7 @@ impl SavedSubmission {
                 SubmissionStatus::Failed
             }
             _ => {
-                self.hold(
-                    HoldReason::UnknownStatus,
-                    "Circle returned an unknown withdrawal status",
-                );
+                self.last_error = Some("Circle returned an unknown withdrawal status".into());
                 return;
             }
         };

@@ -55,7 +55,7 @@ fn routing(target: AccountId, hint: NoteExecutionHint) -> NoteAttachment {
 }
 
 /// Keep assets, storage and attachments independent for content checks.
-struct NoteFixture {
+pub(super) struct NoteFixture {
     script: NoteScript,
     tag: u32,
     assets: Vec<Asset>,
@@ -65,7 +65,7 @@ struct NoteFixture {
 }
 
 impl NoteFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let asset = fungible(faucet_account_id(), 100);
         Self {
             script: BurnNote::script(),
@@ -85,7 +85,7 @@ impl NoteFixture {
         self.items = items;
     }
 
-    fn edit_attachment(&mut self, index: usize, edit: impl FnOnce(&mut Vec<Word>)) {
+    pub(super) fn edit_attachment(&mut self, index: usize, edit: impl FnOnce(&mut Vec<Word>)) {
         let attachment = &self.attachments[index];
         let mut words = attachment.content().as_words().to_vec();
         edit(&mut words);
@@ -93,7 +93,7 @@ impl NoteFixture {
             NoteAttachment::with_words(attachment.attachment_scheme(), words).unwrap();
     }
 
-    fn note(self, serial: u64) -> Note {
+    pub(super) fn note(self, serial: u64) -> Note {
         self.with_serial(word(serial))
     }
 

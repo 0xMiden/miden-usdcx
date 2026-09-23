@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use alloy_primitives::{Signature, B256};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteType;
 use miden_protocol::transaction::OutputNote;
-use miden_standards::note::BurnNote;
+use miden_protocol::Felt;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -20,10 +19,10 @@ use crate::verify::VerifyError;
 use super::discovery::write_config;
 use super::submit::{reply, Ledger, ScriptedCircle};
 use super::support::{
-    development_signers, faucet_account_id, note, scan_limits, transaction, BlockFactory,
+    development_signers, faucet_account_id, scan_limits, test_note, transaction, BlockFactory,
     CircleState, ObservedRequest, TestChain,
 };
-use super::validation::validated_burn;
+use super::validation::{validated_burn, NoteFixture};
 use super::verify::serial;
 
 type Counts = [Arc<AtomicUsize>; 2];
@@ -137,7 +136,9 @@ async fn cycle_runs_in_order() {
 
 #[tokio::test]
 async fn invalid_burns_are_not_signed() {
-    let invalid = note(BurnNote::script(), NoteType::Public, 7, 1);
+    let mut invalid = NoteFixture::new();
+    invalid.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap());
+    let invalid = test_note(invalid.note(7));
     let young = validated_burn(1_000, serial(8), 9);
     let mut blocks = BlockFactory::new();
     blocks.push(vec![invalid.output], vec![]);

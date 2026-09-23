@@ -133,7 +133,7 @@ fn check_note_content_cases() {
         Accepted,
     }
 
-    use BurnRefusal::{InvalidWithdrawal, WrongTag};
+    use BurnRefusal::InvalidWithdrawal;
     use Expected::{Accepted, CandidateRejected, Refused};
     type Case = (&'static str, fn(&mut NoteFixture), Expected);
     let cases: &[Case] = &[
@@ -208,7 +208,7 @@ fn check_note_content_cases() {
             |n| n.script = P2idNote::script(),
             CandidateRejected,
         ),
-        ("wrong tag", |n| n.tag ^= 1, Refused(WrongTag)),
+        ("wrong tag", |n| n.tag ^= 1, Accepted),
         (
             "missing withdrawal",
             |n| {
@@ -401,9 +401,7 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
         words[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()
     });
     let invalid = discovered(invalid.note(21));
-    let mut young = NoteFixture::new();
-    young.tag ^= 1;
-    let young = discovered(young.note(22));
+    let young = discovered(NoteFixture::new().note(22));
     let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     factory.push(

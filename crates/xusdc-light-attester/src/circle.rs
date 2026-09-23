@@ -48,6 +48,8 @@ impl ReqwestTransport {
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(concat!("xusdc-attester/", env!("CARGO_PKG_VERSION")))
+            // Circle is only ever reached over HTTPS. The crate's own tests may use plain HTTP.
+            .https_only(cfg!(not(test)))
             .build()
             .map(|client| Self { client })
             .map_err(CircleError::Transport)

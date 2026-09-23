@@ -1,4 +1,4 @@
-//! Local burn-content checks; the end-to-end signing boundary remains a roadmap stub.
+//! Local checks on a consumed burn's content before it is prepared with Circle.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
@@ -116,8 +116,9 @@ fn discovered(note: Note) -> DiscoveredBurn {
         .into_discovered(BlockNumber::from(2u32), burn_tx_id)
 }
 
-/// Accepts valid request formats, refuses each proven content violation, and processes only
-/// ready rows. Refusal writes must preserve pending work when the database cannot save them.
+/// Accepts valid request formats, refuses a burn whose withdrawal payload does not decode, and
+/// processes only ready rows. Refusal writes must preserve pending work when the database cannot
+/// save them.
 #[tokio::test]
 async fn burn_notes_are_validated() {
     check_note_content_cases();

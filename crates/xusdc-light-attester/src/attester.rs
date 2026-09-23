@@ -339,7 +339,7 @@ impl Attester {
         )
     }
 
-    /// Takes each validated burn through prepare, verify, sign and submit. A store failure or a
+    /// Takes each eligible burn through prepare, verify, sign and submit. A store failure or a
     /// conflict stops the pass; any other failure is logged, that burn stays eligible for the
     /// next cycle, and the remaining burns are still tried.
     async fn submit_withdrawals(
@@ -350,21 +350,7 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             let note_id = burn.note_id();
-            let result = async {
-                let prepared = self
-                    .circle
-                    .prepare_withdrawal(&burn, self.config.use_circle_forwarding())
-                    .await?;
-                let verified = prepared
-                    .verify(&burn, &self.config)
-                    .map_err(|error| SubmitError::Verification(Box::new(error)))?;
-                let signed = verified
-                    .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
-                    .await?;
-                self.submit_signed_withdrawal(&signed, rate_limited).await
-            }
-            .await;
-            if let Err(error) = result {
+            if let Err(error) = self.withdraw(&burn, rate_limited).await {
                 if error.is_fatal() {
                     return Err(error);
                 }
@@ -375,6 +361,25 @@ impl Attester {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Prepares one burn's withdrawal with Circle, verifies the reply, signs it and submits it.
+    async fn withdraw(
+        &mut self,
+        burn: &DiscoveredBurn,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
+        let prepared = self
+            .circle
+            .prepare_withdrawal(burn, self.config.use_circle_forwarding())
+            .await?;
+        let verified = prepared
+            .verify(burn, &self.config)
+            .map_err(|error| SubmitError::Verification(Box::new(error)))?;
+        let signed = verified
+            .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
+            .await?;
+        self.submit_signed_withdrawal(&signed, rate_limited).await
     }
 }
 

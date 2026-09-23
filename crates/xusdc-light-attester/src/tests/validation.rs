@@ -20,6 +20,7 @@ use xusdc_encoding::note::xreserve_burn::{
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
+use xusdc_encoding::xreserve::MIDEN_DOMAIN;
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 
@@ -342,13 +343,13 @@ fn check_note_content_cases() {
             Refused,
         ),
         (
-            "destination is our own domain",
+            "destination is our own domain, left to Circle's prepare",
             |n| {
                 let mut payload = items();
-                payload.dest_domain = 10_007;
+                payload.dest_domain = MIDEN_DOMAIN;
                 n.set_items(payload);
             },
-            Refused,
+            Accepted,
         ),
     ];
 

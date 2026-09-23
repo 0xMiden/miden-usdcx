@@ -13,7 +13,7 @@ use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 
 #[derive(Debug)]
 pub struct RunError;
@@ -29,15 +29,9 @@ pub enum DiscoverError {
     #[error("Miden chain diverged from the persisted authenticated chain")]
     ChainDiverged,
     #[error("attester store failed")]
-    Store(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Store(#[from] anyhow::Error),
     #[error("the finality bound cannot be represented by the next-block cursor")]
     CursorOverflow,
-}
-
-impl From<StoreError> for DiscoverError {
-    fn from(error: StoreError) -> Self {
-        Self::Store(Box::new(error))
-    }
 }
 
 #[derive(Debug)]
@@ -173,10 +167,7 @@ impl Attester {
         if saved_scan.authenticated_parent.is_none()
             && saved_scan.cursor.next_block == self.config.trusted_anchor_block()
         {
-            let anchor = self
-                .trusted_anchor_block
-                .clone()
-                .ok_or(StoreError::Invalid)?;
+            let anchor = self.trusted_anchor_block.clone().context(INVALID)?;
             self.scan_and_save_block(&anchor, &mut burn_notes_by_nullifier)?;
         }
 
@@ -241,7 +232,7 @@ impl Attester {
                 .trusted_anchor_block
                 .as_ref()
                 .map(|block| block.header().clone())
-                .ok_or(StoreError::Invalid)?,
+                .context(INVALID)?,
         };
 
         // The anchor may predate the faucet. Authenticate the intervening headers, but do not

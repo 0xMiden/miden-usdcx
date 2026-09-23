@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use anyhow::{anyhow, bail, Context};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, Nullifier};
@@ -14,6 +15,9 @@ use rusqlite::{params, Params, Transaction};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 
 const DISCOVERED: &str = "DISCOVERED";
+
+pub(crate) const INVALID: &str = "attester store is invalid";
+pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScanCursor {
@@ -34,18 +38,6 @@ pub(crate) struct ScanState {
     pub(crate) authenticated_parent: Option<BlockHeader>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum StoreError {
-    #[error("attester store is invalid")]
-    Invalid,
-    #[error("attester store is locked by another process")]
-    Locked,
-    #[error("configured trusted anchor differs from the store")]
-    AnchorChanged,
-    #[error("authenticated evidence conflicts with the attester store")]
-    Conflict,
-}
-
 pub(crate) struct Store {
     connection: rusqlite::Connection,
     initial_cursor: ScanCursor,
@@ -58,8 +50,8 @@ impl Store {
         faucet_account_id: AccountId,
         initial_cursor: ScanCursor,
         trusted_anchor: TrustedAnchor,
-    ) -> Result<Self, StoreError> {
-        let exists = path.try_exists().map_err(|_| StoreError::Invalid)?;
+    ) -> anyhow::Result<Self> {
+        let exists = path.try_exists().context(INVALID)?;
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
         // Keep the exclusive connection lock for the store's lifetime so a second attester cannot
@@ -97,16 +89,16 @@ impl Store {
         })
     }
 
-    pub(crate) fn scan_state(&self) -> Result<ScanState, StoreError> {
+    pub(crate) fn scan_state(&self) -> anyhow::Result<ScanState> {
         load_scan_state(&self.connection, self.initial_cursor)
     }
 
-    pub(crate) fn candidates(&self) -> Result<Vec<BurnCandidate>, StoreError> {
+    pub(crate) fn candidates(&self) -> anyhow::Result<Vec<BurnCandidate>> {
         load_candidates(&self.connection, self.faucet_account_id)
     }
 
     #[cfg(test)]
-    pub(crate) fn discovered_burns(&self) -> Result<Vec<DiscoveredBurn>, StoreError> {
+    pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
         load_burns(&self.connection, self.faucet_account_id)
     }
 
@@ -115,7 +107,7 @@ impl Store {
         candidates: &[BurnCandidate],
         burns: &[DiscoveredBurn],
         next_state: &ScanState,
-    ) -> Result<(), StoreError> {
+    ) -> anyhow::Result<()> {
         validate_scan_state(next_state, self.initial_cursor)?;
         validate_discovery_records(candidates, burns, next_state.cursor, self.initial_cursor)?;
 
@@ -126,15 +118,12 @@ impl Store {
 
         // Advance one block at a time so no caller can silently skip burn evidence.
         if next_state.cursor.next_block.checked_sub(1) != Some(current_state.cursor.next_block) {
-            return Err(StoreError::Conflict);
+            bail!(CONFLICT);
         }
         if let Some(current_parent) = &current_state.authenticated_parent {
-            let next_parent = next_state
-                .authenticated_parent
-                .as_ref()
-                .ok_or(StoreError::Invalid)?;
+            let next_parent = next_state.authenticated_parent.as_ref().context(INVALID)?;
             if next_parent.prev_block_commitment() != current_parent.commitment() {
-                return Err(StoreError::Conflict);
+                bail!(CONFLICT);
             }
         }
 
@@ -161,7 +150,7 @@ impl Store {
             )
             .map_err(classify_error)?;
         if updated != 1 {
-            return Err(StoreError::Invalid);
+            bail!(INVALID);
         }
 
         transaction.commit().map_err(classify_error)
@@ -173,7 +162,7 @@ fn initialize_store(
     faucet_account_id: AccountId,
     initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
     transaction
         .execute_batch(
@@ -232,7 +221,7 @@ fn validate_store(
     faucet_account_id: AccountId,
     initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
     // Stored chain state becomes the next run's trust base, so reject any malformed or
@@ -244,7 +233,7 @@ fn validate_store(
         })
         .map_err(classify_error)?;
     if row_count != 1 {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     let (stored_faucet, anchor_block, anchor_commitment) = connection
@@ -263,7 +252,7 @@ fn validate_store(
         .map_err(classify_error)?;
 
     if decode_canonical::<AccountId>(&stored_faucet)? != faucet_account_id {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     let stored_anchor = TrustedAnchor {
@@ -271,7 +260,7 @@ fn validate_store(
         commitment: decode_canonical(&anchor_commitment)?,
     };
     if stored_anchor != trusted_anchor {
-        return Err(StoreError::AnchorChanged);
+        bail!("configured trusted anchor differs from the store");
     }
     let state = load_scan_state(connection, initial_cursor)?;
     if state
@@ -279,18 +268,18 @@ fn validate_store(
         .as_ref()
         .is_some_and(|parent| parent.block_num() < trusted_anchor.block_num)
     {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     Ok(())
 }
 
-fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     let quick_check = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(classify_error)?;
     if quick_check != "ok" {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     for probe in [
@@ -309,7 +298,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreE
 fn load_scan_state(
     connection: &rusqlite::Connection,
     initial_cursor: ScanCursor,
-) -> Result<ScanState, StoreError> {
+) -> anyhow::Result<ScanState> {
     let (next_block, authenticated_parent) = connection
         .query_row(
             "SELECT next_block, authenticated_parent
@@ -332,12 +321,12 @@ fn load_scan_state(
     Ok(state)
 }
 
-fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> Result<(), StoreError> {
+fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> anyhow::Result<()> {
     match &state.authenticated_parent {
         Some(parent) if state.cursor.next_block.checked_sub(1) != Some(parent.block_num()) => {
-            Err(StoreError::Invalid)
+            Err(anyhow!(INVALID))
         }
-        None if state.cursor != initial_cursor => Err(StoreError::Invalid),
+        None if state.cursor != initial_cursor => Err(anyhow!(INVALID)),
         _ => Ok(()),
     }
 }
@@ -347,7 +336,7 @@ fn validate_discovery_records(
     burns: &[DiscoveredBurn],
     cursor: ScanCursor,
     initial_cursor: ScanCursor,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     if candidates.iter().any(|candidate| {
         candidate.creation_block() < initial_cursor.next_block
             || candidate.creation_block() >= cursor.next_block
@@ -356,7 +345,7 @@ fn validate_discovery_records(
             || burn.creation_block() >= burn.consumption_block()
             || burn.consumption_block() >= cursor.next_block
     }) {
-        return Err(StoreError::Conflict);
+        bail!(CONFLICT);
     }
     Ok(())
 }
@@ -364,7 +353,7 @@ fn validate_discovery_records(
 fn load_candidates(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-) -> Result<Vec<BurnCandidate>, StoreError> {
+) -> anyhow::Result<Vec<BurnCandidate>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block
@@ -392,7 +381,7 @@ fn load_candidates(
                 decode_block_number(creation_block)?,
                 faucet_account_id,
             )
-            .map_err(|_| StoreError::Invalid)?,
+            .map_err(|_| anyhow!(INVALID))?,
         );
     }
     Ok(candidates)
@@ -402,7 +391,7 @@ fn load_candidates(
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-) -> Result<Vec<DiscoveredBurn>, StoreError> {
+) -> anyhow::Result<Vec<DiscoveredBurn>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
@@ -432,7 +421,7 @@ fn load_burns(
         let consumption_block = decode_block_number(consumption_block)?;
         let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
         if status != DISCOVERED || consumption_block <= creation_block {
-            return Err(StoreError::Invalid);
+            bail!(INVALID);
         }
         burns.push(
             DiscoveredBurn::try_new(
@@ -442,7 +431,7 @@ fn load_burns(
                 burn_tx_id,
                 faucet_account_id,
             )
-            .map_err(|_| StoreError::Invalid)?,
+            .map_err(|_| anyhow!(INVALID))?,
         );
     }
     Ok(burns)
@@ -451,7 +440,7 @@ fn load_burns(
 fn insert_candidate(
     transaction: &Transaction<'_>,
     candidate: &BurnCandidate,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     let note_id = candidate.note_id().to_bytes();
     let nullifier = candidate.nullifier().to_bytes();
     let note = candidate.note().to_bytes();
@@ -464,7 +453,7 @@ fn insert_candidate(
         params![note_id, nullifier],
     )?;
     if overlaps_burn {
-        return Err(StoreError::Conflict);
+        bail!(CONFLICT);
     }
 
     transaction
@@ -477,7 +466,7 @@ fn insert_candidate(
     Ok(())
 }
 
-fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(), StoreError> {
+fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::Result<()> {
     let note_id = burn.note_id().to_bytes();
     let nullifier = burn.nullifier().to_bytes();
     let note = burn.note().to_bytes();
@@ -500,7 +489,7 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> Result<(
             params![note_id, nullifier, note, creation_block],
         )?;
         if !exact {
-            return Err(StoreError::Conflict);
+            bail!(CONFLICT);
         }
     }
 
@@ -537,29 +526,27 @@ fn decode_note(
     note_bytes: &[u8],
     note_id_bytes: &[u8],
     nullifier_bytes: &[u8],
-) -> Result<PublicOutputNote, StoreError> {
+) -> anyhow::Result<PublicOutputNote> {
     let note = decode_canonical::<PublicOutputNote>(note_bytes)?;
     let note_id = decode_canonical::<NoteId>(note_id_bytes)?;
     let nullifier = decode_canonical::<Nullifier>(nullifier_bytes)?;
     if note.id() != note_id || note.as_note().nullifier() != nullifier {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
     Ok(note)
 }
 
-fn decode_block_number(value: i64) -> Result<BlockNumber, StoreError> {
-    Ok(BlockNumber::from(
-        u32::try_from(value).map_err(|_| StoreError::Invalid)?,
-    ))
+fn decode_block_number(value: i64) -> anyhow::Result<BlockNumber> {
+    Ok(BlockNumber::from(u32::try_from(value).context(INVALID)?))
 }
 
-fn decode_canonical<T>(bytes: &[u8]) -> Result<T, StoreError>
+fn decode_canonical<T>(bytes: &[u8]) -> anyhow::Result<T>
 where
     T: Deserializable + Serializable,
 {
-    let value = T::read_from_bytes(bytes).map_err(|_| StoreError::Invalid)?;
+    let value = T::read_from_bytes(bytes).context(INVALID)?;
     if value.to_bytes() != bytes {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
     Ok(value)
 }
@@ -568,33 +555,36 @@ fn exists<P: Params>(
     connection: &rusqlite::Connection,
     sql: &str,
     params: P,
-) -> Result<bool, StoreError> {
+) -> anyhow::Result<bool> {
     connection
         .query_row(sql, params, |row| row.get(0))
         .map_err(classify_error)
 }
 
-fn classify_write_error(error: rusqlite::Error) -> StoreError {
-    match error {
+fn classify_write_error(error: rusqlite::Error) -> anyhow::Error {
+    if matches!(
+        &error,
         rusqlite::Error::SqliteFailure(sqlite_error, _)
-            if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation =>
-        {
-            StoreError::Conflict
-        }
-        other => classify_error(other),
+            if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation
+    ) {
+        anyhow::Error::new(error).context(CONFLICT)
+    } else {
+        classify_error(error)
     }
 }
 
-fn classify_error(error: rusqlite::Error) -> StoreError {
-    match error {
+fn classify_error(error: rusqlite::Error) -> anyhow::Error {
+    let locked = matches!(
+        &error,
         rusqlite::Error::SqliteFailure(sqlite_error, _)
             if matches!(
                 sqlite_error.code,
                 rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            ) =>
-        {
-            StoreError::Locked
-        }
-        _ => StoreError::Invalid,
-    }
+            )
+    );
+    anyhow::Error::new(error).context(if locked {
+        "attester store is locked by another process"
+    } else {
+        "attester store query failed"
+    })
 }

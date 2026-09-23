@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use alloy_primitives::{Signature, B256};
+use anyhow::Context;
 use k256::ecdsa::{SigningKey, VerifyingKey};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,6 +33,49 @@ pub trait Signer: Send + Sync {
         &self,
         digest: B256,
     ) -> Pin<Box<dyn Future<Output = Result<Signature, SignerError>> + Send + '_>>;
+}
+
+/// The two independent signers, checked at startup against the configured public keys.
+pub(crate) struct SignerPair([Box<dyn Signer>; 2]);
+
+impl SignerPair {
+    pub(crate) async fn new(
+        signers: [Box<dyn Signer>; 2],
+        expected_hex: &[String],
+    ) -> anyhow::Result<Self> {
+        let [first, second] = expected_hex else {
+            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+        };
+        let parse_key = |value: &str| {
+            let mut bytes = [0; 33];
+            hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)
+                .context("configured signing public key is not valid hex")?;
+            SigningPublicKey::from_compressed(bytes)
+                .context("configured signing public key is not a valid curve point")
+        };
+        let expected = [parse_key(first)?, parse_key(second)?];
+        let loaded = [
+            signers[0]
+                .public_key()
+                .await
+                .context("could not read a signing provider's public key")?,
+            signers[1]
+                .public_key()
+                .await
+                .context("could not read a signing provider's public key")?,
+        ];
+        if expected[0] == expected[1] || loaded[0] == loaded[1] {
+            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+        }
+        if !loaded.iter().all(|key| expected.contains(key)) {
+            anyhow::bail!("loaded signing public keys do not match configuration");
+        }
+        Ok(Self(signers))
+    }
+
+    pub(crate) fn as_refs(&self) -> [&dyn Signer; 2] {
+        [self.0[0].as_ref(), self.0[1].as_ref()]
+    }
 }
 
 /// A local secp256k1 signer for development.

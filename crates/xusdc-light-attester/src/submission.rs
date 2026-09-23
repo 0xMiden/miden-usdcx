@@ -26,6 +26,14 @@ pub enum SubmitError {
     Signing(#[from] SignerError),
 }
 
+impl SubmitError {
+    /// A failure that stops the rest of the cycle: the store can no longer record what Circle
+    /// answers.
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(self, Self::Store(_))
+    }
+}
+
 /// A submission's status, stored under the name given here. A fresh authorization can replace an
 /// expired withdrawal, but not a failed one: that stays for an operator to investigate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::EnumString)]

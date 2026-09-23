@@ -551,8 +551,8 @@ fn burns_and_scan_position_are_saved_together() {
     let connection = rusqlite::Connection::open(&malformed_candidate_path).unwrap();
     connection
         .execute(
-            "INSERT INTO burn_candidates (note_id, nullifier, note, creation_block)
-             VALUES (X'00', X'01', X'02', 0)",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
+             VALUES (X'00', X'01', X'02', 0, 'CANDIDATE')",
             [],
         )
         .unwrap();

@@ -103,8 +103,7 @@ impl Store {
     pub(crate) fn note_known(&self, note_id: NoteId) -> anyhow::Result<bool> {
         exists(
             &self.connection,
-            "SELECT EXISTS (SELECT 1 FROM burn_candidates WHERE note_id = ?1)
-                 OR EXISTS (SELECT 1 FROM burns WHERE note_id = ?1)",
+            "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1)",
             [note_id.to_bytes()],
         )
     }
@@ -116,7 +115,7 @@ impl Store {
         let mut candidates = load_candidates(
             &self.connection,
             self.faucet_account_id,
-            "WHERE nullifier = ?1",
+            "AND nullifier = ?1",
             [nullifier.to_bytes()],
         )?;
         Ok(candidates.pop())
@@ -200,23 +199,18 @@ fn initialize_store(
                 authenticated_parent BLOB
             ) STRICT;
 
-            CREATE TABLE burn_candidates (
-                note_id BLOB PRIMARY KEY,
-                nullifier BLOB NOT NULL UNIQUE,
-                note BLOB NOT NULL,
-                creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295)
-            ) STRICT;
-
             CREATE TABLE burns (
                 note_id BLOB PRIMARY KEY,
                 nullifier BLOB NOT NULL UNIQUE,
                 note BLOB NOT NULL,
                 creation_block INTEGER NOT NULL CHECK (creation_block BETWEEN 0 AND 4294967295),
-                consumption_block INTEGER NOT NULL
+                consumption_block INTEGER
                     CHECK (consumption_block > creation_block
                            AND consumption_block <= 4294967295),
-                burn_tx_id BLOB NOT NULL,
-                status TEXT NOT NULL CHECK (status = 'DISCOVERED')
+                burn_tx_id BLOB,
+                status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED')),
+                CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
+                CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
             ) STRICT;",
         )
         .map_err(classify_error)?;
@@ -310,7 +304,6 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block FROM burn_candidates LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
             FROM burns LIMIT 0",
     ] {
@@ -384,7 +377,7 @@ fn load_candidates<P: Params>(
     let mut statement = connection
         .prepare(&format!(
             "SELECT note_id, nullifier, note, creation_block
-             FROM burn_candidates {filter} ORDER BY creation_block, note_id"
+             FROM burns WHERE status = 'CANDIDATE' {filter} ORDER BY creation_block, note_id"
         ))
         .map_err(classify_error)?;
     let rows = statement
@@ -422,7 +415,7 @@ fn load_burns(
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-             FROM burns",
+             FROM burns WHERE status = 'DISCOVERED'",
         )
         .map_err(classify_error)?;
     let rows = statement
@@ -473,20 +466,11 @@ fn insert_candidate(
     let note = candidate.note().to_bytes();
     let creation_block = i64::from(candidate.creation_block().as_u32());
 
-    // A promoted note cannot become a candidate again.
-    let overlaps_burn = exists(
-        transaction,
-        "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 OR nullifier = ?2)",
-        params![note_id, nullifier],
-    )?;
-    if overlaps_burn {
-        bail!(CONFLICT);
-    }
-
+    // A note already recorded, as a candidate or as a burn, clashes with the table's keys.
     transaction
         .execute(
-            "INSERT INTO burn_candidates (note_id, nullifier, note, creation_block)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
+             VALUES (?1, ?2, ?3, ?4, 'CANDIDATE')",
             params![note_id, nullifier, note, creation_block],
         )
         .map_err(classify_write_error)?;
@@ -501,26 +485,28 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     let consumption_block = i64::from(burn.consumption_block().as_u32());
     let burn_tx_id = burn.burn_tx_id().to_bytes();
 
-    let overlaps_candidate = exists(
-        transaction,
-        "SELECT EXISTS (
-            SELECT 1 FROM burn_candidates WHERE note_id = ?1 OR nullifier = ?2
-        )",
-        params![note_id, nullifier],
-    )?;
-    if overlaps_candidate {
-        let exact = exists(
-            transaction,
-            "SELECT EXISTS (SELECT 1 FROM burn_candidates
-             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4)",
-            params![note_id, nullifier, note, creation_block],
-        )?;
-        if !exact {
-            bail!(CONFLICT);
-        }
+    // Promotion turns the exact saved candidate into this burn in place, one row per note.
+    let promoted = transaction
+        .execute(
+            "UPDATE burns SET consumption_block = ?5, burn_tx_id = ?6, status = ?7
+             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
+                AND status = 'CANDIDATE'",
+            params![
+                note_id,
+                nullifier,
+                note,
+                creation_block,
+                consumption_block,
+                burn_tx_id,
+                DISCOVERED,
+            ],
+        )
+        .map_err(classify_write_error)?;
+    if promoted == 1 {
+        return Ok(());
     }
 
-    // Promotion is atomic: once the burn is queued, the same note is no longer a candidate.
+    // Any other record of this note or its nullifier clashes with the table's keys.
     transaction
         .execute(
             "INSERT INTO burns (
@@ -543,9 +529,6 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
             ],
         )
         .map_err(classify_write_error)?;
-    transaction
-        .execute("DELETE FROM burn_candidates WHERE note_id = ?1", [&note_id])
-        .map_err(classify_error)?;
     Ok(())
 }
 

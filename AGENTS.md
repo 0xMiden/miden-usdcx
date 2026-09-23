@@ -12,7 +12,7 @@ Circle **xReserve / xUSDC** (NOT standard USDC, NOT CCTP) on Miden: native USDC 
    - NS-3 (supersedes NS-2): the on-chain DepositIntent realization is 01-owned at `xreserve::deposit_intent::rebuild` — the faucet **writes** the signed preimage (DC-14) instead of parsing it, so the NS-2 parser is retired and must not be reintroduced. The Rust `DepositIntent` decode is unaffected.
    - DC-7: the burn-item codec is 04-owned and ships in Rust at `crates/xusdc-encoding/src/xreserve/encoding/burn_note.rs`; there is no `burn_items.masm`.
    - Layout: **SELF-CONTAINED** components; the MASM ships under `crates/xusdc-encoding/asm/` as declared Miden projects — the library under `xreserve/`, the faucet's extension of the stock fungible faucet under `components/faucet_extension/`, and one project per note script under `notes/`.
-5. **Version pins:** Workspace manifests and `Cargo.lock` are authoritative. Protocol-family crates pin the published crates.io release `=0.17.0-rc.5`.
+5. **Version pins:** Workspace manifests and `Cargo.lock` are authoritative. Protocol-family crates pin the published crates.io release `=0.17.0-rc.6`.
 6. **Circle-owned open decisions stay OPEN** (`DEV-*`/`Q-*`, e.g. DEV-5 cap/scale, DEV-7 burn evidence, DEV-10 AccountId encoding): implement per the frozen spec, keep the OPEN labels, never mark them approved/resolved.
 7. **Single-owner rule:** every shared format/routine has exactly one owner (the map); consumers pin by reference. One canonical golden-vector artifact drives both MASM and Rust tests; MASM tests must EXECUTE, not just assemble.
 8. Git: conventional commits, signed; **never push, publish, or open PRs without explicit human approval.**

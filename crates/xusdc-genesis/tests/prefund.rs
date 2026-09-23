@@ -4,10 +4,10 @@
 mod common;
 
 use assert_matches::assert_matches;
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{AccountBuilder, AccountFile, AccountType};
+use miden_protocol::account::{AccountBuilder, AccountType};
 use miden_protocol::asset::AssetId;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, ONE};
 use miden_standards::account::auth::AuthSingleSig;
 use miden_standards::account::faucets::FungibleFaucet;
@@ -25,22 +25,22 @@ fn prefund_gives_the_recorded_supply_and_promotes_to_genesis_form() {
     let prefunded = prefund_distributor(&faucet, &distributor).expect("the prefund must succeed");
 
     assert_eq!(
-        prefunded.account.id(),
-        distributor.account.id(),
+        prefunded.account().id(),
+        distributor.account().id(),
         "the id is unchanged"
     );
     assert_eq!(
-        prefunded.account.nonce(),
+        prefunded.account().nonce(),
         ONE,
         "a genesis account carries nonce one"
     );
     assert!(
-        prefunded.account.seed().is_none(),
+        prefunded.account().seed().is_none(),
         "a genesis account carries no seed"
     );
     assert_eq!(
-        prefunded.auth_secret_keys.to_bytes(),
-        distributor.auth_secret_keys.to_bytes(),
+        prefunded.auth_secret_keys(),
+        distributor.auth_secret_keys(),
         "the keys are kept",
     );
     let recorded = FungibleFaucet::try_from(&faucet)
@@ -53,7 +53,7 @@ fn prefund_gives_the_recorded_supply_and_promotes_to_genesis_form() {
     );
     assert_eq!(
         prefunded
-            .account
+            .account()
             .vault()
             .get_balance(AssetId::new_fungible(faucet.id()))
             .expect("the balance is readable"),
@@ -76,7 +76,7 @@ fn prefund_refuses_a_private_distributor() {
 
     let err = prefund_distributor(&genesis_faucet(), &private)
         .expect_err("a private distributor must be refused");
-    assert_matches!(err, PrefundError::DistributorNotPublic(id) if id == private.account.id());
+    assert_matches!(err, PrefundError::DistributorNotPublic(id) if id == private.account().id());
 }
 
 /// A prefunded file fed back in is refused: prefund runs once per distributor.
@@ -91,18 +91,18 @@ fn prefund_refuses_an_already_prefunded_distributor() {
     assert_matches!(
         err,
         PrefundError::DistributorNotFresh { id, nonce }
-            if id == prefunded.account.id() && nonce == Felt::ONE
+            if id == prefunded.account().id() && nonce == Felt::ONE
     );
 }
 
 /// A distributor file without a signing key is refused: nothing could ever spend the funds.
 #[test]
 fn prefund_refuses_a_distributor_without_a_key() {
-    let keyless = AccountFile::new(fresh_distributor().account, Vec::new());
+    let keyless = AccountFile::new(fresh_distributor().into_parts().0, Vec::new());
 
     let err = prefund_distributor(&genesis_faucet(), &keyless)
         .expect_err("a keyless distributor must be refused");
-    assert_matches!(err, PrefundError::DistributorHasNoSigningKey(id) if id == keyless.account.id());
+    assert_matches!(err, PrefundError::DistributorHasNoSigningKey(id) if id == keyless.account().id());
 }
 
 /// A faucet recording no supply has nothing to distribute.
@@ -121,7 +121,7 @@ fn prefund_refuses_a_faucet_with_no_supply() {
 /// A faucet input that is not a fungible faucet (here: a wallet) is refused.
 #[test]
 fn prefund_refuses_a_non_faucet_as_the_faucet() {
-    let wallet = fresh_distributor().account;
+    let wallet = fresh_distributor().into_parts().0;
 
     let err = prefund_distributor(&wallet, &fresh_distributor())
         .expect_err("a wallet passed as the faucet must be refused");

@@ -8,9 +8,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use miden_protocol::account::{Account, AccountFile, AccountId};
+use miden_objects::account_file::AccountFile;
+use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountId;
 
 use crate::config::{GenesisToolConfig, Role};
@@ -41,7 +41,7 @@ pub fn write_account_file(file: &AccountFile, path: &Path) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
-    if !file.auth_secret_keys.is_empty() {
+    if !file.auth_secret_keys().is_empty() {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
@@ -60,7 +60,7 @@ pub fn write_account_file(file: &AccountFile, path: &Path) -> Result<()> {
 /// Reads the account file at `path`.
 pub fn read_account_file(path: &Path) -> Result<AccountFile> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    AccountFile::read_from_bytes(&bytes)
+    AccountFile::try_from_bytes(&bytes)
         .with_context(|| format!("{} is not an account file", path.display()))
 }
 

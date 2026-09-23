@@ -2,8 +2,7 @@
 
 mod common;
 
-use miden_protocol::account::AccountFile;
-use miden_protocol::utils::serde::Serializable;
+use miden_objects::account_file::AccountFile;
 use xusdc_genesis::output::{
     read_account_file, write_account_file, DISTRIBUTOR_MAC_FILE, FAUCET_MAC_FILE,
 };
@@ -20,9 +19,9 @@ fn the_faucet_file_round_trips_without_keys() {
         .expect("the faucet must write");
 
     let file = read_account_file(&path).expect("the faucet file must load");
-    assert_eq!(file.account, faucet);
+    assert_eq!(file.account(), &faucet);
     assert!(
-        file.auth_secret_keys.is_empty(),
+        file.auth_secret_keys().is_empty(),
         "the faucet file carries no keys"
     );
 }
@@ -36,10 +35,10 @@ fn the_distributor_file_keeps_the_key_and_is_private() {
     write_account_file(&distributor, &path).expect("the distributor must write");
 
     let file = read_account_file(&path).expect("the distributor file must load");
-    assert_eq!(file.account, distributor.account);
+    assert_eq!(file.account(), distributor.account());
     assert_eq!(
-        file.auth_secret_keys.to_bytes(),
-        distributor.auth_secret_keys.to_bytes(),
+        file.auth_secret_keys(),
+        distributor.auth_secret_keys(),
         "the key must round-trip through the file",
     );
     #[cfg(unix)]

@@ -6,15 +6,15 @@ publish = false
 description = "xUSDC-on-Miden 04 shared encoding: hand-written MASM + Rust mirror and test harness"
 
 # The four protocol-monorepo crates are pinned to the published crates.io release
-# `=0.17.0-rc.5` — an exact version pin, never a floating range, so the build stays
-# reproducible. The 0.17.0-rc.5 graph resolves the 0.33 assembler/VM family and miden-crypto 0.33. The
+# `=0.17.0-rc.6` — an exact version pin, never a floating range, so the build stays
+# reproducible. The 0.17.0-rc.6 graph resolves the 0.33 assembler/VM family and miden-crypto 0.33. The
 # `testing` feature on the main miden-protocol dep is required by the committed vector generator
 # (AccountIdBuilder).
 
 [dependencies]
-miden-protocol  = { version = "=0.17.0-rc.5", features = ["testing"] }
-miden-standards = { version = "=0.17.0-rc.5" }
-miden-tx        = { version = "=0.17.0-rc.5" }
+miden-protocol  = { version = "=0.17.0-rc.6", features = ["testing"] }
+miden-standards = { version = "=0.17.0-rc.6" }
+miden-tx        = { version = "=0.17.0-rc.6" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # bon powers the note-factory builders and the dedicated note-storage types (the standards
@@ -43,9 +43,9 @@ miden-crypto = { version = "0.33", default-features = false, features = ["std"],
 miden-assembly             = { workspace = true, features = ["std"] }
 miden-core-lib             = { workspace = true }
 miden-package-registry     = { workspace = true, features = ["resolver", "std"] }
-miden-protocol             = { version = "=0.17.0-rc.5" }
+miden-protocol             = { version = "=0.17.0-rc.6" }
 miden-protocol-build-utils = { workspace = true }
-miden-standards            = { version = "=0.17.0-rc.5" }
+miden-standards            = { version = "=0.17.0-rc.6" }
 
 [features]
 # Enables the canonical golden-vector generator binary. Its keccak/commitment crates live
@@ -66,10 +66,10 @@ required-features = ["vectors"]
 [dev-dependencies]
 # This crate depends on ITSELF so the `testing` feature is on for the test build.
 xusdc-encoding  = { path = ".", features = ["testing"] }
-miden-standards = { version = "=0.17.0-rc.5", features = ["testing"] }
-miden-testing   = { version = "=0.17.0-rc.5" }
+miden-standards = { version = "=0.17.0-rc.6", features = ["testing"] }
+miden-testing   = { version = "=0.17.0-rc.6" }
 # exact-error matching for u32-assert traps (OperationError::U32AssertionFailed); 0.33 is the
-# version the 0.17.0-rc.5 protocol graph resolves — the pin moves in lockstep with the protocol family so
+# version the 0.17.0-rc.6 protocol graph resolves — the pin moves in lockstep with the protocol family so
 # exactly one processor copy exists and the error downcasts unify
 miden-processor = "0.33"
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }

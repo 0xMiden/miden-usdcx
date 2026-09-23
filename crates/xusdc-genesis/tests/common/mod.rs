@@ -4,8 +4,9 @@
 // Each test binary compiles its own copy of this module and exercises a different subset of it.
 #![allow(dead_code)]
 
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{Account, AccountFile};
+use miden_protocol::account::Account;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
 use xusdc_genesis::accounts::{build_faucet, new_distributor_with};

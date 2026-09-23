@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::AuthScheme;
-use miden_protocol::account::AccountFile;
 use xusdc_genesis::accounts::{build_faucet, new_distributor, prefund_distributor, record_nonces};
 use xusdc_genesis::config::{GenesisToolConfig, UsedNoncesFile};
 use xusdc_genesis::output::{
@@ -110,7 +110,7 @@ fn run_new_distributor(scheme: AuthScheme) -> Result<()> {
         "{}",
         render_ids(
             &format!("distributor ({DISTRIBUTOR_MAC_FILE}, {scheme} key)"),
-            distributor.account.id(),
+            distributor.account().id(),
         )
     );
     println!("written to {DISTRIBUTOR_MAC_FILE}");
@@ -131,7 +131,7 @@ fn run_faucet(config_path: &Path) -> Result<()> {
 }
 
 fn run_prefund(faucet_path: &Path, distributor_path: &Path) -> Result<()> {
-    let faucet = read_account_file(faucet_path)?.account;
+    let (faucet, _) = read_account_file(faucet_path)?.into_parts();
     let distributor = read_account_file(distributor_path)?;
     let prefunded =
         prefund_distributor(&faucet, &distributor).context("prefunding the distributor")?;
@@ -140,13 +140,13 @@ fn run_prefund(faucet_path: &Path, distributor_path: &Path) -> Result<()> {
         "{}",
         render_ids(
             &format!("distributor ({GENESIS_DISTRIBUTOR_MAC_FILE}, prefunded)"),
-            prefunded.account.id(),
+            prefunded.account().id(),
         )
     );
     println!(
         "  balance: {} base units of the faucet {}",
         prefunded
-            .account
+            .account()
             .vault()
             .get_balance(miden_protocol::asset::AssetId::new_fungible(faucet.id()))
             .context("reading the prefunded balance")?
@@ -158,7 +158,7 @@ fn run_prefund(faucet_path: &Path, distributor_path: &Path) -> Result<()> {
 }
 
 fn run_record_nonces(faucet_path: &Path, nonces_path: &Path) -> Result<()> {
-    let faucet = read_account_file(faucet_path)?.account;
+    let (faucet, _) = read_account_file(faucet_path)?.into_parts();
     let nonces = UsedNoncesFile::load(nonces_path)
         .with_context(|| format!("loading the nonces from {}", nonces_path.display()))?
         .used_nonces;

@@ -2,8 +2,8 @@
 
 mod common;
 
+use miden_objects::account_file::AccountFile;
 use miden_protocol::account::auth::{AuthScheme, AuthSecretKey};
-use miden_protocol::account::AccountFile;
 use miden_protocol::{Word, ZERO};
 use miden_standards::account::auth::AuthSingleSig;
 use rstest::rstest;
@@ -14,7 +14,7 @@ use crate::common::DISTRIBUTOR_SEED;
 /// The wallet is public, undeployed (nonce zero, seed present, empty vault), and its single-sig
 /// auth slot holds the commitment of the one key in the file.
 fn assert_fresh_wallet_controlled_by_its_key(distributor: &AccountFile, scheme: AuthScheme) {
-    let account = &distributor.account;
+    let account = distributor.account();
     assert!(
         account.id().is_public(),
         "the distributor is a public account"
@@ -29,7 +29,7 @@ fn assert_fresh_wallet_controlled_by_its_key(distributor: &AccountFile, scheme: 
         "a fresh distributor holds nothing"
     );
 
-    let [key] = distributor.auth_secret_keys.as_slice() else {
+    let [key] = distributor.auth_secret_keys() else {
         panic!("the file carries exactly one key");
     };
     assert_eq!(
@@ -57,8 +57,8 @@ fn new_distributor_is_a_fresh_wallet_controlled_by_its_key(#[case] scheme: AuthS
 
     let other = new_distributor(scheme).expect("a second distributor must generate");
     assert_ne!(
-        other.account.id(),
-        distributor.account.id(),
+        other.account().id(),
+        distributor.account().id(),
         "every generation draws a fresh key and seed",
     );
 }
@@ -71,5 +71,5 @@ fn new_distributor_with_is_deterministic_in_its_inputs() {
         new_distributor_with(DISTRIBUTOR_SEED, key.clone()).expect("the distributor must compose");
     let second = new_distributor_with(DISTRIBUTOR_SEED, key).expect("the distributor must compose");
     assert_fresh_wallet_controlled_by_its_key(&first, AuthScheme::EcdsaK256Keccak);
-    assert_eq!(first.account, second.account);
+    assert_eq!(first.account(), second.account());
 }

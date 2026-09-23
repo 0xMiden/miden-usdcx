@@ -16,8 +16,8 @@ pub(crate) struct InvalidBurnCandidate(&'static str);
 
 /// A public note whose structure allows the configured faucet to consume it as an xUSDC burn.
 ///
-/// The fixed tag and Circle payload are deliberately not checked here. They do not participate in
-/// on-chain consumption, so a note that violates either may still destroy xUSDC and must remain
+/// The Circle payload is deliberately not checked here. It does not participate in on-chain
+/// consumption, so a note with an invalid payload may still destroy xUSDC and must remain
 /// discoverable for the later durable-refusal gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BurnCandidate {

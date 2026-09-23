@@ -250,7 +250,7 @@ async fn failed_store_write_preserves_the_old_row() {
     ];
     let old_ready = ready(&attester);
     let error = attester.poll_withdrawal_statuses().await.unwrap_err();
-    assert!(matches!(error, SubmitError::InvalidStore));
+    assert!(matches!(error, SubmitError::Store(_)));
     assert_eq!(ledger.record(&attester, first), old[0]);
     assert_eq!(ledger.record(&attester, second), old[1]);
     assert_eq!(ready(&attester), old_ready);

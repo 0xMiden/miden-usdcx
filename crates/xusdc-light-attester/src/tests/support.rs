@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use miden_protocol::account::AccountId;
@@ -186,6 +187,7 @@ pub(super) enum ObservedRequest {
 pub(super) struct FakeCircle {
     state: CircleState,
     requests: Arc<Mutex<Vec<ObservedRequest>>>,
+    rate_limited: AtomicBool,
 }
 
 impl FakeCircle {
@@ -195,9 +197,21 @@ impl FakeCircle {
             Self {
                 state,
                 requests: Arc::clone(&requests),
+                rate_limited: AtomicBool::new(false),
             },
             requests,
         )
+    }
+
+    /// Records the call and answers it with the fixed state. Like the real client, a 429 pauses
+    /// the rest of the cycle.
+    fn reply(&self, request: ObservedRequest) -> Result<RawResponse, CircleError> {
+        self.requests.lock().unwrap().push(request);
+        let answer = self.state.clone().answer();
+        if matches!(&answer, Ok(response) if response.status == StatusCode::TOO_MANY_REQUESTS) {
+            self.rate_limited.store(true, Ordering::Relaxed);
+        }
+        answer
     }
 }
 
@@ -205,8 +219,7 @@ impl CircleApi for FakeCircle {
     fn check_connection(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
-        self.requests.lock().unwrap().push(ObservedRequest::Info);
-        let answer = self.state.clone().answer();
+        let answer = self.reply(ObservedRequest::Info);
         Box::pin(async move { read_info(&answer?) })
     }
 
@@ -216,8 +229,7 @@ impl CircleApi for FakeCircle {
         _use_circle_forwarding: bool,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
-        self.requests.lock().unwrap().push(ObservedRequest::Prepare);
-        let answer = self.state.clone().answer();
+        let answer = self.reply(ObservedRequest::Prepare);
         Box::pin(async move { read_prepared(answer?) })
     }
 
@@ -225,11 +237,10 @@ impl CircleApi for FakeCircle {
         &'a self,
         saved: &'a SavedSubmission,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
-        self.requests.lock().unwrap().push(ObservedRequest::Submit {
+        let answer = self.reply(ObservedRequest::Submit {
             endpoint: saved.endpoint.clone(),
             body: saved.body.clone(),
         });
-        let answer = self.state.clone().answer();
         Box::pin(async move { answer })
     }
 
@@ -238,12 +249,15 @@ impl CircleApi for FakeCircle {
         saved: &'a SavedSubmission,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
-        self.requests.lock().unwrap().push(ObservedRequest::Lookup {
+        let answer = self.reply(ObservedRequest::Lookup {
             endpoint: saved.endpoint.clone(),
             id: id.to_owned(),
         });
-        let answer = self.state.clone().answer();
         Box::pin(async move { answer })
+    }
+
+    fn rate_limited(&self) -> bool {
+        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 

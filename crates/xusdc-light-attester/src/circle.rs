@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
@@ -87,6 +88,9 @@ pub trait CircleApi: Send + Sync {
         saved: &'a SavedSubmission,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
+
+    /// Whether Circle has answered 429. The remaining requests then wait for a later cycle.
+    fn rate_limited(&self) -> bool;
 }
 
 /// Circle's xReserve API over HTTPS. Every request goes through one worker, which sends them one
@@ -95,6 +99,7 @@ pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
     requests: mpsc::Sender<Job>,
+    rate_limited: AtomicBool,
 }
 
 /// A request queued for the worker, and where its answer goes.
@@ -123,6 +128,7 @@ impl CircleClient {
             base_url: config.circle_api_base_url().clone(),
             request_timeout: config.circle_request_timeout(),
             requests,
+            rate_limited: AtomicBool::new(false),
         };
         Ok((circle, worker))
     }
@@ -144,7 +150,12 @@ impl CircleClient {
             .send(Job { request, reply })
             .await
             .map_err(|_| CircleError::Unavailable)?;
-        response.await.map_err(|_| CircleError::Unavailable)?
+        let raw = response.await.map_err(|_| CircleError::Unavailable)??;
+        // A 429 is remembered, so the rest of the cycle leaves Circle alone.
+        if raw.status == StatusCode::TOO_MANY_REQUESTS {
+            self.rate_limited.store(true, Ordering::Relaxed);
+        }
+        Ok(raw)
     }
 
     pub(crate) fn prepare_request(
@@ -245,6 +256,10 @@ impl CircleApi for CircleClient {
             *request.timeout_mut() = Some(self.request_timeout);
             self.send(request).await
         })
+    }
+
+    fn rate_limited(&self) -> bool {
+        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 

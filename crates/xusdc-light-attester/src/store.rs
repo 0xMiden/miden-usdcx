@@ -382,7 +382,7 @@ fn load_candidates(
                 decode_block_number(creation_block)?,
                 faucet_account_id,
             )
-            .map_err(|_| anyhow!(INVALID))?,
+            .context(INVALID)?,
         );
     }
     Ok(candidates)
@@ -432,7 +432,7 @@ fn load_burns(
                 burn_tx_id,
                 faucet_account_id,
             )
-            .map_err(|_| anyhow!(INVALID))?,
+            .context(INVALID)?,
         );
     }
     Ok(burns)

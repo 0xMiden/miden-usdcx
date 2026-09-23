@@ -298,7 +298,7 @@ async fn rate_limited_status_check_stops_the_cycle() {
     let mut rate_limited = false;
     let queue = attester.store.submissions_to_poll().unwrap();
     attester
-        .poll_withdrawal_statuses(queue, &mut rate_limited)
+        .advance_submissions(queue, &mut rate_limited)
         .await
         .unwrap();
     assert!(rate_limited);

@@ -6,7 +6,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::Word;
 
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
 
 use super::{
     config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
@@ -276,7 +276,15 @@ async fn invalid_store_is_rejected() {
             ready_circle(),
         )
         .await;
-        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
+        let error = result.err().unwrap();
+        assert_eq!(error.to_string(), "failed to open attester store");
+        // SQLite's own finding is kept as the cause.
+        if matches!(case, InvalidStoreCase::OutOfRange) {
+            assert!(
+                format!("{error:#}").contains("CHECK constraint failed in attester_state"),
+                "{error:#}"
+            );
+        }
     }
 }
 

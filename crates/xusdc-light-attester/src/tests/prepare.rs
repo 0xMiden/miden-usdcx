@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use miden_protocol::{Felt, Word};
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use serde_json::{json, Value};
 
@@ -11,15 +10,7 @@ use crate::config::Config;
 
 use super::startup::{config_toml, create_store_parent};
 use super::validation::validated_burn;
-
-fn serial(last: u64) -> Word {
-    Word::new([
-        Felt::new(0x0102_0304_0506_0708).unwrap(),
-        Felt::new(0x1112_1314_1516_1718).unwrap(),
-        Felt::new(0x2122_2324_2526_2728).unwrap(),
-        Felt::new(last).unwrap(),
-    ])
-}
+use super::verify::serial;
 
 fn client() -> CircleClient {
     let tempdir = tempfile::tempdir().unwrap();

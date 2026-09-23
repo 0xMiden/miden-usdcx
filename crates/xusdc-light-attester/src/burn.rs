@@ -2,12 +2,12 @@
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteId, NoteTag, Nullifier};
+use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_standards::note::NetworkAccountTarget;
 use xusdc_encoding::note::xreserve_burn::{
-    XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
-    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
+    XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::xreserve::encoding::XReserveBurnItems;
 
@@ -158,14 +158,12 @@ impl DiscoveredBurn {
 /// A durable reason why a consumed, structurally valid burn cannot become a withdrawal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnRefusal {
-    WrongTag,
     InvalidWithdrawal,
 }
 
 impl BurnRefusal {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::WrongTag => "wrong_tag",
             Self::InvalidWithdrawal => "invalid_withdrawal",
         }
     }
@@ -192,10 +190,6 @@ impl TryFrom<DiscoveredBurn> for ValidatedBurn {
 
 pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnRefusal> {
     let note = burn.note().as_note();
-    if note.metadata().tag() != NoteTag::new(FIXED_XUSDC_BURN_TAG) {
-        return Err(BurnRefusal::WrongTag);
-    }
-
     let withdrawal = note
         .attachments()
         .iter()

@@ -122,7 +122,8 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    /// Records a proven-invalid burn without changing its evidence or scan progress.
+    /// Records a burn whose withdrawal payload does not decode, without changing its evidence or
+    /// scan progress.
     #[allow(dead_code)]
     pub(crate) fn refuse_burn(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let updated = self

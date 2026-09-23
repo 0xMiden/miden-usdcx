@@ -129,8 +129,11 @@ impl UnverifiedPrepareResponse {
         if hook.remote_domain != CircleDomain::MIDEN.as_u32() {
             return Err(VerifyError::WrongBurnField("remoteDomain"));
         }
-        // The Miden sender belongs in the hook, not Circle's sourceDepositor field.
-        let sender = EthEmbeddedAccountId::from_account_id(burn.note().as_note().metadata().sender());
+        // Circle's prepare API takes the burner as remoteDepositor and returns it in the hook data,
+        // where xReserve's withdrawal contract reads it, for example for its blocklist check.
+        // Circle fills in sourceDepositor and sourceSigner itself.
+        let sender =
+            EthEmbeddedAccountId::from_account_id(burn.note().as_note().metadata().sender());
         if hook.remote_depositor != B256::from(sender.to_bytes32()) {
             return Err(VerifyError::WrongBurnField("remoteDepositor"));
         }

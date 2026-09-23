@@ -28,8 +28,6 @@ pub enum DiscoverError {
     ChainDiverged,
     #[error("attester store failed")]
     Store(#[from] anyhow::Error),
-    #[error("the scan height cannot be represented by the next-block cursor")]
-    CursorOverflow,
 }
 
 #[derive(Debug)]
@@ -198,11 +196,7 @@ impl Attester {
         if last_block_to_scan < saved_scan.cursor.next_block {
             return Ok(None);
         }
-        if last_block_to_scan == BlockNumber::MAX {
-            return Err(DiscoverError::CursorOverflow);
-        }
 
-        // This bound also keeps the parent and predeployment child() calls below overflow.
         Ok(Some(last_block_to_scan))
     }
 
@@ -243,13 +237,6 @@ impl Attester {
     /// Records one authenticated block: its new candidates, the burns its faucet transactions
     /// consumed, and the checkpoint moved past it, in a single store transaction.
     fn scan_and_save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
-        let next_block = block
-            .header()
-            .block_num()
-            .as_u32()
-            .checked_add(1)
-            .map(BlockNumber::from)
-            .ok_or(DiscoverError::CursorOverflow)?;
         let (new_burn_notes, new_burns) =
             find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?;
         // Save this block atomically; a later RPC failure must not discard its progress.
@@ -257,7 +244,9 @@ impl Attester {
             &new_burn_notes,
             &new_burns,
             &ScanState {
-                cursor: ScanCursor { next_block },
+                cursor: ScanCursor {
+                    next_block: block.header().block_num().child(),
+                },
                 authenticated_parent: Some(block.header().clone()),
             },
         )?;

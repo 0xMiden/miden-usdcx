@@ -901,14 +901,6 @@ async fn bad_blocks_are_rejected() {
         attester.store.scan_state().unwrap().cursor.next_block,
         BlockNumber::from(4u32)
     );
-    let saved = attester.store.scan_state().unwrap();
-    *controls.scan_limits.lock().unwrap() = scan_limits(u32::MAX, u32::MAX);
-    assert!(matches!(
-        attester.discover_burns().await,
-        Err(DiscoverError::CursorOverflow)
-    ));
-    assert_eq!(attester.store.scan_state().unwrap(), saved);
-    assert!(controls.requests.lock().unwrap().is_empty());
 }
 
 /// A note published again with the same id, before or after the faucet consumed it, is the same

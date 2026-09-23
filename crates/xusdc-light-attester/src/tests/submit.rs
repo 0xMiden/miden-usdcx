@@ -380,7 +380,7 @@ async fn submit_sends_checked_request() {
         ("finalized", Finalized),
         ("expired", Expired),
         ("failed", Failed),
-        ("new_status", Held),
+        ("new_status", Submitting),
     ] {
         let ledger = Ledger::new().await;
         let mut response = ledger.response(0, status);
@@ -397,6 +397,12 @@ async fn submit_sends_checked_request() {
             assert_eq!(
                 saved.last_error.as_deref(),
                 Some("Circle's reported failure")
+            );
+        }
+        if status == "new_status" {
+            assert_eq!(
+                saved.last_error.as_deref(),
+                Some("Circle returned an unknown withdrawal status")
             );
         }
         assert!(attester.retry_held_submission(saved.note_id).is_err());
@@ -487,7 +493,7 @@ async fn submit_sends_checked_request() {
     ledger.submit(&mut attester, 0).await.unwrap();
     assert_eq!(
         ledger.record(&attester, 0).status,
-        Held,
+        Submitting,
         "only 201 creates a submission"
     );
 
@@ -566,6 +572,11 @@ async fn retries_use_saved_request() {
             reply(503, json!({"message": "unavailable"})),
         ),
         ("rate limited", reply(429, json!({"message": "slow down"}))),
+        (
+            "request timeout",
+            reply(408, json!({"message": "request timeout"})),
+        ),
+        ("forbidden", reply(403, json!({"message": "forbidden"}))),
         (
             "truncated success",
             CircleState::ResponseBody(StatusCode::CREATED, b"[{".to_vec()),
@@ -658,9 +669,9 @@ async fn retries_use_saved_request() {
 }
 
 /// A withdrawal ID outside Circle's UUID charset is never accepted from a creation or a conflict,
-/// because it would be sent back as a URL path segment.
+/// because it would be sent back as a URL path segment. The request stays queued instead.
 #[tokio::test]
-async fn malformed_withdrawal_ids_are_held() {
+async fn malformed_withdrawal_ids_are_retried() {
     let ledger = Ledger::new().await;
     let mut response = ledger.response(0, "created");
     response["withdrawalId"] = json!("../v1/info");
@@ -669,11 +680,7 @@ async fn malformed_withdrawal_ids_are_held() {
     let saved = ledger.record(&attester, 0);
     assert_eq!(
         (saved.status, saved.hold_reason, saved.withdrawal_id),
-        (
-            SubmissionStatus::Held,
-            Some(HoldReason::ResponseMismatch),
-            None
-        )
+        (SubmissionStatus::Submitting, None, None)
     );
 
     let ledger = Ledger::new().await;
@@ -687,11 +694,7 @@ async fn malformed_withdrawal_ids_are_held() {
     let saved = ledger.record(&attester, 0);
     assert_eq!(
         (saved.status, saved.hold_reason, saved.withdrawal_id),
-        (
-            SubmissionStatus::Held,
-            Some(HoldReason::ResponseMismatch),
-            None
-        )
+        (SubmissionStatus::Submitting, None, None)
     );
     assert_eq!(requests.lock().unwrap().len(), 1, "no lookup with a bad ID");
 }
@@ -755,20 +758,25 @@ async fn conflicts_are_checked() {
         };
         let (mut attester, _) = ledger.start(replies).await;
         ledger.submit(&mut attester, 0).await.unwrap();
+        let saved = ledger.record(&attester, 0);
         assert_eq!(
-            ledger.record(&attester, 0).hold_reason,
-            Some(HoldReason::ResponseMismatch),
+            (saved.status, saved.hold_reason, saved.last_error.as_deref()),
+            (
+                Submitting,
+                None,
+                Some("response does not identify the saved withdrawal")
+            ),
             "{name}"
         );
     }
     let ledger = Ledger::new().await;
     let mut other_id = ledger.response(0, "created");
     other_id["withdrawalId"] = json!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71");
-    for (name, replies, reason) in [
+    for (name, replies, error) in [
         (
             "wrong lookup ID",
             vec![conflict(), reply(200, other_id)],
-            HoldReason::ResponseMismatch,
+            "response does not identify the saved withdrawal",
         ),
         (
             "extra success",
@@ -776,7 +784,7 @@ async fn conflicts_are_checked() {
                 201,
                 json!([ledger.response(0, "created"), ledger.response(0, "created")]),
             )],
-            HoldReason::ResponseMismatch,
+            "response contains extra withdrawals",
         ),
         (
             "conflict wrong burn note",
@@ -784,15 +792,16 @@ async fn conflicts_are_checked() {
                 409,
                 json!({"success": false, "message": "already associated", "conflict": {"withdrawalId": ID, "burnTxId": "0x00"}}),
             )],
-            HoldReason::ResponseMismatch,
+            "conflict names another burn note",
         ),
     ] {
         let ledger = Ledger::new().await;
         let (mut attester, _) = ledger.start(replies).await;
         ledger.submit(&mut attester, 0).await.unwrap();
+        let saved = ledger.record(&attester, 0);
         assert_eq!(
-            ledger.record(&attester, 0).hold_reason,
-            Some(reason),
+            (saved.status, saved.hold_reason, saved.last_error.as_deref()),
+            (Submitting, None, Some(error)),
             "{name}"
         );
         assert!(attester
@@ -866,12 +875,13 @@ async fn held_submissions_do_not_block_others() {
         }
     }
 
+    // A status lookup never holds: after a 400 to the GET the saved ID stays queued.
     let ledger = Ledger::new().await;
     let (mut attester, requests) = ledger.start(vec![conflict(), reply(400, rejected)]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    let held = ledger.record(&attester, 0);
-    assert_eq!(held.hold_reason, Some(HoldReason::HttpRejected));
-    assert_eq!(held.withdrawal_id.as_deref(), Some(ID));
+    let queued = ledger.record(&attester, 0);
+    assert_eq!(queued.hold_reason, None);
+    assert_eq!(queued.withdrawal_id.as_deref(), Some(ID));
     drop(attester);
     let path = ledger.directory.path().join("attester.toml");
     let text = std::fs::read_to_string(&path)
@@ -881,10 +891,6 @@ async fn held_submissions_do_not_block_others() {
     let (mut attester, retry) = ledger
         .start(vec![reply(200, ledger.response(0, "created"))])
         .await;
-    attester.retry_held_submission(held.note_id).unwrap();
-    let queued = ledger.record(&attester, 0);
-    assert_eq!(queued.withdrawal_id, held.withdrawal_id);
-    assert_eq!(queued.body, held.body);
     attester.recover_submissions().await.unwrap();
     assert_eq!(*retry.lock().unwrap(), requests.lock().unwrap()[1..]);
     assert_eq!(

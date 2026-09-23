@@ -75,14 +75,11 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
 pub(crate) fn verified_withdrawal() -> VerifiedWithdrawal {
     let burn = validated_burn(1_000, serial(0x3132_3334_3536_3738), 9);
     let mut prepared = batch(FIRST_SALT, 1_000, 9);
-    rebuild_for_test(&mut prepared, true).unwrap();
-    verify_prepared_response(
-        &burn,
-        UnverifiedPrepareResponse {
-            batches: vec![prepared],
-        },
-        &config(None),
-    )
+    rebuild_for_test(&mut prepared).unwrap();
+    UnverifiedPrepareResponse {
+        batches: vec![prepared],
+    }
+    .verify(&burn, &config(None))
     .unwrap()
 }
 

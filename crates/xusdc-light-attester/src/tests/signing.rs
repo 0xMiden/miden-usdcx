@@ -61,7 +61,7 @@ async fn verified_withdrawal_gets_two_signatures() {
     assert_eq!(signed.batch.batch.burn_tx_id, expected.batch.burn_tx_id);
     assert_eq!(signed.batch.batch.digest, digest);
     let (intent, _) = super::parse_intent(&signed.batch.batch.intent).unwrap();
-    assert_eq!(super::signing_hash(intent, true), digest);
+    assert_eq!(intent.signing_hash(), digest);
     assert_eq!(
         signed.batch.signatures,
         [

@@ -12,7 +12,7 @@ use miden_standards::note::BurnNote;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use crate::attester::{Attester, CycleError, DiscoverError, SubmitError};
+use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::signer::{Signer, SignerError, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted};
 use crate::verify::VerifyError;
@@ -291,10 +291,10 @@ async fn submission_store_failure_stops_remaining_work() {
         });
         let error = attester.run_one_cycle().await.unwrap_err();
         assert!(matches!(
-            error,
-            CycleError::Submission(SubmitError::Store(_))
+            error.downcast_ref::<SubmitError>(),
+            Some(SubmitError::Store(_))
         ));
-        assert!(std::error::Error::source(&error).is_some());
+        assert!(format!("{error:#}").contains("disk full"));
         assert_eq!(counts(&calls), [usize::from(!recovering); 2]);
         assert_eq!(
             requests.lock().unwrap().len(),
@@ -327,9 +327,10 @@ async fn diverged_chain_stops_the_cycle() {
     *chain.scan_limits.lock().unwrap() = scan_limits(2, 2);
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
 
+    let error = attester.run_one_cycle().await.unwrap_err();
     assert!(matches!(
-        attester.run_one_cycle().await,
-        Err(CycleError::Discovery(DiscoverError::ChainDiverged))
+        error.downcast_ref::<DiscoverError>(),
+        Some(DiscoverError::ChainDiverged)
     ));
     assert_eq!(counts(&calls), [0, 0]);
     assert!(requests.lock().unwrap().is_empty());
@@ -351,9 +352,10 @@ async fn discovery_store_failure_stops_work_but_retries() {
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let checkpoint = attester.store.scan_state().unwrap();
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
+    let error = attester.run_one_cycle().await.unwrap_err();
     assert!(matches!(
-        attester.run_one_cycle().await,
-        Err(CycleError::Discovery(DiscoverError::Store(_)))
+        error.downcast_ref::<DiscoverError>(),
+        Some(DiscoverError::Store(_))
     ));
     assert_eq!(counts(&calls), [0, 0]);
     assert!(requests.lock().unwrap().is_empty());

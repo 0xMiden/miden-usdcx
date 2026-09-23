@@ -11,7 +11,7 @@ pub(crate) mod submission;
 // Fresh withdrawals pass this gate before either signer is called.
 pub(crate) mod verify;
 
-pub use attester::{Attester, CycleError, CycleReport};
+pub use attester::{Attester, CycleReport};
 
 #[cfg(test)]
 mod tests;

@@ -5,9 +5,7 @@ use serde_json::json;
 
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::verify::{
-    canonical_values_for_test, rebuild_for_test, verify_prepared_response, VerifyError,
-};
+use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifyError};
 
 use super::startup::{config_toml, create_store_parent};
 use super::validation::validated_burn;
@@ -121,7 +119,7 @@ fn circle_response_matches_burns() {
     let refuse = |name: &str, batches, expected| {
         let response = UnverifiedPrepareResponse { batches };
         assert_eq!(
-            verify_prepared_response(&burn, response, &config).err(),
+            response.verify(&burn, &config).err(),
             Some(expected),
             "{name}"
         );
@@ -150,21 +148,14 @@ fn circle_response_matches_burns() {
     let response = UnverifiedPrepareResponse {
         batches: vec![batch(FIRST_SALT, 1_000, 9)],
     };
-    assert_eq!(
-        verify_prepared_response(&burn, response, &config).err(),
-        None
-    );
+    assert_eq!(response.verify(&burn, &config).err(), None);
 
     let mut changed = batch(FIRST_SALT, 1_000, 9);
     changed.message_hash_to_sign = ZERO_WORD.into();
     refuse("different digest", vec![changed], DigestMismatch);
     let mut set_header = batch(FIRST_SALT, 1_000, 9);
     set_header.encoded.replace_range(..10, "0xe999239b");
-    refuse(
-        "burn-intent-set header",
-        vec![set_header],
-        EncodedMismatch,
-    );
+    refuse("burn-intent-set header", vec![set_header], EncodedMismatch);
     let mut mismatched = batch(FIRST_SALT, 1_000, 9);
     let original = mismatched.encoded.clone();
     let mut altered = hex::decode(&original[2..]).unwrap();
@@ -183,13 +174,10 @@ fn circle_response_matches_burns() {
         mismatched = batch(FIRST_SALT, 1_000, 9);
     }
 
-    let verified = verify_prepared_response(
-        &burn,
-        UnverifiedPrepareResponse {
-            batches: vec![batch(FIRST_SALT, 1_000, 9)],
-        },
-        &config,
-    )
+    let verified = UnverifiedPrepareResponse {
+        batches: vec![batch(FIRST_SALT, 1_000, 9)],
+    }
+    .verify(&burn, &config)
     .unwrap();
     assert_eq!(
         verified.note_id(),
@@ -208,7 +196,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
             batches: vec![batch],
         };
         assert_eq!(
-            verify_prepared_response(&burns[0], response, &config(ceiling)).err(),
+            response.verify(&burns[0], &config(ceiling)).err(),
             expected,
             "{name}"
         );

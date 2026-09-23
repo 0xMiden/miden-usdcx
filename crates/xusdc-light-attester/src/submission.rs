@@ -26,6 +26,14 @@ pub enum SubmitError {
     Signing(#[from] SignerError),
 }
 
+impl SubmitError {
+    /// A failure that stops the rest of the cycle: the store can no longer record what Circle
+    /// answers.
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(self, Self::Store(_))
+    }
+}
+
 /// Failed and expired attempts can be replaced; they do not permanently retire the burn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubmissionStatus {

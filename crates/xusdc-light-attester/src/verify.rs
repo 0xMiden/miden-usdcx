@@ -402,7 +402,6 @@ impl eip712::BurnIntent {
 fn transfer_spec_hash(spec: &eip712::TransferSpec) -> Result<B256, VerifyError> {
     // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID.
     // Its correspondence to REST transferSpecHashes still awaits a live withdrawal response.
-    // https://github.com/circlefin/evm-gateway-contracts/blob/ee628dc35ee67bc8ad30ba0606cc70888688a3f1/src/lib/TransferSpecLib.sol#L372-L466
     Ok(keccak256(spec.encode()?))
 }
 

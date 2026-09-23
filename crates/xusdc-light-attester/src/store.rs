@@ -26,14 +26,12 @@ const CAP_REJECTED: &str = "CAP_REJECTED";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected,
-    VerifyFailed,
 }
 
 impl BurnHoldReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PrepareRejected => "prepare_rejected",
-            Self::VerifyFailed => "verify_failed",
         }
     }
 }
@@ -606,7 +604,7 @@ fn create_burns_table(connection: &rusqlite::Connection) -> anyhow::Result<()> {
             burn_tx_id BLOB,
             status TEXT NOT NULL
                 CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED', 'CAP_REJECTED')),
-            hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected', 'verify_failed')),
+            hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected')),
             reservation_amount INTEGER CHECK (reservation_amount >= 0),
             admitted_at_ms INTEGER CHECK (admitted_at_ms >= 0),
             CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),

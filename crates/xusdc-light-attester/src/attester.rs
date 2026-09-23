@@ -377,22 +377,18 @@ impl Attester {
                     return Err(error);
                 }
                 let hold = match &error {
-                    // A 5xx or a 429 from prepare is transient: the burn stays eligible next cycle.
+                    // A 400 is Circle refusing to prepare this burn. Any other failure, including
+                    // a reply that fails our checks, is tried again next cycle.
                     SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
                         status, ..
-                    }) if !status.is_server_error() && *status != StatusCode::TOO_MANY_REQUESTS => {
+                    }) if *status == StatusCode::BAD_REQUEST => {
                         Some(BurnHoldReason::PrepareRejected)
                     }
-                    SubmitError::Prepare(CircleError::InvalidResponse(_)) => {
-                        Some(BurnHoldReason::PrepareRejected)
-                    }
-                    SubmitError::Verification(_) => Some(BurnHoldReason::VerifyFailed),
                     _ => None,
                 };
                 if let Some(reason) = hold {
                     self.store.hold_burn(note_id, reason)?;
                 }
-                // Transport/server and signing failures remain eligible next cycle.
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
                 first_error.get_or_insert(error);
             }

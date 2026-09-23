@@ -11,7 +11,6 @@ use crate::circle::CircleApi;
 use crate::config::Config;
 use crate::signer::{Signer, SigningPublicKey};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
-use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -177,7 +176,7 @@ impl Attester {
             Err(_) => Vec::new(),
         };
         let mut rate_limited = false;
-        self.recover_submissions(recovery, &mut rate_limited)
+        self.advance_submissions(recovery, &mut rate_limited)
             .await
             .context("withdrawal processing stopped")?;
         let submit = match self.submit_withdrawals(fresh, &mut rate_limited).await {
@@ -186,7 +185,7 @@ impl Attester {
             }
             submit => submit,
         };
-        self.poll_withdrawal_statuses(polling, &mut rate_limited)
+        self.advance_submissions(polling, &mut rate_limited)
             .await
             .context("polling stopped")?;
         Ok(CycleReport {
@@ -394,21 +393,6 @@ impl Attester {
             }
         }
         first_error.map_or(Ok(()), Err)
-    }
-
-    /// Asks Circle once for each given submitted withdrawal and records the answer on its row: a
-    /// final status closes the row, and any other answer or a lost reply leaves it for the next
-    /// pass. After a 429 the remaining checks wait for the next cycle.
-    pub(crate) async fn poll_withdrawal_statuses(
-        &mut self,
-        submissions: Vec<SavedSubmission>,
-        rate_limited: &mut bool,
-    ) -> Result<(), SubmitError> {
-        // Each saved ID gets one GET; the shared handler persists its outcome before we continue.
-        for saved in submissions {
-            self.advance_submission(saved, rate_limited).await?;
-        }
-        Ok(())
     }
 }
 

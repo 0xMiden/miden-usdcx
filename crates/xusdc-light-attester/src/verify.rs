@@ -11,7 +11,16 @@ use crate::burn::ValidatedBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
 use crate::config::Config;
 
+// Circle's Gateway contracts (BurnIntents.sol) start an encoded burn intent with
+// bytes4(keccak256("circle.gateway.BurnIntent")).
 const BURN_INTENT_MAGIC: [u8; 4] = 0x070a_fbc2u32.to_be_bytes();
+// Circle's Gateway contracts (TransferSpec.sol) start an encoded transfer spec with
+// bytes4(keccak256("circle.gateway.TransferSpec")).
+const TRANSFER_SPEC_MAGIC: [u8; 4] = 0xca85_def7u32.to_be_bytes();
+// Circle's xReserve contracts (WithdrawHookData.sol) start the withdrawal hook data with
+// bytes4(keccak256("circle.xReserve.WithdrawHookData")), followed by this format version.
+const WITHDRAW_HOOK_DATA_MAGIC: [u8; 4] = 0x6b20_f62au32.to_be_bytes();
+const WITHDRAW_HOOK_DATA_VERSION: u32 = 1;
 
 // Names and field order are part of Circle's EIP-712 type hashes.
 mod eip712 {
@@ -192,8 +201,8 @@ impl HookData {
 
     fn encode(&self) -> Result<Vec<u8>, VerifyError> {
         // JSON omits the binary magic/version; its 20-byte address is left-padded to bytes32.
-        let mut bytes = 0x6b20_f62au32.to_be_bytes().to_vec();
-        bytes.extend(1u32.to_be_bytes());
+        let mut bytes = WITHDRAW_HOOK_DATA_MAGIC.to_vec();
+        bytes.extend(WITHDRAW_HOOK_DATA_VERSION.to_be_bytes());
         bytes.extend(self.remote_domain.to_be_bytes());
         bytes.extend_from_slice(self.remote_token.as_slice());
         bytes.extend_from_slice(self.remote_depositor.as_slice());
@@ -247,7 +256,7 @@ fn append_with_length(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), VerifyEr
 
 impl eip712::TransferSpec {
     fn encode(&self) -> Result<Vec<u8>, VerifyError> {
-        let mut bytes = 0xca85_def7u32.to_be_bytes().to_vec();
+        let mut bytes = TRANSFER_SPEC_MAGIC.to_vec();
         bytes.extend(self.version.to_be_bytes());
         bytes.extend(self.sourceDomain.to_be_bytes());
         bytes.extend(self.destinationDomain.to_be_bytes());

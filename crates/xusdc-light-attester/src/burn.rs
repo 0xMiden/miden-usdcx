@@ -8,7 +8,7 @@ use miden_standards::note::NetworkAccountTarget;
 use miden_usdcx::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
-use miden_usdcx::xreserve::encoding::{CircleDomain, XReserveBurnItems};
+use miden_usdcx::xreserve::encoding::XReserveBurnItems;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("note is not a consumable xUSDC burn: {0}")]

@@ -1,5 +1,7 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
+use std::time::Duration;
+
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
@@ -27,6 +29,9 @@ pub enum DiscoverError {
 }
 
 pub use crate::submission::SubmitError;
+
+/// While Circle keeps answering 429, the pause between cycles doubles up to this limit.
+const MAX_RATE_LIMITED_PAUSE: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -115,10 +120,14 @@ impl Attester {
 
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
-    /// A store failure aborts only this cycle; retry after the same delay.
+    /// A store failure aborts only this cycle; the next one runs after the usual pause. After
+    /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
+    /// without one.
     pub async fn run(&mut self, shutdown: CancellationToken) {
+        let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
-            match self.run_one_cycle().await {
+            let mut rate_limited = false;
+            match self.cycle(&mut rate_limited).await {
                 Ok(report) => {
                     if let Err(error) = report.discover {
                         eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
@@ -126,14 +135,29 @@ impl Attester {
                 }
                 Err(error) => eprintln!("cycle stopped; retrying after poll interval: {error:?}"),
             }
+            pause = if rate_limited {
+                pause
+                    .saturating_mul(2)
+                    .min(MAX_RATE_LIMITED_PAUSE)
+                    .max(self.config.poll_interval())
+            } else {
+                self.config.poll_interval()
+            };
             tokio::select! {
                 () = shutdown.cancelled() => {}
-                () = tokio::time::sleep(self.config.poll_interval()) => {}
+                () = tokio::time::sleep(pause) => {}
             }
         }
     }
 
+    /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
     pub async fn run_one_cycle(&mut self) -> anyhow::Result<CycleReport> {
+        self.cycle(&mut false).await
+    }
+
+    /// Circle's 429 sets `rate_limited`: the rest of the cycle then leaves Circle alone, and
+    /// [`Self::run`] reads it to pace the next cycle.
+    async fn cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<CycleReport> {
         let discover = self.discover_burns().await;
         // Only an unreachable node keeps the rest of the cycle going: a store failure or a
         // diverged chain stops everything until an operator has looked.
@@ -149,17 +173,16 @@ impl Attester {
             Ok(proof_lag_block) => self.validate_ready_burns(*proof_lag_block)?,
             Err(_) => Vec::new(),
         };
-        let mut rate_limited = false;
-        self.advance_submissions(recovery, &mut rate_limited)
+        self.advance_submissions(recovery, rate_limited)
             .await
             .context("withdrawal processing stopped")?;
-        let submit = match self.submit_withdrawals(fresh, &mut rate_limited).await {
+        let submit = match self.submit_withdrawals(fresh, rate_limited).await {
             Err(error) if error.is_fatal() => {
                 return Err(error).context("withdrawal processing stopped")
             }
             submit => submit,
         };
-        self.advance_submissions(polling, &mut rate_limited)
+        self.advance_submissions(polling, rate_limited)
             .await
             .context("polling stopped")?;
         Ok(CycleReport {
@@ -333,7 +356,8 @@ impl Attester {
 
     /// Takes each validated burn through prepare, verify, sign and submit. A store failure or a
     /// conflict stops the pass; any other failure is logged, that burn stays eligible for the
-    /// next cycle, and the remaining burns are still tried.
+    /// next cycle, and the remaining burns are still tried. After a 429 the remaining burns wait
+    /// for the next cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<ValidatedBurn>,
@@ -341,6 +365,9 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         let mut first_error = None;
         for burn in burns {
+            if *rate_limited {
+                break;
+            }
             let note_id = burn.burn.note_id();
             if let Err(error) = self.withdraw(&burn, rate_limited).await {
                 if error.is_fatal() {

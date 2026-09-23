@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::attester::Attester;
 use crate::circle::CircleError;
-use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus::*, SubmitError};
+use crate::submission::{SavedSubmission, SubmissionStatus::*, SubmitError};
 
 use super::submit::{reply, Ledger};
 use super::support::{CircleState, ObservedRequest};
@@ -189,23 +189,18 @@ async fn missing_lookup_does_not_block_others() {
     assert_eq!(
         ledger.record(&attester, first),
         SavedSubmission {
-            status: Held,
-            hold_reason: Some(HoldReason::HttpRejected),
             last_http_status: Some(404),
             last_response: Some(b"{}".to_vec()),
-            last_error: Some("HTTP response needs operator review".into()),
-            ..before
+            last_error: Some("Circle returned HTTP 404 Not Found".into()),
+            ..before.clone()
         }
     );
     assert_eq!(ledger.record(&attester, second).status, Finalized);
     assert_eq!(requests.lock().unwrap().len(), 2);
+    // A status lookup never holds: the next pass asks again with the same request.
     attester.poll_withdrawal_statuses().await.unwrap();
-    assert_eq!(requests.lock().unwrap().len(), 2);
-    let held = ledger.record(&attester, first);
-    attester.retry_held_submission(held.note_id).unwrap();
-    attester.recover_submissions().await.unwrap();
     assert_eq!(ledger.record(&attester, first).status, Submitted);
-    assert_eq!(ledger.record(&attester, first).body, held.body);
+    assert_eq!(ledger.record(&attester, first).body, before.body);
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[0], requests[2]);
@@ -213,7 +208,7 @@ async fn missing_lookup_does_not_block_others() {
 }
 
 #[tokio::test]
-async fn wrong_response_is_held_without_blocking_others() {
+async fn wrong_response_is_retried_without_blocking_others() {
     let (ledger, [first, second]) = pending_pair().await;
     let mut response = ledger.response(first, "finalized");
     response["transferSpecHashes"] = json!([format!("0x{}", "ff".repeat(32))]);
@@ -221,17 +216,25 @@ async fn wrong_response_is_held_without_blocking_others() {
         .start(vec![
             reply(200, response),
             reply(200, ledger.response(second, "finalized")),
+            reply(200, ledger.response(first, "finalized")),
         ])
         .await;
     attester.poll_withdrawal_statuses().await.unwrap();
-    assert_eq!(ledger.record(&attester, first).status, Held);
+    let saved = ledger.record(&attester, first);
     assert_eq!(
-        ledger.record(&attester, first).hold_reason,
-        Some(HoldReason::ResponseMismatch)
+        (saved.status, saved.hold_reason, saved.last_error.as_deref()),
+        (
+            Submitted,
+            None,
+            Some("response does not identify the saved withdrawal")
+        )
     );
     assert_eq!(ledger.record(&attester, second).status, Finalized);
     attester.poll_withdrawal_statuses().await.unwrap();
-    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(ledger.record(&attester, first).status, Finalized);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0], requests[2]);
 }
 
 #[tokio::test]

@@ -132,7 +132,7 @@ impl Store {
         &self,
         proof_lag_block: BlockNumber,
         minimum_depth_blocks: u32,
-    ) -> Result<Vec<DiscoveredBurn>, StoreError> {
+    ) -> anyhow::Result<Vec<DiscoveredBurn>> {
         let Some(parent) = self.scan_state()?.authenticated_parent else {
             return Ok(Vec::new());
         };

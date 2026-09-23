@@ -14,16 +14,6 @@ use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
-pub enum CycleError {
-    #[error("discovery stopped on a store failure")]
-    Discovery(#[source] DiscoverError),
-    #[error("withdrawal processing stopped on a store failure")]
-    Submission(#[from] SubmitError),
-    #[error("polling stopped on a store failure")]
-    Poll(#[source] SubmitError),
-}
-
-#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DiscoverError {
     #[error("Miden chain read failed")]
@@ -170,37 +160,35 @@ impl Attester {
         }
     }
 
-    pub async fn run_one_cycle(&mut self) -> Result<CycleReport, CycleError> {
+    pub async fn run_one_cycle(&mut self) -> anyhow::Result<CycleReport> {
         let discover = self.discover_burns().await;
         // Only an unreachable node keeps the rest of the cycle going: a store failure or a
         // diverged chain stops everything until an operator has looked.
         if let Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) = discover {
-            return Err(CycleError::Discovery(error));
+            return Err(error).context("discovery stopped");
         }
 
         // Snapshot the ledger before any submission changes status. Work that expires or is
         // newly submitted in this cycle must not be prepared or polled again in the same cycle.
-        let recovery = self
-            .store
-            .submissions_to_recover()
-            .map_err(SubmitError::from)?;
-        let polling = self
-            .store
-            .submissions_to_poll()
-            .map_err(SubmitError::from)?;
+        let recovery = self.store.submissions_to_recover()?;
+        let polling = self.store.submissions_to_poll()?;
         let fresh = match &discover {
-            Ok(proof_lag_block) => self.ready_burns(*proof_lag_block).map_err(SubmitError::from)?,
+            Ok(proof_lag_block) => self.ready_burns(*proof_lag_block)?,
             Err(_) => Vec::new(),
         };
         let mut rate_limited = false;
-        self.recover_submissions(recovery, &mut rate_limited).await?;
+        self.recover_submissions(recovery, &mut rate_limited)
+            .await
+            .context("withdrawal processing stopped")?;
         let submit = match self.submit_withdrawals(fresh, &mut rate_limited).await {
-            Err(error) if error.is_fatal() => return Err(CycleError::Submission(error)),
+            Err(error) if error.is_fatal() => {
+                return Err(error).context("withdrawal processing stopped")
+            }
             submit => submit,
         };
         self.poll_withdrawal_statuses(polling, &mut rate_limited)
             .await
-            .map_err(CycleError::Poll)?;
+            .context("polling stopped")?;
         Ok(CycleReport {
             discover: discover.map(|_| ()),
             submit,

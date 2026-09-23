@@ -9,7 +9,7 @@ use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
-use crate::signer::{Signer, SigningPublicKey};
+use crate::signer::{Signer, SignerPair};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +41,7 @@ pub struct Attester {
     chain: Box<dyn ChainReader>,
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
-    signers: [Box<dyn Signer>; 2],
+    signers: SignerPair,
 }
 
 impl Attester {
@@ -82,33 +82,7 @@ impl Attester {
             );
         }
 
-        let [first, second] = config.expected_signing_public_keys_hex() else {
-            anyhow::bail!("exactly two distinct, valid signing public keys are required");
-        };
-        let parse_key = |value: &str| {
-            let mut bytes = [0; 33];
-            hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)
-                .context("configured signing public key is not valid hex")?;
-            SigningPublicKey::from_compressed(bytes)
-                .context("configured signing public key is not a valid curve point")
-        };
-        let expected = [parse_key(first)?, parse_key(second)?];
-        let loaded = [
-            signers[0]
-                .public_key()
-                .await
-                .context("could not read a signing provider's public key")?,
-            signers[1]
-                .public_key()
-                .await
-                .context("could not read a signing provider's public key")?,
-        ];
-        if expected[0] == expected[1] || loaded[0] == loaded[1] {
-            anyhow::bail!("exactly two distinct, valid signing public keys are required");
-        }
-        if !loaded.iter().all(|key| expected.contains(key)) {
-            anyhow::bail!("loaded signing public keys do not match configuration");
-        }
+        let signers = SignerPair::new(signers, config.expected_signing_public_keys_hex()).await?;
 
         circle
             .check_connection()
@@ -383,9 +357,7 @@ impl Attester {
         let verified = prepared
             .verify(burn, &self.config)
             .map_err(|error| SubmitError::Verification(Box::new(error)))?;
-        let signed = verified
-            .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
-            .await?;
+        let signed = verified.sign(self.signers.as_refs()).await?;
         self.submit_signed_withdrawal(&signed).await
     }
 }

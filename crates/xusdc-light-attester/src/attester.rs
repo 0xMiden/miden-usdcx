@@ -11,7 +11,7 @@ use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor, INVALID};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 
 #[derive(Debug)]
 pub struct RunError;
@@ -274,7 +274,7 @@ impl Attester {
     pub(crate) fn validate_ready_burns(
         &mut self,
         proof_lag_block: BlockNumber,
-    ) -> Result<Vec<ValidatedBurn>, StoreError> {
+    ) -> anyhow::Result<Vec<ValidatedBurn>> {
         let burns = self.store.burns_ready_for_withdrawal(
             proof_lag_block,
             self.config.minimum_finality_depth_blocks(),

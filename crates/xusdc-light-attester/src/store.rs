@@ -128,7 +128,7 @@ impl Store {
         &mut self,
         note_id: NoteId,
         reason: BurnRefusal,
-    ) -> Result<(), StoreError> {
+    ) -> anyhow::Result<()> {
         let updated = self
             .connection
             .execute(
@@ -137,11 +137,13 @@ impl Store {
                 params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
             )
             .map_err(classify_error)?;
-        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+        (updated == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
     #[cfg(test)]
-    pub(crate) fn discovered_burns(&self) -> Result<Vec<DiscoveredBurn>, StoreError> {
+    pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
         load_burns(&self.connection, self.faucet_account_id, true)
     }
 
@@ -263,7 +265,7 @@ fn initialize_store(
     transaction.commit().map_err(classify_error)
 }
 
-fn create_burns_table(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+fn create_burns_table(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             "CREATE TABLE burns (
@@ -462,7 +464,7 @@ fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
     include_refused: bool,
-) -> Result<Vec<DiscoveredBurn>, StoreError> {
+) -> anyhow::Result<Vec<DiscoveredBurn>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,

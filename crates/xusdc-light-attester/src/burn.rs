@@ -10,8 +10,9 @@ use xusdc_encoding::note::xreserve_burn::{
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct InvalidBurnCandidate;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("note is not a consumable xUSDC burn: {0}")]
+pub(crate) struct InvalidBurnCandidate(&'static str);
 
 /// A public note whose structure allows the configured faucet to consume it as an xUSDC burn.
 ///
@@ -32,38 +33,43 @@ impl BurnCandidate {
     ) -> Result<Self, InvalidBurnCandidate> {
         let burn = note.as_note();
         if burn.script().root() != XReserveBurnNote::script_root() {
-            return Err(InvalidBurnCandidate);
+            return Err(InvalidBurnCandidate("script root is not the burn script"));
         }
 
         let attachments = burn.attachments();
         if attachments.num_attachments() != 2 {
-            return Err(InvalidBurnCandidate);
+            return Err(InvalidBurnCandidate("expected exactly two attachments"));
         }
         let routing = attachments
             .find(NetworkAccountTarget::ATTACHMENT_SCHEME)
-            .ok_or(InvalidBurnCandidate)?;
+            .ok_or(InvalidBurnCandidate("routing attachment is missing"))?;
         let withdrawal = attachments
             .iter()
             .find(|attachment| {
                 attachment.attachment_scheme().as_u16()
                     == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
             })
-            .ok_or(InvalidBurnCandidate)?;
-        let target = NetworkAccountTarget::try_from(routing).map_err(|_| InvalidBurnCandidate)?;
+            .ok_or(InvalidBurnCandidate("withdrawal attachment is missing"))?;
+        let target = NetworkAccountTarget::try_from(routing)
+            .map_err(|_| InvalidBurnCandidate("routing attachment is malformed"))?;
         if target.target_id() != faucet_account_id
             || usize::from(withdrawal.num_words()) != XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS
         {
-            return Err(InvalidBurnCandidate);
+            return Err(InvalidBurnCandidate(
+                "routing target is not the faucet or the withdrawal attachment has the wrong size",
+            ));
         }
 
         let [asset] = burn.assets().as_slice() else {
-            return Err(InvalidBurnCandidate);
+            return Err(InvalidBurnCandidate("expected exactly one asset"));
         };
         if !asset.is_fungible()
             || asset.faucet_id() != faucet_account_id
             || burn.storage().items() != asset.as_elements()
         {
-            return Err(InvalidBurnCandidate);
+            return Err(InvalidBurnCandidate(
+                "asset or storage is not one fungible amount of the faucet's token",
+            ));
         }
 
         Ok(Self {

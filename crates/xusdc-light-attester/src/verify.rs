@@ -94,12 +94,10 @@ impl UnverifiedPrepareResponse {
         burn: &ValidatedBurn,
         config: &Config,
     ) -> Result<VerifiedWithdrawal, VerifyError> {
-        let mut batches = self.batches.into_iter();
-        let (Some(batch), None) = (batches.next(), batches.next()) else {
+        let Ok([batch]) = <[_; 1]>::try_from(self.batches) else {
             return Err(VerifyError::WrongCount);
         };
-        let mut intents = batch.burn_intents.into_iter();
-        let (Some(raw), None) = (intents.next(), intents.next()) else {
+        let Ok([raw]) = <[_; 1]>::try_from(batch.burn_intents) else {
             return Err(VerifyError::WrongCount);
         };
         let (intent, hook) = parse_intent(&raw)?;

@@ -43,12 +43,12 @@ pub(super) type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
 
 pub(super) async fn recover(attester: &mut Attester) -> Result<(), SubmitError> {
     let queue = attester.store.submissions_to_recover()?;
-    attester.recover_submissions(queue).await
+    attester.advance_submissions(queue).await
 }
 
 pub(super) async fn poll(attester: &mut Attester) -> Result<(), SubmitError> {
     let queue = attester.store.submissions_to_poll().unwrap();
-    attester.poll_withdrawal_statuses(queue).await
+    attester.advance_submissions(queue).await
 }
 
 struct TestSigner(u8);

@@ -201,13 +201,9 @@ pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnR
         .map_err(|_| BurnRefusal::InvalidWithdrawal)?
         .items()
         .clone();
-    let [asset] = note.assets().as_slice() else {
-        return Err(BurnRefusal::InvalidWithdrawal);
-    };
-    let Some(asset) = asset.as_fungible() else {
-        return Err(BurnRefusal::InvalidWithdrawal);
-    };
-    let amount = u64::from(asset.amount());
+    // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
+    // of the faucet.
+    let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());
 
     Ok(ValidatedBurn {
         burn,

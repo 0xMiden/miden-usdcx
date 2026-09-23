@@ -342,13 +342,13 @@ fn check_note_content_cases() {
             Refused,
         ),
         (
-            "destination is our own domain",
+            "destination is our own domain, left to Circle's prepare",
             |n| {
                 let mut payload = items();
-                payload.dest_domain = CircleDomain::new(10_007);
+                payload.dest_domain = CircleDomain::MIDEN;
                 n.set_items(payload);
             },
-            Refused,
+            Accepted,
         ),
     ];
 

@@ -3,24 +3,18 @@
 use std::path::Path;
 use std::time::Duration;
 
+use anyhow::{bail, Context};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use rusqlite::params;
+
+pub(crate) const INVALID: &str = "attester store is invalid";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) struct ScanCursor {
     /// The exact next block included in the next scan.
     pub(crate) next_block: BlockNumber,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
-pub(crate) enum StoreError {
-    #[error("attester store is invalid")]
-    Invalid,
-    #[error("attester store is locked by another process")]
-    Locked,
 }
 
 #[allow(dead_code)]
@@ -34,8 +28,8 @@ impl Store {
         path: &Path,
         faucet_account_id: AccountId,
         initial_cursor: ScanCursor,
-    ) -> Result<Self, StoreError> {
-        let exists = path.try_exists().map_err(|_| StoreError::Invalid)?;
+    ) -> anyhow::Result<Self> {
+        let exists = path.try_exists().context(INVALID)?;
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
         connection
@@ -57,7 +51,7 @@ impl Store {
         Ok(Self { connection })
     }
 
-    pub(crate) fn scan_cursor(&self) -> Result<ScanCursor, StoreError> {
+    pub(crate) fn scan_cursor(&self) -> anyhow::Result<ScanCursor> {
         let next_block = self
             .connection
             .query_row(
@@ -68,9 +62,7 @@ impl Store {
             .map_err(classify_error)?;
 
         Ok(ScanCursor {
-            next_block: BlockNumber::from(
-                u32::try_from(next_block).map_err(|_| StoreError::Invalid)?,
-            ),
+            next_block: BlockNumber::from(u32::try_from(next_block).context(INVALID)?),
         })
     }
 }
@@ -79,7 +71,7 @@ fn initialize_store(
     connection: &mut rusqlite::Connection,
     faucet_account_id: AccountId,
     initial_cursor: ScanCursor,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
     transaction
         .execute_batch(
@@ -106,7 +98,7 @@ fn initialize_store(
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
     let (stored_faucet, next_block, row_count) = connection
@@ -129,18 +121,18 @@ fn validate_store(
         || stored_faucet != faucet_account_id.to_hex()
         || u32::try_from(next_block).is_err()
     {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     Ok(())
 }
 
-fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     let quick_check = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(classify_error)?;
     if quick_check != "ok" {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
 
     connection
@@ -153,16 +145,18 @@ fn validate_store_format(connection: &rusqlite::Connection) -> Result<(), StoreE
     Ok(())
 }
 
-fn classify_error(error: rusqlite::Error) -> StoreError {
-    match error {
+fn classify_error(error: rusqlite::Error) -> anyhow::Error {
+    let locked = matches!(
+        &error,
         rusqlite::Error::SqliteFailure(sqlite_error, _)
             if matches!(
                 sqlite_error.code,
                 rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            ) =>
-        {
-            StoreError::Locked
-        }
-        _ => StoreError::Invalid,
-    }
+            )
+    );
+    anyhow::Error::new(error).context(if locked {
+        "attester store is locked by another process"
+    } else {
+        "attester store query failed"
+    })
 }

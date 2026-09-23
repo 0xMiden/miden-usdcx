@@ -198,7 +198,7 @@ impl Attester {
         };
         self.recover_submissions(recovery).await?;
         let submit = self.submit_withdrawals(fresh).await;
-        if let Err(error @ (SubmitError::InvalidStore | SubmitError::Conflict)) = submit {
+        if let Err(error @ SubmitError::Store(_)) = submit {
             return Err(CycleError::Submission(error));
         }
         self.poll_withdrawal_statuses(polling)
@@ -386,7 +386,7 @@ impl Attester {
             }
             .await;
             if let Err(error) = result {
-                if matches!(error, SubmitError::InvalidStore | SubmitError::Conflict) {
+                if matches!(error, SubmitError::Store(_)) {
                     return Err(error);
                 }
                 // Retry scheduling/holds for prepare and verify failures are the next slice.

@@ -146,8 +146,10 @@ impl SignedWithdrawal {
         let signed = &self.batch;
         let batch = &signed.batch;
         let (intent, _) = parse_intent(&batch.intent).map_err(|_| SubmitError::InvalidRequest)?;
-        let transfer_spec_hash =
-            transfer_spec_hash(&intent.spec).map_err(|_| SubmitError::InvalidRequest)?;
+        let transfer_spec_hash = intent
+            .spec
+            .hash()
+            .map_err(|_| SubmitError::InvalidRequest)?;
         let body = serde_json::to_vec(&json!({
             "batches": [{
                 "burnIntents": [&batch.intent],
@@ -381,6 +383,12 @@ impl eip712::TransferSpec {
         append_with_length(&mut bytes, &self.hookData)?;
         Ok(bytes)
     }
+
+    fn hash(&self) -> Result<B256, VerifyError> {
+        // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID.
+        // Its correspondence to REST transferSpecHashes still awaits a live withdrawal response.
+        Ok(keccak256(self.encode()?))
+    }
 }
 
 impl eip712::BurnIntent {
@@ -397,12 +405,6 @@ impl eip712::BurnIntent {
         let domain = eip712_domain! { name: "GatewayWallet", version: "1", };
         self.eip712_signing_hash(&domain)
     }
-}
-
-fn transfer_spec_hash(spec: &eip712::TransferSpec) -> Result<B256, VerifyError> {
-    // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID.
-    // Its correspondence to REST transferSpecHashes still awaits a live withdrawal response.
-    Ok(keccak256(spec.encode()?))
 }
 
 // Keeps semantic test mutations self-consistent; this is not an independent reference vector.

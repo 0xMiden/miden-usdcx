@@ -2,9 +2,11 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use reqwest::{StatusCode, Url};
+use tokio::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -37,11 +39,15 @@ pub trait HttpTransport: Send + Sync {
 
 pub struct ReqwestTransport {
     client: reqwest::Client,
+    next_request: Mutex<Instant>,
 }
 
 /// Stop waiting for a Circle connection after 10 s, even when the configured request timeout is
 /// longer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Circle allows five requests per second from one IP address; a quarter of a second between two
+/// requests stays below that.
+pub(crate) const REQUEST_GAP: Duration = Duration::from_millis(250);
 
 impl ReqwestTransport {
     pub fn new() -> Result<Self, CircleError> {
@@ -51,7 +57,10 @@ impl ReqwestTransport {
             // Circle is only ever reached over HTTPS. The crate's own tests may use plain HTTP.
             .https_only(cfg!(not(test)))
             .build()
-            .map(|client| Self { client })
+            .map(|client| Self {
+                client,
+                next_request: Mutex::new(Instant::now()),
+            })
             .map_err(CircleError::Transport)
     }
 }
@@ -62,6 +71,18 @@ impl HttpTransport for ReqwestTransport {
         request: reqwest::Request,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + '_>> {
         Box::pin(async move {
+            // Take the next free slot before waiting, so requests started together still go out
+            // one gap apart.
+            let start = {
+                let mut next_request = self
+                    .next_request
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let start = (*next_request).max(Instant::now());
+                *next_request = start + REQUEST_GAP;
+                start
+            };
+            tokio::time::sleep_until(start).await;
             self.client
                 .execute(request)
                 .await

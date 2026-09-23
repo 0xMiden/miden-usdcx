@@ -1,7 +1,7 @@
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
-use crate::circle::CircleError;
+use crate::circle::{CircleError, HttpTransport, ReqwestTransport, REQUEST_GAP};
 
 use super::{
     create_store_parent, load_config, ready_circle, start, ChainState, CircleState, FakeCircle,
@@ -69,4 +69,17 @@ async fn unreachable_circle_api_is_rejected() {
             }]
         );
     }
+}
+
+#[tokio::test]
+async fn circle_requests_are_paced() {
+    let transport = ReqwestTransport::new().unwrap();
+    let started = std::time::Instant::now();
+    for _ in 0..2 {
+        // A non-HTTP URL fails before any network I/O, so only the pacing takes time.
+        let url = "ftp://circle.example.invalid/".parse().unwrap();
+        let request = reqwest::Request::new(Method::GET, url);
+        assert!(transport.execute(request).await.is_err());
+    }
+    assert!(started.elapsed() >= REQUEST_GAP);
 }

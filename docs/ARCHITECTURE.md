@@ -37,7 +37,7 @@ That is not, by itself, a proof of one-to-one external backing. Local conservati
 
 The faucet is a public network account with no signing key. Its outer external capability boundary is a fixed allowlist of note-script roots plus one transaction-script root (the `miden-standards` expiration script); inner boundaries are RBAC, Authority, the active policy roots, transfer callbacks, mint cryptography, and internal authentication and fee dispatch. A root commits to complete code, but admitting one branching root admits every action that script implements. Permissionless submission does not imply permissionless code execution.
 
-Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze, allowlist mutators) are installed by the `miden-standards` components but deliberately have no admitted entry path because their roots are absent from the note allowlist.
+Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze, allowlist mutators) are installed by the `miden-standards` components but deliberately have no admitted entry path because their roots are absent from the note allowlist. The `UpgradeManager::upgrade` hook is installed on the same terms: it is part of the genesis code so a future upgrade path can reach it, and no admitted note or transaction script calls it.
 
 Two properties are load-bearing:
 
@@ -46,7 +46,7 @@ Two properties are load-bearing:
 
 ## 4. The faucet: composition and state
 
-The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. A separate zero-slot component supplies the burn policy.
+The account is composed from the `miden-standards` components (`FungibleFaucet`, `Pausable`, `MinBurnAmount`, `BasicBlocklist`, `TokenPolicyManager`, `PausableManager`, `BlocklistManager`, `RoleBasedAccessControl`, `Authority`, `UpgradeManager`, network-account authentication with its fee-policy companion, and a `ConstantFeeManager`) plus one local `xreserve` component contributing the attester-commitment map, the used-nonce map, and the domain configuration. A separate zero-slot component supplies the burn policy.
 
 State, grouped by writer posture:
 

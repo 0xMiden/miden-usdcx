@@ -5,8 +5,9 @@
 //! holds:
 //!   * `authority::get_authority` is READ-ONLY in execution (executed bounding, not
 //!     documentation);
-//!   * 12 mutator and fee procedures in three reachability tiers. Tier A contains four unreachable
-//!     allowlist mutators. Tier B contains six fee procedures and the `compute_note_fee` callback;
+//!   * 13 mutator, upgrade and fee procedures in three reachability tiers. Tier A contains five
+//!     unreachable procedures: the four allowlist mutators and the upgrade hook. Tier B contains
+//!     six fee procedures and the `compute_note_fee` callback;
 //!     these have no direct external entry point but are used by the internal fee-estimation path.
 //!     Tier C contains `set_note_fee`, which is reached through the fee configuration note and
 //!     authorized by `ADMIN`.
@@ -63,10 +64,10 @@ fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
 // FEE AND MUTATOR PROCEDURES
 // ================================================================================================
 //
-// The 12 procedures fall into three reachability tiers.
+// The 13 procedures fall into three reachability tiers.
 //
-// Tier A contains four unreachable allowlist mutators. No accepted note or transaction script
-// references them.
+// Tier A contains five unreachable procedures: the four allowlist mutators and the
+// `UpgradeManager::upgrade` hook. No accepted note or transaction script references them.
 //
 // Tier B contains six fee procedures and the `compute_note_fee` callback. Accepted notes and
 // transaction scripts do not reference them directly. The auth component invokes the fee
@@ -75,12 +76,14 @@ fn component_surface(components: &[AccountComponent]) -> Vec<(String, Word)> {
 // Tier C contains `ConstantFeeManager::set_note_fee`, which is called by
 // `ConstantFeePolicyConfigNote` and authorized through the `ADMIN` fallback.
 
-/// Tier A contains the four unreachable allowlist mutators.
-const TIER_A_MUTATOR_ROWS: [&str; 4] = [
+/// Tier A contains the five unreachable procedures: the four allowlist mutators and the upgrade
+/// hook.
+const TIER_A_MUTATOR_ROWS: [&str; 5] = [
     "::miden::standards::components::auth::network_account::add_allowed_note_script",
     "::miden::standards::components::auth::network_account::remove_allowed_note_script",
     "::miden::standards::components::auth::network_account::add_allowed_tx_script",
     "::miden::standards::components::auth::network_account::remove_allowed_tx_script",
+    "::miden::standards::components::upgrade::manager::upgrade",
 ];
 
 /// Tier B contains six fee procedures and the fee-policy callback. These procedures have no direct
@@ -114,7 +117,7 @@ fn procedure_roots(paths: &[&'static str]) -> Result<Vec<(&'static str, Word)>> 
         .collect()
 }
 
-/// Returns the roots of all 12 fee and mutator procedures.
+/// Returns the roots of all 13 fee, mutator and upgrade procedures.
 fn fee_and_mutator_procedure_roots() -> Result<Vec<(&'static str, Word)>> {
     let mut rows = procedure_roots(&TIER_A_MUTATOR_ROWS)?;
     rows.extend(procedure_roots(&TIER_B_FEE_ROWS)?);
@@ -123,9 +126,9 @@ fn fee_and_mutator_procedure_roots() -> Result<Vec<(&'static str, Word)>> {
 }
 
 /// Tier A, UNREACHABLE, leg 1 (static, exhaustive over the allowlist): NOT ONE of the 10
-/// allowlisted note scripts references ANY of the 4 mutator roots ANYWHERE in its MAST — so no
-/// admissible note can mutate the allowlists. The swept set is asserted equal to the allowlist
-/// first, so a new note cannot dodge the sweep.
+/// allowlisted note scripts references ANY of the 5 Tier-A roots ANYWHERE in its MAST — so no
+/// admissible note can mutate the allowlists or record an upgrade. The swept set is asserted
+/// equal to the allowlist first, so a new note cannot dodge the sweep.
 #[test]
 fn tier_a_mutators_are_unreachable_from_every_allowlisted_note() -> Result<()> {
     let allowlist = XReserveStablecoinBuilder::allowed_note_scripts();
@@ -144,9 +147,9 @@ fn tier_a_mutators_are_unreachable_from_every_allowlisted_note() -> Result<()> {
                 assert_ne!(
                     node.digest(),
                     *root,
-                    "allowlisted note script `{label}` references the Tier-A mutator root \
-                     `{path}` — the unreachability guarantee is BROKEN (an admissible note could \
-                     mutate the frozen allowlists)"
+                    "allowlisted note script `{label}` references the Tier-A root `{path}` — \
+                     the unreachability guarantee is BROKEN (an admissible note could reach a \
+                     procedure that has no admitted entry path)"
                 );
             }
         }

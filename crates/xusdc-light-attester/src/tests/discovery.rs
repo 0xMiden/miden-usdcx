@@ -15,7 +15,7 @@ use crate::attester::{Attester, DiscoverError};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
 
 use super::support::{
     faucet_account_id, note, ready_circle, scan_limits, test_note, transaction, BlockFactory,
@@ -289,10 +289,13 @@ fn burns_and_scan_position_are_saved_together() {
     let initial_state = store.scan_state().unwrap();
     // Even the first saved block must not skip a height. No stored parent can mask this check.
     assert_eq!(
-        store.save_scan_progress(std::slice::from_ref(&candidate), &[], &after_child),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(std::slice::from_ref(&candidate), &[], &after_child)
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(initial_state));
+    assert_eq!(store.scan_state().unwrap(), initial_state);
     assert!(store.candidates().unwrap().is_empty());
     assert!(store.discovered_burns().unwrap().is_empty());
     store
@@ -300,11 +303,14 @@ fn burns_and_scan_position_are_saved_together() {
         .unwrap();
     for next_state in [&after_anchor, &after_child] {
         assert_eq!(
-            store.save_scan_progress(std::slice::from_ref(&candidate), &[], next_state),
-            Err(StoreError::Conflict)
+            store
+                .save_scan_progress(std::slice::from_ref(&candidate), &[], next_state)
+                .unwrap_err()
+                .to_string(),
+            CONFLICT
         );
-        assert_eq!(store.scan_state(), Ok(after_anchor.clone()));
-        assert_eq!(store.candidates(), Ok(vec![candidate.clone()]));
+        assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
+        assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
         assert!(store.discovered_burns().unwrap().is_empty());
     }
 
@@ -339,15 +345,18 @@ fn burns_and_scan_position_are_saved_together() {
     };
     // The height is correct, but the new header must also link to the saved block.
     assert_eq!(
-        store.save_scan_progress(
-            std::slice::from_ref(&second_candidate),
-            std::slice::from_ref(&burn),
-            &wrong_parent,
-        ),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(
+                std::slice::from_ref(&second_candidate),
+                std::slice::from_ref(&burn),
+                &wrong_parent,
+            )
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(after_anchor.clone()));
-    assert_eq!(store.candidates(), Ok(vec![candidate.clone()]));
+    assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
+    assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
     assert!(store.discovered_burns().unwrap().is_empty());
 
     // Both heights pass the temporal bounds, but promotion must retain the candidate's height.
@@ -360,34 +369,43 @@ fn burns_and_scan_position_are_saved_together() {
     )
     .unwrap();
     assert_eq!(
-        store.save_scan_progress(
-            std::slice::from_ref(&second_candidate),
-            std::slice::from_ref(&mismatched_promotion),
-            &after_child,
-        ),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(
+                std::slice::from_ref(&second_candidate),
+                std::slice::from_ref(&mismatched_promotion),
+                &after_child,
+            )
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(after_anchor.clone()));
-    assert_eq!(store.candidates(), Ok(vec![candidate.clone()]));
+    assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
+    assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
     assert!(store.discovered_burns().unwrap().is_empty());
 
     store
         .save_scan_progress(&[], std::slice::from_ref(&burn), &after_child)
         .unwrap();
     assert_eq!(
-        store.save_scan_progress(
-            std::slice::from_ref(&candidate),
-            std::slice::from_ref(&burn),
-            &after_child,
-        ),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(
+                std::slice::from_ref(&candidate),
+                std::slice::from_ref(&burn),
+                &after_child,
+            )
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(after_child.clone()));
+    assert_eq!(store.scan_state().unwrap(), after_child.clone());
     assert!(store.candidates().unwrap().is_empty());
-    assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+    assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     assert_eq!(
-        store.save_scan_progress(&[], &[], &after_anchor),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(&[], &[], &after_anchor)
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
 
     let conflicting_burn = DiscoveredBurn::try_new(
@@ -409,24 +427,30 @@ fn burns_and_scan_position_are_saved_together() {
         authenticated_parent: Some(grandchild.header().clone()),
     };
     assert_eq!(
-        store.save_scan_progress(std::slice::from_ref(&candidate), &[], &after_grandchild),
-        Err(StoreError::Conflict)
+        store
+            .save_scan_progress(std::slice::from_ref(&candidate), &[], &after_grandchild)
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
-    assert_eq!(store.scan_state(), Ok(after_child.clone()));
+    assert_eq!(store.scan_state().unwrap(), after_child.clone());
     assert!(store.candidates().unwrap().is_empty());
-    assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+    assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     for duplicate in [&burn, &conflicting_burn] {
         assert_eq!(
-            store.save_scan_progress(
-                std::slice::from_ref(&second_candidate),
-                std::slice::from_ref(duplicate),
-                &after_grandchild,
-            ),
-            Err(StoreError::Conflict)
+            store
+                .save_scan_progress(
+                    std::slice::from_ref(&second_candidate),
+                    std::slice::from_ref(duplicate),
+                    &after_grandchild,
+                )
+                .unwrap_err()
+                .to_string(),
+            CONFLICT
         );
-        assert_eq!(store.scan_state(), Ok(after_child.clone()));
+        assert_eq!(store.scan_state().unwrap(), after_child.clone());
         assert!(store.candidates().unwrap().is_empty());
-        assert_eq!(store.discovered_burns(), Ok(vec![burn.clone()]));
+        assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     }
     let invalid_parent = ScanState {
         cursor: ScanCursor {
@@ -435,10 +459,13 @@ fn burns_and_scan_position_are_saved_together() {
         authenticated_parent: after_child.authenticated_parent.clone(),
     };
     assert_eq!(
-        store.save_scan_progress(&[], &[], &invalid_parent),
-        Err(StoreError::Invalid)
+        store
+            .save_scan_progress(&[], &[], &invalid_parent)
+            .unwrap_err()
+            .to_string(),
+        INVALID
     );
-    assert_eq!(store.scan_state(), Ok(after_child.clone()));
+    assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
     drop(store);
     let store = Store::open_or_create(
@@ -450,14 +477,14 @@ fn burns_and_scan_position_are_saved_together() {
         trusted_anchor,
     )
     .unwrap();
-    assert_eq!(store.discovered_burns(), Ok(vec![burn]));
+    assert_eq!(store.discovered_burns().unwrap(), vec![burn]);
     drop(store);
 
     let changed_anchor = TrustedAnchor {
         commitment: Word::empty(),
         ..trusted_anchor
     };
-    assert!(matches!(
+    assert_eq!(
         Store::open_or_create(
             &path,
             faucet_account_id(),
@@ -465,9 +492,12 @@ fn burns_and_scan_position_are_saved_together() {
                 next_block: BlockNumber::GENESIS,
             },
             changed_anchor,
-        ),
-        Err(StoreError::AnchorChanged)
-    ));
+        )
+        .err()
+        .unwrap()
+        .to_string(),
+        "configured trusted anchor differs from the store"
+    );
 
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
@@ -483,7 +513,7 @@ fn burns_and_scan_position_are_saved_together() {
         trusted_anchor,
     )
     .unwrap();
-    assert_eq!(store.discovered_burns(), Err(StoreError::Invalid));
+    assert_eq!(store.discovered_burns().unwrap_err().to_string(), INVALID);
     drop(store);
 
     let malformed_candidate_path = tempdir.path().join("malformed-candidate.sqlite3");
@@ -516,7 +546,7 @@ fn burns_and_scan_position_are_saved_together() {
         trusted_anchor,
     )
     .unwrap();
-    assert_eq!(store.candidates(), Err(StoreError::Invalid));
+    assert_eq!(store.candidates().unwrap_err().to_string(), INVALID);
 
     let predeployment_path = tempdir.path().join("predeployment.sqlite3");
     let mut store = Store::open_or_create(
@@ -529,22 +559,25 @@ fn burns_and_scan_position_are_saved_together() {
     )
     .unwrap();
     assert_eq!(
-        store.save_scan_progress(
-            &[BurnCandidate::try_new(
-                candidate.note().clone(),
-                BlockNumber::from(1u32),
-                faucet_account_id(),
-            )
-            .unwrap()],
-            &[],
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: BlockNumber::from(3u32),
+        store
+            .save_scan_progress(
+                &[BurnCandidate::try_new(
+                    candidate.note().clone(),
+                    BlockNumber::from(1u32),
+                    faucet_account_id(),
+                )
+                .unwrap()],
+                &[],
+                &ScanState {
+                    cursor: ScanCursor {
+                        next_block: BlockNumber::from(3u32),
+                    },
+                    authenticated_parent: Some(BlockHeader::mock(2u32, None, None, &[])),
                 },
-                authenticated_parent: Some(BlockHeader::mock(2u32, None, None, &[])),
-            },
-        ),
-        Err(StoreError::Conflict)
+            )
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
     );
 }
 

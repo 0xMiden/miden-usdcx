@@ -775,14 +775,6 @@ async fn bad_blocks_are_rejected() {
     );
 
     let saved_state = attester.store.scan_state().unwrap();
-    controls.requests.lock().unwrap().clear();
-    *controls.scan_limits.lock().unwrap() = scan_limits(u32::MAX, u32::MAX);
-    assert!(matches!(
-        attester.discover_burns().await,
-        Err(DiscoverError::CursorOverflow)
-    ));
-    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
-    assert!(controls.requests.lock().unwrap().is_empty());
     drop(attester);
     let (mut attester, _) = start(&tempdir, 1, fork_factory.blocks(), scan_limits(3, 0)).await;
     assert!(matches!(

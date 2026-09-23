@@ -5,7 +5,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
 use crate::config::Config;
-use crate::store::StoreError;
 use crate::store::{ScanCursor, Store};
 
 use super::{
@@ -167,7 +166,10 @@ async fn invalid_store_is_rejected() {
         write_invalid_store(&store_path, case);
 
         let result = start(load_config(&tempdir, 1), ChainState::Ready, ready_circle()).await;
-        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "failed to open attester store"
+        );
     }
 }
 
@@ -180,21 +182,20 @@ async fn store_cannot_be_opened_twice() {
             ready_circle(),
         )
         .await;
-        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
+        let error = result.err().unwrap();
+        assert!(format!("{error:#}").contains("attester store is locked by another process"));
         return;
     }
 
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
     let config_path = write_config(&tempdir, 1);
-    let store = Store::open_or_create(
-        &store_path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::from(1u32),
-        },
-    )
-    .unwrap();
+    let cursor = ScanCursor {
+        next_block: BlockNumber::from(1u32),
+    };
+    // Reopen the new store, as a restarted attester does: that path must take the lock too.
+    drop(Store::open_or_create(&store_path, faucet_account_id(), cursor).unwrap());
+    let store = Store::open_or_create(&store_path, faucet_account_id(), cursor).unwrap();
 
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")

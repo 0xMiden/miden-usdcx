@@ -125,7 +125,7 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> Result<(), StoreError> {
+    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission(record)?;
         // Only an explicitly supplied fresh authorization can replace a confirmed failure.
         let written = self
@@ -153,25 +153,21 @@ impl Store {
                 ],
             )
             .map_err(classify_write_error)?;
-        (written == 1).then_some(()).ok_or(StoreError::Conflict)
+        (written == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
     #[cfg(test)]
-    pub(crate) fn submission(
-        &self,
-        note_id: NoteId,
-    ) -> Result<Option<SavedSubmission>, StoreError> {
+    pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
         Ok(load_submissions(&self.connection, Some(note_id), false)?.pop())
     }
 
-    pub(crate) fn submissions_to_recover(&self) -> Result<Vec<SavedSubmission>, StoreError> {
+    pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
         load_submissions(&self.connection, None, true)
     }
 
-    pub(crate) fn save_submission_outcome(
-        &self,
-        outcome: &SavedSubmission,
-    ) -> Result<(), StoreError> {
+    pub(crate) fn save_submission_outcome(&self, outcome: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission_outcome(outcome)?;
         // The sequential submitter changes only outcomes, never a request or a known ID.
         let updated = self
@@ -192,10 +188,12 @@ impl Store {
                 ],
             )
             .map_err(classify_error)?;
-        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+        (updated == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
-    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> Result<(), StoreError> {
+    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
         // Keep the saved ID and bytes: recovery resumes GET if an ID is already known.
         let updated = self
             .connection
@@ -205,7 +203,9 @@ impl Store {
                 [note_id.to_bytes()],
             )
             .map_err(classify_error)?;
-        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+        (updated == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
     /// Records a burn whose withdrawal payload does not decode, without changing its evidence or
@@ -495,7 +495,7 @@ fn load_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
     recoverable_only: bool,
-) -> Result<Vec<SavedSubmission>, StoreError> {
+) -> anyhow::Result<Vec<SavedSubmission>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
@@ -517,7 +517,7 @@ fn load_submissions(
             "EXPIRED" => SubmissionStatus::Expired,
             "FAILED" => SubmissionStatus::Failed,
             "HELD" => SubmissionStatus::Held,
-            _ => return Err(StoreError::Invalid),
+            _ => bail!(INVALID),
         };
         let hold_reason = match row
             .get::<_, Option<String>>(7)
@@ -528,7 +528,7 @@ fn load_submissions(
             Some("http_rejected") => Some(HoldReason::HttpRejected),
             Some("response_mismatch") => Some(HoldReason::ResponseMismatch),
             Some("unknown_status") => Some(HoldReason::UnknownStatus),
-            _ => return Err(StoreError::Invalid),
+            _ => bail!(INVALID),
         };
         let record = SavedSubmission {
             note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
@@ -538,7 +538,7 @@ fn load_submissions(
             use_circle_forwarding: match row.get::<_, i64>(4).map_err(classify_error)? {
                 0 => false,
                 1 => true,
-                _ => return Err(StoreError::Invalid),
+                _ => bail!(INVALID),
             },
             status,
             withdrawal_id: row.get(6).map_err(classify_error)?,
@@ -554,26 +554,26 @@ fn load_submissions(
              WHERE note_id = ?1 AND status = 'DISCOVERED')",
             [record.note_id.to_bytes()],
         )? {
-            return Err(StoreError::Invalid);
+            bail!(INVALID);
         }
         records.push(record);
     }
     Ok(records)
 }
 
-fn validate_submission(record: &SavedSubmission) -> Result<(), StoreError> {
-    let endpoint = reqwest::Url::parse(&record.endpoint).map_err(|_| StoreError::Invalid)?;
+fn validate_submission(record: &SavedSubmission) -> anyhow::Result<()> {
+    let endpoint = reqwest::Url::parse(&record.endpoint).context(INVALID)?;
     if endpoint.scheme() != "https"
         || endpoint.host_str().is_none()
         || endpoint.path() != "/v1/withdraw"
         || !validate_saved_request(record)
     {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
     validate_submission_outcome(record)
 }
 
-fn validate_submission_outcome(outcome: &SavedSubmission) -> Result<(), StoreError> {
+fn validate_submission_outcome(outcome: &SavedSubmission) -> anyhow::Result<()> {
     if (outcome.status == SubmissionStatus::Held) != outcome.hold_reason.is_some()
         || outcome
             .withdrawal_id
@@ -590,7 +590,7 @@ fn validate_submission_outcome(outcome: &SavedSubmission) -> Result<(), StoreErr
             .last_http_status
             .is_some_and(|code| reqwest::StatusCode::from_u16(code).is_err())
     {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
     Ok(())
 }

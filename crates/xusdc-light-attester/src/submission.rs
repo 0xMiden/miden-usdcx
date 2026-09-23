@@ -6,7 +6,6 @@ use reqwest::StatusCode;
 
 use crate::attester::Attester;
 use crate::circle::{self, ConflictResponse, RawResponse, WithdrawalResponse};
-use crate::store::StoreError;
 use crate::verify::SignedWithdrawal;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,10 +13,8 @@ use crate::verify::SignedWithdrawal;
 pub enum SubmitError {
     #[error("submission request is invalid")]
     InvalidRequest,
-    #[error("attester submission store is invalid")]
-    InvalidStore,
-    #[error("submission conflicts with the saved burn or request")]
-    Conflict,
+    #[error("attester store failed")]
+    Store(#[from] anyhow::Error),
     #[error("could not encode the signed withdrawal")]
     Encoding(#[source] serde_json::Error),
 }
@@ -258,14 +255,5 @@ impl SavedSubmission {
 
     fn matches_note(&self, id: &str) -> bool {
         id.eq_ignore_ascii_case(&self.note_id.to_hex())
-    }
-}
-
-impl From<StoreError> for SubmitError {
-    fn from(error: StoreError) -> Self {
-        match error {
-            StoreError::Conflict => Self::Conflict,
-            _ => Self::InvalidStore,
-        }
     }
 }

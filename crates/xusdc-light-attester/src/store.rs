@@ -26,14 +26,12 @@ const CAP_REJECTED: &str = "CAP_REJECTED";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected,
-    VerifyFailed,
 }
 
 impl BurnHoldReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PrepareRejected => "prepare_rejected",
-            Self::VerifyFailed => "verify_failed",
         }
     }
 }

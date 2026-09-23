@@ -177,7 +177,7 @@ impl Store {
         now_ms: i64,
         window_ms: i64,
         limit: u64,
-    ) -> Result<bool, StoreError> {
+    ) -> anyhow::Result<bool> {
         can_submit_burn(&self.connection, note_id, amount, now_ms, window_ms, limit)
     }
 
@@ -189,7 +189,7 @@ impl Store {
         now_ms: i64,
         window_ms: i64,
         limit: u64,
-    ) -> Result<bool, StoreError> {
+    ) -> anyhow::Result<bool> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         if !can_submit_burn(
             &transaction,
@@ -214,7 +214,7 @@ impl Store {
         now_ms: i64,
         window_ms: i64,
         limit: u64,
-    ) -> Result<bool, StoreError> {
+    ) -> anyhow::Result<bool> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let amount = transaction
             .query_row(
@@ -233,7 +233,7 @@ impl Store {
         Ok(true)
     }
 
-    pub(crate) fn record_cap_rejection(&mut self, note_id: NoteId) -> Result<(), StoreError> {
+    pub(crate) fn record_cap_rejection(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let removed = transaction
             .execute(
@@ -250,17 +250,13 @@ impl Store {
             )
             .map_err(classify_error)?;
         if removed != 1 || updated != 1 {
-            return Err(StoreError::Conflict);
+            bail!(CONFLICT);
         }
         // Circle refused this attempt: release its charge, retain its cooldown, discard its bytes.
         transaction.commit().map_err(classify_error)
     }
 
-    pub(crate) fn hold_burn(
-        &self,
-        note_id: NoteId,
-        reason: BurnHoldReason,
-    ) -> Result<(), StoreError> {
+    pub(crate) fn hold_burn(&self, note_id: NoteId, reason: BurnHoldReason) -> anyhow::Result<()> {
         let updated = self
             .connection
             .execute(
@@ -272,10 +268,12 @@ impl Store {
                 params![note_id.to_bytes(), reason.as_str()],
             )
             .map_err(classify_error)?;
-        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+        (updated == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
-    pub(crate) fn release_burn_hold(&self, note_id: NoteId) -> Result<(), StoreError> {
+    pub(crate) fn release_burn_hold(&self, note_id: NoteId) -> anyhow::Result<()> {
         let updated = self
             .connection
             .execute(
@@ -284,7 +282,9 @@ impl Store {
                 [note_id.to_bytes()],
             )
             .map_err(classify_error)?;
-        (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+        (updated == 1)
+            .then_some(())
+            .ok_or_else(|| anyhow!(CONFLICT))
     }
 
     /// The saved submission for `note_id`, if there is one.
@@ -449,9 +449,9 @@ fn can_submit_burn(
     now_ms: i64,
     window_ms: i64,
     limit: u64,
-) -> Result<bool, StoreError> {
+) -> anyhow::Result<bool> {
     if now_ms < 0 || window_ms <= 0 {
-        return Err(StoreError::Invalid);
+        bail!(INVALID);
     }
     let (status, hold, previous_amount, admitted_at) = connection
         .query_row(
@@ -469,13 +469,13 @@ fn can_submit_burn(
         )
         .map_err(classify_error)?;
     if previous_amount.is_some_and(|previous| previous != amount) {
-        return Err(StoreError::Conflict);
+        bail!(CONFLICT);
     }
     if hold.is_some()
         || status == REFUSED
         || amount > limit
         || (status == CAP_REJECTED
-            && inside_window(now_ms, admitted_at.ok_or(StoreError::Invalid)?, window_ms))
+            && inside_window(now_ms, admitted_at.context(INVALID)?, window_ms))
     {
         return Ok(false);
     }
@@ -513,7 +513,7 @@ fn reserve_capacity(
     note_id: NoteId,
     amount: u64,
     now_ms: i64,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     let updated = connection
         .execute(
             "UPDATE burns SET status = 'DISCOVERED', reservation_amount = ?2,
@@ -523,7 +523,9 @@ fn reserve_capacity(
             params![note_id.to_bytes(), amount, now_ms],
         )
         .map_err(classify_error)?;
-    (updated == 1).then_some(()).ok_or(StoreError::Conflict)
+    (updated == 1)
+        .then_some(())
+        .ok_or_else(|| anyhow!(CONFLICT))
 }
 
 /// Saves a signed request before it is sent, and records it in the burn's history. It can replace
@@ -531,7 +533,7 @@ fn reserve_capacity(
 fn save_submission(
     connection: &rusqlite::Connection,
     record: &SavedSubmission,
-) -> Result<(), StoreError> {
+) -> anyhow::Result<()> {
     validate_submission(record)?;
     let written = connection
         .execute(
@@ -556,7 +558,7 @@ fn save_submission(
             ],
         )
         .map_err(classify_write_error)?;
-    (written == 1).then_some(()).ok_or(StoreError::Conflict)?;
+    ensure!(written == 1, CONFLICT);
     record_submission(connection, record.note_id, EventKind::Authorized)
 }
 

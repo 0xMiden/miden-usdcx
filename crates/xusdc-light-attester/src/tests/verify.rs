@@ -13,7 +13,7 @@ use super::validation::validated_burn;
 const FIRST_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
 const ZERO_WORD: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-fn serial(last: u64) -> Word {
+pub(super) fn serial(last: u64) -> Word {
     Word::new([
         Felt::new(0x0102_0304_0506_0708).unwrap(),
         Felt::new(0x1112_1314_1516_1718).unwrap(),

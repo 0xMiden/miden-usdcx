@@ -277,9 +277,7 @@ fn create_burns_table(connection: &rusqlite::Connection) -> anyhow::Result<()> {
                 CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
             burn_tx_id BLOB,
             status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
-            refusal_reason TEXT CHECK (refusal_reason IN (
-                'wrong_tag', 'invalid_withdrawal'
-            )),
+            refusal_reason TEXT CHECK (refusal_reason IN ('invalid_withdrawal')),
             CHECK ((status != 'REFUSED' AND refusal_reason IS NULL)
                 OR (status = 'REFUSED' AND refusal_reason IS NOT NULL)),
             CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),

@@ -351,10 +351,9 @@ impl Attester {
         Ok(validated)
     }
 
-    /// Takes each validated burn through prepare, verify, sign and submit. A store failure or a
-    /// conflict stops the pass; any other failure is logged, that burn stays eligible for the
-    /// next cycle, and the remaining burns are still tried. After a 429 the remaining burns wait
-    /// for the next cycle.
+    /// Takes each validated burn through prepare, verify, sign and submit. A store or clock
+    /// failure stops the pass. A prepare 400 holds the burn; any other failure is logged and
+    /// retried next cycle. After a 429 the remaining burns wait for the next cycle.
     async fn submit_withdrawals(&mut self, burns: Vec<ValidatedBurn>) -> Result<(), SubmitError> {
         let mut first_error = None;
         for burn in burns {

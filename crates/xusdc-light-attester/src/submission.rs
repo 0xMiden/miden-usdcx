@@ -111,8 +111,8 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    /// After fixing a prepare/verification failure, let this burn be checked again.
-    /// Capacity reservations and any cap-rejection cooldown remain unchanged.
+    /// After Circle's prepare refused this burn and the cause is fixed, let the burn be checked
+    /// again. Capacity reservations and any cap-rejection cooldown remain unchanged.
     pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }
@@ -294,9 +294,10 @@ impl SavedSubmission {
             StatusCode::CREATED
         };
         if response.status != expected_status {
-            // Only a 400 to the POST is a definite no from Circle: a blocked burner or recipient,
-            // or data Circle refuses. Any other answer says nothing final, so the row stays queued
-            // and the next pass sends the same request again.
+            // Only a 400 to the POST, unless it is Circle's configured capacity message, is a
+            // definite no from Circle: a blocked burner or recipient, or data Circle refuses. Any
+            // other answer says nothing final, so the row stays queued and the next pass sends the
+            // same request again.
             if !lookup && response.status == StatusCode::BAD_REQUEST {
                 self.hold(
                     HoldReason::HttpRejected,

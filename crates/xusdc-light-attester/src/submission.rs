@@ -85,7 +85,7 @@ impl Attester {
         )? {
             return Ok(());
         }
-        self.send_admitted_submission(saved).await
+        self.send_admitted_submission(saved, true).await
     }
 
     /// Sends each given saved request once: the saved POST while Circle's withdrawal ID is
@@ -147,12 +147,15 @@ impl Attester {
         {
             return Ok(());
         }
-        self.send_admitted_submission(saved).await
+        self.send_admitted_submission(saved, false).await
     }
 
+    /// Sends the saved request once. `first_send` is true only when these signed bytes have never
+    /// been sent before, so no earlier attempt can have been accepted.
     async fn send_admitted_submission(
         &mut self,
         mut saved: SavedSubmission,
+        first_send: bool,
     ) -> Result<(), SubmitError> {
         let mut response = self.send_saved_request(&mut saved).await;
         if saved.withdrawal_id.is_none()
@@ -167,6 +170,12 @@ impl Attester {
                         })
             })
         {
+            if !first_send {
+                // An earlier send of these bytes may have been accepted, so the burn is never
+                // signed again: the same request stays queued and goes out in a later cycle.
+                saved.last_error = Some("Circle's withdrawal limit is reached".into());
+                return self.save_outcome(&saved);
+            }
             // Only a confirmed cap rejection releases capacity. Discard its signed bytes;
             // after the cooldown it must be prepared and signed again, not replayed stale.
             self.store.record_cap_rejection(saved.note_id)?;

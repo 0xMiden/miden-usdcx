@@ -70,7 +70,7 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
     }))
     .unwrap();
     // This gives semantic cases a consistent header/hash, not an independent crypto reference.
-    rebuild_for_test(&mut batch, false).unwrap();
+    rebuild_for_test(&mut batch).unwrap();
     batch
 }
 
@@ -129,7 +129,7 @@ fn circle_response_matches_burns() {
     for (name, edit, expected) in field_cases {
         let mut changed = batch(FIRST_SALT, 1_000, 9);
         edit(&mut changed);
-        rebuild_for_test(&mut changed, false).unwrap();
+        rebuild_for_test(&mut changed).unwrap();
         refuse(name, vec![changed], expected);
     }
     refuse("missing batch", vec![], WrongCount);
@@ -147,38 +147,23 @@ fn circle_response_matches_burns() {
         .push(batch(FIRST_SALT, 1_000, 9).burn_intents.remove(0));
     refuse("two intents in one batch", vec![split], WrongCount);
 
-    for as_set in [false, true] {
-        let mut accepted = batch(FIRST_SALT, 1_000, 9);
-        rebuild_for_test(&mut accepted, as_set).unwrap();
-        let response = UnverifiedPrepareResponse {
-            batches: vec![accepted],
-        };
-        assert_eq!(
-            verify_prepared_response(&burn, response, &config).err(),
-            None
-        );
-
-        let mut changed = batch(FIRST_SALT, 1_000, 9);
-        rebuild_for_test(&mut changed, as_set).unwrap();
-        changed.message_hash_to_sign = ZERO_WORD.into();
-        refuse("different digest", vec![changed], DigestMismatch);
-    }
-    let mut wrong_set_count = batch(FIRST_SALT, 1_000, 9);
-    rebuild_for_test(&mut wrong_set_count, true).unwrap();
-    let mut encoded_set = hex::decode(&wrong_set_count.encoded[2..]).unwrap();
-    encoded_set[7] = 2;
-    wrong_set_count.encoded = format!("0x{}", hex::encode(encoded_set));
-    refuse(
-        "one-intent set count",
-        vec![wrong_set_count],
-        EncodedMismatch,
+    let response = UnverifiedPrepareResponse {
+        batches: vec![batch(FIRST_SALT, 1_000, 9)],
+    };
+    assert_eq!(
+        verify_prepared_response(&burn, response, &config).err(),
+        None
     );
-    let mut unknown_header = batch(FIRST_SALT, 1_000, 9);
-    unknown_header.encoded.replace_range(..10, "0x00000000");
+
+    let mut changed = batch(FIRST_SALT, 1_000, 9);
+    changed.message_hash_to_sign = ZERO_WORD.into();
+    refuse("different digest", vec![changed], DigestMismatch);
+    let mut set_header = batch(FIRST_SALT, 1_000, 9);
+    set_header.encoded.replace_range(..10, "0xe999239b");
     refuse(
-        "unknown header",
-        vec![unknown_header],
-        MalformedField("encoded"),
+        "burn-intent-set header",
+        vec![set_header],
+        EncodedMismatch,
     );
     let mut mismatched = batch(FIRST_SALT, 1_000, 9);
     let original = mismatched.encoded.clone();
@@ -258,7 +243,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         let mut changed = batch(FIRST_SALT, 1_000, 9);
         changed.burn_intents[0].spec.value = value.into();
         changed.burn_intents[0].max_fee = fee.into();
-        rebuild_for_test(&mut changed, false).unwrap();
+        rebuild_for_test(&mut changed).unwrap();
         check(name, changed, ceiling, expected);
     }
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
@@ -285,7 +270,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     for (name, edit, expected) in forwarding_cases {
         let mut changed = batch(FIRST_SALT, 1_000, 9);
         edit(&mut changed);
-        rebuild_for_test(&mut changed, false).unwrap();
+        rebuild_for_test(&mut changed).unwrap();
         check(name, changed, None, Some(expected));
     }
 }

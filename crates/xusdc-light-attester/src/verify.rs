@@ -12,7 +12,6 @@ use crate::circle::{BurnIntent, UnverifiedPrepareResponse};
 use crate::config::Config;
 
 const BURN_INTENT_MAGIC: [u8; 4] = 0x070a_fbc2u32.to_be_bytes();
-const BURN_INTENT_SET_MAGIC: [u8; 4] = 0xe999_239bu32.to_be_bytes();
 
 // Names and field order are part of Circle's EIP-712 type hashes.
 mod eip712 {
@@ -38,10 +37,6 @@ mod eip712 {
             uint256 maxBlockHeight;
             uint256 maxFee;
             TransferSpec spec;
-        }
-
-        struct BurnIntentSet {
-            BurnIntent[] intents;
         }
     }
 }
@@ -152,12 +147,13 @@ pub(crate) fn verify_prepared_response(
         return Err(VerifyError::Forwarding);
     }
 
+    // Circle sends the encoded bytes and the hash to sign; we rebuild both from the checked fields
+    // and sign only if both match exactly.
     let supplied_bytes: Bytes = parse(&batch.encoded, "encoded")?;
-    let as_set = framing(&supplied_bytes)?;
-    if supplied_bytes.as_ref() != encode_framed_intent(&intent, as_set)? {
+    if supplied_bytes.as_ref() != encode_burn_intent(&intent)? {
         return Err(VerifyError::EncodedMismatch);
     }
-    let digest = signing_hash(intent, as_set);
+    let digest = signing_hash(intent);
     if digest != parse::<B256>(&batch.message_hash_to_sign, "messageHashToSign")? {
         return Err(VerifyError::DigestMismatch);
     }
@@ -274,49 +270,20 @@ fn encode_burn_intent(intent: &eip712::BurnIntent) -> Result<Vec<u8>, VerifyErro
     Ok(bytes)
 }
 
-fn encode_framed_intent(intent: &eip712::BurnIntent, as_set: bool) -> Result<Vec<u8>, VerifyError> {
-    let intent = encode_burn_intent(intent)?;
-    if !as_set {
-        return Ok(intent);
-    }
-    let mut set = BURN_INTENT_SET_MAGIC.to_vec();
-    set.extend(1u32.to_be_bytes());
-    set.extend(intent);
-    Ok(set)
-}
-
-fn framing(encoded: &[u8]) -> Result<bool, VerifyError> {
-    if encoded.starts_with(&BURN_INTENT_SET_MAGIC) {
-        Ok(true)
-    } else if encoded.starts_with(&BURN_INTENT_MAGIC) {
-        Ok(false)
-    } else {
-        Err(VerifyError::MalformedField("encoded"))
-    }
-}
-
-fn signing_hash(intent: eip712::BurnIntent, as_set: bool) -> B256 {
+fn signing_hash(intent: eip712::BurnIntent) -> B256 {
     // Circle omits chainId/verifyingContract. This digest is NOT keccak256(encoded).
     let domain = eip712_domain! { name: "GatewayWallet", version: "1", };
-    if as_set {
-        let set = eip712::BurnIntentSet {
-            intents: vec![intent],
-        };
-        set.eip712_signing_hash(&domain)
-    } else {
-        intent.eip712_signing_hash(&domain)
-    }
+    intent.eip712_signing_hash(&domain)
 }
 
 // Keeps semantic test mutations self-consistent; this is not an independent reference vector.
 #[cfg(test)]
 pub(crate) fn rebuild_for_test(
     batch: &mut crate::circle::UnverifiedPrepareBatch,
-    as_set: bool,
 ) -> Result<(), VerifyError> {
     let (intent, _) = parse_intent(&batch.burn_intents[0])?;
-    batch.encoded = format!("0x{}", hex::encode(encode_framed_intent(&intent, as_set)?));
-    let digest = signing_hash(intent, as_set);
+    batch.encoded = format!("0x{}", hex::encode(encode_burn_intent(&intent)?));
+    let digest = signing_hash(intent);
     batch.message_hash_to_sign = format!("{digest:#x}");
     Ok(())
 }
@@ -329,9 +296,7 @@ pub(crate) fn canonical_values_for_test(
         return Err(VerifyError::WrongCount);
     };
     let (intent, _) = parse_intent(raw)?;
-    let supplied: Bytes = parse(&batch.encoded, "encoded")?;
-    let as_set = framing(&supplied)?;
-    let encoded = encode_framed_intent(&intent, as_set)?;
-    let digest = signing_hash(intent, as_set);
+    let encoded = encode_burn_intent(&intent)?;
+    let digest = signing_hash(intent);
     Ok((encoded, digest))
 }

@@ -6,7 +6,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::Word;
 
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, StoreError, TrustedAnchor};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
 
 use super::{
     config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
@@ -275,7 +275,10 @@ async fn invalid_store_is_rejected() {
             ready_circle(),
         )
         .await;
-        assert!(result.err().unwrap().downcast_ref::<StoreError>().is_some());
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "failed to open attester store"
+        );
     }
 }
 

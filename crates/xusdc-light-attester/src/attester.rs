@@ -361,21 +361,7 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             let note_id = burn.burn.note_id();
-            let result = async {
-                let prepared = self
-                    .circle
-                    .prepare_withdrawal(&burn, self.config.use_circle_forwarding())
-                    .await?;
-                let verified = prepared
-                    .verify(&burn, &self.config)
-                    .map_err(|error| SubmitError::Verification(Box::new(error)))?;
-                let signed = verified
-                    .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
-                    .await?;
-                self.submit_signed_withdrawal(&signed).await
-            }
-            .await;
-            if let Err(error) = result {
+            if let Err(error) = self.withdraw(&burn).await {
                 if error.is_fatal() {
                     return Err(error);
                 }
@@ -386,6 +372,21 @@ impl Attester {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Prepares one burn's withdrawal with Circle, verifies the reply, signs it and submits it.
+    async fn withdraw(&mut self, burn: &ValidatedBurn) -> Result<(), SubmitError> {
+        let prepared = self
+            .circle
+            .prepare_withdrawal(burn, self.config.use_circle_forwarding())
+            .await?;
+        let verified = prepared
+            .verify(burn, &self.config)
+            .map_err(|error| SubmitError::Verification(Box::new(error)))?;
+        let signed = verified
+            .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])
+            .await?;
+        self.submit_signed_withdrawal(&signed).await
     }
 }
 

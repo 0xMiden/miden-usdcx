@@ -12,7 +12,7 @@ use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P
 use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, DiscoverError};
-use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
@@ -527,26 +527,19 @@ fn burns_and_scan_position_are_saved_together() {
     );
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
-    store
-        .refuse_burn(burn.note_id(), BurnRefusal::InvalidWithdrawal)
-        .unwrap();
+    store.refuse_burn(burn.note_id()).unwrap();
     assert_eq!(
-        store
-            .refuse_burn(burn.note_id(), BurnRefusal::InvalidWithdrawal)
-            .unwrap_err()
-            .to_string(),
+        store.refuse_burn(burn.note_id()).unwrap_err().to_string(),
         CONFLICT,
         "a refused burn is no longer pending work"
     );
-    for (id, reason) in [
-        (burn.note_id(), BurnRefusal::InvalidWithdrawal),
-        (second_candidate.note_id(), BurnRefusal::InvalidWithdrawal),
-    ] {
-        assert_eq!(
-            store.refuse_burn(id, reason).unwrap_err().to_string(),
-            CONFLICT
-        );
-    }
+    assert_eq!(
+        store
+            .refuse_burn(second_candidate.note_id())
+            .unwrap_err()
+            .to_string(),
+        CONFLICT
+    );
     assert_eq!(
         store
             .save_scan_progress(
@@ -584,14 +577,14 @@ fn burns_and_scan_position_are_saved_together() {
         .is_empty());
     drop(store);
     let connection = rusqlite::Connection::open(&path).unwrap();
-    let refusal = connection
+    let status = connection
         .query_row(
-            "SELECT status, refusal_reason FROM burns WHERE note_id = ?1",
+            "SELECT status FROM burns WHERE note_id = ?1",
             [burn.note_id().to_bytes()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| row.get::<_, String>(0),
         )
         .unwrap();
-    assert_eq!(refusal, ("REFUSED".into(), "invalid_withdrawal".into()));
+    assert_eq!(status, "REFUSED");
     drop(connection);
 
     let changed_anchor = TrustedAnchor {

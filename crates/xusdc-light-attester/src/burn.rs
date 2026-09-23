@@ -155,20 +155,6 @@ impl DiscoveredBurn {
     }
 }
 
-/// A durable reason why a consumed, structurally valid burn cannot become a withdrawal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BurnRefusal {
-    InvalidWithdrawal,
-}
-
-impl BurnRefusal {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidWithdrawal => "invalid_withdrawal",
-        }
-    }
-}
-
 /// A consumed burn whose Circle withdrawal fields decoded successfully.
 ///
 /// This local validation is not permission to sign.
@@ -180,32 +166,22 @@ pub(crate) struct ValidatedBurn {
     pub(crate) amount: u64,
 }
 
-impl TryFrom<DiscoveredBurn> for ValidatedBurn {
-    type Error = BurnRefusal;
-
-    fn try_from(burn: DiscoveredBurn) -> Result<Self, Self::Error> {
-        validate_burn(burn)
-    }
-}
-
-pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Result<ValidatedBurn, BurnRefusal> {
+/// Decodes the burn's Circle withdrawal fields. `None` means the payload does not decode, so the
+/// burn can never become a withdrawal.
+pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Option<ValidatedBurn> {
     let note = burn.note().as_note();
-    let withdrawal = note
-        .attachments()
-        .iter()
-        .find(|attachment| {
-            attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
-        })
-        .ok_or(BurnRefusal::InvalidWithdrawal)?;
+    let withdrawal = note.attachments().iter().find(|attachment| {
+        attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
+    })?;
     let items = XUsdcBurnAttachment::try_from(withdrawal)
-        .map_err(|_| BurnRefusal::InvalidWithdrawal)?
+        .ok()?
         .items()
         .clone();
     // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
     // of the faucet.
     let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());
 
-    Ok(ValidatedBurn {
+    Some(ValidatedBurn {
         burn,
         items,
         amount,

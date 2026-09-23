@@ -287,14 +287,12 @@ impl Attester {
             let note_id = burn.note_id();
             let burn_tx_id = burn.burn_tx_id();
             match validate_burn(burn) {
-                Ok(burn) => validated.push(burn),
-                Err(reason) => {
-                    self.store.refuse_burn(note_id, reason)?;
+                Some(burn) => validated.push(burn),
+                None => {
+                    self.store.refuse_burn(note_id)?;
                     eprintln!(
-                        "refused burn: note={} transaction={} reason={}",
-                        note_id,
-                        burn_tx_id,
-                        reason.as_str()
+                        "refused burn: withdrawal payload does not decode: note={} transaction={}",
+                        note_id, burn_tx_id
                     );
                 }
             }

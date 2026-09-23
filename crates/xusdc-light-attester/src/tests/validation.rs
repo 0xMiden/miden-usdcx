@@ -21,7 +21,7 @@ use xusdc_encoding::note::xreserve_burn::{
 };
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
-use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn, ValidatedBurn};
+use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn};
 
 use super::discovery::start;
 use super::support::{faucet_account_id, scan_limits, transaction, word, BlockFactory};
@@ -129,11 +129,10 @@ fn check_note_content_cases() {
     #[derive(Clone, Copy)]
     enum Expected {
         CandidateRejected,
-        Refused(BurnRefusal),
+        Refused,
         Accepted,
     }
 
-    use BurnRefusal::InvalidWithdrawal;
     use Expected::{Accepted, CandidateRejected, Refused};
     type Case = (&'static str, fn(&mut NoteFixture), Expected);
     let cases: &[Case] = &[
@@ -326,7 +325,7 @@ fn check_note_content_cases() {
         (
             "withdrawal cannot decode",
             |n| n.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
-            Refused(InvalidWithdrawal),
+            Refused,
         ),
     ];
 
@@ -368,7 +367,7 @@ fn check_note_content_cases() {
         &mut RandomCoin::new(word(8)),
     )
     .unwrap();
-    let validated = ValidatedBurn::try_from(discovered(factory_note)).unwrap();
+    let validated = validate_burn(discovered(factory_note)).unwrap();
     assert_eq!(
         (validated.items, validated.amount),
         (items(), 100),
@@ -377,17 +376,17 @@ fn check_note_content_cases() {
     for (name, candidate, burn_tx_id, expected, accepted) in cases {
         match expected {
             CandidateRejected => assert!(candidate.is_err(), "{name}"),
-            Refused(reason) => {
+            Refused => {
                 let burn = candidate
                     .expect(name)
                     .into_discovered(BlockNumber::from(2u32), burn_tx_id);
-                assert_eq!(ValidatedBurn::try_from(burn).unwrap_err(), reason, "{name}");
+                assert!(validate_burn(burn).is_none(), "{name}");
             }
             Accepted => {
                 let burn = candidate
                     .expect(name)
                     .into_discovered(BlockNumber::from(2u32), burn_tx_id);
-                let burn = ValidatedBurn::try_from(burn).expect(name);
+                let burn = validate_burn(burn).expect(name);
                 assert_eq!((burn.items, burn.amount), accepted.unwrap(), "{name}");
             }
         }
@@ -491,9 +490,9 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
     drop(attester);
 
     let connection = rusqlite::Connection::open(&store_path).unwrap();
-    for (burn, expected_status, expected_reason) in [
-        (&good, "DISCOVERED", None),
-        (&young, "DISCOVERED", None),
+    for (burn, expected_status) in [
+        (&good, "DISCOVERED"),
+        (&young, "DISCOVERED"),
         (
             &invalid,
             if fail_refusal_write {
@@ -501,23 +500,15 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
             } else {
                 "REFUSED"
             },
-            if fail_refusal_write {
-                None
-            } else {
-                Some("invalid_withdrawal")
-            },
         ),
     ] {
-        let row: (String, Option<String>) = connection
+        let status: String = connection
             .query_row(
-                "SELECT status, refusal_reason FROM burns WHERE note_id = ?1",
+                "SELECT status FROM burns WHERE note_id = ?1",
                 [burn.note_id().to_bytes()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            row,
-            (expected_status.into(), expected_reason.map(str::to_owned))
-        );
+        assert_eq!(status, expected_status);
     }
 }

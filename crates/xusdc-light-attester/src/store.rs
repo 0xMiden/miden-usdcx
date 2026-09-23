@@ -14,7 +14,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use rusqlite::{params, Params, Transaction};
 
-use crate::burn::{BurnCandidate, BurnRefusal, DiscoveredBurn};
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
@@ -124,17 +124,13 @@ impl Store {
 
     /// Records a proven-invalid burn without changing its evidence or scan progress.
     #[allow(dead_code)]
-    pub(crate) fn refuse_burn(
-        &mut self,
-        note_id: NoteId,
-        reason: BurnRefusal,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn refuse_burn(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let updated = self
             .connection
             .execute(
-                "UPDATE burns SET status = ?1, refusal_reason = ?2
-             WHERE note_id = ?3 AND status = ?4 AND refusal_reason IS NULL",
-                params![REFUSED, reason.as_str(), note_id.to_bytes(), DISCOVERED],
+                "UPDATE burns SET status = ?1
+             WHERE note_id = ?2 AND status = ?3",
+                params![REFUSED, note_id.to_bytes(), DISCOVERED],
             )
             .map_err(classify_error)?;
         (updated == 1)
@@ -277,9 +273,6 @@ fn create_burns_table(connection: &rusqlite::Connection) -> anyhow::Result<()> {
                 CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
             burn_tx_id BLOB,
             status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
-            refusal_reason TEXT CHECK (refusal_reason IN ('invalid_withdrawal')),
-            CHECK ((status != 'REFUSED' AND refusal_reason IS NULL)
-                OR (status = 'REFUSED' AND refusal_reason IS NOT NULL)),
             CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
             CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
         ) STRICT;",
@@ -355,8 +348,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
-            refusal_reason FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
+            FROM burns LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }

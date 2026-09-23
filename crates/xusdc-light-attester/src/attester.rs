@@ -12,7 +12,6 @@ use crate::config::Config;
 use crate::signer::{Signer, SigningPublicKey};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
-use crate::verify::verify_prepared_response;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CycleError {
@@ -377,7 +376,8 @@ impl Attester {
                     .circle
                     .prepare_withdrawal(&burn, self.config.use_circle_forwarding())
                     .await?;
-                let verified = verify_prepared_response(&burn, prepared, &self.config)
+                let verified = prepared
+                    .verify(&burn, &self.config)
                     .map_err(|error| SubmitError::Verification(Box::new(error)))?;
                 let signed = verified
                     .sign([self.signers[0].as_ref(), self.signers[1].as_ref()])

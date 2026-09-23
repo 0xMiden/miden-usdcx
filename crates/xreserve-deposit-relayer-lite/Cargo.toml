@@ -8,7 +8,7 @@ description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-miden-protocol = { version = "=0.17.0-rc.5" }
+miden-protocol = { version = "=0.17.0-rc.6" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = "2"

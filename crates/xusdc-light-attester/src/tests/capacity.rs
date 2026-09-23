@@ -319,21 +319,21 @@ async fn failed_cap_cleanup_keeps_the_request_and_reservation() {
 }
 
 #[tokio::test]
-async fn prepare_and_verify_holds_survive_restart_until_released() {
+async fn prepare_400_holds_survive_restart_until_released() {
     let ledger = Ledger::new().await;
     let order = &ledger.fresh_indices;
     let mut bad = ledger.prepared_response(order[2]);
     bad["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "00".repeat(32)));
     let (mut attester, _) = ledger
         .start(vec![
-            reply(201, json!([ledger.response(order[2], "expired")])),
+            reply(201, json!([ledger.response(order[0], "expired")])),
             reply(400, json!({"message": "rejected"})),
             reply(200, json!({})),
             reply(200, bad),
         ])
         .await;
-    // Verification can fail on a fresh authorization for an expired attempt too.
-    ledger.submit(&mut attester, order[2]).await.unwrap();
+    // Circle can refuse the fresh prepare for a burn whose earlier withdrawal expired.
+    ledger.submit(&mut attester, order[0]).await.unwrap();
     assert!(matches!(
         attester.run_one_cycle().await.unwrap().submit,
         Err(SubmitError::Prepare(
@@ -341,47 +341,62 @@ async fn prepare_and_verify_holds_survive_restart_until_released() {
         ))
     ));
     drop(attester);
-    let replies = order
+    // Neither the malformed reply nor the failed check held its burn: both are prepared again.
+    let replies = order[1..]
         .iter()
         .flat_map(|&i| {
             [
                 reply(200, ledger.prepared_response(i)),
-                CircleState::TransportError,
+                reply(201, json!([ledger.response(i, "finalized")])),
             ]
         })
+        .chain([
+            reply(200, ledger.prepared_response(order[0])),
+            CircleState::TransportError,
+        ])
         .collect();
     let (mut attester, requests) = ledger.start(replies).await;
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
-    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(requests.lock().unwrap().len(), 4);
     assert_eq!(
-        ledger.record(&attester, order[2]).status,
+        ledger.record(&attester, order[0]).status,
         SubmissionStatus::Expired
     );
     assert!(
-        admission(&ledger, order[2]) > 0,
+        admission(&ledger, order[0]) > 0,
         "the hold keeps its existing reservation"
     );
-    for &i in order {
-        attester
-            .release_burn_hold(ledger.burns[i].burn.note_id())
-            .unwrap();
-    }
+    attester
+        .release_burn_hold(ledger.burns[order[0]].burn.note_id())
+        .unwrap();
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
-    assert_eq!(requests.lock().unwrap().len(), 6);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(requests[4], ObservedRequest::Prepare);
 }
 
 #[tokio::test]
 async fn transient_prepare_failures_retry_next_cycle() {
-    for failure in [
-        CircleState::TransportError,
-        reply(503, json!({})),
-        reply(429, json!({})),
-    ] {
+    // Only a 400 from prepare holds a burn; every other failure is tried again next cycle.
+    let failures: [fn(&Ledger) -> CircleState; 7] = [
+        |_| CircleState::TransportError,
+        |_| reply(503, json!({})),
+        |_| reply(429, json!({})),
+        |_| reply(408, json!({})),
+        |_| reply(403, json!({})),
+        |_| reply(200, json!({})),
+        |ledger| {
+            let mut bad = ledger.prepared_response(ledger.fresh_indices[0]);
+            bad["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "00".repeat(32)));
+            reply(200, bad)
+        },
+    ];
+    for failure in failures {
         let ledger = Ledger::new().await;
         let order = &ledger.fresh_indices;
         let (mut attester, requests) = ledger
             .start(vec![
-                failure,
+                failure(&ledger),
                 reply(200, ledger.prepared_response(order[0])),
                 CircleState::TransportError,
             ])

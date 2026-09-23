@@ -84,6 +84,10 @@ impl Attester {
     }
 
     async fn advance_submission(&mut self, mut saved: SavedSubmission) -> Result<(), SubmitError> {
+        // After a 429 the rest of the cycle leaves Circle alone; the row stays queued.
+        if self.circle.rate_limited() {
+            return Ok(());
+        }
         let mut response = self.send_saved_request(&mut saved).await;
         if saved.withdrawal_id.is_none()
             && response

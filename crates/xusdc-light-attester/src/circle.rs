@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -84,6 +85,9 @@ pub trait CircleApi: Send + Sync {
         saved: &'a SavedSubmission,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
+
+    /// Whether Circle has answered 429. The remaining requests then wait for a later cycle.
+    fn rate_limited(&self) -> bool;
 }
 
 /// Circle's xReserve API over HTTPS. Requests go out at least [`REQUEST_GAP`] apart.
@@ -92,6 +96,7 @@ pub struct CircleClient {
     request_timeout: Duration,
     client: reqwest::Client,
     next_request: Mutex<Instant>,
+    rate_limited: AtomicBool,
 }
 
 impl CircleClient {
@@ -109,6 +114,7 @@ impl CircleClient {
                 request_timeout: config.circle_request_timeout(),
                 client,
                 next_request: Mutex::new(Instant::now()),
+                rate_limited: AtomicBool::new(false),
             })
             .map_err(CircleError::Transport)
     }
@@ -145,7 +151,8 @@ impl CircleClient {
         self.read_reply(response).await
     }
 
-    /// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`].
+    /// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`]. A 429 is
+    /// remembered, so the rest of the cycle leaves Circle alone.
     pub(crate) async fn read_reply(
         &self,
         mut response: reqwest::Response,
@@ -159,6 +166,9 @@ impl CircleClient {
                 return Err(CircleError::BodyTooLarge);
             }
             body.extend_from_slice(&chunk);
+        }
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            self.rate_limited.store(true, Ordering::Relaxed);
         }
         Ok(RawResponse::new(status, body))
     }
@@ -238,6 +248,10 @@ impl CircleApi for CircleClient {
             *request.timeout_mut() = Some(self.request_timeout);
             self.send(request).await
         })
+    }
+
+    fn rate_limited(&self) -> bool {
+        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 

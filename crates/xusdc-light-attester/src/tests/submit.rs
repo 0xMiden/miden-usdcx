@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
@@ -70,6 +71,7 @@ struct ScriptedCircle {
     replies: Mutex<VecDeque<CircleState>>,
     requests: Requests,
     store_path: PathBuf,
+    rate_limited: AtomicBool,
 }
 
 impl ScriptedCircle {
@@ -98,12 +100,18 @@ impl ScriptedCircle {
 
     fn next_reply(&self, request: ObservedRequest) -> Result<RawResponse, CircleError> {
         self.requests.lock().unwrap().push(request);
-        self.replies
+        let answer = self
+            .replies
             .lock()
             .unwrap()
             .pop_front()
             .expect("unexpected extra Circle request")
-            .answer()
+            .answer();
+        // Like the real client, a 429 pauses the rest of the cycle.
+        if matches!(&answer, Ok(response) if response.status == StatusCode::TOO_MANY_REQUESTS) {
+            self.rate_limited.store(true, Ordering::Relaxed);
+        }
+        answer
     }
 }
 
@@ -154,6 +162,10 @@ impl CircleApi for ScriptedCircle {
                 id,
             )
         })
+    }
+
+    fn rate_limited(&self) -> bool {
+        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 
@@ -219,6 +231,7 @@ impl Ledger {
             replies: Mutex::new(replies.into()),
             requests: requests.clone(),
             store_path: self.path(),
+            rate_limited: AtomicBool::new(false),
         };
         let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
         let chain = TestChain::new(self.blocks.clone(), scan_limits(3, 3)).0;
@@ -300,6 +313,7 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         replies: Mutex::new(VecDeque::new()),
         requests: requests.clone(),
         store_path: directory.path().join("state.sqlite3"),
+        rate_limited: AtomicBool::new(false),
     };
     let config = Config::load(&directory.path().join("attester.toml")).unwrap();
     let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
@@ -586,6 +600,14 @@ async fn retries_use_saved_request() {
             SubmissionStatus::Submitting,
             "{name}"
         );
+        if name == "rate limited" {
+            attester.recover_submissions().await.unwrap();
+            assert_eq!(
+                first_requests.lock().unwrap().len(),
+                1,
+                "{name}: no request until the next cycle"
+            );
+        }
         drop(attester);
         let config_path = ledger.directory.path().join("attester.toml");
         let text = std::fs::read_to_string(&config_path)

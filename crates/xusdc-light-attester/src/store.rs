@@ -184,7 +184,7 @@ impl Store {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
     }
 
-    pub(crate) fn submissions_to_poll(&self) -> Result<Vec<SavedSubmission>, StoreError> {
+    pub(crate) fn submissions_to_poll(&self) -> anyhow::Result<Vec<SavedSubmission>> {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
     }
 

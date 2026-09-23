@@ -196,10 +196,10 @@ impl Attester {
         };
         let mut rate_limited = false;
         self.recover_submissions(recovery, &mut rate_limited).await?;
-        let submit = self.submit_withdrawals(fresh, &mut rate_limited).await;
-        if let Err(error @ SubmitError::Store(_)) = submit {
-            return Err(CycleError::Submission(error));
-        }
+        let submit = match self.submit_withdrawals(fresh, &mut rate_limited).await {
+            Err(error) if error.is_fatal() => return Err(CycleError::Submission(error)),
+            submit => submit,
+        };
         self.poll_withdrawal_statuses(polling, &mut rate_limited)
             .await
             .map_err(CycleError::Poll)?;
@@ -398,7 +398,7 @@ impl Attester {
             }
             .await;
             if let Err(error) = result {
-                if matches!(error, SubmitError::Store(_)) {
+                if error.is_fatal() {
                     return Err(error);
                 }
                 // Retry scheduling/holds for prepare and verify failures are the next slice.

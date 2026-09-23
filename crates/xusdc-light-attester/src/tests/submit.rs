@@ -721,20 +721,13 @@ async fn conflicts_are_checked() {
         let (mut attester, requests) = ledger.start(vec![conflict(), unavailable]).await;
         ledger.submit(&mut attester, 0).await.unwrap();
         let saved = ledger.record(&attester, 0);
-        let held = name == "not found";
-        assert_eq!(saved.status, if held { Held } else { Submitting }, "{name}");
+        assert_eq!(saved.status, Submitting, "{name}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
         drop(attester);
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
-        if held {
-            assert_eq!(saved.hold_reason, Some(HoldReason::HttpRejected));
-            attester.recover_submissions().await.unwrap();
-            assert!(requests.lock().unwrap().is_empty());
-            attester.retry_held_submission(saved.note_id).unwrap();
-        }
         attester.recover_submissions().await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],

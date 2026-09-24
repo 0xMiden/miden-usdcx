@@ -26,12 +26,14 @@ const CAP_REJECTED: &str = "CAP_REJECTED";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected,
+    TooSmallToForward,
 }
 
 impl BurnHoldReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::PrepareRejected => "prepare_rejected",
+            Self::TooSmallToForward => "too_small_to_forward",
         }
     }
 }
@@ -633,7 +635,7 @@ fn create_burns_table(connection: &rusqlite::Connection) -> anyhow::Result<()> {
             burn_tx_id BLOB,
             status TEXT NOT NULL
                 CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED', 'CAP_REJECTED')),
-            hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected')),
+            hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected', 'too_small_to_forward')),
             reservation_amount INTEGER CHECK (reservation_amount >= 0),
             admitted_at_ms INTEGER CHECK (admitted_at_ms >= 0),
             CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),

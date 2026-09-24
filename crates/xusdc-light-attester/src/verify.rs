@@ -91,6 +91,8 @@ pub(crate) enum VerifyError {
     CallerRestricted,
     #[error("Circle's forwarded route has a wrong {0}")]
     ForwardedField(&'static str),
+    #[error("the burn is too small to pay the configured CCTP fee")]
+    TooSmallToForward,
     #[error("Circle's signing hash differs from the checked fields")]
     DigestMismatch,
     #[error("Circle's encoded intent differs from the checked fields")]
@@ -279,6 +281,11 @@ impl UnverifiedPrepareResponse {
         if spec.value.is_zero() || spec.value.checked_add(intent.maxFee) != Some(burned_amount) {
             return Err(VerifyError::BadAmount);
         }
+        // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
+        // The payout is tied to the burn by now, so this burn cannot pay the configured CCTP fee.
+        if forwarded && cctp_fee >= spec.value {
+            return Err(VerifyError::TooSmallToForward);
+        }
         // Circle's fee grows with the amount on most routes, so the allowed fee is a fixed part
         // plus a share of the burn.
         let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64())
@@ -362,8 +369,7 @@ fn verify_forwarded_leg(
     if call.destinationCaller != B256::ZERO {
         return Err(ForwardedField("calldata destinationCaller"));
     }
-    // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
-    if call.maxFee != U256::from(cctp_fee) || call.maxFee >= call.amount {
+    if call.maxFee != U256::from(cctp_fee) {
         return Err(ForwardedField("calldata maxFee"));
     }
     if call.minFinalityThreshold != CCTP_FAST_FINALITY {

@@ -19,7 +19,7 @@ const ZERO_WORD: &str = "0x00000000000000000000000000000000000000000000000000000
 const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
 // Circle's sandbox replies of 2026-09-21 for a 1 USDC burn to Linea (through xReserve on Arc plus
 // CCTP) and to Base (direct), both prepared with forwarding on and a 0.5 USDC CCTP fee.
-const FORWARDED_FIXTURE: &str =
+pub(super) const FORWARDED_FIXTURE: &str =
     include_str!("fixtures/circle-sandbox-2026-09-21-forwarded-linea.response.json");
 const DIRECT_WITH_OPTIONS_FIXTURE: &str =
     include_str!("fixtures/circle-sandbox-2026-09-21-direct-base-with-options.response.json");
@@ -56,7 +56,7 @@ fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
 /// A captured reply, rebound to the test faucet: the probes ran against Circle's registered remote
 /// domain and token, so those two hook fields are replaced and the digest rebuilt, keeping every
 /// other field exactly as Circle laid it out.
-fn captured(fixture: &str) -> UnverifiedPrepareBatch {
+pub(super) fn captured(fixture: &str) -> UnverifiedPrepareBatch {
     let mut response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
     let mut batch = response.batches.remove(0);
     let hook = &mut batch.burn_intents[0].spec.hook_data;
@@ -66,12 +66,15 @@ fn captured(fixture: &str) -> UnverifiedPrepareBatch {
     batch
 }
 
-fn decode_call(batch: &UnverifiedPrepareBatch) -> cctp::depositForBurnWithHookCall {
+pub(super) fn decode_call(batch: &UnverifiedPrepareBatch) -> cctp::depositForBurnWithHookCall {
     let calldata = &batch.burn_intents[0].spec.hook_data.forwarding_calldata;
     cctp::depositForBurnWithHookCall::abi_decode(&hex::decode(&calldata[2..]).unwrap()).unwrap()
 }
 
-fn with_calldata(mut batch: UnverifiedPrepareBatch, calldata: Vec<u8>) -> UnverifiedPrepareBatch {
+pub(super) fn with_calldata(
+    mut batch: UnverifiedPrepareBatch,
+    calldata: Vec<u8>,
+) -> UnverifiedPrepareBatch {
     batch.burn_intents[0].spec.hook_data.forwarding_calldata =
         format!("0x{}", hex::encode(calldata));
     rebuild_for_test(&mut batch).unwrap();
@@ -359,7 +362,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     );
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 12] = [
+    let cases: [(&str, Edit, VerifyError); 13] = [
         (
             "zero forwarding contract",
             |b, _| {
@@ -423,6 +426,14 @@ fn forwarded_route_is_bound_to_the_burn() {
             |_, c| c.hookData = Bytes::new(),
             ForwardedField("calldata hookData"),
         ),
+        (
+            "payout does not match the burn",
+            |b, c| {
+                b.burn_intents[0].spec.value = "400000".into();
+                c.amount = U256::from(400_000);
+            },
+            BadAmount,
+        ),
     ];
     for (name, edit, expected) in cases {
         let mut batch = captured(FORWARDED_FIXTURE);
@@ -439,7 +450,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     let batch = with_calldata(batch, call.abi_encode());
     assert_eq!(
         verify(&burn, batch, &forwarding_config(2_000_000, 981_751)),
-        Some(ForwardedField("calldata maxFee")),
+        Some(TooSmallToForward),
         "fee at the amount"
     );
     let batch = captured(FORWARDED_FIXTURE);

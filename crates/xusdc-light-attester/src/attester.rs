@@ -15,6 +15,7 @@ use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::{Signer, SignerPair};
 use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::verify::VerifyError;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -366,8 +367,9 @@ impl Attester {
     }
 
     /// Takes each validated burn through prepare, verify, sign and submit. A store or clock
-    /// failure stops the pass. A prepare 400 holds the burn; any other failure is logged and
-    /// retried next cycle. After a 429 the remaining burns wait for the next cycle.
+    /// failure stops the pass. A prepare 400, or a forwarded burn too small to pay the CCTP fee,
+    /// holds the burn; any other failure is logged and retried next cycle. After a 429 the
+    /// remaining burns wait for the next cycle.
     async fn submit_withdrawals(&mut self, burns: Vec<ValidatedBurn>) -> Result<(), SubmitError> {
         let mut first_error = None;
         for burn in burns {
@@ -432,13 +434,21 @@ impl Attester {
 /// the log.
 pub(crate) fn burn_hold(error: &SubmitError) -> (Option<BurnHoldReason>, Option<String>) {
     match error {
-        // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
-        // that fails our checks, is tried again next cycle.
+        // A 400 is Circle refusing to prepare this burn.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
             if *status == StatusCode::BAD_REQUEST =>
         {
             (Some(BurnHoldReason::PrepareRejected), circle_message(body))
         }
+        // A forwarded burn too small to pay the configured CCTP fee fails the same way every
+        // cycle until that fee changes.
+        SubmitError::Verification(cause)
+            if cause.downcast_ref::<VerifyError>() == Some(&VerifyError::TooSmallToForward) =>
+        {
+            (Some(BurnHoldReason::TooSmallToForward), None)
+        }
+        // Any other failure, including a reply that fails our other checks, is tried again next
+        // cycle.
         _ => (None, None),
     }
 }

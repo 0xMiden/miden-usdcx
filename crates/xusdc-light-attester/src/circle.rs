@@ -1,4 +1,5 @@
-//! Circle reachability and prepare requests. Responses are not trusted for signing.
+//! Client for Circle's xReserve API: the startup reachability check and the prepare-withdrawal
+//! request. Circle's replies are checked before anything is signed.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -51,7 +51,6 @@ impl XReserveStablecoinBuilder {
             // Fee administration and sponsorship notes.
             ConstantFeePolicyConfigNote::script_root(),
             FeeSponsorshipNote::script_root(),
-            // Network account configuration note.
             NetworkAccountConfigNote::script_root(),
         ])
     }

@@ -60,7 +60,8 @@ pub struct Cli {
 
     /// Fixed start of Circle's HTTP 400 withdrawal-limit message, the text before the numbers,
     /// for example "Withdrawal request exceeds rolling withdrawal limit"; enables automatic retries
-    /// when set.
+    /// when set. Use the whole fixed text: a shorter start can also match Circle's other 400
+    /// messages.
     #[arg(long)]
     withdrawal_cap_error_message: Option<String>,
 

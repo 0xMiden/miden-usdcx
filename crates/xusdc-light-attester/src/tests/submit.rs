@@ -6,18 +6,19 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
 use miden_protocol::block::SignedBlock;
 use miden_protocol::transaction::OutputNote;
-use reqwest::StatusCode;
+use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
 use crate::attester::Attester;
 use crate::burn::{DiscoveredBurn, ValidatedBurn};
 use crate::circle::{
-    read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
+    read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
@@ -897,4 +898,246 @@ async fn held_submissions_do_not_block_others() {
         ledger.record(&attester, 0).status,
         SubmissionStatus::Submitted
     );
+}
+
+/// The withdraw and status requests are built from the saved row: its endpoint's host, its exact
+/// bytes and the configured timeout, whatever today's configured URL is.
+#[tokio::test]
+async fn submission_requests_use_the_saved_request() {
+    let ledger = Ledger::new().await;
+    let saved = ledger
+        .signed(0)
+        .await
+        .submission("https://saved.example.invalid/v1/withdraw".into())
+        .unwrap();
+    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let client = CircleClient::new(&config).unwrap();
+
+    let post = client.submission_request(&saved).unwrap();
+    assert_eq!(post.method(), Method::POST);
+    assert_eq!(
+        post.url().as_str(),
+        "https://saved.example.invalid/v1/withdraw"
+    );
+    assert_eq!(post.timeout(), Some(&Duration::from_millis(100)));
+    assert_eq!(
+        post.headers().len(),
+        1,
+        "no auth or invented idempotency headers"
+    );
+    assert_eq!(post.headers()[CONTENT_TYPE], "application/json");
+    assert_eq!(
+        post.body().and_then(|body| body.as_bytes()),
+        Some(saved.body.as_slice())
+    );
+
+    let get = client.status_request(&saved, ID).unwrap();
+    assert_eq!(get.method(), Method::GET);
+    assert_eq!(
+        get.url().as_str(),
+        format!("https://saved.example.invalid/v1/withdrawal/{ID}")
+    );
+    assert_eq!(get.timeout(), Some(&Duration::from_millis(100)));
+    assert!(get.headers().is_empty());
+    assert!(get.body().is_none());
+}
+
+/// Circle's answers are read into the saved row: only a 400 to the POST holds it, other unexpected
+/// answers leave it queued, and an answer counts only if it names the saved withdrawal.
+#[tokio::test]
+async fn circle_answers_are_read_into_the_saved_row() {
+    use SubmissionStatus::*;
+    let ledger = Ledger::new().await;
+    let queued = ledger.signed(0).await.submission(ENDPOINT.into()).unwrap();
+    let body = |value: Value| serde_json::to_vec(&value).unwrap();
+    let created = ledger.response(0, "created");
+    let mut failed = ledger.response(0, "failed");
+    failed["failureReason"] = json!("Circle's reported failure");
+    let mut wrong_hash = ledger.response(0, "created");
+    wrong_hash["transferSpecHashes"] = json!([reference_hash(1)]);
+    let mut other_id = ledger.response(0, "finalized");
+    other_id["withdrawalId"] = json!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71");
+    let not_named = Some("response does not identify the saved withdrawal");
+    // Each row: the reply to a POST, or with `lookup` to a GET for the saved ID, then the row's
+    // status, hold, withdrawal ID and error afterwards.
+    for (name, lookup, status, reply, expected) in [
+        (
+            "created",
+            false,
+            201,
+            body(json!([created])),
+            (Submitted, None, Some(ID), None),
+        ),
+        (
+            "failed",
+            false,
+            201,
+            body(json!([failed])),
+            (Failed, None, Some(ID), Some("Circle's reported failure")),
+        ),
+        (
+            "unknown status",
+            false,
+            201,
+            body(json!([ledger.response(0, "new_status")])),
+            (
+                Submitting,
+                None,
+                Some(ID),
+                Some("Circle returned an unknown withdrawal status"),
+            ),
+        ),
+        (
+            "rejected",
+            false,
+            400,
+            body(json!({"message": "rejected"})),
+            (
+                Held,
+                Some(HoldReason::HttpRejected),
+                None,
+                Some("HTTP response needs operator review"),
+            ),
+        ),
+        (
+            "timeout",
+            false,
+            408,
+            Vec::new(),
+            (
+                Submitting,
+                None,
+                None,
+                Some("Circle returned HTTP 408 Request Timeout"),
+            ),
+        ),
+        (
+            "rate limited",
+            false,
+            429,
+            Vec::new(),
+            (
+                Submitting,
+                None,
+                None,
+                Some("Circle returned HTTP 429 Too Many Requests"),
+            ),
+        ),
+        (
+            "answered 200",
+            false,
+            200,
+            body(json!([created])),
+            (Submitting, None, None, Some("Circle returned HTTP 200 OK")),
+        ),
+        (
+            "malformed",
+            false,
+            201,
+            body(json!({})),
+            (
+                Submitting,
+                None,
+                None,
+                Some("Circle returned an incomplete or malformed response"),
+            ),
+        ),
+        (
+            "two withdrawals",
+            false,
+            201,
+            body(json!([created, created])),
+            (
+                Submitting,
+                None,
+                None,
+                Some("response contains extra withdrawals"),
+            ),
+        ),
+        (
+            "wrong hash",
+            false,
+            201,
+            body(json!([wrong_hash])),
+            (Submitting, None, None, not_named),
+        ),
+        (
+            "lookup finalized",
+            true,
+            200,
+            body(ledger.response(0, "finalized")),
+            (Finalized, None, Some(ID), None),
+        ),
+        (
+            "lookup rejected",
+            true,
+            400,
+            Vec::new(),
+            (
+                Submitting,
+                None,
+                Some(ID),
+                Some("Circle returned HTTP 400 Bad Request"),
+            ),
+        ),
+        (
+            "lookup names another ID",
+            true,
+            200,
+            body(other_id),
+            (Submitting, None, Some(ID), not_named),
+        ),
+    ] {
+        let mut saved = queued.clone();
+        if lookup {
+            saved.withdrawal_id = Some(ID.into());
+        }
+        saved.read_response(RawResponse::new(
+            StatusCode::from_u16(status).unwrap(),
+            reply,
+        ));
+        assert_eq!(
+            (
+                saved.status,
+                saved.hold_reason,
+                saved.withdrawal_id.as_deref(),
+                saved.last_error.as_deref()
+            ),
+            expected,
+            "{name}"
+        );
+    }
+
+    for (name, conflict, id, error) in [
+        ("an ID", json!({"withdrawalId": ID}), Some(ID), None),
+        (
+            "no ID yet",
+            json!({}),
+            None,
+            Some("conflict has no withdrawal ID yet"),
+        ),
+        (
+            "another burn note",
+            json!({"withdrawalId": ID, "burnTxId": format!("0x{}", "ff".repeat(32))}),
+            None,
+            Some("conflict names another burn note"),
+        ),
+        (
+            "a malformed ID",
+            json!({"withdrawalId": "6149dc3d/../withdraw"}),
+            None,
+            Some("conflict names a malformed withdrawal ID"),
+        ),
+    ] {
+        let mut saved = queued.clone();
+        saved.last_response = Some(body(
+            json!({"success": false, "message": "already associated", "conflict": conflict}),
+        ));
+        assert_eq!(saved.read_conflict(), id.is_some(), "{name}");
+        assert_eq!(
+            (saved.withdrawal_id.as_deref(), saved.last_error.as_deref()),
+            (id, error),
+            "{name}"
+        );
+    }
 }

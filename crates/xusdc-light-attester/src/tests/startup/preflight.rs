@@ -1,7 +1,7 @@
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
-use crate::circle::{CircleClient, CircleError, REQUEST_GAP};
+use crate::circle::{CircleApi, CircleClient, CircleError, REQUEST_GAP};
 
 use super::{
     create_store_parent, load_config, ready_circle, start, CircleState, FakeCircle,
@@ -98,7 +98,8 @@ async fn circle_requests_are_paced() {
     assert!(started.elapsed() >= REQUEST_GAP);
 }
 
-/// Circle's reply is read in full up to 1 MiB and refused one byte past it.
+/// Circle's reply is read in full up to 1 MiB and refused one byte past it. A 429 pauses the rest
+/// of the cycle; other answers do not.
 #[tokio::test]
 async fn circle_replies_are_read_within_limits() {
     let tempdir = tempfile::tempdir().unwrap();
@@ -124,4 +125,15 @@ async fn circle_replies_are_read_within_limits() {
             .await,
         Err(CircleError::BodyTooLarge)
     ));
+
+    client
+        .read_reply(reply(StatusCode::SERVICE_UNAVAILABLE, 0))
+        .await
+        .unwrap();
+    assert!(!client.rate_limited());
+    client
+        .read_reply(reply(StatusCode::TOO_MANY_REQUESTS, 0))
+        .await
+        .unwrap();
+    assert!(client.rate_limited());
 }

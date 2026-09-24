@@ -161,7 +161,7 @@ fn invalid_config_is_rejected() {
         (
             "--trusted-anchor-commitment",
             "0X0100000000000000020000000000000003000000000000000400000000000000",
-            "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
+            "trusted anchor commitment is invalid",
         ),
         (
             "--trusted-anchor-commitment",

@@ -183,19 +183,13 @@ impl TryFrom<Cli> for Config {
             ));
         }
 
-        let trusted_anchor_commitment_hex = cli.trusted_anchor_commitment.as_bytes();
-        if trusted_anchor_commitment_hex.len() != 66
-            || !trusted_anchor_commitment_hex.starts_with(b"0x")
-            || !trusted_anchor_commitment_hex[2..]
-                .iter()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-        {
+        let trusted_anchor_commitment = Word::parse(&cli.trusted_anchor_commitment)
+            .map_err(|_| ConfigError::invalid("trusted anchor commitment is invalid"))?;
+        if trusted_anchor_commitment.to_hex() != cli.trusted_anchor_commitment {
             return Err(ConfigError::invalid(
                 "trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex",
             ));
         }
-        let trusted_anchor_commitment = Word::parse(&cli.trusted_anchor_commitment)
-            .map_err(|_| ConfigError::invalid("trusted anchor commitment is invalid"))?;
 
         // `Endpoint::try_from` reads a bare word such as "mainnet" as an HTTPS host, so the scheme
         // must be written out.

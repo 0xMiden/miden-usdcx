@@ -6436,6 +6436,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "hex",
+ "http",
  "miden-client",
  "miden-objects",
  "miden-protocol",

@@ -1,7 +1,7 @@
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
-use crate::circle::{CircleClient, CircleError, REQUEST_GAP};
+use crate::circle::{read_reply, CircleClient, CircleError, REQUEST_GAP};
 
 use super::{
     create_store_parent, load_config, ready_circle, start, CircleState, FakeCircle,
@@ -134,4 +134,24 @@ async fn circle_requests_are_paced() {
 
     drop(circle);
     worker.await.unwrap();
+}
+
+/// Circle's reply is read in full up to 1 MiB and refused one byte past it.
+#[tokio::test]
+async fn circle_replies_are_read_within_limits() {
+    let reply = |status: StatusCode, length: usize| {
+        reqwest::Response::from(
+            http::Response::builder()
+                .status(status)
+                .body(vec![b'0'; length])
+                .unwrap(),
+        )
+    };
+
+    let read = read_reply(reply(StatusCode::OK, 1 << 20)).await.unwrap();
+    assert_eq!((read.status, read.body.len()), (StatusCode::OK, 1 << 20));
+    assert!(matches!(
+        read_reply(reply(StatusCode::OK, (1 << 20) + 1)).await,
+        Err(CircleError::BodyTooLarge)
+    ));
 }

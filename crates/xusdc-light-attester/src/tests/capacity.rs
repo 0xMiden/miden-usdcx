@@ -574,7 +574,8 @@ fn limit_message_is_recognised_by_its_start() {
     }
 }
 
-/// Only a 400 from prepare holds a burn; any other failure before submission is tried again.
+/// Only a 400 from prepare, or a forwarded burn too small to pay the CCTP fee, holds a burn; any
+/// other failure before submission is tried again.
 #[test]
 fn failures_that_hold_a_burn() {
     let prepare = |status: u16| {
@@ -608,6 +609,11 @@ fn failures_that_hold_a_burn() {
             "failed verification",
             SubmitError::Verification(Box::new(VerifyError::DigestMismatch)),
             (None, None),
+        ),
+        (
+            "too small to forward",
+            SubmitError::Verification(Box::new(VerifyError::TooSmallToForward)),
+            (Some(BurnHoldReason::TooSmallToForward), None),
         ),
     ] {
         let (reason, message) = burn_hold(&error);

@@ -251,7 +251,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         rebuild_for_test(&mut changed).unwrap();
         check(name, changed, ceiling, expected);
     }
-    // Circle charged 11099 for a 1 USDC payout to Base: more than a fixed 11000, but within the
+    // Circle charged 11099 on a 1 USDC burn to Base: more than a fixed 11000, but within the
     // ceiling once one basis point of the burn (100) is added.
     let mut base_fee = batch(FIRST_SALT, 1_000_000, 9);
     base_fee.burn_intents[0].spec.value = "988901".into();

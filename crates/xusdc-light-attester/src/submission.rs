@@ -164,9 +164,16 @@ impl Attester {
                     && self
                         .config
                         .withdrawal_cap_error_message()
-                        .is_some_and(|expected| {
-                            serde_json::from_slice::<serde_json::Value>(&reply.body)
-                                .is_ok_and(|body| body["message"].as_str() == Some(expected))
+                        .is_some_and(|start| {
+                            // Circle's limit message goes on with the current total and the limit,
+                            // so only its fixed start is configured.
+                            serde_json::from_slice::<serde_json::Value>(&reply.body).is_ok_and(
+                                |body| {
+                                    body["message"]
+                                        .as_str()
+                                        .is_some_and(|message| message.starts_with(start))
+                                },
+                            )
                         })
             })
         {

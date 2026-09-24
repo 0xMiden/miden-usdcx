@@ -9,7 +9,9 @@ max_withdrawal_fee = 0
 # Development 10m USDC placeholder: replace with Circle's confirmed chain limit.
 withdrawal_limit = 10_000_000_000_000
 withdrawal_window_hours = 24
-# Set this only to Circle's confirmed exact HTTP 400 cap message to enable automatic retries.
+# Set this only to the fixed start of Circle's HTTP 400 withdrawal-limit message, the text before
+# the numbers, for example "Withdrawal request exceeds rolling withdrawal limit", to enable
+# automatic retries.
 # withdrawal_cap_error_message = ""
 poll_interval_ms = 1000
 faucet_deployment_block = 0

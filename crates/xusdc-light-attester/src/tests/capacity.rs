@@ -261,11 +261,15 @@ async fn cap_rejection_releases_capacity_but_waits_for_fresh_signing() {
 
 #[tokio::test]
 async fn only_the_configured_post_400_releases_capacity() {
-    for (configured, status, message, lookup) in [
-        (false, 400, "synthetic cap rejection", false),
-        (true, 400, "synthetic cap rejection ", false),
-        (true, 503, "synthetic cap rejection", false),
-        (true, 400, "synthetic cap rejection", true),
+    // Only a POST 400 whose message starts with the configured text releases capacity.
+    let numbered =
+        "synthetic cap rejection for USDC. Current total: 900000. Limit: 1000000 per 24-hour window";
+    for (configured, status, message, lookup, released) in [
+        (false, 400, "synthetic cap rejection", false, false),
+        (true, 400, " synthetic cap rejection", false, false),
+        (true, 503, "synthetic cap rejection", false, false),
+        (true, 400, "synthetic cap rejection", true, false),
+        (true, 400, numbered, false, true),
     ] {
         let ledger = Ledger::new().await;
         ledger.configure(1_000, configured);
@@ -284,11 +288,20 @@ async fn only_the_configured_post_400_releases_capacity() {
         if lookup {
             poll(&mut attester).await.unwrap();
         }
-        assert!(!ledger.record(&attester, 0).body.is_empty());
-        assert!(!attester
+        let kept = attester
             .store
-            .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
-            .unwrap());
+            .submission(ledger.burns[0].burn.note_id())
+            .unwrap()
+            .is_some_and(|saved| !saved.body.is_empty());
+        assert_eq!(kept, !released, "{message}");
+        assert_eq!(
+            attester
+                .store
+                .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
+                .unwrap(),
+            released,
+            "{message}"
+        );
     }
 
     // The reply to the first POST is lost, so Circle may have accepted it. The limit 400 on the

@@ -281,11 +281,6 @@ impl UnverifiedPrepareResponse {
         if spec.value.is_zero() || spec.value.checked_add(intent.maxFee) != Some(burned_amount) {
             return Err(VerifyError::BadAmount);
         }
-        // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
-        // The payout is tied to the burn by now, so this burn cannot pay the configured CCTP fee.
-        if forwarded && cctp_fee >= spec.value {
-            return Err(VerifyError::TooSmallToForward);
-        }
         // Circle's fee grows with the amount on most routes, so the allowed fee is a fixed part
         // plus a share of the burn.
         let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64())
@@ -307,6 +302,13 @@ impl UnverifiedPrepareResponse {
         let digest = intent.signing_hash();
         if digest != parse::<B256>(&batch.message_hash_to_sign, "messageHashToSign")? {
             return Err(VerifyError::DigestMismatch);
+        }
+        // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
+        // This check runs last: a fee above the ceiling or a broken reply fails an earlier check
+        // and is retried, so this failure means only that the burn is too small to pay the
+        // configured CCTP fee.
+        if forwarded && cctp_fee >= spec.value {
+            return Err(VerifyError::TooSmallToForward);
         }
         Ok(VerifiedWithdrawal {
             batch: VerifiedBatch {

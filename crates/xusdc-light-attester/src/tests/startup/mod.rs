@@ -97,6 +97,10 @@ impl TestArgs {
         self.args.push(value.into());
     }
 
+    pub(super) fn switch(&mut self, flag: &str) {
+        self.args.push(flag.into());
+    }
+
     pub(super) fn parse(&self) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(&self.args)
     }

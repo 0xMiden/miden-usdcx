@@ -235,6 +235,32 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
+    /// Releases every burn hold and every withdrawal hold in one transaction, and returns how many
+    /// burns and withdrawals it released.
+    pub(crate) fn release_all_holds(&mut self) -> anyhow::Result<(usize, usize)> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let burns = transaction
+            .execute(
+                "UPDATE burns SET hold_reason = NULL WHERE hold_reason IS NOT NULL",
+                [],
+            )
+            .map_err(classify_error)?;
+        // A held withdrawal is started over instead of resent. Circle refuses a signed request
+        // that has expired, and asks for the burn to be signed again with the same burn id.
+        // Signing again cannot pay twice: Circle matches withdrawals by burn id and answers an
+        // earlier accepted one with 409 and its existing withdrawal. The new request is checked
+        // against the burn like the first one, so it cannot change who is paid or how much.
+        let withdrawals = transaction
+            .execute(
+                "DELETE FROM submissions WHERE status = 'HELD' AND hold_reason = 'http_rejected'
+                    AND withdrawal_id IS NULL",
+                [],
+            )
+            .map_err(classify_error)?;
+        transaction.commit().map_err(classify_error)?;
+        Ok((burns, withdrawals))
+    }
+
     pub(crate) fn hold_burn(&self, note_id: NoteId, reason: BurnHoldReason) -> anyhow::Result<()> {
         let updated = self
             .connection

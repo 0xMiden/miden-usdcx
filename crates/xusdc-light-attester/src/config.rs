@@ -88,6 +88,12 @@ pub struct Cli {
     /// Durable SQLite ledger path; only one attester instance may open it. Relative paths resolve from the process working directory.
     #[arg(long)]
     store_path: OsString,
+
+    /// Releases every held burn and every held withdrawal once, after the store opens. Each
+    /// released burn is prepared, checked and signed again from scratch; for a held withdrawal the
+    /// old signed request is thrown away first.
+    #[arg(long)]
+    release_holds: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +140,7 @@ pub struct Config {
     expected_signing_public_keys_hex: Vec<String>,
     /// Durable ledger state; deploy it on persistent storage for exactly one attester instance.
     store_path: PathBuf,
+    release_holds: bool,
 }
 
 impl TryFrom<Cli> for Config {
@@ -251,6 +258,7 @@ impl TryFrom<Cli> for Config {
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
             expected_signing_public_keys_hex: cli.expected_signing_public_key,
             store_path,
+            release_holds: cli.release_holds,
         })
     }
 }
@@ -322,5 +330,9 @@ impl Config {
 
     pub(crate) fn store_path(&self) -> &Path {
         &self.store_path
+    }
+
+    pub(crate) fn release_holds(&self) -> bool {
+        self.release_holds
     }
 }

@@ -54,7 +54,7 @@ impl Signer for CountedSigner {
     }
 }
 
-fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts) {
+pub(super) fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts) {
     let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let mut index = 0;
     let signers = development_signers().map(|inner| {
@@ -69,7 +69,7 @@ fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts
     (signers, calls)
 }
 
-fn counts(calls: &Counts) -> [usize; 2] {
+pub(super) fn counts(calls: &Counts) -> [usize; 2] {
     calls.each_ref().map(|count| count.load(Ordering::Relaxed))
 }
 
@@ -77,7 +77,7 @@ fn accepted(ledger: &Ledger, index: usize, status: &str) -> CircleState {
     reply(201, json!([ledger.response(index, status)]))
 }
 
-fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
+pub(super) fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
     indices
         .iter()
         .flat_map(|&i| {

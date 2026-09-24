@@ -7,7 +7,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -97,7 +97,7 @@ impl Attester {
             .await
             .context("failed to connect to the Circle API")?;
 
-        let store = Store::open_or_create(
+        let mut store = Store::open_or_create(
             config.store_path(),
             config.faucet_account_id(),
             ScanCursor {
@@ -113,6 +113,12 @@ impl Attester {
             anyhow::bail!("trusted anchor must not be after the scan start");
         }
         let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
+        if config.release_holds() {
+            let (burns, withdrawals) = store
+                .release_all_holds()
+                .context("failed to release held burns and withdrawals")?;
+            info!(burns, withdrawals, "released held burns and withdrawals");
+        }
 
         Ok(Self {
             config,

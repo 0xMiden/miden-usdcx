@@ -29,6 +29,7 @@ use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitErr
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
+use super::service_map::{counts, fresh_replies, signers};
 use super::startup::TestArgs;
 use super::support::{
     development_signers, faucet_account_id, scan_limits, transaction, BlockFactory, ChainControls,
@@ -203,7 +204,7 @@ impl CircleApi for ScriptedCircle {
 pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<SignedBlock>,
-    config: Mutex<TestArgs>,
+    pub(super) config: Mutex<TestArgs>,
     pub(super) burns: Vec<ValidatedBurn>,
     pub(super) fresh_indices: Vec<usize>,
 }
@@ -955,7 +956,6 @@ async fn held_submissions_do_not_block_others() {
         .start(vec![
             reply(400, rejected.clone()),
             reply(201, json!([ledger.response(1, "created")])),
-            reply(201, json!([ledger.response(0, "created")])),
         ])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
@@ -972,27 +972,57 @@ async fn held_submissions_do_not_block_others() {
         2,
         "holds do not retry automatically"
     );
-    attester.retry_held_submission(held.note_id).unwrap();
-    recover(&mut attester).await.unwrap();
+
+    // Releasing the hold at startup starts the withdrawal over: the burn is prepared and signed
+    // again, and the old signed request is never sent.
+    drop(attester);
+    ledger.config.lock().unwrap().switch("--release-holds");
+    let ready: Vec<_> = ledger
+        .fresh_indices
+        .iter()
+        .copied()
+        .filter(|&index| index != 1)
+        .collect();
+    let mut replies = fresh_replies(&ledger, &ready);
+    replies.push(reply(200, ledger.response(1, "created")));
+    let (signers, calls) = signers(None);
+    let (mut attester, released, _) = ledger.runtime(replies, signers).await;
+    assert!(attester.store.submission(held.note_id).unwrap().is_none());
+    assert!(attester
+        .store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .any(|burn| burn.note_id() == held.note_id));
+    attester.run_one_cycle().await.unwrap();
+    assert_eq!(counts(&calls), [2, 2], "both ready burns are signed");
     {
-        let observed = requests.lock().unwrap();
-        assert_eq!(observed.len(), 3);
-        assert_eq!(observed[0], observed[2]);
-        for (index, request) in observed[..2].iter().enumerate() {
-            assert_eq!(
-                ledger.record(&attester, index).status,
-                SubmissionStatus::Submitted
+        let released = released.lock().unwrap();
+        let position = 2 * ready.iter().position(|&index| index == 0).unwrap();
+        assert_eq!(released[position], ObservedRequest::Prepare);
+        let ObservedRequest::Submit { body, .. } = &released[position + 1] else {
+            panic!(
+                "expected the withdraw request, got {:?}",
+                released[position + 1]
             );
-            let ObservedRequest::Submit { body, .. } = request else {
-                panic!("expected the withdraw request, got {request:?}");
-            };
-            let body: Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(
-                body["batches"][0]["burnTxId"],
-                ledger.burns[index].burn.note_id().to_hex()
-            );
-        }
+        };
+        let body: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(
+            body["batches"][0]["burnTxId"],
+            ledger.burns[0].burn.note_id().to_hex()
+        );
     }
+    for index in 0..2 {
+        assert_eq!(
+            ledger.record(&attester, index).status,
+            SubmissionStatus::Submitted
+        );
+    }
+    assert_eq!(
+        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount = 1000"),
+        3,
+        "the released burn renews its one reservation"
+    );
 
     // A status lookup never holds: after a 400 to the GET the saved ID stays queued.
     let ledger = Ledger::new().await;

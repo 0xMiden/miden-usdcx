@@ -37,8 +37,8 @@ pub enum CircleError {
 
 #[derive(Debug)]
 pub struct RawResponse {
-    status: StatusCode,
-    body: Vec<u8>,
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
 }
 
 impl RawResponse {
@@ -168,24 +168,10 @@ async fn request_worker(client: reqwest::Client, mut jobs: mpsc::Receiver<Job>) 
         if job.reply.is_closed() {
             continue;
         }
-        let result = async {
-            let mut response = client
-                .execute(job.request)
-                .await
-                .map_err(CircleError::Transport)?;
-            let status = response.status();
-            // Read chunk by chunk and stop once the total passes the cap, so an oversized or
-            // endless reply is refused before it is buffered; the declared length is not trusted.
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
-                if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-                    return Err(CircleError::BodyTooLarge);
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Ok(RawResponse::new(status, body))
-        }
-        .await;
+        let result = match client.execute(job.request).await {
+            Ok(response) => read_reply(response).await,
+            Err(error) => Err(CircleError::Transport(error)),
+        };
         // The gap counts from when this attempt ended, so two dispatches are always further apart.
         next_dispatch = Instant::now() + REQUEST_GAP;
         let _ = job.reply.send(result);
@@ -210,6 +196,23 @@ impl CircleApi for CircleClient {
             read_prepared(self.send(request).await?)
         })
     }
+}
+
+/// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`].
+pub(crate) async fn read_reply(
+    mut response: reqwest::Response,
+) -> Result<RawResponse, CircleError> {
+    let status = response.status();
+    // Read chunk by chunk and stop once the total passes the cap, so an oversized or endless
+    // reply is refused before it is buffered; the declared length is not trusted.
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+            return Err(CircleError::BodyTooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(RawResponse::new(status, body))
 }
 
 /// Circle's API counts as reachable only when its info endpoint answers 200.

@@ -133,6 +133,7 @@ struct VerifiedBatch {
     note_id: NoteId,
     intent: BurnIntent,
     digest: B256,
+    transfer_spec_hash: B256,
 }
 
 #[derive(Debug)]
@@ -145,11 +146,6 @@ impl SignedWithdrawal {
     pub(crate) fn submission(&self, endpoint: String) -> Result<SavedSubmission, SubmitError> {
         let signed = &self.batch;
         let batch = &signed.batch;
-        let (intent, _) = parse_intent(&batch.intent).map_err(|_| SubmitError::InvalidRequest)?;
-        let transfer_spec_hash = intent
-            .spec
-            .hash()
-            .map_err(|_| SubmitError::InvalidRequest)?;
         let body = serde_json::to_vec(&json!({
             "batches": [{
                 "burnIntents": [&batch.intent],
@@ -164,7 +160,7 @@ impl SignedWithdrawal {
             note_id: batch.note_id,
             endpoint,
             body,
-            transfer_spec_hash,
+            transfer_spec_hash: batch.transfer_spec_hash,
             use_circle_forwarding: self.use_circle_forwarding,
             status: SubmissionStatus::Submitting,
             withdrawal_id: None,
@@ -277,6 +273,7 @@ impl UnverifiedPrepareResponse {
                 note_id: burn.burn.note_id(),
                 intent: raw,
                 digest,
+                transfer_spec_hash: spec.hash()?,
             },
             use_circle_forwarding: config.use_circle_forwarding(),
         })

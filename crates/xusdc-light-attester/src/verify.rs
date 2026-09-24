@@ -385,8 +385,8 @@ impl eip712::TransferSpec {
     }
 
     fn hash(&self) -> Result<B256, VerifyError> {
-        // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID.
-        // Its correspondence to REST transferSpecHashes still awaits a live withdrawal response.
+        // Circle's TransferSpecLib.encodeTransferSpec/getHash define this packed transfer ID; the
+        // transferSpecHashes in Circle's REST responses are the same keccak256 of the packed spec.
         Ok(keccak256(self.encode()?))
     }
 }

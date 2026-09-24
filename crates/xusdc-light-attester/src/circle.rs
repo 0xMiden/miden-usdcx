@@ -49,12 +49,27 @@ impl RawResponse {
     }
 }
 
+/// Circle's `message` from an error reply, cut to [`MAX_LOGGED_MESSAGE_CHARS`] characters.
+pub(crate) fn circle_message(body: &[u8]) -> Option<String> {
+    let reply: serde_json::Value = serde_json::from_slice(body).ok()?;
+    Some(
+        reply["message"]
+            .as_str()?
+            .chars()
+            .take(MAX_LOGGED_MESSAGE_CHARS)
+            .collect(),
+    )
+}
+
 /// Stop waiting for a Circle connection after 10 s, even when the configured request timeout is
 /// longer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Circle's replies are a few kilobytes; refusing more than 1 MiB keeps an oversized body out of
 /// memory.
 const MAX_RESPONSE_BODY_BYTES: usize = 1 << 20;
+/// Circle's message is outside text written into our logs; 200 characters keep the reason
+/// readable without letting a long reply flood them.
+const MAX_LOGGED_MESSAGE_CHARS: usize = 200;
 /// Circle allows five requests per second from one IP address; a quarter of a second between two
 /// requests stays below that.
 pub(crate) const REQUEST_GAP: Duration = Duration::from_millis(250);

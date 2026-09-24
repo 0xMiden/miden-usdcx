@@ -6,7 +6,9 @@ use reqwest::StatusCode;
 use tracing::{info, warn};
 
 use crate::attester::Attester;
-use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
+use crate::circle::{
+    self, circle_message, CircleError, ConflictResponse, RawResponse, WithdrawalResponse,
+};
 use crate::signer::SignerError;
 use crate::verify::SignedWithdrawal;
 
@@ -270,6 +272,10 @@ impl Attester {
                 .last_error
                 .as_deref()
                 .filter(|_| saved.status != SubmissionStatus::Failed);
+            let message = saved
+                .hold_reason
+                .and(saved.last_response.as_deref())
+                .and_then(circle_message);
             warn!(
                 note_id = %saved.note_id,
                 withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
@@ -277,6 +283,7 @@ impl Attester {
                 http_status = ?saved.last_http_status,
                 hold_reason = ?saved.hold_reason,
                 reason,
+                circle_message = message.as_deref(),
                 "withdrawal submission needs attention"
             );
         }

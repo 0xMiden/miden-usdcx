@@ -587,28 +587,29 @@ fn failures_that_hold_a_burn() {
         (
             "prepare 400",
             prepare(400),
-            Some(BurnHoldReason::PrepareRejected),
+            (Some(BurnHoldReason::PrepareRejected), Some("rejected")),
         ),
-        ("prepare 503", prepare(503), None),
-        ("prepare 429", prepare(429), None),
-        ("prepare 408", prepare(408), None),
-        ("prepare 403", prepare(403), None),
+        ("prepare 503", prepare(503), (None, None)),
+        ("prepare 429", prepare(429), (None, None)),
+        ("prepare 408", prepare(408), (None, None)),
+        ("prepare 403", prepare(403), (None, None)),
         (
             "malformed reply",
             SubmitError::Prepare(CircleError::InvalidResponse(malformed)),
-            None,
+            (None, None),
         ),
         (
             "Circle unavailable",
             SubmitError::Prepare(CircleError::Unavailable),
-            None,
+            (None, None),
         ),
         (
             "failed verification",
             SubmitError::Verification(Box::new(VerifyError::DigestMismatch)),
-            None,
+            (None, None),
         ),
     ] {
-        assert_eq!(burn_hold(&error), hold, "{name}");
+        let (reason, message) = burn_hold(&error);
+        assert_eq!((reason, message.as_deref()), hold, "{name}");
     }
 }

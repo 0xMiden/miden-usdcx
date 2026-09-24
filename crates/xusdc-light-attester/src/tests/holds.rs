@@ -251,44 +251,48 @@ fn failures_that_hold_a_burn() {
         (
             "prepare 400",
             prepare(400),
-            Some((
-                BurnHoldReason::PrepareRejected,
+            (
+                Some(BurnHoldReason::PrepareRejected),
                 Some((400, br#"{"message":"rejected"}"#.to_vec())),
-            )),
+                Some("rejected"),
+            ),
         ),
-        ("prepare 503", prepare(503), None),
+        ("prepare 503", prepare(503), (None, None, None)),
         (
             "prepare 429",
             SubmitError::Prepare(CircleError::RateLimited {
                 body: None,
                 read_error: None,
             }),
-            None,
+            (None, None, None),
         ),
-        ("prepare 408", prepare(408), None),
-        ("prepare 403", prepare(403), None),
+        ("prepare 408", prepare(408), (None, None, None)),
+        ("prepare 403", prepare(403), (None, None, None)),
         (
             "malformed reply",
             SubmitError::Prepare(CircleError::InvalidResponse(malformed)),
-            None,
+            (None, None, None),
         ),
         (
             "Circle unavailable",
             SubmitError::Prepare(CircleError::Unavailable),
-            None,
+            (None, None, None),
         ),
         (
             "failed verification",
             SubmitError::Verification(VerifyError::DigestMismatch),
-            None,
+            (None, None, None),
         ),
     ] {
-        let actual = burn_hold(&error).map(|(reason, response)| {
+        let (reason, response, message) = burn_hold(&error);
+        assert_eq!(
             (
                 reason,
                 response.map(|(status, body)| (status, body.to_vec())),
-            )
-        });
-        assert_eq!(actual, hold, "{name}");
+                message.as_deref(),
+            ),
+            hold,
+            "{name}"
+        );
     }
 }

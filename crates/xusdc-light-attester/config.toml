@@ -1,5 +1,5 @@
 # Development-only configuration. The faucet ID is intentionally not deployed.
-miden_network = "devnet"
+miden_rpc_url = "https://rpc.devnet.miden.io"
 circle_request_timeout_ms = 10000
 faucet_account_id_hex = "0xbb405fd9fe431bd1135a292de098cb"
 circle_api_base_url = "https://xreserve-api-testnet.circle.com"

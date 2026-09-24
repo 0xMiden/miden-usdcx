@@ -359,7 +359,15 @@ fn forwarded_route_is_bound_to_the_burn() {
     );
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 11] = [
+    let cases: [(&str, Edit, VerifyError); 12] = [
+        (
+            "zero forwarding contract",
+            |b, _| {
+                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
+                    format!("0x{}", "00".repeat(20))
+            },
+            ForwardedField("forwardingContractAddress"),
+        ),
         (
             "recipient is not the forwarder",
             |b, _| b.burn_intents[0].spec.destination_recipient = ZERO_WORD.into(),

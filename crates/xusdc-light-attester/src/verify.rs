@@ -325,6 +325,11 @@ fn verify_forwarded_leg(
     forwarder: Address,
 ) -> Result<(), VerifyError> {
     use VerifyError::ForwardedField;
+    // xReserve only forwards when the hook names a forwarding contract. With zero it keeps the
+    // minted USDC itself and nothing reaches the burn's recipient.
+    if hook.forwarding_contract == Address::ZERO {
+        return Err(ForwardedField("forwardingContractAddress"));
+    }
     let spec = &intent.spec;
     let forwarder = forwarder.into_word();
     if spec.destinationRecipient != forwarder {

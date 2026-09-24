@@ -21,6 +21,9 @@ const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
 // CCTP) and to Base (direct), both prepared with forwarding on and a 0.5 USDC CCTP fee.
 pub(super) const FORWARDED_FIXTURE: &str =
     include_str!("fixtures/circle-sandbox-2026-09-21-forwarded-linea.response.json");
+// The same forwarded request to Solana, whose recipient fills all 32 bytes of the mint recipient.
+const FORWARDED_SOLANA_FIXTURE: &str =
+    include_str!("fixtures/circle-sandbox-2026-09-23-forwarded-solana.response.json");
 const DIRECT_WITH_OPTIONS_FIXTURE: &str =
     include_str!("fixtures/circle-sandbox-2026-09-21-direct-base-with-options.response.json");
 
@@ -330,6 +333,7 @@ fn circle_hash_matches_reference() {
         include_str!("fixtures/circle-sandbox-2026-09-10-live-control-single.response.json"),
         FORWARDED_FIXTURE,
         DIRECT_WITH_OPTIONS_FIXTURE,
+        FORWARDED_SOLANA_FIXTURE,
     ] {
         let response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
         let [batch] = response.batches.as_slice() else {
@@ -356,10 +360,13 @@ fn forwarded_route_is_bound_to_the_burn() {
         };
         response.verify(burn, config).err()
     };
-    assert_eq!(
-        verify(&burn, captured(FORWARDED_FIXTURE), &forwarding),
-        None
-    );
+    let solana = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 5, [0x11; 32]);
+    for (burn, fixture) in [
+        (&burn, FORWARDED_FIXTURE),
+        (&solana, FORWARDED_SOLANA_FIXTURE),
+    ] {
+        assert_eq!(verify(burn, captured(fixture), &forwarding), None);
+    }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
     let cases: [(&str, Edit, VerifyError); 13] = [

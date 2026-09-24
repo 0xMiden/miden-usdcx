@@ -213,7 +213,13 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         );
     };
     let amount_cases = [
-        ("default refuses a fee", "999", "1", None, Some(FeeTooHigh)),
+        (
+            "zero ceiling refuses a fee",
+            "999",
+            "1",
+            None,
+            Some(FeeTooHigh),
+        ),
         (
             "configured ceiling is inclusive",
             "990",

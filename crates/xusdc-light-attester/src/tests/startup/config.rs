@@ -43,6 +43,7 @@ fn cli_surface_is_explicit() {
         "--request-timeout",
         "--faucet-account-id",
         "--use-circle-forwarding",
+        "--max-withdrawal-fee",
         "--withdrawal-limit",
         "--poll-interval",
         "--faucet-deployment-block",
@@ -290,9 +291,7 @@ fn invalid_config_is_rejected() {
     assert_config_error(&excessive_fee, "maximum withdrawal fee is invalid");
 
     let mut defaults = valid;
-    defaults.remove("--max-withdrawal-fee");
     defaults.remove("--withdrawal-window-hours");
     let config = defaults.load();
-    assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
     assert_eq!(config.withdrawal_window_ms(), 86_400_000);
 }

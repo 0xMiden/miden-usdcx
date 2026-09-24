@@ -158,7 +158,6 @@ impl ChainReader for TestChain {
 #[derive(Clone)]
 pub(super) enum CircleState {
     Response(StatusCode),
-    ResponseBody(StatusCode, Vec<u8>),
     TransportError,
 }
 
@@ -167,7 +166,6 @@ impl CircleState {
     fn answer(self) -> Result<RawResponse, CircleError> {
         match self {
             CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
-            CircleState::ResponseBody(status, body) => Ok(RawResponse::new(status, body)),
             CircleState::TransportError => Err(CircleError::Unavailable),
         }
     }

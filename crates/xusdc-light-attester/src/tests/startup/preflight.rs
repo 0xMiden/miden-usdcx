@@ -97,3 +97,31 @@ async fn circle_requests_are_paced() {
     }
     assert!(started.elapsed() >= REQUEST_GAP);
 }
+
+/// Circle's reply is read in full up to 1 MiB and refused one byte past it.
+#[tokio::test]
+async fn circle_replies_are_read_within_limits() {
+    let tempdir = tempfile::tempdir().unwrap();
+    create_store_parent(&tempdir);
+    let client = CircleClient::new(&load_config(&tempdir, 1)).unwrap();
+    let reply = |status: StatusCode, length: usize| {
+        reqwest::Response::from(
+            http::Response::builder()
+                .status(status)
+                .body(vec![b'0'; length])
+                .unwrap(),
+        )
+    };
+
+    let read = client
+        .read_reply(reply(StatusCode::OK, 1 << 20))
+        .await
+        .unwrap();
+    assert_eq!((read.status, read.body.len()), (StatusCode::OK, 1 << 20));
+    assert!(matches!(
+        client
+            .read_reply(reply(StatusCode::OK, (1 << 20) + 1))
+            .await,
+        Err(CircleError::BodyTooLarge)
+    ));
+}

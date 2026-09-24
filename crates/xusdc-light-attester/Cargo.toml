@@ -23,6 +23,7 @@ tokio-util = "0.7"
 toml = "1"
 
 [dev-dependencies]
+http = "1"
 miden-protocol = { version = "=0.17.0-rc.5", features = ["testing"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["net", "io-util", "time"] }
+tokio = { workspace = true, features = ["time"] }

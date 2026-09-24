@@ -229,7 +229,7 @@ fn invalid_config_is_rejected() {
 
     let mut missing_parent = valid.clone();
     missing_parent.replace("--store-path", tempdir.path().join("missing/store.sqlite3"));
-    assert_config_error(&missing_parent, "store path parent does not exist");
+    assert_config_error(&missing_parent, "store path parent is not accessible");
 
     let parent_file = tempdir.path().join("not-a-directory");
     std::fs::write(&parent_file, b"file").unwrap();

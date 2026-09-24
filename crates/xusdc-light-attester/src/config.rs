@@ -217,7 +217,7 @@ impl TryFrom<Cli> for Config {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let store_parent_metadata = fs::metadata(store_parent).map_err(|source| {
-            ConfigError::with_source("store path parent does not exist", source)
+            ConfigError::with_source("store path parent is not accessible", source)
         })?;
         if !store_parent_metadata.is_dir() {
             return Err(ConfigError::invalid(

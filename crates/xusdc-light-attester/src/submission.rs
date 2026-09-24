@@ -160,21 +160,7 @@ impl Attester {
         let mut response = self.send_saved_request(&mut saved).await;
         if saved.withdrawal_id.is_none()
             && response.as_ref().is_some_and(|reply| {
-                reply.status == StatusCode::BAD_REQUEST
-                    && self
-                        .config
-                        .withdrawal_cap_error_message()
-                        .is_some_and(|start| {
-                            // Circle's limit message goes on with the current total and the limit,
-                            // so only its fixed start is configured.
-                            serde_json::from_slice::<serde_json::Value>(&reply.body).is_ok_and(
-                                |body| {
-                                    body["message"]
-                                        .as_str()
-                                        .is_some_and(|message| message.starts_with(start))
-                                },
-                            )
-                        })
+                is_limit_rejection(reply, self.config.withdrawal_cap_error_message())
             })
         {
             if !first_send {
@@ -369,6 +355,20 @@ impl SavedSubmission {
     fn matches_note(&self, id: &str) -> bool {
         id.eq_ignore_ascii_case(&self.note_id.to_hex())
     }
+}
+
+/// Whether Circle refused a withdraw POST because its withdrawal limit is reached: a 400 whose
+/// `message` starts with the configured text. Circle's limit message goes on with the current
+/// total and the limit, so only its fixed start is configured.
+pub(crate) fn is_limit_rejection(response: &RawResponse, message_start: Option<&str>) -> bool {
+    response.status == StatusCode::BAD_REQUEST
+        && message_start.is_some_and(|start| {
+            serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|body| {
+                body["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with(start))
+            })
+        })
 }
 
 /// Circle's withdrawal IDs are UUIDs; the ID becomes a URL path segment, so nothing else passes.

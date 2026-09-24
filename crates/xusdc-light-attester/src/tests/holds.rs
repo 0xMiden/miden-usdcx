@@ -102,10 +102,6 @@ async fn prepare_400_holds_survive_restart_until_released() {
                 reply(201, json!([ledger.response(i, "finalized")])),
             ]
         })
-        .chain([
-            reply(200, ledger.prepared_response(order[0])),
-            CircleState::TransportError,
-        ])
         .collect();
     let (mut attester, requests) = ledger.start(replies).await;
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
@@ -114,13 +110,18 @@ async fn prepare_400_holds_survive_restart_until_released() {
         ledger.record(&attester, order[0]).status,
         SubmissionStatus::Expired
     );
-    attester
-        .release_burn_hold(ledger.burns[order[0]].burn.note_id())
-        .unwrap();
+    drop(attester);
+    ledger.config.lock().unwrap().switch("--release-holds");
+    let (mut attester, requests) = ledger
+        .start(vec![
+            reply(200, ledger.prepared_response(order[0])),
+            CircleState::TransportError,
+        ])
+        .await;
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 6);
-    assert_eq!(requests[4], ObservedRequest::Prepare);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], ObservedRequest::Prepare);
 }
 
 #[tokio::test]

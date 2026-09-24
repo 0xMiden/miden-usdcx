@@ -56,7 +56,7 @@ impl Signer for CountedSigner {
     }
 }
 
-async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
+pub(super) async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
     let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let mut index = 0;
     let signers = development_signers().map(|inner| {
@@ -71,7 +71,7 @@ async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
     (SignerPair::new(signers).await.unwrap(), calls)
 }
 
-fn counts(calls: &Counts) -> [usize; 2] {
+pub(super) fn counts(calls: &Counts) -> [usize; 2] {
     calls.each_ref().map(|count| count.load(Ordering::Relaxed))
 }
 
@@ -79,7 +79,7 @@ fn accepted(ledger: &Ledger, index: usize, status: &str) -> CircleState {
     reply(201, json!([ledger.response(index, status)]))
 }
 
-fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
+pub(super) fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
     indices
         .iter()
         .flat_map(|&i| {

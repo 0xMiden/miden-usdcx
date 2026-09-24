@@ -262,7 +262,7 @@ impl CircleApi for FakeCircle {
     fn prepare_withdrawal<'a>(
         &'a self,
         _burn: &'a DiscoveredBurn,
-        _cctp_forwarding_max_fee: Option<u64>,
+        _cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         let answer = self.reply(ObservedRequest::Prepare);

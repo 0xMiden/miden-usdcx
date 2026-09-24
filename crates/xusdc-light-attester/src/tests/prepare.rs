@@ -34,69 +34,63 @@ async fn prepare_sends_the_right_values() {
         (9_223_372_034_707_292_160, "9223372034707.292160", 9),
     ];
     let client = client();
-    for forwarding in [None, Some(500_000)] {
-        // Apart from the salt, which is each burn's note ID, these expected values are written
-        // independently, not produced by the request helpers.
-        let expected = |burn: &DiscoveredBurn, value: &str, domain: u32| {
-            let mut batch = json!({
-                "token": "USDC",
-                "remoteDomain": 10007,
-                "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
-                "finalDestinationDomain": domain,
-                "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-                "valueIncludingFees": value,
-                "salt": burn.note_id().to_hex(),
-                "useCircleForwarding": forwarding.is_some(),
-            });
-            if forwarding.is_some() {
-                batch["forwardingOptions"] =
-                    json!({"maxFee": "0.500000", "usesFastFinality": true});
-            }
-            batch
-        };
-        let mut burns: Vec<_> = cases
-            .iter()
-            .map(|&(amount, value, domain)| {
-                let burn = discovered_burn(amount, serial(0x3132_3334_3536_3738), domain);
-                let expected = expected(&burn, value, domain);
-                (burn, expected)
-            })
-            .collect();
-        let burn = discovered_burn(10_000_000, serial(0x3132_3334_3536_3739), 9);
-        let other = expected(&burn, "10.000000", 9);
-        burns.push((burn, other));
-        for (burn, expected) in &burns {
-            assert_eq!(
-                serde_json::to_value(PrepareBatch::from_burn(burn, forwarding)).unwrap(),
-                *expected
-            );
-        }
-        let salts: BTreeSet<_> = burns
-            .iter()
-            .map(|(_, expected)| expected["salt"].to_string())
-            .collect();
-        assert_eq!(salts.len(), burns.len());
-
-        let (burn, expected) = &burns[0];
-        let request = client.prepare_request(burn, forwarding).unwrap();
-        assert_eq!(request.method(), Method::POST);
+    // Apart from the salt, which is each burn's note ID, these expected values are written
+    // independently, not produced by the request helpers.
+    let expected = |burn: &DiscoveredBurn, value: &str, domain: u32| {
+        json!({
+            "token": "USDC",
+            "remoteDomain": 10007,
+            "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
+            "finalDestinationDomain": domain,
+            "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "valueIncludingFees": value,
+            "salt": burn.note_id().to_hex(),
+            "useCircleForwarding": true,
+            "forwardingOptions": {"maxFee": "0.500000", "usesFastFinality": true},
+        })
+    };
+    let mut burns: Vec<_> = cases
+        .iter()
+        .map(|&(amount, value, domain)| {
+            let burn = discovered_burn(amount, serial(0x3132_3334_3536_3738), domain);
+            let expected = expected(&burn, value, domain);
+            (burn, expected)
+        })
+        .collect();
+    let burn = discovered_burn(10_000_000, serial(0x3132_3334_3536_3739), 9);
+    let other = expected(&burn, "10.000000", 9);
+    burns.push((burn, other));
+    for (burn, expected) in &burns {
         assert_eq!(
-            request.url().as_str(),
-            "https://circle.example.invalid/v1/prepare-withdrawal"
-        );
-        assert_eq!(request.timeout(), Some(&Duration::from_millis(275)));
-        assert_eq!(
-            request.headers().len(),
-            1,
-            "no invented auth or idempotency headers"
-        );
-        assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
-        let body = request.body().and_then(|body| body.as_bytes()).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(body).unwrap(),
-            json!({"batches": [expected]})
+            serde_json::to_value(PrepareBatch::from_burn(burn, 500_000)).unwrap(),
+            *expected
         );
     }
+    let salts: BTreeSet<_> = burns
+        .iter()
+        .map(|(_, expected)| expected["salt"].to_string())
+        .collect();
+    assert_eq!(salts.len(), burns.len());
+
+    let (burn, expected) = &burns[0];
+    let request = client.prepare_request(burn, 500_000).unwrap();
+    assert_eq!(request.method(), Method::POST);
+    assert_eq!(
+        request.url().as_str(),
+        "https://circle.example.invalid/v1/prepare-withdrawal"
+    );
+    assert_eq!(request.timeout(), Some(&Duration::from_millis(275)));
+    assert_eq!(
+        request.headers().len(),
+        1,
+        "no invented auth or idempotency headers"
+    );
+    assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
+    let body = request.body().and_then(|body| body.as_bytes()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(body).unwrap(),
+        json!({"batches": [expected]})
+    );
 }
 
 #[test]
@@ -104,8 +98,9 @@ fn prepare_salt_is_unique_per_burn_and_stable_on_retry() {
     let first = discovered_burn(1_000_000, serial(7), 9);
     let second = discovered_burn(2_000_000, serial(7), 9);
     assert_ne!(first.note_id(), second.note_id());
-    let salt =
-        |burn| serde_json::to_value(PrepareBatch::from_burn(burn, None)).unwrap()["salt"].clone();
+    let salt = |burn| {
+        serde_json::to_value(PrepareBatch::from_burn(burn, 500_000)).unwrap()["salt"].clone()
+    };
     assert_eq!(salt(&first), salt(&first), "retry must keep the salt");
     assert_ne!(
         salt(&first),

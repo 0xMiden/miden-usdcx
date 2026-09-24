@@ -4,12 +4,14 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::utils::serde::Serializable;
+use reqwest::StatusCode;
 use serde_json::json;
 
-use crate::attester::Attester;
-use crate::circle::CircleError;
+use crate::attester::{burn_hold, Attester};
+use crate::circle::{CircleError, RawResponse};
 use crate::store::BurnHoldReason;
-use crate::submission::{SubmissionStatus, SubmitError};
+use crate::submission::{is_limit_rejection, SubmissionStatus, SubmitError};
+use crate::verify::VerifyError;
 
 use super::submit::{poll, recover, reply, Ledger};
 use super::support::{CircleState, ObservedRequest};
@@ -476,4 +478,99 @@ async fn unusable_clock_stops_the_cycle() {
         Some(SubmitError::Clock)
     ));
     assert!(requests.lock().unwrap().is_empty());
+}
+
+/// Circle's limit message is recognised by its configured start, and only in a 400.
+#[test]
+fn limit_message_is_recognised_by_its_start() {
+    let start = Some("synthetic cap rejection");
+    let numbered =
+        "synthetic cap rejection for USDC. Current total: 900000. Limit: 1000000 per 24-hour window";
+    let message = |value| serde_json::to_vec(&json!({ "message": value })).unwrap();
+    for (name, configured, status, body, expected) in [
+        ("not configured", None, 400, message(json!(numbered)), false),
+        (
+            "the exact start",
+            start,
+            400,
+            message(json!("synthetic cap rejection")),
+            true,
+        ),
+        (
+            "the numbered message",
+            start,
+            400,
+            message(json!(numbered)),
+            true,
+        ),
+        (
+            "a leading space",
+            start,
+            400,
+            message(json!(" synthetic cap rejection")),
+            false,
+        ),
+        ("a 503", start, 503, message(json!(numbered)), false),
+        (
+            "a body that is not JSON",
+            start,
+            400,
+            b"synthetic cap rejection".to_vec(),
+            false,
+        ),
+        (
+            "a message that is not text",
+            start,
+            400,
+            message(json!(7)),
+            false,
+        ),
+    ] {
+        let response = RawResponse::new(StatusCode::from_u16(status).unwrap(), body);
+        assert_eq!(
+            is_limit_rejection(&response, configured),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+/// Only a 400 from prepare holds a burn; any other failure before submission is tried again.
+#[test]
+fn failures_that_hold_a_burn() {
+    let prepare = |status: u16| {
+        SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
+            status: StatusCode::from_u16(status).unwrap(),
+            body: br#"{"message":"rejected"}"#.to_vec(),
+        })
+    };
+    let malformed = serde_json::from_slice::<serde_json::Value>(b"not JSON").unwrap_err();
+    for (name, error, hold) in [
+        (
+            "prepare 400",
+            prepare(400),
+            Some(BurnHoldReason::PrepareRejected),
+        ),
+        ("prepare 503", prepare(503), None),
+        ("prepare 429", prepare(429), None),
+        ("prepare 408", prepare(408), None),
+        ("prepare 403", prepare(403), None),
+        (
+            "malformed reply",
+            SubmitError::Prepare(CircleError::InvalidResponse(malformed)),
+            None,
+        ),
+        (
+            "Circle unavailable",
+            SubmitError::Prepare(CircleError::Unavailable),
+            None,
+        ),
+        (
+            "failed verification",
+            SubmitError::Verification(Box::new(VerifyError::DigestMismatch)),
+            None,
+        ),
+    ] {
+        assert_eq!(burn_hold(&error), hold, "{name}");
+    }
 }

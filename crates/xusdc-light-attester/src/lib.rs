@@ -9,6 +9,7 @@ pub mod signer;
 pub(crate) mod store;
 
 pub use attester::{Attester, CycleReport, RunError};
+pub use burn::DiscoveredBurn;
 
 #[cfg(test)]
 mod tests;

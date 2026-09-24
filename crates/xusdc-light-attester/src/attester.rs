@@ -133,7 +133,9 @@ impl Attester {
                         eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
                     }
                 }
-                Err(error) => eprintln!("cycle stopped; retrying after poll interval: {error:?}"),
+                Err(error) => {
+                    eprintln!("cycle stopped; retrying after the pause between cycles: {error:?}")
+                }
             }
             pause = if rate_limited {
                 pause

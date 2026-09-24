@@ -237,7 +237,7 @@ impl Attester {
                 note_id = %saved.note_id,
                 method,
                 withdrawal_id,
-                error = %error,
+                error = error as &dyn std::error::Error,
                 "Circle request failed"
             ),
         }
@@ -264,13 +264,19 @@ impl Attester {
             || saved.last_error.is_some()
             || saved.status == SubmissionStatus::Failed
         {
+            // For a failed withdrawal the saved text is Circle's own failure reason: outside text
+            // that stays in the store and out of the log. Every other saved text is one of ours.
+            let reason = saved
+                .last_error
+                .as_deref()
+                .filter(|_| saved.status != SubmissionStatus::Failed);
             warn!(
                 note_id = %saved.note_id,
                 withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
                 status = ?saved.status,
                 http_status = ?saved.last_http_status,
                 hold_reason = ?saved.hold_reason,
-                has_error = saved.last_error.is_some(),
+                reason,
                 "withdrawal submission needs attention"
             );
         }

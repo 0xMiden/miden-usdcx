@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use reqwest::{StatusCode, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::time::Instant;
 use xusdc_encoding::account::xreserve::USDCX_DECIMALS;
@@ -141,31 +141,7 @@ impl CircleClient {
         burn: &ValidatedBurn,
         use_circle_forwarding: bool,
     ) -> Result<UnverifiedPrepareResponse, CircleError> {
-        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
-        let note = burn.burn.note().as_note();
-        let amount = burn.amount;
-        let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
-        // Circle takes whole-USDC decimal strings, not smallest-unit integers.
-        let value_including_fees = format!(
-            "{}.{:0width$}",
-            amount / units_per_usdc,
-            amount % units_per_usdc,
-            width = usize::from(USDCX_DECIMALS),
-        );
-        // Circle's salt is the note serial. The attachment only holds the destination.
-        let salt = note.serial_num().to_hex();
-        let batch = json!({
-            "token": "USDC",
-            "remoteDomain": MIDEN_DOMAIN,
-            "remoteDepositor": format!("0x{}", hex::encode(sender.to_bytes32())),
-            "finalDestinationDomain": burn.items.dest_domain,
-            "finalDestinationRecipient": format!(
-                "0x{}", hex::encode(burn.items.dest_recipient.as_bytes())
-            ),
-            "valueIncludingFees": value_including_fees,
-            "salt": salt,
-            "useCircleForwarding": use_circle_forwarding,
-        });
+        let batch = PrepareBatch::from_burn(burn, use_circle_forwarding);
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
@@ -202,6 +178,51 @@ pub(crate) fn read_info(response: &RawResponse) -> Result<(), CircleError> {
         Ok(())
     } else {
         Err(CircleError::UnexpectedStatus(response.status))
+    }
+}
+
+/// One burn's entry in the prepare-withdrawal request, with Circle's field names.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrepareBatch {
+    token: &'static str,
+    remote_domain: u32,
+    remote_depositor: String,
+    final_destination_domain: u32,
+    final_destination_recipient: String,
+    value_including_fees: String,
+    salt: String,
+    use_circle_forwarding: bool,
+}
+
+impl PrepareBatch {
+    pub(crate) fn from_burn(burn: &ValidatedBurn, use_circle_forwarding: bool) -> Self {
+        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+        let note = burn.burn.note().as_note();
+        let amount = burn.amount;
+        let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
+        // Circle takes whole-USDC decimal strings, not smallest-unit integers.
+        let value_including_fees = format!(
+            "{}.{:0width$}",
+            amount / units_per_usdc,
+            amount % units_per_usdc,
+            width = usize::from(USDCX_DECIMALS),
+        );
+        // Circle's salt is the note serial. The attachment only holds the destination.
+        let salt = note.serial_num().to_hex();
+        Self {
+            token: "USDC",
+            remote_domain: MIDEN_DOMAIN,
+            remote_depositor: format!("0x{}", hex::encode(sender.to_bytes32())),
+            final_destination_domain: burn.items.dest_domain,
+            final_destination_recipient: format!(
+                "0x{}",
+                hex::encode(burn.items.dest_recipient.as_bytes())
+            ),
+            value_including_fees,
+            salt,
+            use_circle_forwarding,
+        }
     }
 }
 

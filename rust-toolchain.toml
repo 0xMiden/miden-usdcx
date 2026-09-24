@@ -1,0 +1,8 @@
+# To adopt a newer toolchain, update the channel and run `just test`, `just lint`, and `just fmt`.
+#
+# The channel names a patch release because a bare "1.98" resolves to 1.98.0, which carries a
+# miscompilation bug. It is also the minimum the pinned protocol family declares, so cargo refuses
+# to build that family with anything earlier.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

@@ -18,6 +18,8 @@
 //! Before a page is submitted, the faucet's used-nonce map is read for the deposits on it, so a
 //! deposit the faucet has already minted is dropped before any proof is built for it. That is what
 //! keeps replaying the feed cheap after the state file is lost: the replay costs reads, not proofs.
+//! The client watches the faucet alongside the relayer's own account, so those reads are answered
+//! from the local store, as of the client's last sync.
 
 use std::fmt;
 use std::fs;
@@ -29,28 +31,24 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::domain::account::{
-    AccountStorageMapDetails, AccountStorageRequirements, GetAccountRequest, StorageMapEntries,
-    StorageMapFetch,
-};
-use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
+use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionRequestBuilder, TransactionStatus};
 use miden_client::Client;
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::account::{AccountId, StorageMapKey};
+use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::TransactionId;
-use miden_protocol::{Word, EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
+use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
 
 use xusdc_encoding::account::XReserveFaucetExtension;
-use xusdc_encoding::xreserve::encoding::DepositNonce;
 
 use crate::circle::PageSize;
 use crate::config::Config;
+use crate::mint::DepositMint;
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.
@@ -79,14 +77,12 @@ const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
 /// can be exercised without a node.
 pub trait MidenClient: fmt::Debug + Send {
-    /// Reports, for each of `nonces` in order, whether the `faucet` has already minted that
-    /// deposit.
+    /// Keeps the mints whose deposit the faucet has not minted yet, in their original order.
     ///
-    /// A `true` is final: the faucet only ever adds to its used-nonce map. A `false` can go stale
-    /// the moment it is read, because a mint note already on chain may be consumed before the new
-    /// one; the faucet refuses the second of the two, so a stale `false` costs a proof and nothing
-    /// more.
-    fn used_nonces(&mut self, faucet: AccountId, nonces: &[DepositNonce]) -> Result<Vec<bool>>;
+    /// Dropping a mint is final: the faucet only ever adds to its used-nonce map. Keeping one is
+    /// not, because a mint note already on chain for the same deposit may be consumed before the
+    /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
+    fn unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>>;
 
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
@@ -143,16 +139,15 @@ impl fmt::Display for ExpirationDelta {
 }
 
 /// A Miden client pointed at a node, with the relayer's account tracked and its signing key to
-/// hand.
+/// hand, and the faucet watched so its storage can be read locally.
 pub struct NodeClient {
     /// `miden-client` is asynchronous and the relay loop is not, so every call is driven to
     /// completion on this runtime.
     runtime: tokio::runtime::Runtime,
     client: Client<FilesystemKeyStore>,
-    /// The client's own connection to the node, kept for the faucet storage reads the client has
-    /// no method for: it can only read the storage of accounts it tracks, and tracking the faucet
-    /// would mean syncing its whole used-nonce map.
-    rpc: Arc<dyn NodeRpcClient>,
+    /// The faucet the client was told to watch at startup, and so the only one whose storage it
+    /// can read.
+    faucet: AccountId,
     expiration_delta: ExpirationDelta,
 }
 
@@ -161,25 +156,30 @@ pub struct NodeClient {
 impl fmt::Debug for NodeClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeClient")
+            .field("faucet", &self.faucet)
             .field("expiration_delta", &self.expiration_delta)
             .finish_non_exhaustive()
     }
 }
 
 impl NodeClient {
-    /// Connects to the configured node, opens the local store and keystore, and starts tracking
-    /// the relayer's account.
+    /// Connects to the configured node, opens the local store and keystore, starts tracking the
+    /// relayer's account and starts watching the faucet.
     ///
     /// The relayer account must already exist on chain and its signing key must already be in the
     /// keystore directory; this only teaches the local client about the account. Everything that
     /// can be refused is refused here, so the service never starts polling Circle unless it can
     /// also mint.
     ///
+    /// Watching the faucet on a fresh store downloads its whole used-nonce map, which holds one
+    /// entry per deposit ever minted, so the first start against a long-lived faucet is slow. A
+    /// store carried over from an earlier run already has it and only syncs what changed since.
+    ///
     /// # Errors
     ///
     /// - The node URL is not an endpoint, or the node cannot be reached.
     /// - The data directory, its store, or its keystore cannot be opened.
-    /// - The node does not know the relayer account.
+    /// - The node does not know the relayer account or the faucet.
     pub fn new(config: &Config) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -196,13 +196,13 @@ impl NodeClient {
         let keystore = FilesystemKeyStore::new(data_dir.join(KEYSTORE_DIR))
             .map_err(|error| anyhow!("opening the miden keystore: {error}"))?;
 
-        let rpc: Arc<dyn NodeRpcClient> =
-            Arc::new(GrpcClient::new(&endpoint, RPC_TIMEOUT.as_millis() as u64));
-
         let mut client = runtime
             .block_on(
                 ClientBuilder::new()
-                    .rpc(Arc::clone(&rpc))
+                    .rpc(Arc::new(GrpcClient::new(
+                        &endpoint,
+                        RPC_TIMEOUT.as_millis() as u64,
+                    )))
                     .sqlite_store(data_dir.join(STORE_FILE))
                     .authenticator(Arc::new(keystore))
                     .build(),
@@ -210,6 +210,7 @@ impl NodeClient {
             .context("building the miden client")?;
 
         let relayer = config.relayer_account_id;
+        let faucet = config.faucet_account_id;
         runtime.block_on(async {
             client
                 .sync_state()
@@ -227,63 +228,71 @@ impl NodeClient {
                     })?;
             }
 
+            // Watched rather than imported: the client keeps the faucet's storage current on every
+            // sync but does not pull the notes addressed to it, which are every mint note on chain.
+            if client.get_account(faucet).await?.is_none() {
+                client
+                    .import_watched_account_by_id(faucet)
+                    .await
+                    .with_context(|| format!("watching the faucet {faucet}"))?;
+            }
+
             Ok::<(), anyhow::Error>(())
         })?;
 
         Ok(Self {
             runtime,
             client,
-            rpc,
+            faucet,
             expiration_delta: config.expiration_delta,
         })
     }
 }
 
 impl MidenClient for NodeClient {
-    /// Reads the nonces' entries in the faucet's used-nonce map, a bounded number of keys per
-    /// request.
+    /// Syncs, then reads each mint's entry in the faucet's used-nonce map from the local store.
     ///
-    /// Each response carries a partial Merkle tree over the requested keys, and the client refuses
-    /// one whose root is not the map root in the faucet's storage header. The node is still the one
-    /// the relayer submits through, and it is trusted the same way here as it is for inclusion.
-    #[instrument(name = "used_nonces", skip_all, fields(nonces.count = nonces.len(), used.count = Empty))]
-    fn used_nonces(&mut self, faucet: AccountId, nonces: &[DepositNonce]) -> Result<Vec<bool>> {
-        let slot = XReserveFaucetExtension::used_nonces_slot();
-        let keys: Vec<StorageMapKey> = nonces
-            .iter()
-            .map(DepositNonce::to_storage_map_key)
-            .collect();
-
-        let mut used = Vec::with_capacity(keys.len());
-        // The node covers at most this many keys in one partial map, so a page larger than that is
-        // read in several requests.
-        for chunk in keys.chunks(AccountStorageMapDetails::MAX_PARTIAL_MAP_KEYS) {
-            let requirements = AccountStorageRequirements::new([(slot.clone(), chunk)]);
-            let request =
-                GetAccountRequest::new().with_storage(StorageMapFetch::Slots(requirements.clone()));
-
-            let (_block, proof) = self
-                .runtime
-                .block_on(self.rpc.get_account(faucet, request))
-                .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
-
-            let storage = proof
-                .storage_details()
-                .with_context(|| format!("the node returned no storage for the faucet {faucet}"))?;
-            storage
-                .validate_against_request(&requirements)
-                .context("the node answered for other nonces than the ones asked about")?;
-            let map = storage.find_map_details(slot).with_context(|| {
-                format!("the faucet {faucet} has no used-nonce map; is it an xUSDC faucet?")
-            })?;
-
-            for key in chunk {
-                used.push(stored_value(&map.entries, key)? != EMPTY_WORD);
-            }
+    /// The sync is what keeps the answer current: a relayer that has been caught up for a while
+    /// has not synced since its last transaction, and the faucet has minted since. The reads
+    /// themselves never reach the node.
+    #[instrument(name = "unminted", skip_all, fields(mints.count = mints.len(), unminted.count = Empty))]
+    fn unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>> {
+        // A page with nothing to check is not worth a sync.
+        if mints.is_empty() {
+            return Ok(mints);
         }
 
-        Span::current().record("used.count", used.iter().filter(|used| **used).count());
-        Ok(used)
+        let slot = XReserveFaucetExtension::used_nonces_slot();
+        let Self {
+            runtime,
+            client,
+            faucet,
+            ..
+        } = self;
+
+        let unminted = runtime.block_on(async {
+            client
+                .sync_state()
+                .await
+                .context("syncing before reading the used nonces")?;
+
+            let faucet_storage = client.account_reader(*faucet);
+            let mut unminted = Vec::with_capacity(mints.len());
+            for mint in mints {
+                let value = faucet_storage
+                    .get_storage_map_item(slot.clone(), mint.nonce.to_storage_map_key())
+                    .await
+                    .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
+                if value == EMPTY_WORD {
+                    unminted.push(mint);
+                }
+            }
+
+            Ok::<_, anyhow::Error>(unminted)
+        })?;
+
+        Span::current().record("unminted.count", unminted.len());
+        Ok(unminted)
     }
 
     /// Submits the whole page as one transaction and returns once the node has included it.
@@ -401,32 +410,9 @@ fn inclusion(
     }
 }
 
-/// Reads `key`'s value out of the map entries the node returned for it, where an absent key reads
-/// as the empty word, as it does on chain.
-///
-/// A request that names its keys is answered with a partial map over them, but the whole map is an
-/// answer that covers them too, so both are read.
-fn stored_value(entries: &StorageMapEntries, key: &StorageMapKey) -> Result<Word> {
-    match entries {
-        StorageMapEntries::PartialMap { partial_smt, .. } => partial_smt
-            .get_value(&key.hash().as_word())
-            .with_context(|| format!("the node's answer does not cover the key {}", key.to_hex())),
-        StorageMapEntries::AllEntries(entries) => Ok(entries
-            .iter()
-            .find(|entry| entry.key == *key)
-            .map_or(EMPTY_WORD, |entry| entry.value)),
-        StorageMapEntries::LimitExceeded => {
-            bail!("the node answered a keyed read with the map being too large to return")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use miden_client::rpc::domain::account::StorageMapEntry;
     use miden_client::transaction::DiscardCause;
-    use miden_protocol::account::StorageMap;
-    use miden_protocol::crypto::merkle::smt::PartialSmt;
     use rstest::rstest;
 
     use super::*;
@@ -497,64 +483,6 @@ mod tests {
         .unwrap_err();
         assert!(
             error.to_string().contains("discarded"),
-            "unexpected error: {error}"
-        );
-    }
-
-    /// The value the faucet writes for a used nonce. Any non-empty word reads as used; this is
-    /// the one the faucet actually writes.
-    fn used() -> Word {
-        Word::from([1u32, 0, 0, 0])
-    }
-
-    /// The used-nonce map key of the deposit with this nonce seed.
-    fn nonce_key(seed: u8) -> StorageMapKey {
-        DepositNonce::new([seed; 32]).to_storage_map_key()
-    }
-
-    /// A used-nonce map in which the deposit with nonce seed 1 is minted and the rest are not.
-    fn map_with_one_minted() -> StorageMap {
-        StorageMap::with_entries([(nonce_key(1), used())]).unwrap()
-    }
-
-    /// The partial map a node answers a keyed read with: the map's openings at exactly `keys`.
-    fn partial_answer(map: &StorageMap, keys: &[StorageMapKey]) -> StorageMapEntries {
-        let partial_smt =
-            PartialSmt::from_proofs(keys.iter().map(|key| map.open(key).into())).unwrap();
-        StorageMapEntries::PartialMap {
-            map_keys: keys.to_vec(),
-            partial_smt,
-        }
-    }
-
-    /// The whole-map answer, which covers every key.
-    fn full_answer(map: &StorageMap) -> StorageMapEntries {
-        StorageMapEntries::AllEntries(
-            map.entries()
-                .map(|(key, value)| StorageMapEntry {
-                    key: *key,
-                    value: *value,
-                })
-                .collect(),
-        )
-    }
-
-    /// A minted deposit reads as its marker and an unminted one as empty, whichever form the node
-    /// answers in.
-    #[rstest]
-    #[case::partial(partial_answer(&map_with_one_minted(), &[nonce_key(1), nonce_key(2)]))]
-    #[case::full(full_answer(&map_with_one_minted()))]
-    fn a_stored_value_reads_the_marker_or_empty(#[case] entries: StorageMapEntries) {
-        assert_eq!(stored_value(&entries, &nonce_key(1)).unwrap(), used());
-        assert_eq!(stored_value(&entries, &nonce_key(2)).unwrap(), EMPTY_WORD);
-    }
-
-    /// A map too large to return carries no values at all, so nothing can be read from it.
-    #[test]
-    fn a_limit_exceeded_answer_is_an_error() {
-        let error = stored_value(&StorageMapEntries::LimitExceeded, &nonce_key(1)).unwrap_err();
-        assert!(
-            error.to_string().contains("too large"),
             "unexpected error: {error}"
         );
     }

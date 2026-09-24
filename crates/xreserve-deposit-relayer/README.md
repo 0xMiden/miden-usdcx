@@ -8,7 +8,8 @@ submits them to Miden.
 ```text
 Circle attestation feed        GET /v1/remote-domains/{domain}/attestations, newest first
         |
-relayer                        decode each DepositIntent, build one mint note per deposit
+relayer                        decode each DepositIntent, build one mint note per deposit,
+        |                      drop the deposits the faucet has already minted
         |
 relayer account transaction    one page of mint notes as the transaction's output notes
         |
@@ -21,8 +22,8 @@ The relayer is a courier. It does not decide whether a deposit gets minted: the 
 it decides on the note's contents alone. The relayer's job is to get every attested deposit in
 front of the faucet exactly as Circle signed it, and to keep doing so across failures and restarts.
 
-The service is one synchronous loop: poll Circle, build notes, submit, wait for inclusion, record
-progress, sleep. The Miden client's asynchronous API is driven to completion on a single-threaded
+The service is one synchronous loop: poll Circle, build notes, drop the already-minted ones,
+submit, wait for inclusion, record progress, sleep. The Miden client's asynchronous API is driven to completion on a single-threaded
 runtime, so there is never more than one page in flight.
 
 ## Authorization and trust
@@ -58,7 +59,10 @@ on chain.
   refused when the faucet consumes it. When the faucet's attester is rotated (by the
   `ATTEST_ADMIN` role), restart the relayer with the new key.
 - **The Miden node** is the operator's own. The relayer treats a transaction as done once that node
-  reports it committed in a block; it does not seek independent finality.
+  reports it committed in a block; it does not seek independent finality. It also takes the
+  faucet's used-nonce map from that node, so a node that lied about it could make the relayer skip
+  a deposit it wrongly reports as minted — a liveness failure, not a mint the faucet did not
+  authorize.
 
 ### What a broken relayer can and cannot do
 
@@ -77,8 +81,26 @@ There are two replay layers and the relayer relies on the second.
   twice.
 - The faucet's used-nonce map stops the *deposit* being minted twice, however many notes carry it.
 
-That is why the relayer keeps no per-deposit ledger: anything it re-submits after a crash or a lost
-state file is refused on chain, and costs proving time rather than a second mint.
+That is why the relayer keeps no per-deposit ledger of its own: the faucet's used-nonce map is the
+ledger. The relayer reads it before submitting (next section), and whatever slips past that read is
+refused on chain.
+
+## Skipping deposits that are already minted
+
+Before a page is proven, the relayer reads the faucet's used-nonce map for every deposit on the
+page and drops the ones already minted. A replay of the feed — after a crash, or after the state
+file is lost — therefore costs reads rather than proofs, and a page whose deposits are all minted
+submits nothing at all.
+
+The faucet is watched by the Miden client alongside the relayer's own account: every sync keeps
+its storage current in the client's local store, and the read is answered from there, after a sync
+at the start of the check. It is watched rather than imported so the client does not also pull the
+notes addressed to the faucet, which are every mint note on chain.
+
+A "minted" answer is final, since the faucet only ever adds to its used-nonce map. A "not minted"
+answer can be overtaken: a mint note already on chain for the same deposit may be consumed before
+the new one. The faucet refuses the second of the two, so that case costs one proof and nothing
+more.
 
 ## Transactions and inclusion
 
@@ -101,7 +123,8 @@ a smaller one notices a lost transaction sooner.
 
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
-duplicate, a wrong attester key, a paused faucet — simply stays unconsumed. The relayer does not
+duplicate that slipped past the used-nonce check, a wrong attester key, a paused faucet — simply
+stays unconsumed. The relayer does not
 watch for that.
 
 ## Malformed attestations
@@ -141,20 +164,29 @@ public key must use compressed SEC1 format.
 
 The relayer account must already exist on chain, and its signing key must already be in the
 keystore directory. Neither is created here. Everything that can be refused — an unreachable node,
-an unreadable keystore, an account the node does not know — is refused at startup, before the
-first Circle request, so the service never reads the feed unless it can also mint.
+an unreadable keystore, a relayer account or faucet the node does not know — is refused at startup,
+before the first Circle request, so the service never reads the feed unless it can also mint.
 
 Logs are a tree per page — the page, its Circle request, the notes it built and the transaction
 that carried them — filtered by `RUST_LOG` (default `info`).
 
-`--miden-data-dir` holds the Miden client's own state: the store it syncs the chain into, and the
-`keystore` directory it reads the relayer account's signing key from. The keystore has to survive a
-restart, because without the signing key the relayer cannot mint at all; the store holds a copy of
-the chain state that the client rebuilds from the node if it is lost, so losing the directory costs
-a full re-sync rather than correctness. Nothing in it is read back to resume work: a restart picks
-up from the page recorded in the state file below, fetches that page again and builds fresh mint
-notes for every deposit on it, including any deposit whose mint note was already submitted. The
-faucet refuses the duplicates, so they cost proving time rather than a second mint.
+`--miden-data-dir` holds the Miden client's own state:
+
+- `store.sqlite3`, the SQLite store the client syncs the chain into: block headers, the relayer
+  account and the transactions it submitted, and a full copy of the faucet's storage — including
+  the used-nonce map, which gains one entry per deposit ever minted and so grows for the faucet's
+  lifetime.
+- `keystore/`, the directory the relayer account's signing key is read from.
+
+The keystore has to survive a restart, because without the signing key the relayer cannot mint at
+all. The store does not: the client rebuilds it from the node, so losing it costs a re-sync rather
+than correctness. That re-sync includes downloading the faucet's whole used-nonce map, so the first
+start on a fresh data directory takes longer the more deposits the faucet has minted; a store
+carried over from an earlier run only syncs what changed since.
+
+Nothing in the data directory is read back to resume work: a restart picks up from the page
+recorded in the state file below and fetches that page again. The deposits on it that already
+minted are dropped by the used-nonce check rather than proven a second time.
 
 ## Progress
 
@@ -186,5 +218,9 @@ The file is replaced atomically (write, fsync, rename), so a crash leaves the ol
 one, never a torn one. A file that exists but is not a state is an error, not a first run, since
 treating it as one would replay the whole feed silently.
 
-Deleting the file is safe, just slow — the next run scans the whole feed, and the faucet refuses
-the deposits it has already minted.
+Deleting the file is safe. The next run scans the whole feed, and the used-nonce check drops every
+deposit the faucet has already minted, so the replay costs Circle requests and local reads rather
+than a proof per deposit.
+
+The state file and the Miden store are independent: the state file says how far the relayer walked
+the feed; the store holds the chain, including which deposits minted. Either can be lost on its own.

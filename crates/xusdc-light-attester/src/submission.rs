@@ -74,7 +74,7 @@ impl Attester {
     }
 
     /// After reviewing an HTTP rejection, queue the unchanged request for another attempt.
-    /// This does not release identity conflicts or retry failed/expired Circle withdrawals.
+    /// This does not retry failed or expired Circle withdrawals.
     pub fn retry_held_submission(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store
             .retry_held_submission(note_id)

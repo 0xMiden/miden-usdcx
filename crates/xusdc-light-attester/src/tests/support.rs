@@ -24,8 +24,11 @@ use reqwest::StatusCode;
 use xusdc_encoding::note::xreserve_burn::XUsdcBurnAttachment;
 use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
 
+use crate::burn::ValidatedBurn;
 use crate::chain::{ChainError, ChainReader, ScanLimits};
-use crate::circle::{read_info, CircleApi, CircleError, RawResponse};
+use crate::circle::{
+    read_info, read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
+};
 
 pub(super) const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
@@ -174,6 +177,7 @@ impl CircleState {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ObservedRequest {
     Info,
+    Prepare,
 }
 
 pub(super) struct FakeCircle {
@@ -201,6 +205,17 @@ impl CircleApi for FakeCircle {
         self.requests.lock().unwrap().push(ObservedRequest::Info);
         let answer = self.state.clone().answer();
         Box::pin(async move { read_info(&answer?) })
+    }
+
+    fn prepare_withdrawal<'a>(
+        &'a self,
+        _burn: &'a ValidatedBurn,
+        _use_circle_forwarding: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
+    {
+        self.requests.lock().unwrap().push(ObservedRequest::Prepare);
+        let answer = self.state.clone().answer();
+        Box::pin(async move { read_prepared(answer?) })
     }
 }
 

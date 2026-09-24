@@ -1,7 +1,7 @@
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
-use crate::circle::{CircleError, HttpTransport, ReqwestTransport, REQUEST_GAP};
+use crate::circle::{CircleClient, CircleError, HttpTransport, ReqwestTransport, REQUEST_GAP};
 
 use super::{
     create_store_parent, load_config, ready_circle, start, ChainState, CircleState, FakeCircle,
@@ -60,15 +60,24 @@ async fn unreachable_circle_api_is_rejected() {
             .unwrap()
             .downcast_ref::<CircleError>()
             .is_some());
-        assert_eq!(
-            *requests.lock().unwrap(),
-            vec![ObservedRequest {
-                method: Method::GET,
-                url: "https://circle.example.invalid/v1/info".to_string(),
-                timeout: Some(REQUEST_TIMEOUT),
-            }]
-        );
+        assert_eq!(*requests.lock().unwrap(), vec![ObservedRequest::Info]);
     }
+
+    // The real client asks for Circle's info with the configured timeout and nothing else.
+    let tempdir = tempfile::tempdir().unwrap();
+    create_store_parent(&tempdir);
+    let transport = Box::new(ReqwestTransport::new().unwrap());
+    let request = CircleClient::new(&load_config(&tempdir, 1), transport)
+        .info_request()
+        .unwrap();
+    assert_eq!(request.method(), Method::GET);
+    assert_eq!(
+        request.url().as_str(),
+        "https://circle.example.invalid/v1/info"
+    );
+    assert_eq!(request.timeout(), Some(&REQUEST_TIMEOUT));
+    assert!(request.headers().is_empty());
+    assert!(request.body().is_none());
 }
 
 #[tokio::test]

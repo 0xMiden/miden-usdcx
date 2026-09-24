@@ -449,3 +449,18 @@ async fn transient_prepare_failures_retry_next_cycle() {
         assert_eq!(requests.lock().unwrap().len(), 3);
     }
 }
+
+/// Without a usable clock the withdrawal limit cannot be applied, so the cycle stops before any
+/// Circle request, as it does after a store failure.
+#[tokio::test]
+async fn unusable_clock_stops_the_cycle() {
+    let ledger = Ledger::new().await;
+    let (mut attester, requests) = ledger.start(vec![]).await;
+    attester.now = Box::new(|| UNIX_EPOCH - Duration::from_millis(1));
+    let error = attester.run_one_cycle().await.unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<SubmitError>(),
+        Some(SubmitError::Clock)
+    ));
+    assert!(requests.lock().unwrap().is_empty());
+}

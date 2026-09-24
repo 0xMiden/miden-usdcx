@@ -38,9 +38,10 @@ pub struct Cli {
     #[arg(long, action = ArgAction::Set, value_parser = clap::value_parser!(bool))]
     use_circle_forwarding: bool,
 
-    /// Maximum total fee per withdrawal, in the smallest USDC unit. Every Circle route charges one
-    /// (the smallest seen is 4350); Ethereum needs at least 1003500, Circle's flat fee there with
-    /// forwarding on.
+    /// Fixed part of the allowed fee per withdrawal, in the smallest USDC unit;
+    /// --max-withdrawal-fee-bps adds a share of the burned amount on top. Every Circle route
+    /// charges a fee (the smallest seen is 4350); Ethereum needs at least 1003500, Circle's flat
+    /// fee there with forwarding on.
     #[arg(long)]
     max_withdrawal_fee: u64,
 

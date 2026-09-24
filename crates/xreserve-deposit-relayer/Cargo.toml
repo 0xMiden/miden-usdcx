@@ -7,10 +7,10 @@ description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 
 [dependencies]
 xusdc-encoding = { path = "../xusdc-encoding" }
-miden-protocol = { version = "=0.17.0-rc.6" }
+miden-protocol = { version = "=0.17.0-rc.7" }
 # The client pair is the release-candidate line, one minor behind the protocol pin above only in its
-# own numbering: `0.17.0-rc.2` is the first client built against protocol `0.17.0-rc.6`, so it is the
-# earliest release that resolves against the rest of the workspace.
+# own numbering: `0.17.0-rc.2` was built against protocol `0.17.0-rc.6` and requires `^0.17.0-rc.6`,
+# which also accepts `0.17.0-rc.7`, so it resolves against the rest of the workspace.
 miden-client = { version = "=0.17.0-rc.2", default-features = false, features = ["std", "tonic"] }
 miden-client-sqlite-store = { version = "=0.17.0-rc.2" }
 

@@ -202,6 +202,44 @@ async fn recovery_is_not_gated_by_the_per_burn_cap() {
     );
 }
 
+/// Lowering the limit, even to zero, must not strand requests Circle may already hold: a
+/// reservation still inside the window is renewed and its request sent again without the limit
+/// check. An expired one is checked again, so only one of the two fits beside the other's renewed
+/// reservation.
+#[tokio::test]
+async fn live_reservations_are_resent_after_the_limit_drops() {
+    for (restart_at, resent, admissions) in [
+        (2 * WINDOW - 1, 2, [2 * WINDOW - 1, 2 * WINDOW - 1]),
+        (2 * WINDOW, 1, [WINDOW, 2 * WINDOW]),
+    ] {
+        let ledger = Ledger::new().await;
+        let (mut attester, _) = ledger
+            .start(vec![
+                CircleState::TransportError,
+                CircleState::TransportError,
+            ])
+            .await;
+        at(&mut attester, WINDOW);
+        ledger.submit(&mut attester, 0).await.unwrap();
+        ledger.submit(&mut attester, 1).await.unwrap();
+        drop(attester);
+
+        ledger.configure(0, false);
+        let (mut attester, requests) = ledger
+            .start(vec![
+                CircleState::TransportError,
+                CircleState::TransportError,
+            ])
+            .await;
+        at(&mut attester, restart_at);
+        recover(&mut attester).await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), resent, "{restart_at}");
+        let mut stored = [admission(&ledger, 0), admission(&ledger, 1)];
+        stored.sort();
+        assert_eq!(stored, admissions, "{restart_at}");
+    }
+}
+
 #[tokio::test]
 async fn cap_rejection_releases_capacity_but_waits_for_fresh_signing() {
     let ledger = Ledger::new().await;

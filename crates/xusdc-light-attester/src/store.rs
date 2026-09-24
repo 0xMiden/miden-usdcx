@@ -181,7 +181,9 @@ impl Store {
 
     /// An uncertain POST may arrive at Circle again, so refresh its existing reservation first.
     /// The per-burn cap is not applied again here: it was passed at admission, and lowering it
-    /// afterwards must not strand a request Circle may already hold.
+    /// afterwards must not strand a request Circle may already hold. For the same reason, a
+    /// reservation still inside the window is renewed without checking the limit again; an
+    /// expired one is checked against the reservations still inside the window.
     pub(crate) fn renew_submission(
         &mut self,
         note_id: NoteId,
@@ -190,16 +192,19 @@ impl Store {
         limit: u64,
     ) -> anyhow::Result<bool> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        let amount = transaction
+        let (amount, admitted_at_ms) = transaction
             .query_row(
-                "SELECT reservation_amount FROM burns JOIN submissions USING (note_id)
+                "SELECT reservation_amount, admitted_at_ms
+                 FROM burns JOIN submissions USING (note_id)
                  WHERE note_id = ?1 AND submissions.status = 'SUBMITTING'
                     AND withdrawal_id IS NULL",
                 [note_id.to_bytes()],
-                |row| row.get::<_, u64>(0),
+                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?)),
             )
             .map_err(classify_error)?;
-        if !can_submit_burn(&transaction, note_id, amount, now_ms, window_ms, limit)? {
+        if !inside_window(now_ms, admitted_at_ms, window_ms)
+            && !can_submit_burn(&transaction, note_id, amount, now_ms, window_ms, limit)?
+        {
             return Ok(false);
         }
         reserve_capacity(&transaction, note_id, amount, now_ms)?;

@@ -142,7 +142,7 @@ impl Attester {
                 Ok(report) => {
                     if let Err(error) = report.discover {
                         warn!(
-                            error = %error,
+                            error = &error as &dyn std::error::Error,
                             "discovery failed; new signing paused for this cycle"
                         );
                     }
@@ -157,7 +157,7 @@ impl Attester {
                 }
                 Err(error) => {
                     error!(
-                        error = %error,
+                        error = %format_args!("{error:#}"),
                         "cycle stopped; retrying after the pause between cycles"
                     );
                 }
@@ -404,7 +404,7 @@ impl Attester {
                 }
                 warn!(
                     note_id = %note_id,
-                    error = %error,
+                    error = &error as &dyn std::error::Error,
                     "withdrawal failed before submission"
                 );
                 first_error.get_or_insert(error);

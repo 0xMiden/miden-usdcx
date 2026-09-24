@@ -44,6 +44,11 @@ pub struct Cli {
     #[arg(long)]
     max_withdrawal_fee: u64,
 
+    /// Extra allowed fee in basis points of the burned amount, on top of --max-withdrawal-fee.
+    /// Circle charges 1 basis point on most routes, so leave headroom, for example 2.
+    #[arg(long)]
+    max_withdrawal_fee_bps: u64,
+
     /// Rolling withdrawal cap in the smallest USDC unit; zero pauses new submissions.
     #[arg(long)]
     withdrawal_limit: u64,
@@ -117,6 +122,7 @@ pub struct Config {
     circle_api_base_url: Url,
     use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
+    max_withdrawal_fee_bps: u64,
     withdrawal_limit: u64,
     withdrawal_window_ms: i64,
     withdrawal_cap_error_message: Option<String>,
@@ -234,6 +240,7 @@ impl TryFrom<Cli> for Config {
             circle_api_base_url,
             use_circle_forwarding: cli.use_circle_forwarding,
             max_withdrawal_fee,
+            max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             withdrawal_limit: cli.withdrawal_limit,
             withdrawal_window_ms,
             withdrawal_cap_error_message: cli.withdrawal_cap_error_message,
@@ -271,6 +278,10 @@ impl Config {
 
     pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
+    }
+
+    pub(crate) fn max_withdrawal_fee_bps(&self) -> u64 {
+        self.max_withdrawal_fee_bps
     }
 
     pub(crate) fn withdrawal_limit(&self) -> u64 {

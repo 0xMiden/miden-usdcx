@@ -50,6 +50,8 @@ impl TestArgs {
                 "false".into(),
                 "--max-withdrawal-fee".into(),
                 "0".into(),
+                "--max-withdrawal-fee-bps".into(),
+                "0".into(),
                 "--withdrawal-limit".into(),
                 "10000000000000".into(),
                 "--withdrawal-window-hours".into(),

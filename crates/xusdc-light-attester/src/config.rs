@@ -95,7 +95,8 @@ pub struct Cli {
 
     /// Releases every held burn and every held withdrawal once, after the store opens. Each
     /// released burn is prepared, checked and signed again from scratch; for a held withdrawal the
-    /// old signed request is thrown away first.
+    /// old signed request is thrown away first. Meant for a single restart: while it is set, every
+    /// start releases the holds again.
     #[arg(long)]
     release_holds: bool,
 }

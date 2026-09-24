@@ -1,7 +1,7 @@
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
-use crate::circle::{CircleClient, CircleError, HttpTransport, ReqwestTransport, REQUEST_GAP};
+use crate::circle::{CircleClient, CircleError, REQUEST_GAP};
 
 use super::{
     create_store_parent, load_config, ready_circle, start, ChainState, CircleState, FakeCircle,
@@ -66,8 +66,8 @@ async fn unreachable_circle_api_is_rejected() {
     // The real client asks for Circle's info with the configured timeout and nothing else.
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let transport = Box::new(ReqwestTransport::new().unwrap());
-    let request = CircleClient::new(&load_config(&tempdir, 1), transport)
+    let request = CircleClient::new(&load_config(&tempdir, 1))
+        .unwrap()
         .info_request()
         .unwrap();
     assert_eq!(request.method(), Method::GET);
@@ -82,13 +82,15 @@ async fn unreachable_circle_api_is_rejected() {
 
 #[tokio::test]
 async fn circle_requests_are_paced() {
-    let transport = ReqwestTransport::new().unwrap();
+    let tempdir = tempfile::tempdir().unwrap();
+    create_store_parent(&tempdir);
+    let client = CircleClient::new(&load_config(&tempdir, 1)).unwrap();
     let started = std::time::Instant::now();
     for _ in 0..2 {
         // A non-HTTP URL fails before any network I/O, so only the pacing takes time.
         let url = "ftp://circle.example.invalid/".parse().unwrap();
         let request = reqwest::Request::new(Method::GET, url);
-        assert!(transport.execute(request).await.is_err());
+        assert!(client.send(request).await.is_err());
     }
     assert!(started.elapsed() >= REQUEST_GAP);
 }

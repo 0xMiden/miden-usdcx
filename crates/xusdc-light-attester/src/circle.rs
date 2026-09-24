@@ -66,6 +66,14 @@ pub trait CircleApi: Send + Sync {
     fn check_connection(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>>;
+
+    /// Asks Circle to prepare the withdrawal of this burn. The reply is only decoded; it must be
+    /// verified before anything is signed.
+    fn prepare_withdrawal<'a>(
+        &'a self,
+        burn: &'a ValidatedBurn,
+        use_circle_forwarding: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>;
 }
 
 /// Circle's xReserve API over HTTPS. Every request goes through one worker, which sends them one
@@ -126,13 +134,11 @@ impl CircleClient {
         response.await.map_err(|_| CircleError::Unavailable)?
     }
 
-    /// Decodes Circle's reply only. Its contents must be verified before signing.
-    #[allow(dead_code)]
-    pub(crate) async fn prepare_withdrawal(
+    pub(crate) fn prepare_request(
         &self,
         burn: &ValidatedBurn,
         use_circle_forwarding: bool,
-    ) -> Result<UnverifiedPrepareResponse, CircleError> {
+    ) -> Result<reqwest::Request, CircleError> {
         let batch = PrepareBatch::from_burn(burn, use_circle_forwarding);
         let url = self
             .base_url
@@ -145,14 +151,7 @@ impl CircleClient {
             reqwest::header::HeaderValue::from_static("application/json"),
         );
         *request.body_mut() = Some(json!({ "batches": [batch] }).to_string().into());
-        let response = self.send(request).await?;
-        if response.status != StatusCode::OK {
-            return Err(CircleError::UnexpectedPrepareStatus {
-                status: response.status,
-                body: response.body,
-            });
-        }
-        serde_json::from_slice(&response.body).map_err(CircleError::InvalidResponse)
+        Ok(request)
     }
 }
 
@@ -199,6 +198,18 @@ impl CircleApi for CircleClient {
     ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
         Box::pin(async move { read_info(&self.send(self.info_request()?).await?) })
     }
+
+    fn prepare_withdrawal<'a>(
+        &'a self,
+        burn: &'a ValidatedBurn,
+        use_circle_forwarding: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let request = self.prepare_request(burn, use_circle_forwarding)?;
+            read_prepared(self.send(request).await?)
+        })
+    }
 }
 
 /// Circle's API counts as reachable only when its info endpoint answers 200.
@@ -208,6 +219,20 @@ pub(crate) fn read_info(response: &RawResponse) -> Result<(), CircleError> {
     } else {
         Err(CircleError::UnexpectedStatus(response.status))
     }
+}
+
+/// A 200 must decode as a prepared withdrawal. Any other status keeps Circle's status and body,
+/// so the caller can tell a refusal from a failure.
+pub(crate) fn read_prepared(
+    response: RawResponse,
+) -> Result<UnverifiedPrepareResponse, CircleError> {
+    if response.status != StatusCode::OK {
+        return Err(CircleError::UnexpectedPrepareStatus {
+            status: response.status,
+            body: response.body,
+        });
+    }
+    serde_json::from_slice(&response.body).map_err(CircleError::InvalidResponse)
 }
 
 /// One burn's entry in the prepare-withdrawal request, with Circle's field names.
@@ -258,7 +283,7 @@ impl PrepareBatch {
 /// Decoded wire data, not a verified or signable withdrawal.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub(crate) struct UnverifiedPrepareResponse {
+pub struct UnverifiedPrepareResponse {
     pub(crate) batches: Vec<UnverifiedPrepareBatch>,
 }
 

@@ -353,6 +353,15 @@ impl Ledger {
     }
 
     /// Opens the ledger's store directly, as a starting attester would.
+    pub(super) fn stored(&self, sql: &str) -> i64 {
+        let disk = Connection::open_with_flags(
+            format!("file:{}?immutable=1", self.path().display()),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        disk.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
     pub(super) fn open_store(&self) -> anyhow::Result<Store> {
         Store::open_or_create(
             &self.path(),

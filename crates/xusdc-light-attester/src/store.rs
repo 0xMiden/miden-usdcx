@@ -30,6 +30,7 @@ const DISCOVERED: &str = "DISCOVERED";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected = 1,
+    TooSmallToForward = 2,
 }
 
 impl BurnHoldReason {

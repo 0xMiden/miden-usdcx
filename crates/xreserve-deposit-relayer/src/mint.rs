@@ -15,7 +15,7 @@ use miden_protocol::{Felt, Word};
 use tracing::{error, instrument};
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{DepositIntent, DepositNonce};
 
 use crate::circle::{Attestation, RemoteDomain};
 use crate::config::Config;
@@ -74,6 +74,15 @@ fn entropy_seed() -> Word {
     ])
 }
 
+/// A mint note together with the deposit nonce it mints.
+///
+/// The nonce is what the faucet's replay guard is keyed by, so it is what the relayer checks
+/// before submitting the note. The note does not expose it once built, so it is kept alongside.
+pub struct DepositMint {
+    pub nonce: DepositNonce,
+    pub note: XUsdcMintNote,
+}
+
 /// Builds mint notes for one faucet from the attestations of one remote domain.
 ///
 /// Every identity is validated when the command line is parsed, so an invalid configuration
@@ -113,7 +122,7 @@ impl Minter {
     /// An attestation that cannot be decoded or built is logged and skipped. Each successful note
     /// receives a fresh serial number, so rebuilding the same deposit produces a distinct note.
     #[instrument(name = "build_notes", skip_all, fields(attestations = attestations.len()))]
-    pub fn build_notes(&mut self, attestations: &[&Attestation]) -> Vec<XUsdcMintNote> {
+    pub fn build_notes(&mut self, attestations: &[&Attestation]) -> Vec<DepositMint> {
         attestations
             .iter()
             .filter_map(|attestation| {
@@ -134,11 +143,12 @@ impl Minter {
     ///
     /// Failures depend only on the attestation and the configured identities, so retrying the
     /// same input cannot make it build successfully.
-    fn build_note(&mut self, attestation: &Attestation) -> Result<XUsdcMintNote> {
+    fn build_note(&mut self, attestation: &Attestation) -> Result<DepositMint> {
         let intent = DepositIntent::try_from(attestation.payload.as_slice())
             .context("the payload is not a deposit intent")?;
+        let nonce = intent.header().nonce();
 
-        XUsdcMintNote::builder()
+        let note = XUsdcMintNote::builder()
             .sender(self.mint_account)
             .target(self.usdcx_faucet)
             .remote_domain(self.remote_domain.into())
@@ -149,7 +159,9 @@ impl Minter {
             ))
             .generate_serial_number(&mut self.rng)
             .build()
-            .context("building the mint note")
+            .context("building the mint note")?;
+
+        Ok(DepositMint { nonce, note })
     }
 }
 
@@ -165,7 +177,7 @@ mod tests {
         DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
-    use super::{AttesterPublicKey, Minter, XUsdcMintNote};
+    use super::{AttesterPublicKey, DepositMint, Minter};
     use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
     use crate::config::Config;
     use crate::miden::ExpirationDelta;
@@ -312,8 +324,28 @@ mod tests {
 
     /// The protocol note identifier of the one note a page was expected to build. Converting is
     /// the caller's job, so these tests do it where they need an identifier.
-    fn only_note_id(notes: Vec<XUsdcMintNote>) -> NoteId {
-        Note::from(notes.into_iter().next().expect("the page built one note")).id()
+    fn only_note_id(mints: Vec<DepositMint>) -> NoteId {
+        Note::from(
+            mints
+                .into_iter()
+                .next()
+                .expect("the page built one note")
+                .note,
+        )
+        .id()
+    }
+
+    /// Each note is paired with the nonce of the deposit it mints, which is what the used-nonce
+    /// check is keyed by.
+    #[test]
+    fn each_note_carries_its_deposit_nonce() {
+        let mints =
+            Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
+        let nonces: Vec<_> = mints.iter().map(|mint| mint.nonce).collect();
+        assert_eq!(
+            nonces,
+            [DepositNonce::new([1; 32]), DepositNonce::new([2; 32])]
+        );
     }
 
     /// Rebuilding the same deposit twice yields distinct notes because each receives a new serial

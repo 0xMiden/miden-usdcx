@@ -249,7 +249,8 @@ fn circle_response_matches_burns() {
     );
 }
 
-/// The payout and fee must total the burn, respect the fee cap, and request no forwarding.
+/// The payout and fee must total the burn, respect the fee cap, and a direct reply must not
+/// restrict the caller.
 #[test]
 fn circle_response_checks_amount_fee_and_forwarding() {
     use VerifyError::*;

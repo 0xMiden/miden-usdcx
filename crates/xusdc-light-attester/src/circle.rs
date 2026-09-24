@@ -1,4 +1,6 @@
-//! Circle requests. Prepared authorizations and submission identities are checked separately.
+//! Client for Circle's xReserve API: the startup reachability check, the prepare-withdrawal and
+//! withdraw requests, and the withdrawal status lookup. A prepared withdrawal is verified before it
+//! is signed, and a reply to a submission counts only if it names the saved withdrawal.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -44,6 +44,11 @@ pub struct Cli {
     #[arg(long)]
     max_withdrawal_fee: u64,
 
+    /// Extra allowed fee in basis points of the burned amount, on top of --max-withdrawal-fee.
+    /// Circle charges 1 basis point on most routes, so leave headroom, for example 2.
+    #[arg(long)]
+    max_withdrawal_fee_bps: u64,
+
     /// Delay between attester cycles (for example, "1s" or "500ms").
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
@@ -81,6 +86,7 @@ pub struct Config {
     circle_api_base_url: Url,
     use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
+    max_withdrawal_fee_bps: u64,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -158,6 +164,7 @@ impl TryFrom<Cli> for Config {
             circle_api_base_url,
             use_circle_forwarding: cli.use_circle_forwarding,
             max_withdrawal_fee,
+            max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             poll_interval: cli.poll_interval,
             faucet_deployment_block: BlockNumber::from(cli.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
@@ -192,6 +199,10 @@ impl Config {
 
     pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
+    }
+
+    pub(crate) fn max_withdrawal_fee_bps(&self) -> u64 {
+        self.max_withdrawal_fee_bps
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

@@ -11,7 +11,7 @@ use tracing::{error, warn};
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{CircleApi, CircleError};
+use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
@@ -399,12 +399,15 @@ impl Attester {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                if let Some((reason, response)) = burn_hold(&error) {
+                let (hold, response, message) = burn_hold(&error);
+                if let Some(reason) = hold {
                     self.store.hold_burn(note_id, reason, response)?;
                 }
                 warn!(
                     note_id = %note_id,
                     error = &error as &dyn std::error::Error,
+                    hold_reason = ?hold,
+                    circle_message = message.as_deref(),
                     "withdrawal failed before submission"
                 );
                 first_error.get_or_insert(error);
@@ -447,20 +450,28 @@ fn discovery_outcome(
     }
 }
 
-/// The hold that a failure before submission puts on its burn, if any.
-pub(crate) fn burn_hold(error: &SubmitError) -> Option<(BurnHoldReason, Option<(u16, &[u8])>)> {
+/// The hold that a failure before submission puts on its burn, its HTTP evidence, and Circle's
+/// message for the log.
+pub(crate) fn burn_hold(
+    error: &SubmitError,
+) -> (
+    Option<BurnHoldReason>,
+    Option<(u16, &[u8])>,
+    Option<String>,
+) {
     match error {
         // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
         // that fails our checks, is tried again next cycle.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
             if *status == StatusCode::BAD_REQUEST =>
         {
-            Some((
-                BurnHoldReason::PrepareRejected,
+            (
+                Some(BurnHoldReason::PrepareRejected),
                 Some((status.as_u16(), body)),
-            ))
+                circle_message(body),
+            )
         }
-        _ => None,
+        _ => (None, None, None),
     }
 }
 

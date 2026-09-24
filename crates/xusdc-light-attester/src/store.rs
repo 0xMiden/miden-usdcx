@@ -247,9 +247,11 @@ impl Store {
             .map_err(classify_error)?;
         // A held withdrawal is started over instead of resent. Circle refuses a signed request
         // that has expired, and asks for the burn to be signed again with the same burn id.
-        // Signing again cannot pay twice: Circle matches withdrawals by burn id and answers an
-        // earlier accepted one with 409 and its existing withdrawal. The new request is checked
-        // against the burn like the first one, so it cannot change who is paid or how much.
+        // Signing again cannot pay twice: Circle matches withdrawals by burn id, answers a repeat
+        // of an accepted request with 409 and its existing withdrawal, and refuses a new request
+        // whose transfer spec differs, for example after a fee change. The new request passes the
+        // same checks against the burn, so the recipient, chain and burned amount cannot change;
+        // only Circle's fee can, within the ceiling.
         let withdrawals = transaction
             .execute(
                 "DELETE FROM submissions WHERE status = 'HELD' AND hold_reason = 'http_rejected'

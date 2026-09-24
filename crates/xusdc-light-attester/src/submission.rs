@@ -147,7 +147,7 @@ impl SavedSubmission {
         self.last_error = Some(message.into());
     }
 
-    fn read_conflict(&mut self) -> bool {
+    pub(crate) fn read_conflict(&mut self) -> bool {
         let conflict = self
             .last_response
             .as_deref()
@@ -177,7 +177,7 @@ impl SavedSubmission {
         false
     }
 
-    fn read_response(&mut self, response: RawResponse) {
+    pub(crate) fn read_response(&mut self, response: RawResponse) {
         let lookup = self.withdrawal_id.is_some();
         let expected_status = if lookup {
             StatusCode::OK

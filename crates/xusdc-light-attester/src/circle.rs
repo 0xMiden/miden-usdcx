@@ -194,6 +194,39 @@ impl CircleClient {
         *request.body_mut() = Some(json!({ "batches": [batch] }).to_string().into());
         Ok(request)
     }
+
+    pub(crate) fn submission_request(
+        &self,
+        saved: &SavedSubmission,
+    ) -> Result<reqwest::Request, CircleError> {
+        let url = Url::parse(&saved.endpoint).map_err(|_| CircleError::Unavailable)?;
+        let mut request = reqwest::Request::new(reqwest::Method::POST, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        request.headers_mut().insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        // A retry must send the saved authorization, not rebuild it from today's config.
+        *request.body_mut() = Some(saved.body.clone().into());
+        Ok(request)
+    }
+
+    pub(crate) fn status_request(
+        &self,
+        saved: &SavedSubmission,
+        id: &str,
+    ) -> Result<reqwest::Request, CircleError> {
+        let mut url = Url::parse(&saved.endpoint)
+            .and_then(|url| url.join("/v1/withdrawal/"))
+            .map_err(|_| CircleError::Unavailable)?;
+        url.path_segments_mut()
+            .map_err(|_| CircleError::Unavailable)?
+            .pop_if_empty()
+            .push(id);
+        let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+        *request.timeout_mut() = Some(self.request_timeout);
+        Ok(request)
+    }
 }
 
 impl CircleApi for CircleClient {
@@ -219,18 +252,7 @@ impl CircleApi for CircleClient {
         &'a self,
         saved: &'a SavedSubmission,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
-        Box::pin(async move {
-            let url = Url::parse(&saved.endpoint).map_err(|_| CircleError::Unavailable)?;
-            let mut request = reqwest::Request::new(reqwest::Method::POST, url);
-            *request.timeout_mut() = Some(self.request_timeout);
-            request.headers_mut().insert(
-                reqwest::header::CONTENT_TYPE,
-                reqwest::header::HeaderValue::from_static("application/json"),
-            );
-            // A retry must send the saved authorization, not rebuild it from today's config.
-            *request.body_mut() = Some(saved.body.clone().into());
-            self.send(request).await
-        })
+        Box::pin(async move { self.send(self.submission_request(saved)?).await })
     }
 
     fn get_withdrawal<'a>(
@@ -238,18 +260,7 @@ impl CircleApi for CircleClient {
         saved: &'a SavedSubmission,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
-        Box::pin(async move {
-            let mut url = Url::parse(&saved.endpoint)
-                .and_then(|url| url.join("/v1/withdrawal/"))
-                .map_err(|_| CircleError::Unavailable)?;
-            url.path_segments_mut()
-                .map_err(|_| CircleError::Unavailable)?
-                .pop_if_empty()
-                .push(id);
-            let mut request = reqwest::Request::new(reqwest::Method::GET, url);
-            *request.timeout_mut() = Some(self.request_timeout);
-            self.send(request).await
-        })
+        Box::pin(async move { self.send(self.status_request(saved, id)?).await })
     }
 
     fn rate_limited(&self) -> bool {

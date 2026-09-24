@@ -1,7 +1,9 @@
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{Config, MidenNetwork};
+use miden_client::rpc::Endpoint;
+
+use crate::config::Config;
 
 use super::{config_toml, create_store_parent, startup_anchor, CONFIG_FILE};
 
@@ -34,7 +36,7 @@ fn assert_config_error(config: &str, expected_error: &str) {
 }
 
 #[test]
-fn miden_network_is_required_and_explicit() {
+fn miden_rpc_url_is_required() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
     let path = tempdir.path().join(CONFIG_FILE);
@@ -42,24 +44,40 @@ fn miden_network_is_required_and_explicit() {
 
     std::fs::write(&path, &devnet).unwrap();
     assert_eq!(
-        Config::load(&path).unwrap().miden_network(),
-        MidenNetwork::Devnet
+        Config::load(&path).unwrap().miden_rpc_url(),
+        &Endpoint::devnet()
     );
 
-    let testnet = replace_setting(&devnet, "miden_network", "miden_network = \"testnet\"");
-    std::fs::write(&path, testnet).unwrap();
+    let local = replace_setting(
+        &devnet,
+        "miden_rpc_url",
+        "miden_rpc_url = \"http://localhost:57291\"",
+    );
+    std::fs::write(&path, local).unwrap();
     assert_eq!(
-        Config::load(&path).unwrap().miden_network(),
-        MidenNetwork::Testnet
+        Config::load(&path).unwrap().miden_rpc_url(),
+        &Endpoint::localhost()
     );
 
     assert_config_error(
-        &remove_setting(&devnet, "miden_network"),
+        &remove_setting(&devnet, "miden_rpc_url"),
         "failed to parse config",
     );
     assert_config_error(
-        &replace_setting(&devnet, "miden_network", "miden_network = \"mainnet\""),
-        "failed to parse config",
+        &replace_setting(
+            &devnet,
+            "miden_rpc_url",
+            "miden_rpc_url = \"https://rpc.devnet.miden.io:99999\"",
+        ),
+        "Miden RPC URL is invalid",
+    );
+    assert_config_error(
+        &replace_setting(
+            &devnet,
+            "miden_rpc_url",
+            "miden_rpc_url = \"rpc.devnet.miden.io\"",
+        ),
+        "Miden RPC URL must start with https:// or http://",
     );
 }
 

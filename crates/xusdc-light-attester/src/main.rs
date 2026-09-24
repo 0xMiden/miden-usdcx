@@ -24,11 +24,11 @@ async fn main() -> Result<()> {
     let signers = SignerPair::new(signers)
         .await
         .context("failed to initialize the signer pair")?;
-    let miden_network = config.miden_network();
+    let miden_rpc_url = config.miden_rpc_url().clone();
 
     let mut attester = Attester::start(
         config,
-        Box::new(MidenChainReader::for_network(miden_network)),
+        Box::new(MidenChainReader::new(&miden_rpc_url)),
         Box::new(circle),
         signers,
     )
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(?miden_network, "attester started with development signers");
+    warn!(%miden_rpc_url, "attester started with development signers");
     let result = attester.run(shutdown).await;
     signal_task.abort();
     // Dropping the attester closes the request queue; the worker then finishes any request in

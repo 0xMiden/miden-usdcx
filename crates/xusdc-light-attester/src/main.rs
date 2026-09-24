@@ -20,11 +20,11 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to load {}", config_path.display()))?;
     let circle = CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
     let signers = development_signers().context("failed to initialize development signers")?;
-    let miden_network = config.miden_network();
+    let miden_rpc_url = config.miden_rpc_url().clone();
 
     let mut attester = Attester::start(
         config,
-        Box::new(MidenChainReader::for_network(miden_network)),
+        Box::new(MidenChainReader::new(&miden_rpc_url)),
         Box::new(circle),
         signers,
     )
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(?miden_network, "attester started with development signers");
+    warn!(%miden_rpc_url, "attester started with development signers");
     attester.run(shutdown).await;
     signal_task.abort();
     Ok(())

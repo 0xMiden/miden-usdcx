@@ -36,8 +36,8 @@ pub enum CircleError {
 
 #[derive(Debug)]
 pub struct RawResponse {
-    status: StatusCode,
-    body: Vec<u8>,
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
 }
 
 impl RawResponse {
@@ -124,11 +124,19 @@ impl CircleClient {
             start
         };
         tokio::time::sleep_until(start).await;
-        let mut response = self
+        let response = self
             .client
             .execute(request)
             .await
             .map_err(CircleError::Transport)?;
+        self.read_reply(response).await
+    }
+
+    /// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`].
+    pub(crate) async fn read_reply(
+        &self,
+        mut response: reqwest::Response,
+    ) -> Result<RawResponse, CircleError> {
         let status = response.status();
         // Read chunk by chunk and stop once the total passes the cap, so an oversized or
         // endless reply is refused before it is buffered; the declared length is not trusted.

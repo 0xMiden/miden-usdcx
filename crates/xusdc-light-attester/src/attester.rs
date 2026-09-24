@@ -343,18 +343,12 @@ fn find_burns_in_block(
         if transaction.account_id() != faucet_account_id {
             continue;
         }
-        // Input notes expose nullifiers: match them against this block's notes, then the store.
+        // Input notes expose nullifiers: match them against the notes saved from earlier blocks.
+        // A note created and consumed in the same block is erased from the block's output notes,
+        // so this block's own notes never match.
         for input_note in transaction.input_notes().iter() {
-            let nullifier = input_note.nullifier();
-            let candidate = match new_burn_notes
-                .iter()
-                .find(|note| note.nullifier() == nullifier)
-            {
-                Some(candidate) => candidate.clone(),
-                None => match store.candidate_by_nullifier(nullifier)? {
-                    Some(candidate) => candidate,
-                    None => continue,
-                },
+            let Some(candidate) = store.candidate_by_nullifier(input_note.nullifier())? else {
+                continue;
             };
             new_burns.push(candidate.into_discovered(block_num, transaction.id()));
         }

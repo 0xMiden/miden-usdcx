@@ -134,8 +134,8 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    /// After Circle's prepare refused this burn and the cause is fixed, let the burn be checked
-    /// again.
+    /// After the cause of this burn's hold is fixed, such as Circle's prepare refusing it, let the
+    /// burn be checked again.
     pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }

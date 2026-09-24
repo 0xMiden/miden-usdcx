@@ -385,9 +385,10 @@ impl Attester {
         Ok(validated)
     }
 
-    /// Takes each validated burn through prepare, verify, sign and submit. A store error
-    /// stops the cycle. A prepare 400 holds the burn. Other errors are retried next cycle while
-    /// later burns continue. A 429 stops Circle requests for this cycle.
+    /// Takes each validated burn through prepare, verify, sign and submit. A store error stops the
+    /// cycle. A prepare 400, or a forwarded burn too small to pay the CCTP fee, holds the burn.
+    /// Other errors are retried next cycle while later burns continue. A 429 stops Circle requests
+    /// for this cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<ValidatedBurn>,
@@ -499,13 +500,21 @@ fn discovery_outcome(
 /// the log.
 pub(crate) fn burn_hold(error: &SubmitError) -> (Option<BurnHoldReason>, Option<String>) {
     match error {
-        // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
-        // that fails our checks, is tried again next cycle.
+        // A 400 is Circle refusing to prepare this burn.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
             if *status == StatusCode::BAD_REQUEST =>
         {
             (Some(BurnHoldReason::PrepareRejected), circle_message(body))
         }
+        // A forwarded burn too small to pay the configured CCTP fee fails the same way every
+        // cycle until that fee changes.
+        SubmitError::Verification(cause)
+            if cause.downcast_ref::<VerifyError>() == Some(&VerifyError::TooSmallToForward) =>
+        {
+            (Some(BurnHoldReason::TooSmallToForward), None)
+        }
+        // Any other failure, including a reply that fails our other checks, is tried again next
+        // cycle.
         _ => (None, None),
     }
 }

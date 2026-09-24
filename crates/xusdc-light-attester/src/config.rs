@@ -45,7 +45,7 @@ pub struct Cli {
     max_withdrawal_fee: u64,
 
     /// Extra allowed fee in basis points of the burned amount, on top of --max-withdrawal-fee.
-    /// Circle charges 1 basis point on most routes, so leave headroom, for example 2.
+    /// Circle charges up to 1.5 basis points on most routes, so leave headroom, for example 3.
     #[arg(long)]
     max_withdrawal_fee_bps: u64,
 

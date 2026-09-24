@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use xusdc_attester::chain::MidenChainReader;
-use xusdc_attester::circle::ReqwestTransport;
+use xusdc_attester::circle::{CircleClient, ReqwestTransport};
 use xusdc_attester::config::Config;
 use xusdc_attester::Attester;
 
@@ -15,11 +15,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to load {}", config_path.display()))?;
     let circle_transport =
         ReqwestTransport::new().context("failed to initialize Circle HTTP client")?;
+    let circle = CircleClient::new(&config, Box::new(circle_transport));
 
     let _attester = Attester::start(
         config,
         Box::new(MidenChainReader::devnet()),
-        Box::new(circle_transport),
+        Box::new(circle),
     )
     .await
     .context("startup failed")?;

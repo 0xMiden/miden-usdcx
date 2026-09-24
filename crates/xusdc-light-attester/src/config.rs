@@ -57,7 +57,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 24)]
     withdrawal_window_hours: u64,
 
-    /// Circle's exact confirmed HTTP 400 cap message; enables automatic retries when set.
+    /// Fixed start of Circle's HTTP 400 withdrawal-limit message, the text before the numbers,
+    /// for example "Withdrawal request exceeds rolling withdrawal limit"; enables automatic retries
+    /// when set.
     #[arg(long)]
     withdrawal_cap_error_message: Option<String>,
 

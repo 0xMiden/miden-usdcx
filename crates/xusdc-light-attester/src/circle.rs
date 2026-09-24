@@ -84,8 +84,8 @@ pub trait CircleApi: Send + Sync {
 
     /// Asks Circle to prepare the withdrawal of this burn. The reply is only decoded; it must be
     /// verified before anything is signed.
-    /// `cctp_forwarding_max_fee` is the fee Circle needs up front for the routes it serves through
-    /// xReserve on Arc plus a CCTP transfer.
+    /// `cctp_forwarding_max_fee` caps the CCTP fee on the routes Circle serves through xReserve on
+    /// Arc plus a CCTP transfer; CCTP deducts only the fee it actually charges.
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a ValidatedBurn,

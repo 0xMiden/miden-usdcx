@@ -172,7 +172,7 @@ async fn circle_requests_are_paced() {
 }
 
 /// Circle's reply is read in full up to 1 MiB and refused one byte past it. A 429 pauses the rest
-/// of the cycle; other answers do not.
+/// of the cycle, other answers do not, and a new cycle forgets it.
 #[tokio::test]
 async fn circle_replies_are_read_within_limits() {
     let tempdir = tempfile::tempdir().unwrap();
@@ -209,4 +209,6 @@ async fn circle_replies_are_read_within_limits() {
         .await
         .unwrap();
     assert!(client.rate_limited());
+    client.reset_rate_limit();
+    assert!(!client.rate_limited());
 }

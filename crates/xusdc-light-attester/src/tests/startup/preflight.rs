@@ -87,10 +87,11 @@ async fn circle_requests_are_paced() {
     let client = CircleClient::new(&load_config(&tempdir, 1)).unwrap();
     let started = std::time::Instant::now();
     for _ in 0..2 {
-        // A non-HTTP URL fails before any network I/O, so only the pacing takes time.
-        let url = "ftp://circle.example.invalid/".parse().unwrap();
+        // Plain HTTP is refused before any network I/O, so only the pacing takes time.
+        let url = "http://circle.example.invalid/".parse().unwrap();
         let request = reqwest::Request::new(Method::GET, url);
-        assert!(client.send(request).await.is_err());
+        let error = client.send(request).await.unwrap_err();
+        assert!(matches!(error, CircleError::Transport(source) if source.is_builder()));
     }
     assert!(started.elapsed() >= REQUEST_GAP);
 }

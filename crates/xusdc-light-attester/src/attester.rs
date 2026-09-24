@@ -404,17 +404,7 @@ impl Attester {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                let hold = match &error {
-                    // A 400 is Circle refusing to prepare this burn. Any other failure, including
-                    // a reply that fails our checks, is tried again next cycle.
-                    SubmitError::Prepare(CircleError::UnexpectedPrepareStatus {
-                        status, ..
-                    }) if *status == StatusCode::BAD_REQUEST => {
-                        Some(BurnHoldReason::PrepareRejected)
-                    }
-                    _ => None,
-                };
-                if let Some(reason) = hold {
+                if let Some(reason) = burn_hold(&error) {
                     self.store.hold_burn(note_id, reason)?;
                 }
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
@@ -455,6 +445,20 @@ fn discovery_outcome(
         Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) => {
             Err(error).context("discovery stopped")
         }
+    }
+}
+
+/// The hold that a failure before submission puts on its burn, if any.
+pub(crate) fn burn_hold(error: &SubmitError) -> Option<BurnHoldReason> {
+    match error {
+        // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
+        // that fails our checks, is tried again next cycle.
+        SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, .. })
+            if *status == StatusCode::BAD_REQUEST =>
+        {
+            Some(BurnHoldReason::PrepareRejected)
+        }
+        _ => None,
     }
 }
 

@@ -8,6 +8,8 @@ use std::time::Duration;
 use reqwest::{StatusCode, Url};
 use tokio::time::Instant;
 
+use crate::config::Config;
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CircleError {
@@ -92,39 +94,55 @@ impl HttpTransport for ReqwestTransport {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) struct CircleClient {
+/// The calls the attester makes to Circle's xReserve API. [`CircleClient`] makes them over HTTPS;
+/// this is a trait so that the attester can be tested without Circle.
+pub trait CircleApi: Send + Sync {
+    /// Checks at startup that Circle's API answers.
+    fn check_connection(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>>;
+}
+
+/// Builds the requests to Circle's xReserve API and sends them through the transport.
+pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
     transport: Box<dyn HttpTransport>,
 }
 
 impl CircleClient {
-    pub(crate) fn new(
-        base_url: Url,
-        request_timeout: Duration,
-        transport: Box<dyn HttpTransport>,
-    ) -> Self {
+    pub fn new(config: &Config, transport: Box<dyn HttpTransport>) -> Self {
         Self {
-            base_url,
-            request_timeout,
+            base_url: config.circle_api_base_url().clone(),
+            request_timeout: config.circle_request_timeout(),
             transport,
         }
     }
 
-    pub(crate) async fn check_connection(&self) -> Result<(), CircleError> {
+    pub(crate) fn info_request(&self) -> Result<reqwest::Request, CircleError> {
         let url = self
             .base_url
             .join("/v1/info")
             .map_err(|_| CircleError::Unavailable)?;
         let mut request = reqwest::Request::new(reqwest::Method::GET, url);
         *request.timeout_mut() = Some(self.request_timeout);
-        let response = self.transport.execute(request).await?;
+        Ok(request)
+    }
+}
 
-        if response.status == StatusCode::OK {
-            Ok(())
-        } else {
-            Err(CircleError::UnexpectedStatus(response.status))
-        }
+impl CircleApi for CircleClient {
+    fn check_connection(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
+        Box::pin(async move { read_info(&self.transport.execute(self.info_request()?).await?) })
+    }
+}
+
+/// Circle's API counts as reachable only when its info endpoint answers 200.
+pub(crate) fn read_info(response: &RawResponse) -> Result<(), CircleError> {
+    if response.status == StatusCode::OK {
+        Ok(())
+    } else {
+        Err(CircleError::UnexpectedStatus(response.status))
     }
 }

@@ -6,7 +6,7 @@ use anyhow::Context;
 use miden_protocol::note::NoteScriptRoot;
 
 use crate::chain::ChainReader;
-use crate::circle::{CircleClient, HttpTransport};
+use crate::circle::CircleApi;
 use crate::config::Config;
 use crate::store::{ScanCursor, Store};
 use miden_standards::note::BurnNote;
@@ -36,7 +36,7 @@ pub struct Attester {
     config: Config,
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
-    circle: CircleClient,
+    circle: Box<dyn CircleApi>,
     burn_note_script_root: NoteScriptRoot,
 }
 
@@ -45,7 +45,7 @@ impl Attester {
     pub async fn start(
         config: Config,
         chain: Box<dyn ChainReader>,
-        circle_transport: Box<dyn HttpTransport>,
+        circle: Box<dyn CircleApi>,
     ) -> anyhow::Result<Self> {
         let burn_note_script_root = BurnNote::script_root();
         let store = Store::open_or_create(
@@ -71,11 +71,6 @@ impl Attester {
 
         // TODO(KMS): compare the configured public keys with the loaded signing keys.
 
-        let circle = CircleClient::new(
-            config.circle_api_base_url().clone(),
-            config.circle_request_timeout(),
-            circle_transport,
-        );
         circle
             .check_connection()
             .await

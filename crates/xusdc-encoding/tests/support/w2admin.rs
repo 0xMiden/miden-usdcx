@@ -32,7 +32,7 @@ use miden_standards::account::policies::{BasicBlocklist, BlocklistManager, Block
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::config::{
     BlocklistConfig, BlocklistConfigNote, FaucetMetadataConfig, FaucetMetadataConfigNote,
-    PauseConfig, PauseConfigNote,
+    NetworkAccountConfig, NetworkAccountConfigNote, PauseConfig, PauseConfigNote,
 };
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
@@ -46,7 +46,7 @@ use xusdc_encoding::note::xreserve_admin::XReserveMinBurnAmountNote;
 // ================================================================================================
 
 /// Number of note-script roots in the production allowlist.
-pub const PRODUCTION_ALLOWLIST_ROOTS: usize = 10;
+pub const PRODUCTION_ALLOWLIST_ROOTS: usize = 11;
 
 /// The `DOM_PAUSER` role symbol felt the retired `pause_admin.masm` hard-coded. The role identity
 /// had to survive the move from a MASM literal into the procedure-role map, so it is pinned here as
@@ -440,6 +440,24 @@ pub fn stock_block_action_note(
         .serial_number(config_note_serial(seed))
         .build()
         .map_err(|e| anyhow::anyhow!("building the stock blocklist config note: {e}"))?;
+    Ok(Note::from(note))
+}
+
+/// The `miden-standards` network-account configuration note for `config`, sent by `sender` and
+/// tagged for `faucet_id`.
+pub fn network_account_config_note(
+    sender: AccountId,
+    faucet_id: AccountId,
+    config: NetworkAccountConfig,
+    seed: u64,
+) -> Result<Note> {
+    let note = NetworkAccountConfigNote::builder()
+        .sender(sender)
+        .target(faucet_id)
+        .config(config)
+        .serial_number(config_note_serial(seed))
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the network-account config note: {e}"))?;
     Ok(Note::from(note))
 }
 

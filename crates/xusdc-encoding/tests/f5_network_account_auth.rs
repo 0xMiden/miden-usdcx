@@ -6,13 +6,13 @@
 //! scripts rather than a signature.
 //!
 //! The note-script allowlist contains two supply notes, six administration and configuration notes,
-//! the fee configuration note, and the sponsorship note. The general network-account configuration
-//! note is excluded, so accepted notes cannot modify the note or transaction allowlists. The
+//! the fee configuration note, the sponsorship note, and the network-account configuration note,
+//! through which `ADMIN` adds and removes note-script and transaction-script roots. The
 //! `RbacConfigNote` supports role grants, revocations, administration changes, and renunciation.
 //!
-//! Its transaction-script allowlist contains exactly one entry, the canonical expiration script.
-//! Any other transaction script is rejected. This is what stops an arbitrary script from being run
-//! against the faucet's own procedures.
+//! As built, its transaction-script allowlist contains exactly one entry, the canonical expiration
+//! script. Any other transaction script is rejected. This is what stops an arbitrary script from
+//! being run against the faucet's own procedures.
 //!
 //! The remaining tests cover the routing attachments that make a network account reachable: a mint
 //! note carries two attachments — the merged transport (the attestation followed by the deposit
@@ -49,6 +49,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::ExpirationTransactionScript;
 use miden_testing::{assert_transaction_executor_error, MockChain};
 use miden_tx::TransactionExecutorError;
+use support::w2admin::PRODUCTION_ALLOWLIST_ROOTS;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilder;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
@@ -185,20 +186,19 @@ fn production_faucet_auth_component_is_stock_network_account() -> Result<()> {
     Ok(())
 }
 
-// PROOF #5 — the frozen note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
+// PROOF #5 — the seeded note-script allowlist + a tx-script allowlist of EXACTLY the expiration root
 // ================================================================================================
 
-/// The note-script allowlist contains exactly ten roots: two supply notes, six administration and
-/// configuration notes, and two fee notes. The builder defines the set
+/// The builder defines the note-script allowlist
 /// ([`XReserveStablecoinBuilder::allowed_note_scripts`]); the built account must store it.
 #[test]
-fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<()> {
+fn production_faucet_note_allowlist_equals_the_builder_set() -> Result<()> {
     let (_chain, account) = production_faucet()?;
     let expected = XReserveStablecoinBuilder::allowed_note_scripts();
     assert_eq!(
         expected.len(),
-        10,
-        "the expected allowlist contains exactly 10 distinct roots"
+        PRODUCTION_ALLOWLIST_ROOTS,
+        "the expected allowlist contains {PRODUCTION_ALLOWLIST_ROOTS} distinct roots"
     );
 
     // The built account stores the builder's allowlist.
@@ -207,7 +207,7 @@ fn production_faucet_note_allowlist_contains_the_ten_expected_roots() -> Result<
     assert_eq!(
         allowlist.allowed_script_roots(),
         &expected,
-        "the built faucet's allowlist map must equal the builder's 10 roots",
+        "the built faucet's allowlist map must equal the builder's roots",
     );
     Ok(())
 }

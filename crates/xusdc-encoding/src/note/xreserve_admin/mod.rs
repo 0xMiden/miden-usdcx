@@ -18,8 +18,9 @@
 //! The other admin surfaces do NOT ship a faucet-owned note script, because a standard note
 //! already covers each of them and calls the standard component the faucet installs. Pausing uses
 //! the standard pause-action note directly, with no faucet wrapper at all, the max-supply cap
-//! uses the standard faucet-metadata config note the same way, and the blocklist uses the
-//! standard blocklist-config note. Role management uses the standard role-action note, whose
+//! uses the standard faucet-metadata config note the same way, the blocklist uses the standard
+//! blocklist-config note, and the note and transaction allowlists use the `miden-standards`
+//! network-account configuration note. Role management uses the standard role-action note, whose
 //! single script root carries grant, revoke, set-role-admin and renounce alike. One surface goes
 //! through a thin factory that exists solely to refuse building a note the standard builder would
 //! accept: the burn floor through [`XReserveMinBurnAmountNote`] (no zero floor).

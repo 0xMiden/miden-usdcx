@@ -12,8 +12,8 @@ use miden_protocol::block::FeeParameters;
 use miden_protocol::note::NoteScriptRoot;
 use miden_standards::account::auth::AuthNetworkAccount;
 use miden_standards::note::config::{
-    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, PauseConfigNote,
-    RbacConfigNote,
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    NetworkAccountConfigNote, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::note::{BurnNote, FeeSponsorshipNote, MintNote};
 use miden_standards::tx_script::ExpirationTransactionScript;
@@ -23,16 +23,18 @@ use super::{XReserveStablecoinBuilder, XReserveStablecoinBuilderError};
 use crate::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 
 impl XReserveStablecoinBuilder {
-    /// Returns the production faucet's note-script allowlist.
+    /// Returns the production faucet's note-script allowlist as built.
     ///
-    /// The ten roots cover mint and burn, one faucet setter (`set_attester`), min-burn,
-    /// max-supply, pause and blocklist administration, role administration, constant-fee
-    /// administration, and fee sponsorship. The general network account configuration note is
-    /// excluded, so the note and transaction allowlists cannot be modified through an accepted
-    /// note. The faucet-metadata root also carries other metadata setters, but this account
-    /// builds those fields immutable, so their setters always trap: each setter first asserts
-    /// its flag in the faucet's `mutability_config` storage word, which is set at construction
-    /// and has no writer.
+    /// The roots cover mint and burn, one faucet setter (`set_attester`), min-burn, max-supply,
+    /// pause and blocklist administration, role administration, constant-fee administration, fee
+    /// sponsorship, and network account configuration. The configuration note adds and removes
+    /// note-script, transaction-script and fee-policy roots; the account-wide authority resolves
+    /// each of its actions to `ADMIN`. The allowlist checks read a transaction's initial state, so
+    /// a change applies from the next transaction, and a newly admitted note root also needs a fee
+    /// schedule entry before the constant fee policy prices it. The faucet-metadata root also
+    /// carries other metadata setters, but this account builds those fields immutable, so their
+    /// setters always trap: each setter first asserts its flag in the faucet's `mutability_config`
+    /// storage word, which is set at construction and has no writer.
     pub fn allowed_note_scripts() -> BTreeSet<NoteScriptRoot> {
         BTreeSet::from([
             // Supply notes.
@@ -49,13 +51,14 @@ impl XReserveStablecoinBuilder {
             // Fee administration and sponsorship notes.
             ConstantFeePolicyConfigNote::script_root(),
             FeeSponsorshipNote::script_root(),
+            // Network account configuration note.
+            NetworkAccountConfigNote::script_root(),
         ])
     }
 
     /// Builds the production `AuthNetworkAccount` component from the network fee parameters and
-    /// fee asset. It constructs the xUSDC fee schedule through the pricer, admits only
-    /// `ExpirationTransactionScript::script_root()` as a transaction script, and excludes the
-    /// mutable `NetworkAccountConfigNote` entry point.
+    /// fee asset. It constructs the xUSDC fee schedule through the pricer and admits only
+    /// `ExpirationTransactionScript::script_root()` as a transaction script at build time.
     pub fn auth_component(
         fee_parameters: FeeParameters,
         fee_asset_id: AssetId,

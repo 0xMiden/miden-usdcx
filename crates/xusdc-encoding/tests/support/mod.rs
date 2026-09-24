@@ -63,8 +63,8 @@ use miden_standards::account::policies::{
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::config::{
-    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote, PauseConfigNote,
-    RbacConfigNote,
+    BlocklistConfigNote, ConstantFeePolicyConfigNote, FaucetMetadataConfigNote,
+    NetworkAccountConfigNote, PauseConfigNote, RbacConfigNote,
 };
 use miden_standards::note::{BurnNote, FeeSponsorshipNote, MintNote};
 use miden_standards::testing::note::NoteBuilder;
@@ -578,9 +578,10 @@ pub fn production_component_set(token_supply: u64) -> Result<Vec<AccountComponen
         .map_err(|e| anyhow::anyhow!("composing the production faucet components: {e}"))
 }
 
-/// The ten allowlisted note scripts as labelled `(name, script)` pairs: two supply notes, six
-/// administration and configuration notes (one faucet-owned, five standard), the constant-fee
-/// configuration note, and the sponsorship note.
+/// The allowlisted note scripts as labelled `(name, script)` pairs, in the builder's order: two
+/// supply notes, six administration and configuration notes (one faucet-owned, five standard), the
+/// constant-fee configuration note, the sponsorship note, and the network-account configuration
+/// note.
 pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
     vec![
         ("stock_mint_note", MintNote::script()),
@@ -602,6 +603,10 @@ pub fn allowlisted_note_scripts() -> Vec<(&'static str, NoteScript)> {
             ConstantFeePolicyConfigNote::script(),
         ),
         ("stock_fee_sponsorship_note", FeeSponsorshipNote::script()),
+        (
+            "network_account_config_note",
+            NetworkAccountConfigNote::script(),
+        ),
     ]
 }
 
@@ -1430,9 +1435,10 @@ pub async fn run_pause_tx(
 /// The exact stock error the RBAC role assertion traps (`rbac.masm` ERR_SENDER_LACKS_ROLE). Under
 /// the account's role-based authority this is what an unauthorized sender gets from EVERY
 /// authority-gated procedure: the ones with a role assigned (the pause and blocklist managers) and
-/// the ones without, which fall back to the administrator role (`set_attester`,
-/// the supply cap, the burn floor, the policy setters). No procedure gates on an administrator slot any
-/// more — the faucet installs no ownership component, so there is no owner error to raise.
+/// the ones without, which fall back to the administrator role (`set_attester`, the supply cap,
+/// the burn floor, the policy setters, the allowlist mutators). No procedure gates on an
+/// administrator slot any more — the faucet installs no ownership component, so there is no owner
+/// error to raise.
 pub fn err_sender_lacks_role() -> MasmError {
     MasmError::from_static_str("note sender does not hold the required role")
 }

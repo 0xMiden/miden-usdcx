@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use miden_protocol::account::AccountId;
-use reqwest::{Method, StatusCode};
+use reqwest::StatusCode;
 use tempfile::TempDir;
 
 use crate::attester::Attester;
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{CircleError, HttpTransport, RawResponse};
+use crate::circle::{read_info, CircleApi, CircleError, RawResponse};
 use crate::config::Config;
 
 const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
@@ -98,11 +98,20 @@ enum CircleState {
     TransportError,
 }
 
+impl CircleState {
+    /// What a call to Circle gets back in this state.
+    fn answer(self) -> Result<RawResponse, CircleError> {
+        match self {
+            CircleState::Response(status) => Ok(RawResponse::new(status)),
+            CircleState::TransportError => Err(CircleError::Unavailable),
+        }
+    }
+}
+
+/// The Circle calls a fake received, in order.
 #[derive(Debug, PartialEq, Eq)]
-struct ObservedRequest {
-    method: Method,
-    url: String,
-    timeout: Option<Duration>,
+enum ObservedRequest {
+    Info,
 }
 
 struct FakeCircle {
@@ -123,27 +132,17 @@ impl FakeCircle {
     }
 }
 
-impl HttpTransport for FakeCircle {
-    fn execute(
+impl CircleApi for FakeCircle {
+    fn check_connection(
         &self,
-        request: reqwest::Request,
-    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + '_>> {
-        self.requests.lock().unwrap().push(ObservedRequest {
-            method: request.method().clone(),
-            url: request.url().to_string(),
-            timeout: request.timeout().copied(),
-        });
-        let state = self.state;
-        Box::pin(async move {
-            match state {
-                CircleState::Response(status) => Ok(RawResponse::new(status)),
-                CircleState::TransportError => Err(CircleError::Unavailable),
-            }
-        })
+    ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
+        self.requests.lock().unwrap().push(ObservedRequest::Info);
+        let answer = self.state.answer();
+        Box::pin(async move { read_info(&answer?) })
     }
 }
 
-fn ready_circle() -> Box<dyn HttpTransport> {
+fn ready_circle() -> Box<dyn CircleApi> {
     let (circle, _) = FakeCircle::new(CircleState::Response(StatusCode::OK));
     Box::new(circle)
 }
@@ -151,7 +150,7 @@ fn ready_circle() -> Box<dyn HttpTransport> {
 pub(super) async fn start(
     config: Config,
     chain: ChainState,
-    circle: Box<dyn HttpTransport>,
+    circle: Box<dyn CircleApi>,
 ) -> anyhow::Result<Attester> {
     Attester::start(config, Box::new(FakeChain(chain)), circle).await
 }

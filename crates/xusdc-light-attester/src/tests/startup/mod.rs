@@ -50,6 +50,8 @@ impl TestArgs {
                 "false".into(),
                 "--max-withdrawal-fee".into(),
                 "0".into(),
+                "--max-withdrawal-fee-bps".into(),
+                "0".into(),
                 "--poll-interval".into(),
                 "1s".into(),
                 "--faucet-deployment-block".into(),

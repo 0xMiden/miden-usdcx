@@ -539,12 +539,11 @@ fn save_submission(
     let written = connection
         .execute(
             "INSERT INTO submissions (
-                note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'SUBMITTING')
+                note_id, endpoint, body, transfer_spec_hash, status
+             ) VALUES (?1, ?2, ?3, ?4, 'SUBMITTING')
              ON CONFLICT (note_id) DO UPDATE SET
                 endpoint = excluded.endpoint, body = excluded.body,
                 transfer_spec_hash = excluded.transfer_spec_hash,
-                use_circle_forwarding = excluded.use_circle_forwarding,
                 status = 'SUBMITTING', withdrawal_id = NULL, hold_reason = NULL,
                 last_http_status = NULL, last_response = NULL, last_error = NULL
              WHERE submissions.status IN ('FAILED', 'EXPIRED')
@@ -554,7 +553,6 @@ fn save_submission(
                 record.endpoint,
                 record.body,
                 record.transfer_spec_hash.as_slice(),
-                record.use_circle_forwarding
             ],
         )
         .map_err(classify_write_error)?;
@@ -590,7 +588,6 @@ fn initialize_store(
             endpoint TEXT NOT NULL,
             body BLOB NOT NULL,
             transfer_spec_hash BLOB NOT NULL,
-            use_circle_forwarding INTEGER NOT NULL CHECK (use_circle_forwarding IN (0, 1)),
             status TEXT NOT NULL CHECK (status IN (
                 'SUBMITTING', 'SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED', 'HELD'
             )),
@@ -717,9 +714,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
             next_block, authenticated_parent FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
             hold_reason, reservation_amount, admitted_at_ms FROM burns LIMIT 0",
-        "SELECT note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status,
-            withdrawal_id, hold_reason, last_http_status, last_response, last_error
-            FROM submissions LIMIT 0",
+        "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
+            hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }
@@ -756,7 +752,7 @@ fn load_submissions(
     let mut statement = connection
         .prepare(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
-            use_circle_forwarding, status, withdrawal_id, hold_reason,
+            status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
          WHERE (?1 IS NULL OR note_id = ?1) AND (?2 IS NULL OR status = ?2)
          ORDER BY note_id",
@@ -770,7 +766,7 @@ fn load_submissions(
         .map_err(classify_error)?;
     let mut records = Vec::new();
     while let Some(row) = rows.next().map_err(classify_error)? {
-        let status = match row.get::<_, String>(5).map_err(classify_error)?.as_str() {
+        let status = match row.get::<_, String>(4).map_err(classify_error)?.as_str() {
             "SUBMITTING" => SubmissionStatus::Submitting,
             "SUBMITTED" => SubmissionStatus::Submitted,
             "FINALIZED" => SubmissionStatus::Finalized,
@@ -780,7 +776,7 @@ fn load_submissions(
             _ => bail!(INVALID),
         };
         let hold_reason = match row
-            .get::<_, Option<String>>(7)
+            .get::<_, Option<String>>(6)
             .map_err(classify_error)?
             .as_deref()
         {
@@ -793,17 +789,12 @@ fn load_submissions(
             endpoint: row.get(1).map_err(classify_error)?,
             body: row.get(2).map_err(classify_error)?,
             transfer_spec_hash: B256::from(row.get::<_, [u8; 32]>(3).map_err(classify_error)?),
-            use_circle_forwarding: match row.get::<_, i64>(4).map_err(classify_error)? {
-                0 => false,
-                1 => true,
-                _ => bail!(INVALID),
-            },
             status,
-            withdrawal_id: row.get(6).map_err(classify_error)?,
+            withdrawal_id: row.get(5).map_err(classify_error)?,
             hold_reason,
-            last_http_status: row.get(8).map_err(classify_error)?,
-            last_response: row.get(9).map_err(classify_error)?,
-            last_error: row.get(10).map_err(classify_error)?,
+            last_http_status: row.get(7).map_err(classify_error)?,
+            last_response: row.get(8).map_err(classify_error)?,
+            last_error: row.get(9).map_err(classify_error)?,
         };
         validate_submission(&record)?;
         if !exists(

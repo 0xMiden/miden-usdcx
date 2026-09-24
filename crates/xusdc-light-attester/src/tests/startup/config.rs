@@ -42,9 +42,10 @@ fn cli_surface_is_explicit() {
         "--circle-url",
         "--request-timeout",
         "--faucet-account-id",
-        "--use-circle-forwarding",
         "--max-withdrawal-fee",
         "--max-withdrawal-fee-bps",
+        "--cctp-forwarding-max-fee",
+        "--cctp-forwarder-address",
         "--withdrawal-limit",
         "--poll-interval",
         "--faucet-deployment-block",
@@ -78,7 +79,6 @@ fn cli_surface_is_explicit() {
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
         ("--faucet-account-id", super::FAUCET_ACCOUNT_ID),
-        ("--use-circle-forwarding", "false"),
         ("--max-withdrawal-fee", "0"),
         ("--max-withdrawal-fee-bps", "0"),
         ("--withdrawal-limit", "0"),
@@ -205,24 +205,9 @@ fn invalid_config_is_rejected() {
     }
 
     const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
-    let mut forwarding_without_options = valid.clone();
-    forwarding_without_options.replace("--use-circle-forwarding", "true");
-    assert_config_error(
-        &forwarding_without_options,
-        "cctp forwarding max fee and forwarder address are required when Circle forwarding is on",
-    );
-    let mut options_without_forwarding = valid.clone();
-    options_without_forwarding.append("--cctp-forwarding-max-fee", "1");
-    options_without_forwarding.append("--cctp-forwarder-address", FORWARDER);
-    assert_config_error(
-        &options_without_forwarding,
-        "cctp forwarding max fee and forwarder address only apply when Circle forwarding is on",
-    );
     let mut forwarding = valid.clone();
-    forwarding.replace("--use-circle-forwarding", "true");
     forwarding.replace("--max-withdrawal-fee", "1000");
-    forwarding.append("--cctp-forwarding-max-fee", "1000");
-    forwarding.append("--cctp-forwarder-address", FORWARDER);
+    forwarding.replace("--cctp-forwarding-max-fee", "1000");
     assert_config_error(
         &forwarding,
         "cctp forwarding max fee must be below the maximum withdrawal fee",
@@ -233,7 +218,7 @@ fn invalid_config_is_rejected() {
     forwarding.replace("--cctp-forwarder-address", FORWARDER);
     assert_eq!(
         forwarding.load().cctp_forwarding(),
-        Some((999, FORWARDER.parse().unwrap()))
+        (999, FORWARDER.parse().unwrap())
     );
 
     let mut blank_cap_message = valid.clone();
@@ -255,7 +240,6 @@ fn invalid_config_is_rejected() {
             "4294967296",
             ErrorKind::ValueValidation,
         ),
-        ("--use-circle-forwarding", "yes", ErrorKind::InvalidValue),
     ] {
         let mut args = valid.clone();
         args.replace(flag, value);
@@ -291,7 +275,7 @@ fn invalid_config_is_rejected() {
         config.expected_signing_public_keys_hex(),
         [SIGNING_KEY_ONE, SIGNING_KEY_TWO]
     );
-    assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
+    assert_eq!(config.max_withdrawal_fee().as_u64(), 1_000_000);
     assert_eq!(config.withdrawal_limit(), 10_000_000_000_000);
     assert_eq!(config.withdrawal_window_ms(), 86_400_000);
     assert_eq!(config.withdrawal_cap_error_message(), None);

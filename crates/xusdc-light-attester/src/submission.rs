@@ -61,7 +61,6 @@ pub struct SavedSubmission {
     pub(crate) endpoint: String,
     pub(crate) body: Vec<u8>,
     pub(crate) transfer_spec_hash: B256,
-    pub(crate) use_circle_forwarding: bool,
     pub(crate) status: SubmissionStatus,
     pub(crate) withdrawal_id: Option<String>,
     pub(crate) hold_reason: Option<HoldReason>,
@@ -370,7 +369,7 @@ impl SavedSubmission {
 
         if !is_well_formed_id(&withdrawal.withdrawal_id)
             || !self.matches_note(&withdrawal.burn_note_id)
-            || withdrawal.use_circle_forwarding != self.use_circle_forwarding
+            || !withdrawal.use_circle_forwarding
             || withdrawal.transfer_spec_hashes.len() != 1
             || withdrawal.transfer_spec_hashes[0].parse::<B256>().ok()
                 != Some(self.transfer_spec_hash)

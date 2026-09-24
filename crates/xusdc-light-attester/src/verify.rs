@@ -89,8 +89,6 @@ pub(crate) enum VerifyError {
     WrongSigner,
     #[error("Circle restricted the destination caller")]
     CallerRestricted,
-    #[error("Circle forwarded the withdrawal but no forwarder is configured")]
-    Forwarding,
     #[error("Circle's forwarded route has a wrong {0}")]
     ForwardedField(&'static str),
     #[error("Circle's signing hash differs from the checked fields")]
@@ -105,7 +103,6 @@ pub(crate) enum VerifyError {
 #[derive(Debug)]
 pub(crate) struct VerifiedWithdrawal {
     batch: VerifiedBatch,
-    use_circle_forwarding: bool,
 }
 
 impl VerifiedWithdrawal {
@@ -139,7 +136,6 @@ impl VerifiedWithdrawal {
                 batch: self.batch,
                 signatures: [first, second],
             },
-            use_circle_forwarding: self.use_circle_forwarding,
         })
     }
 }
@@ -163,7 +159,6 @@ struct VerifiedBatch {
 #[derive(Debug)]
 pub(crate) struct SignedWithdrawal {
     batch: SignedBatch,
-    use_circle_forwarding: bool,
 }
 
 impl SignedWithdrawal {
@@ -179,7 +174,7 @@ impl SignedWithdrawal {
                 "burnSignatures": signed.signatures.map(|signature| signature.to_string()),
                 // For Miden, Circle's burnTxId is the burn note ID, not the transaction ID.
                 "burnTxId": batch.note_id.to_hex(),
-                "useCircleForwarding": self.use_circle_forwarding,
+                "useCircleForwarding": true,
             }],
         }))
         .map_err(SubmitError::Encoding)?;
@@ -189,7 +184,6 @@ impl SignedWithdrawal {
                 endpoint,
                 body,
                 transfer_spec_hash: batch.transfer_spec_hash,
-                use_circle_forwarding: self.use_circle_forwarding,
                 status: SubmissionStatus::Submitting,
                 withdrawal_id: None,
                 hold_reason: None,
@@ -212,13 +206,11 @@ pub(crate) fn validate_saved_request(saved: &SavedSubmission) -> bool {
     struct Batch {
         #[serde(rename = "burnTxId")]
         burn_note_id: String,
-        use_circle_forwarding: bool,
     }
     let Ok(Request { batches: [batch] }) = serde_json::from_slice(&saved.body) else {
         return false;
     };
     batch.burn_note_id == saved.note_id.to_hex()
-        && batch.use_circle_forwarding == saved.use_circle_forwarding
 }
 
 #[derive(Debug)]
@@ -252,24 +244,21 @@ impl UnverifiedPrepareResponse {
         // route the burn's destination sits in the CCTP calldata and this leg pays the forwarder.
         let forwarded =
             hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
-        let cctp_fee = match (forwarded, config.cctp_forwarding()) {
-            (false, _) => {
-                if spec.destinationDomain != burn.items.dest_domain {
-                    return Err(VerifyError::WrongBurnField("destinationDomain"));
-                }
-                if spec.destinationRecipient.as_slice() != burn.items.dest_recipient.as_bytes() {
-                    return Err(VerifyError::WrongBurnField("destinationRecipient"));
-                }
-                if spec.destinationCaller != B256::ZERO {
-                    return Err(VerifyError::CallerRestricted);
-                }
-                U256::ZERO
+        let cctp_fee = if forwarded {
+            let (fee, forwarder) = config.cctp_forwarding();
+            verify_forwarded_leg(&intent, &hook, burn, fee, forwarder)?;
+            U256::from(fee)
+        } else {
+            if spec.destinationDomain != burn.items.dest_domain {
+                return Err(VerifyError::WrongBurnField("destinationDomain"));
             }
-            (true, None) => return Err(VerifyError::Forwarding),
-            (true, Some((fee, forwarder))) => {
-                verify_forwarded_leg(&intent, &hook, burn, fee, forwarder)?;
-                U256::from(fee)
+            if spec.destinationRecipient.as_slice() != burn.items.dest_recipient.as_bytes() {
+                return Err(VerifyError::WrongBurnField("destinationRecipient"));
             }
+            if spec.destinationCaller != B256::ZERO {
+                return Err(VerifyError::CallerRestricted);
+            }
+            U256::ZERO
         };
         if hook.remote_domain != MIDEN_DOMAIN {
             return Err(VerifyError::WrongBurnField("remoteDomain"));
@@ -321,7 +310,6 @@ impl UnverifiedPrepareResponse {
                 digest,
                 transfer_spec_hash: spec.hash()?,
             },
-            use_circle_forwarding: config.use_circle_forwarding(),
         })
     }
 }

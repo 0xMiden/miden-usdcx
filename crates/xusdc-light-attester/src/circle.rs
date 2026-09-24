@@ -84,12 +84,12 @@ pub trait CircleApi: Send + Sync {
 
     /// Asks Circle to prepare the withdrawal of this burn. The reply is only decoded; it must be
     /// verified before anything is signed.
-    /// `cctp_forwarding_max_fee` is present exactly when Circle forwarding is on: it is the fee
-    /// Circle needs up front for the routes it serves through xReserve on Arc plus a CCTP transfer.
+    /// `cctp_forwarding_max_fee` is the fee Circle needs up front for the routes it serves through
+    /// xReserve on Arc plus a CCTP transfer.
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a ValidatedBurn,
-        cctp_forwarding_max_fee: Option<u64>,
+        cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>;
 
     /// Sends the saved withdrawal request to its saved endpoint, exactly as saved.
@@ -198,7 +198,7 @@ impl CircleClient {
     pub(crate) fn prepare_request(
         &self,
         burn: &ValidatedBurn,
-        cctp_forwarding_max_fee: Option<u64>,
+        cctp_forwarding_max_fee: u64,
     ) -> Result<reqwest::Request, CircleError> {
         let batch = PrepareBatch::from_burn(burn, cctp_forwarding_max_fee);
         let url = self
@@ -259,7 +259,7 @@ impl CircleApi for CircleClient {
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a ValidatedBurn,
-        cctp_forwarding_max_fee: Option<u64>,
+        cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -336,8 +336,7 @@ pub(crate) struct PrepareBatch {
     value_including_fees: String,
     salt: String,
     use_circle_forwarding: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    forwarding_options: Option<ForwardingOptions>,
+    forwarding_options: ForwardingOptions,
 }
 
 #[derive(Debug, Serialize)]
@@ -348,7 +347,7 @@ struct ForwardingOptions {
 }
 
 impl PrepareBatch {
-    pub(crate) fn from_burn(burn: &ValidatedBurn, cctp_forwarding_max_fee: Option<u64>) -> Self {
+    pub(crate) fn from_burn(burn: &ValidatedBurn, cctp_forwarding_max_fee: u64) -> Self {
         let note = burn.burn.note().as_note();
         let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
         // Circle's salt is the note serial. The attachment only holds the destination.
@@ -364,11 +363,11 @@ impl PrepareBatch {
             ),
             value_including_fees: usdc_decimal(burn.amount),
             salt,
-            use_circle_forwarding: cctp_forwarding_max_fee.is_some(),
-            forwarding_options: cctp_forwarding_max_fee.map(|fee| ForwardingOptions {
-                max_fee: usdc_decimal(fee),
+            use_circle_forwarding: true,
+            forwarding_options: ForwardingOptions {
+                max_fee: usdc_decimal(cctp_forwarding_max_fee),
                 uses_fast_finality: true,
-            }),
+            },
         }
     }
 }

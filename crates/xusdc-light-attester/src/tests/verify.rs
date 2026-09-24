@@ -47,10 +47,9 @@ fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
     let mut args = TestArgs::new(&directory, 1);
-    args.replace("--use-circle-forwarding", "true");
     args.replace("--max-withdrawal-fee", fee_ceiling.to_string());
-    args.append("--cctp-forwarding-max-fee", cctp_fee.to_string());
-    args.append("--cctp-forwarder-address", FORWARDER);
+    args.replace("--cctp-forwarding-max-fee", cctp_fee.to_string());
+    args.replace("--cctp-forwarder-address", FORWARDER);
     args.load()
 }
 
@@ -261,13 +260,6 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     };
     let amount_cases = [
         (
-            "zero ceiling refuses a fee",
-            "999",
-            "1",
-            None,
-            Some(FeeTooHigh),
-        ),
-        (
             "configured ceiling is inclusive",
             "990",
             "10",
@@ -314,29 +306,12 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         batches: vec![base_fee],
     };
     assert_eq!(response.verify(&usdc, &args.load()).err(), None);
-    // With forwarding off, a forwarded reply is refused whatever it carries; the forwarded route
-    // itself is checked in `forwarded_route_is_bound_to_the_burn`.
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let forwarding_cases: [Case; 3] = [
-        (
-            "restricted caller",
-            |b| b.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32)),
-            CallerRestricted,
-        ),
-        (
-            "forwarding contract",
-            |b| {
-                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
-                    format!("0x{}", "11".repeat(20))
-            },
-            Forwarding,
-        ),
-        (
-            "forwarding calldata",
-            |b| b.burn_intents[0].spec.hook_data.forwarding_calldata = "0x1234".into(),
-            Forwarding,
-        ),
-    ];
+    let forwarding_cases: [Case; 1] = [(
+        "restricted caller",
+        |b| b.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32)),
+        CallerRestricted,
+    )];
     for (name, edit, expected) in forwarding_cases {
         let mut changed = batch(FIRST_SALT, 1_000, 9);
         edit(&mut changed);
@@ -483,11 +458,6 @@ fn forwarded_route_is_bound_to_the_burn() {
         ),
         Some(FeeTooHigh),
         "the ceiling covers Circle's fee plus the CCTP fee"
-    );
-    assert_eq!(
-        verify(&burn, captured(FORWARDED_FIXTURE), &config(Some(600_000))),
-        Some(Forwarding),
-        "a forwarded reply without a configured forwarder"
     );
 
     let base_burn = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 6, recipient);

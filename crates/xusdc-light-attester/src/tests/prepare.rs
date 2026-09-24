@@ -31,60 +31,54 @@ fn prepare_sends_the_right_values() {
     let expected_salt = "0x0807060504030201181716151413121128272625242322213837363534333231";
     let other_salt = "0x0807060504030201181716151413121128272625242322213937363534333231";
     let client = client();
-    for forwarding in [None, Some(500_000)] {
-        let expected = |value: &str, domain: u32, salt: &str| {
-            let mut batch = json!({
-                "token": "USDC",
-                "remoteDomain": 10007,
-                "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
-                "finalDestinationDomain": domain,
-                "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-                "valueIncludingFees": value,
-                "salt": salt,
-                "useCircleForwarding": forwarding.is_some(),
-            });
-            if forwarding.is_some() {
-                batch["forwardingOptions"] =
-                    json!({"maxFee": "0.500000", "usesFastFinality": true});
-            }
-            batch
-        };
-        let mut burns: Vec<_> = cases
-            .iter()
-            .map(|&(amount, value, domain)| {
-                let burn = validated_burn(amount, serial(0x3132_3334_3536_3738), domain);
-                (burn, expected(value, domain, expected_salt))
-            })
-            .collect();
-        let burn = validated_burn(10_000_000, serial(0x3132_3334_3536_3739), 9);
-        burns.push((burn, expected("10.000000", 9, other_salt)));
-        for (burn, expected) in &burns {
-            assert_eq!(
-                serde_json::to_value(PrepareBatch::from_burn(burn, forwarding)).unwrap(),
-                *expected
-            );
-        }
-
-        let (burn, expected) = &burns[0];
-        let request = client.prepare_request(burn, forwarding).unwrap();
-        assert_eq!(request.method(), Method::POST);
+    let expected = |value: &str, domain: u32, salt: &str| {
+        json!({
+            "token": "USDC",
+            "remoteDomain": 10007,
+            "remoteDepositor": "0x00000000000000000000000000000000ba0000000000ca110000dd000000ef00",
+            "finalDestinationDomain": domain,
+            "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "valueIncludingFees": value,
+            "salt": salt,
+            "useCircleForwarding": true,
+            "forwardingOptions": {"maxFee": "0.500000", "usesFastFinality": true},
+        })
+    };
+    let mut burns: Vec<_> = cases
+        .iter()
+        .map(|&(amount, value, domain)| {
+            let burn = validated_burn(amount, serial(0x3132_3334_3536_3738), domain);
+            (burn, expected(value, domain, expected_salt))
+        })
+        .collect();
+    let burn = validated_burn(10_000_000, serial(0x3132_3334_3536_3739), 9);
+    burns.push((burn, expected("10.000000", 9, other_salt)));
+    for (burn, expected) in &burns {
         assert_eq!(
-            request.url().as_str(),
-            "https://circle.example.invalid/v1/prepare-withdrawal"
-        );
-        assert_eq!(request.timeout(), Some(&Duration::from_millis(275)));
-        assert_eq!(
-            request.headers().len(),
-            1,
-            "no invented auth or idempotency headers"
-        );
-        assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
-        let body = request.body().and_then(|body| body.as_bytes()).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(body).unwrap(),
-            json!({"batches": [expected]})
+            serde_json::to_value(PrepareBatch::from_burn(burn, 500_000)).unwrap(),
+            *expected
         );
     }
+
+    let (burn, expected) = &burns[0];
+    let request = client.prepare_request(burn, 500_000).unwrap();
+    assert_eq!(request.method(), Method::POST);
+    assert_eq!(
+        request.url().as_str(),
+        "https://circle.example.invalid/v1/prepare-withdrawal"
+    );
+    assert_eq!(request.timeout(), Some(&Duration::from_millis(275)));
+    assert_eq!(
+        request.headers().len(),
+        1,
+        "no invented auth or idempotency headers"
+    );
+    assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
+    let body = request.body().and_then(|body| body.as_bytes()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(body).unwrap(),
+        json!({"batches": [expected]})
+    );
 }
 
 /// Only a 200 is decoded, and decoding does not approve a response. Any other status keeps

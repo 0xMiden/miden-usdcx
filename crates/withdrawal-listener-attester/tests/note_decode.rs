@@ -27,7 +27,9 @@ use withdrawal_listener_attester::note_decode::{
 };
 use xusdc_encoding::vectors::{load, parse_hex32, BnVector};
 use xusdc_encoding::xreserve::encoding::EthEmbeddedAccountIdExt;
-use xusdc_encoding::xreserve::encoding::{EncodingError, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS};
+use xusdc_encoding::xreserve::encoding::{
+    CircleDomain, EncodingError, XReserveBurnItems, BURN_NOTE_ITEMS_FELTS,
+};
 
 // HELPERS
 // ================================================================================================
@@ -156,7 +158,7 @@ fn t_la_01_decodes_the_boundary_payload() {
     let expected = vector.expected_struct();
     assert_eq!(
         decoded.dest_domain,
-        u32::MAX,
+        CircleDomain::new(u32::MAX),
         "destDomain at the u32 boundary is exact"
     );
     assert_eq!(decoded, expected);

@@ -43,14 +43,14 @@ use miden_testing::assert_transaction_executor_error;
 use rstest::rstest;
 use support::*;
 use xusdc_encoding::vectors::{load, MiVector};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, MintIntent};
+use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositIntent, MintIntent};
 
 /// The faucet's domain configuration word: the remote domain id in element 0, zeros elsewhere.
 ///
 /// There is no identifier counterpart, and under DC-14 there is no domain compare either — the
 /// faucet WRITES both into the preimage it rebuilds. The slot still has to hold the right value,
 /// because that is what the writer stamps.
-fn domain_word(domain: u32) -> Word {
+fn domain_word(domain: CircleDomain) -> Word {
     Word::new([
         Felt::from(domain),
         miden_protocol::ZERO,

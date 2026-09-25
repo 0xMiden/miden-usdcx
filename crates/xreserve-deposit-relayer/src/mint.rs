@@ -15,9 +15,9 @@ use miden_protocol::{Felt, Word};
 use tracing::{error, instrument};
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositIntent};
 
-use crate::circle::{Attestation, RemoteDomain};
+use crate::circle::Attestation;
 use crate::config::Config;
 
 /// The public key of the Circle attester whose signatures the mint notes carry. Parsed from the
@@ -83,7 +83,7 @@ pub struct Minter {
     mint_account: AccountId,
     usdcx_faucet: AccountId,
     attester: AttesterPublicKey,
-    remote_domain: RemoteDomain,
+    remote_domain: CircleDomain,
     rng: RandomCoin,
 }
 
@@ -141,7 +141,7 @@ impl Minter {
         XUsdcMintNote::builder()
             .sender(self.mint_account)
             .target(self.usdcx_faucet)
-            .remote_domain(self.remote_domain.into())
+            .remote_domain(self.remote_domain)
             .deposit_intent(intent)
             .attestation(DepositAttestation::new(
                 attestation.signature,
@@ -163,17 +163,17 @@ mod tests {
     use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
     use xusdc_encoding::vectors::load;
     use xusdc_encoding::xreserve::encoding::{
-        DepositIntent, DepositIntentHeader, DepositNonce, Signature,
+        CircleDomain, DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
     use super::{AttesterPublicKey, Minter};
-    use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
+    use crate::circle::{Attestation, MessageHash, PageSize};
     use crate::config::Config;
     use crate::miden::ExpirationDelta;
 
     /// The Miden destination domain these tests address payloads to — a placeholder value, since
     /// the real identifier is a Circle-owned decision that is still open.
-    const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(10001);
+    const REMOTE_DOMAIN: CircleDomain = CircleDomain::new(10001);
 
     /// A valid 33-byte compressed SEC1 attester key (the pinned partner-fixture key). These tests
     /// never verify a signature, so it only has to be a real curve point.
@@ -218,7 +218,7 @@ mod tests {
 
         let rebuilt = DepositIntentHeader::builder()
             .amount(header.amount())
-            .remote_domain(REMOTE_DOMAIN.into())
+            .remote_domain(REMOTE_DOMAIN)
             .remote_token(faucet)
             .remote_recipient(header.remote_recipient())
             .local_token(header.local_token())

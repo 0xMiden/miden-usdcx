@@ -5,7 +5,9 @@ use clap::Parser;
 use miden_protocol::account::AccountId;
 use url::Url;
 
-use crate::circle::{PageSize, RemoteDomain};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
+
+use crate::circle::PageSize;
 use crate::miden::ExpirationDelta;
 use crate::mint::AttesterPublicKey;
 
@@ -34,7 +36,7 @@ pub struct Config {
 
     /// The Circle domain identifier for Miden.
     #[arg(long)]
-    pub remote_domain: RemoteDomain,
+    pub remote_domain: CircleDomain,
 
     /// The RPC endpoint of the Miden node the mint transactions are submitted to.
     #[arg(long)]

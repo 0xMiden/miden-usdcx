@@ -24,6 +24,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 const ASSET_AMOUNT_MAX: u128 = (1u128 << 63) - (1u128 << 31); // 2^63 - 2^31
 
@@ -595,13 +596,13 @@ fn main() {
     // address-shaped, so the accept rows exercise a source chain that is not EVM-based.
     let faucet_id = &ids[1];
     let faucet_b32 = r_b_bytes32(faucet_id);
-    let mi_domain = 7u32;
+    let mi_domain = CircleDomain::new(7);
     // each row gets its own nonce: two deposits never share one, and the replay-guard tests need
     // a pair that keys distinctly
     let mi_spec = |hook_data: Vec<u8>, nonce_seed: u8| -> IntentSpec {
         let mut spec = IntentSpec::base(di_token_b32, recipient_b32);
         spec.nonce = pattern32(nonce_seed);
-        spec.remote_domain = mi_domain;
+        spec.remote_domain = mi_domain.as_u32();
         spec.remote_token = faucet_b32;
         spec.local_token = pattern32(0xb0);
         spec.local_depositor = pattern32(0xc0);

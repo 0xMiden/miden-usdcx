@@ -12,7 +12,7 @@
 use core::fmt;
 use std::sync::Arc;
 
-use xusdc_encoding::xreserve::encoding::EncodingError;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, EncodingError};
 
 use crate::attester::Address;
 
@@ -536,8 +536,8 @@ pub enum ValidationMismatch {
     /// A returned `destinationDomain` does not equal the burn-note payload's `destDomain`.
     DestinationDomain {
         batch: usize,
-        expected: u32,
-        returned: u32,
+        expected: CircleDomain,
+        returned: CircleDomain,
     },
 
     /// A returned `destinationRecipient` does not equal the burn-note payload's `destRecipient`.

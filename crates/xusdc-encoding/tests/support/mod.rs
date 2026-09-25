@@ -81,7 +81,9 @@ use xusdc_encoding::errors;
 use xusdc_encoding::note::xreserve_admin::{XReserveMinBurnAmountNote, XReserveSetAttesterNote};
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{DepositIntent, ForeignChainAddress, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{
+    CircleDomain, DepositIntent, ForeignChainAddress, XReserveBurnItems,
+};
 use xusdc_encoding::xreserve_lib::XReserveLibrary;
 
 // Attestation fixtures — deterministic secp256k1 keys and signatures generated IN-TEST (the
@@ -105,11 +107,11 @@ use sha3::{Digest, Keccak256};
 // identifier with is likewise Circle-OPEN.
 
 /// Matches `di-pos-hookdata` / `di-pos-empty-hookdata` `fields.remote_domain`.
-pub const TEST_DOMAIN: u32 = 7;
+pub const TEST_DOMAIN: CircleDomain = CircleDomain::new(7);
 /// Any value != the vectors' remote_domain, for the wrong-domain reject.
-pub const TEST_WRONG_DOMAIN: u32 = 8;
+pub const TEST_WRONG_DOMAIN: CircleDomain = CircleDomain::new(8);
 /// Test destination domain for burn fixtures.
-pub const TEST_SOURCE_DOMAIN: u32 = 3;
+pub const TEST_SOURCE_DOMAIN: CircleDomain = CircleDomain::new(3);
 
 /// The production mint note over a RAW Circle payload, built exactly the way the relayer builds
 /// one: decode the payload, then drive the typed [`XUsdcMintNote`] builder at [`TEST_DOMAIN`].
@@ -131,7 +133,7 @@ pub fn mint_note_from_payload(
 pub fn mint_note_from_payload_at_domain(
     sender: AccountId,
     faucet_id: AccountId,
-    remote_domain: u32,
+    remote_domain: CircleDomain,
     payload: &[u8],
     attestation: DepositAttestation,
     rng: &mut impl FeltRng,
@@ -540,7 +542,7 @@ fn library_attestation_mint_policy_root(component: &AccountComponent) -> Result<
 /// verdict; the outer `Result` carries fixture setup failures only.
 pub fn production_builder_verdict_with_attesters(
     token_supply: u64,
-    domain: u32,
+    domain: CircleDomain,
     min_burn_amount: Option<AssetAmount>,
     attesters: Vec<PublicKey>,
 ) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
@@ -562,13 +564,16 @@ pub fn production_builder_verdict_with_attesters(
 /// [`production_builder_verdict_with_attesters`] with an empty allowlist.
 pub fn production_builder_verdict(
     token_supply: u64,
-    domain: u32,
+    domain: CircleDomain,
     min_burn_amount: Option<AssetAmount>,
 ) -> Result<std::result::Result<XReserveStablecoinBuilder, XReserveStablecoinBuilderError>> {
     production_builder_verdict_with_attesters(token_supply, domain, min_burn_amount, Vec::new())
 }
 
-pub fn production_builder(token_supply: u64, domain: u32) -> Result<XReserveStablecoinBuilder> {
+pub fn production_builder(
+    token_supply: u64,
+    domain: CircleDomain,
+) -> Result<XReserveStablecoinBuilder> {
     production_builder_verdict(token_supply, domain, None)?
         .map_err(|e| anyhow::anyhow!("building the production faucet: {e}"))
 }
@@ -1613,9 +1618,10 @@ pub fn setup_guarded_mint_account(
         // PRODUCTION path: the real builder — attestation policy ONLY (no reserved alternates).
         // The caller's `domain` word (element 0) is build-seeded.
         GuardSelection::ProductionAttestation => {
-            let domain_u32 = u32::try_from(domain[0].as_canonical_u64())
+            let domain = u32::try_from(domain[0].as_canonical_u64())
+                .map(CircleDomain::new)
                 .context("the fixture domain word element 0 must be a u32")?;
-            let components = production_builder(token_supply, domain_u32)
+            let components = production_builder(token_supply, domain)
                 .context("building the production attestation faucet")?
                 .build_components()
                 .map_err(|e| anyhow::anyhow!("composing the production attestation faucet: {e}"))?;
@@ -1843,7 +1849,7 @@ pub fn setup_burn_policy_account(
         vec![
             StorageSlot::with_value(
                 XReserveFaucetExtension::domain_config_slot().clone(),
-                Word::from([TEST_DOMAIN, 0, 0, 0]),
+                Word::from([TEST_DOMAIN.as_u32(), 0, 0, 0]),
             ),
             StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
             StorageSlot::with_empty_map(XReserveFaucetExtension::xreserve_attesters_slot().clone()),

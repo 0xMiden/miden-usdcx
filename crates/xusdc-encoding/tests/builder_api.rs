@@ -180,7 +180,7 @@ fn build_seeds_the_domain_slot() -> Result<()> {
     };
     assert_eq!(
         slot(XReserveFaucetExtension::domain_config_slot())?,
-        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        Word::from([TEST_DOMAIN.as_u32(), 0, 0, 0]),
         "the domain slot must hold the build-seeded [domain, 0, 0, 0]"
     );
     Ok(())

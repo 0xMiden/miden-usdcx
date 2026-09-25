@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use alloy_primitives::Address;
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
@@ -19,6 +19,22 @@ use reqwest::Url;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
+    /// Signing provider; development reads the two private-key environment variables.
+    #[arg(long, value_enum)]
+    signer_provider: SignerProvider,
+
+    /// AWS region containing both KMS keys; required for aws-kms only.
+    #[arg(long)]
+    aws_kms_region: Option<String>,
+
+    /// Immutable KMS key ARN; provide twice in the same order as --expected-signing-public-key.
+    #[arg(long, action = ArgAction::Append)]
+    aws_kms_key_arn: Vec<String>,
+
+    /// Deadline for each KMS operation, including retries (for example, "10s").
+    #[arg(long, value_parser = humantime::parse_duration)]
+    aws_kms_operation_timeout: Option<Duration>,
+
     /// Miden node RPC URL, for example https://rpc.devnet.miden.io
     #[arg(long)]
     miden_rpc_url: String,
@@ -114,6 +130,87 @@ pub struct Cli {
     release_holds: bool,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SignerProvider {
+    Development,
+    AwsKms,
+}
+
+/// Validated provider settings. No credentials or private keys are configuration fields.
+#[derive(Debug)]
+pub enum SignerConfig {
+    Development,
+    AwsKms {
+        region: String,
+        key_arns: [String; 2],
+        operation_timeout: Duration,
+    },
+}
+
+impl SignerConfig {
+    fn from_cli(cli: &Cli) -> Result<Self, ConfigError> {
+        match cli.signer_provider {
+            SignerProvider::Development => {
+                if cli.aws_kms_region.is_some()
+                    || !cli.aws_kms_key_arn.is_empty()
+                    || cli.aws_kms_operation_timeout.is_some()
+                {
+                    return Err(ConfigError::invalid(
+                        "KMS options require the aws-kms signer provider",
+                    ));
+                }
+                Ok(Self::Development)
+            }
+            SignerProvider::AwsKms => {
+                let region = cli
+                    .aws_kms_region
+                    .as_deref()
+                    .filter(|region| !region.is_empty())
+                    .ok_or_else(|| ConfigError::invalid("AWS KMS region is required"))?;
+                let [first, second] = cli.aws_kms_key_arn.as_slice() else {
+                    return Err(ConfigError::invalid(
+                        "exactly two distinct immutable KMS key ARNs are required",
+                    ));
+                };
+                let account = |arn: &str| -> Option<String> {
+                    let parts: Vec<_> = arn.split(':').collect();
+                    let ["arn", "aws", "kms", arn_region, account, resource] = parts.as_slice()
+                    else {
+                        return None;
+                    };
+                    let key = resource.strip_prefix("key/")?;
+                    (*arn_region == region
+                        && region
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                        && account.len() == 12
+                        && account.bytes().all(|c| c.is_ascii_digit())
+                        && !key.is_empty()
+                        && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
+                    .then(|| (*account).to_owned())
+                };
+                if first == second || account(first).is_none() || account(first) != account(second)
+                {
+                    return Err(ConfigError::invalid("KMS key ARNs must be distinct immutable keys in the configured region and same account"));
+                }
+                let operation_timeout = cli
+                    .aws_kms_operation_timeout
+                    .filter(|timeout| !timeout.is_zero())
+                    .ok_or_else(|| {
+                        ConfigError::invalid(
+                            "AWS KMS operation timeout must be supplied and greater than zero",
+                        )
+                    })?;
+                Ok(Self::AwsKms {
+                    region: region.to_owned(),
+                    key_arns: [first.clone(), second.clone()],
+                    operation_timeout,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{context}")]
 pub struct ConfigError {
@@ -140,6 +237,7 @@ impl ConfigError {
 
 #[derive(Debug)]
 pub struct Config {
+    signer: SignerConfig,
     miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
@@ -166,6 +264,7 @@ impl TryFrom<Cli> for Config {
     type Error = ConfigError;
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
+        let signer = SignerConfig::from_cli(&cli)?;
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee).map_err(|source| {
             ConfigError::with_source("maximum withdrawal fee is invalid", source)
@@ -272,6 +371,7 @@ impl TryFrom<Cli> for Config {
         }
 
         Ok(Self {
+            signer,
             miden_rpc_url,
             circle_request_timeout: cli.request_timeout,
             faucet_account_id,
@@ -295,6 +395,10 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    pub fn signer(&self) -> &SignerConfig {
+        &self.signer
+    }
+
     pub fn miden_rpc_url(&self) -> &Endpoint {
         &self.miden_rpc_url
     }
@@ -355,7 +459,7 @@ impl Config {
         self.minimum_finality_depth_blocks
     }
 
-    pub(crate) fn expected_signing_public_keys_hex(&self) -> &[String] {
+    pub fn expected_signing_public_keys_hex(&self) -> &[String] {
         &self.expected_signing_public_keys_hex
     }
 

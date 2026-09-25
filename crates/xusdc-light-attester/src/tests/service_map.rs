@@ -33,6 +33,7 @@ struct CountedSigner {
     inner: Box<dyn Signer>,
     calls: Arc<AtomicUsize>,
     shutdown: Option<CancellationToken>,
+    fail: bool,
 }
 
 impl Signer for CountedSigner {
@@ -51,6 +52,9 @@ impl Signer for CountedSigner {
             if let Some(shutdown) = &self.shutdown {
                 shutdown.cancel();
             }
+            if self.fail {
+                return Err(SignerError);
+            }
             self.inner.sign_digest(digest).await
         })
     }
@@ -64,6 +68,7 @@ pub(super) fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>;
             inner,
             calls: calls[index].clone(),
             shutdown: shutdown.clone(),
+            fail: false,
         }) as Box<dyn Signer>;
         index += 1;
         signer
@@ -77,6 +82,54 @@ pub(super) fn counts(calls: &Counts) -> [usize; 2] {
 
 fn accepted(ledger: &Ledger, index: usize, status: &str) -> CircleState {
     reply(201, json!([ledger.response(index, status)]))
+}
+
+#[tokio::test]
+async fn either_signer_failure_leaves_burns_retryable_without_submitting() {
+    for failed_index in 0..2 {
+        let ledger = Ledger::new().await;
+        let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+        let mut index = 0;
+        let signers = development_signers().map(|inner| {
+            let signer = Box::new(CountedSigner {
+                inner,
+                calls: calls[index].clone(),
+                shutdown: None,
+                fail: index == failed_index,
+            }) as Box<dyn Signer>;
+            index += 1;
+            signer
+        });
+        let replies = (0..2)
+            .flat_map(|_| {
+                ledger
+                    .fresh_indices
+                    .iter()
+                    .map(|&i| reply(200, ledger.prepared_response(i)))
+            })
+            .collect();
+        let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
+        for cycle in 1..=2 {
+            let report = attester.run_one_cycle().await.unwrap();
+            assert!(matches!(report.submit, Err(SubmitError::Signing(_))));
+            assert_eq!(ledger.stored("SELECT count(*) FROM submissions"), 0);
+            assert_eq!(
+                ledger.stored("SELECT count(*) FROM burns WHERE hold_reason IS NOT NULL"),
+                0
+            );
+            assert_eq!(requests.lock().unwrap().len(), cycle * 3);
+        }
+        assert!(requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| matches!(r, ObservedRequest::Prepare)));
+        // The second configured key has the lower address and is called first.
+        assert_eq!(
+            counts(&calls),
+            if failed_index == 1 { [0, 6] } else { [6, 6] }
+        );
+    }
 }
 
 pub(super) fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {

@@ -6,7 +6,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::Cli;
+use crate::config::{Cli, SignerConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -38,6 +38,7 @@ fn cli_surface_is_explicit() {
     assert_eq!(local.load().miden_rpc_url(), &Endpoint::localhost());
 
     for required in [
+        "--signer-provider",
         "--miden-rpc-url",
         "--circle-url",
         "--request-timeout",
@@ -75,6 +76,7 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
+        ("--signer-provider", "development"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -312,4 +314,71 @@ fn invalid_config_is_rejected() {
     defaults.remove("--withdrawal-window-hours");
     let config = defaults.load();
     assert_eq!(config.withdrawal_window_ms(), 86_400_000);
+}
+
+#[test]
+fn signer_mode_validates_only_its_own_settings() {
+    const FIRST: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
+    const SECOND: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let development = TestArgs::new(&directory, 1);
+    assert!(matches!(
+        development.load().signer(),
+        SignerConfig::Development
+    ));
+    let mut unknown = development.clone();
+    unknown.replace("--signer-provider", "fallback");
+    assert_cli_error(&unknown, ErrorKind::InvalidValue);
+
+    let options = [
+        ("--aws-kms-region", "eu-north-1"),
+        ("--aws-kms-key-arn", FIRST),
+        ("--aws-kms-operation-timeout", "10s"),
+    ];
+    for (flag, value) in options {
+        let mut invalid = development.clone();
+        invalid.append(flag, value);
+        assert!(
+            invalid.config().is_err(),
+            "{flag} cannot select KMS implicitly"
+        );
+    }
+    let mut kms = development;
+    kms.replace("--signer-provider", "aws-kms");
+    for (flag, value) in options {
+        kms.append(flag, value);
+    }
+    kms.append("--aws-kms-key-arn", SECOND);
+    let config = kms.load();
+    assert!(
+        matches!(config.signer(), SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
+            && *operation_timeout == std::time::Duration::from_secs(10))
+    );
+    for (flag, _) in options {
+        let mut missing = kms.clone();
+        missing.remove(flag);
+        assert!(missing.config().is_err(), "{flag}");
+    }
+    for invalid_arn in [
+        SECOND,
+        "alias/testnet-usdcx-attester-1",
+        "arn:aws:kms:eu-north-1:584968076953:alias/testnet-usdcx-attester-1",
+        "arn:aws:kms:eu-west-1:584968076953:key/1234",
+        "arn:aws:kms:eu-north-1:111111111111:key/1234",
+        "arn:aws:kms:eu-north-1:584968076953:key/",
+    ] {
+        let mut invalid = kms.clone();
+        invalid.replace("--aws-kms-key-arn", invalid_arn);
+        assert!(invalid.config().is_err(), "{invalid_arn}");
+    }
+    let mut extra = kms.clone();
+    extra.append("--aws-kms-key-arn", FIRST);
+    assert!(extra.config().is_err());
+    let mut zero = kms;
+    zero.replace("--aws-kms-operation-timeout", "0s");
+    assert!(zero.config().is_err());
 }

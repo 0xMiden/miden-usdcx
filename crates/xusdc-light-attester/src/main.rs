@@ -10,9 +10,9 @@ use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
 use xusdc_attester::config::{
     parse_faucet_account_id, parse_note_ids, parse_trusted_anchor_commitment, Command, Config,
-    Invocation,
+    Invocation, SignerConfig,
 };
-use xusdc_attester::signer::{DevelopmentSigner, Signer, SignerPair};
+use xusdc_attester::signer::{DevelopmentSigner, KmsSigner, Signer, SignerPair};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
@@ -62,7 +62,27 @@ async fn main() -> Result<()> {
         .context("invalid configuration")?;
     let (circle, circle_worker) =
         CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
-    let signers = development_signers().context("failed to initialize development signers")?;
+    let (signers, provider): ([Box<dyn Signer>; 2], _) = match config.signer() {
+        SignerConfig::Development => (
+            development_signers().context("failed to initialize development signers")?,
+            "development",
+        ),
+        SignerConfig::AwsKms {
+            region,
+            key_arns,
+            operation_timeout,
+        } => {
+            let client = KmsSigner::client(region, *operation_timeout).await;
+            let expected = config.expected_signing_public_keys_hex();
+            let first = KmsSigner::connect(client.clone(), &key_arns[0], &expected[0])
+                .await
+                .context("failed to initialize first AWS KMS signer")?;
+            let second = KmsSigner::connect(client, &key_arns[1], &expected[1])
+                .await
+                .context("failed to initialize second AWS KMS signer")?;
+            ([Box::new(first), Box::new(second)], "aws-kms")
+        }
+    };
     let signers = SignerPair::new(signers)
         .await
         .context("failed to initialize the signer pair")?;
@@ -90,7 +110,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(%miden_rpc_url, "attester started with development signers");
+    warn!(%miden_rpc_url, signer_provider = provider, "attester started");
     let result = attester.run(shutdown).await;
     signal_task.abort();
     // Dropping the attester closes the request queue; the worker then finishes any request in
@@ -111,7 +131,6 @@ fn init_tracing() {
 }
 
 fn development_signers() -> Result<[Box<dyn Signer>; 2]> {
-    // Replace only this construction with the two independent KMS providers for deployment.
     // Never include environment values or private-key bytes in an error.
     let load = |name: &str| {
         let value = std::env::var(name).map_err(|_| anyhow!("missing signing key: {name}"))?;

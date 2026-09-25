@@ -38,6 +38,8 @@ impl TestArgs {
         Self {
             args: [
                 "xusdc-attester".into(),
+                "--signer-provider".into(),
+                "development".into(),
                 "--miden-rpc-url".into(),
                 "https://rpc.devnet.miden.io".into(),
                 "--circle-url".into(),

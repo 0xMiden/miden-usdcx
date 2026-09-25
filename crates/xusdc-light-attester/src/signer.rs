@@ -1,4 +1,7 @@
-//! Signing-provider boundary; AWS KMS is not connected yet.
+//! Signing-provider boundary for development and AWS KMS keys.
+
+mod kms;
+pub use kms::KmsSigner;
 
 use std::error::Error;
 use std::future::Future;

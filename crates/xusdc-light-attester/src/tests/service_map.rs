@@ -4,9 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use alloy_primitives::{Signature, B256};
+use alloy_primitives::{Signature, B256, U256};
+use alloy_sol_types::SolCall;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Felt;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -23,7 +25,7 @@ use super::support::{
     CircleState, ObservedRequest, TestChain,
 };
 use super::validation::{validated_burn, NoteFixture};
-use super::verify::serial;
+use super::verify::{captured, decode_call, serial, with_calldata, FORWARDED_FIXTURE};
 
 type Counts = [Arc<AtomicUsize>; 2];
 
@@ -167,43 +169,96 @@ async fn invalid_burns_are_not_signed() {
 
 #[tokio::test]
 async fn circle_response_is_checked_before_signing() {
-    let ledger = Ledger::new().await;
-    let order = &ledger.fresh_indices;
-    seed(&ledger, &[(order[2], Some("created"))]).await;
-    let mut response = ledger.prepared_response(order[0]);
-    response["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "00".repeat(32)));
-    let mut replies = vec![reply(200, response)];
-    replies.extend(fresh_replies(&ledger, &order[1..2]));
-    replies.push(reply(200, ledger.response(order[2], "finalized")));
-    let (signers, calls) = signers(None);
-    let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
-    let report = attester.run_one_cycle().await.unwrap();
-    assert!(report.discover.is_ok());
-    assert_eq!(counts(&calls), [1, 1]);
-    assert_eq!(requests.lock().unwrap().len(), 4);
-    assert!(attester
-        .store
-        .submission(ledger.burns[order[0]].burn.note_id())
-        .unwrap()
-        .is_none());
-    let pending: Vec<_> = attester
-        .store
-        .burns_ready_for_withdrawal(3u32.into(), 1)
-        .unwrap()
-        .iter()
-        .map(|burn| burn.note_id())
-        .collect();
-    assert_eq!(
-        pending,
-        [ledger.burns[order[0]].burn.note_id()],
-        "a failed check leaves the burn unsigned and ready for the next cycle"
-    );
-    assert_eq!(ledger.record(&attester, order[1]).status, Submitted);
-    assert_eq!(ledger.record(&attester, order[2]).status, Finalized);
-    let error = report.submit.unwrap_err();
-    assert!(
-        matches!(error, SubmitError::Verification(cause) if cause.downcast_ref::<VerifyError>() == Some(&VerifyError::DigestMismatch))
-    );
+    // A failed check leaves the burn ready for the next cycle, except a forwarded burn too small
+    // to pay the configured CCTP fee: that fails the same way every cycle, so it is held. The fee
+    // ceiling is checked first, so a small forwarded burn during a fee spike is retried instead.
+    for (expected, held) in [
+        (VerifyError::DigestMismatch, false),
+        (VerifyError::TooSmallToForward, true),
+        (VerifyError::FeeTooHigh, false),
+    ] {
+        let ledger = Ledger::new().await;
+        let order = &ledger.fresh_indices;
+        {
+            let mut config = ledger.config.lock().unwrap();
+            config.replace("--max-withdrawal-fee", "1500");
+            config.replace("--cctp-forwarding-max-fee", "1000");
+        }
+        seed(&ledger, &[(order[2], Some("created"))]).await;
+        let burn = &ledger.burns[order[0]];
+        // Circle's forwarded Linea reply, scaled to this burn and the configured CCTP fee of 1000.
+        let forwarded = |payout: u64, fee: u64| {
+            let mut batch = captured(FORWARDED_FIXTURE);
+            let spec = &mut batch.burn_intents[0].spec;
+            spec.salt = burn.burn.note().as_note().serial_num().to_hex();
+            spec.value = payout.to_string();
+            batch.burn_intents[0].max_fee = fee.to_string();
+            let mut call = decode_call(&batch);
+            call.amount = U256::from(payout);
+            call.destinationDomain = 9;
+            call.mintRecipient = B256::from_slice(burn.items.dest_recipient.as_bytes());
+            call.maxFee = U256::from(1000);
+            let batch = with_calldata(batch, call.abi_encode());
+            json!({"batches": [{"burnIntents": batch.burn_intents,
+                "encoded": batch.encoded, "messageHashToSign": batch.message_hash_to_sign}]})
+        };
+        let response = match expected {
+            VerifyError::DigestMismatch => {
+                let mut response = ledger.prepared_response(order[0]);
+                response["batches"][0]["messageHashToSign"] =
+                    json!(format!("0x{}", "00".repeat(32)));
+                response
+            }
+            // Nothing else is wrong with this reply: the payout of 1000 cannot pay the CCTP fee.
+            VerifyError::TooSmallToForward => forwarded(1000, 0),
+            // Just as small, but Circle's fee of 600 plus the CCTP fee exceeds the ceiling of 1500.
+            _ => forwarded(400, 600),
+        };
+        let mut replies = vec![reply(200, response)];
+        replies.extend(fresh_replies(&ledger, &order[1..2]));
+        replies.push(reply(200, ledger.response(order[2], "finalized")));
+        let (signers, calls) = signers(None);
+        let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
+        let report = attester.run_one_cycle().await.unwrap();
+        assert!(report.discover.is_ok());
+        assert_eq!(counts(&calls), [1, 1], "{expected}");
+        assert_eq!(requests.lock().unwrap().len(), 4);
+        assert!(attester
+            .store
+            .submission(burn.burn.note_id())
+            .unwrap()
+            .is_none());
+        let pending: Vec<_> = attester
+            .store
+            .burns_ready_for_withdrawal(3u32.into(), 1)
+            .unwrap()
+            .iter()
+            .map(|burn| burn.note_id())
+            .collect();
+        if held {
+            assert!(pending.is_empty(), "the burn is held");
+            assert_eq!(
+                ledger.stored(&format!(
+                    "SELECT count(*) FROM burns WHERE note_id = x'{}'
+                        AND hold_reason = 'too_small_to_forward'",
+                    hex::encode(burn.burn.note_id().to_bytes())
+                )),
+                1
+            );
+        } else {
+            assert_eq!(
+                pending,
+                [burn.burn.note_id()],
+                "a failed check leaves the burn unsigned and ready for the next cycle"
+            );
+        }
+        assert_eq!(ledger.record(&attester, order[1]).status, Submitted);
+        assert_eq!(ledger.record(&attester, order[2]).status, Finalized);
+        let error = report.submit.unwrap_err();
+        assert!(
+            matches!(error, SubmitError::Verification(cause) if cause.downcast_ref::<VerifyError>() == Some(&expected))
+        );
+    }
 }
 
 #[tokio::test]

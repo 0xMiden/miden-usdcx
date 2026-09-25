@@ -118,13 +118,27 @@ fn discovered(note: Note) -> DiscoveredBurn {
 }
 
 pub(super) fn validated_burn(amount: u64, serial: Word, destination_domain: u32) -> ValidatedBurn {
+    validated_burn_to(
+        amount,
+        serial,
+        destination_domain,
+        core::array::from_fn(|i| i as u8),
+    )
+}
+
+pub(super) fn validated_burn_to(
+    amount: u64,
+    serial: Word,
+    destination_domain: u32,
+    recipient: [u8; 32],
+) -> ValidatedBurn {
     let mut fixture = NoteFixture::new();
     let asset = fungible(faucet_account_id(), amount);
     fixture.assets = vec![asset];
     fixture.storage = asset.as_elements().to_vec();
     let mut payload = items();
     payload.dest_domain = destination_domain;
-    payload.dest_recipient = ForeignChainAddress::new(core::array::from_fn(|i| i as u8));
+    payload.dest_recipient = ForeignChainAddress::new(recipient);
     fixture.set_items(payload);
     let burn = discovered(fixture.with_serial(serial));
     validate_burn(burn).unwrap()

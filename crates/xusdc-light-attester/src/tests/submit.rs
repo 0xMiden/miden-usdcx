@@ -153,7 +153,7 @@ impl CircleApi for ScriptedCircle {
     fn prepare_withdrawal<'a>(
         &'a self,
         _burn: &'a ValidatedBurn,
-        _use_circle_forwarding: bool,
+        _cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move { read_prepared(self.next_reply(ObservedRequest::Prepare)?) })
@@ -399,7 +399,7 @@ impl Ledger {
 
     pub(super) fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].burn.note_id().to_hex(),
-            "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(index)]})
+            "status": status, "useCircleForwarding": true, "transferSpecHashes": [reference_hash(index)]})
     }
 }
 
@@ -558,7 +558,7 @@ async fn submit_sends_checked_request() {
                 json!({"batches": [{"burnIntents": [expected_intent], "burnSignatures": [
             format!("0x{}{}1b", "00".repeat(31) + "01", "00".repeat(31) + "01"),
             format!("0x{}{}1b", "00".repeat(31) + "02", "00".repeat(31) + "02")],
-            "burnTxId": ledger.burns[0].burn.note_id().to_hex(), "useCircleForwarding": false}]})
+            "burnTxId": ledger.burns[0].burn.note_id().to_hex(), "useCircleForwarding": true}]})
             );
         }
         if matches!(expected, Failed | Expired) {
@@ -612,23 +612,6 @@ async fn submit_sends_checked_request() {
         Submitting,
         "only 201 creates a submission"
     );
-
-    let ledger = Ledger::new().await;
-    let mut response = ledger.response(0, "created");
-    response["useCircleForwarding"] = json!(true);
-    ledger
-        .config
-        .lock()
-        .unwrap()
-        .replace("--use-circle-forwarding", "true");
-    let (mut attester, requests) = ledger.start(vec![reply(201, json!([response]))]).await;
-    ledger.submit(&mut attester, 0).await.unwrap();
-    let body: Value = match &requests.lock().unwrap()[0] {
-        ObservedRequest::Submit { body, .. } => serde_json::from_slice(body).unwrap(),
-        other => panic!("expected the withdraw request, got {other:?}"),
-    };
-    assert_eq!(body["batches"][0]["useCircleForwarding"], true);
-    assert_eq!(ledger.record(&attester, 0).status, Submitted);
 }
 
 /// Persist before sending; an uncertain request cannot be replaced by a fresh authorization.
@@ -864,7 +847,7 @@ async fn conflicts_are_checked() {
         ("wrong hash", |v| {
             v["transferSpecHashes"][0] = json!(format!("0x{}", "ff".repeat(32)))
         }),
-        ("forwarding", |v| v["useCircleForwarding"] = json!(true)),
+        ("forwarding", |v| v["useCircleForwarding"] = json!(false)),
     ];
     for (name, change) in mismatches {
         let ledger = Ledger::new().await;

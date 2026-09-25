@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use alloy_primitives::Address;
 use clap::{ArgAction, Parser};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
@@ -34,10 +35,6 @@ pub struct Cli {
     #[arg(long)]
     faucet_account_id: String,
 
-    /// Whether Circle should forward the withdrawal on the destination chain.
-    #[arg(long, action = ArgAction::Set, value_parser = clap::value_parser!(bool))]
-    use_circle_forwarding: bool,
-
     /// Fixed part of the allowed fee per withdrawal, in the smallest USDC unit;
     /// --max-withdrawal-fee-bps adds a share of the burned amount on top. Every Circle route
     /// charges a fee (the smallest seen is 4350); Ethereum needs at least 1003500, Circle's flat
@@ -49,6 +46,22 @@ pub struct Cli {
     /// Circle charges up to 1.5 basis points on most routes, so leave headroom, for example 3.
     #[arg(long)]
     max_withdrawal_fee_bps: u64,
+
+    /// Fee for the CCTP leg of a forwarded withdrawal, in the smallest USDC unit. Circle reaches
+    /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
+    /// plus CCTP. Must stay below --max-withdrawal-fee, which on those routes also covers the
+    /// Gateway leg (about 0.02 USDC at 1 USDC on the sandbox). This is a cap: CCTP deducts only
+    /// the fee it actually charges. Set it to Circle's current forwarding fee for the most
+    /// expensive forwarded destination plus 10 to 20 percent.
+    #[arg(long)]
+    cctp_forwarding_max_fee: u64,
+
+    /// 0x-prefixed address of Circle's xReserve contract on Arc for the environment --circle-url
+    /// points at; a forwarded response must name it as recipient and caller. Circle reaches
+    /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
+    /// plus CCTP.
+    #[arg(long)]
+    cctp_forwarder_address: String,
 
     /// Rolling withdrawal cap in the smallest USDC unit; zero pauses new submissions.
     #[arg(long)]
@@ -131,9 +144,10 @@ pub struct Config {
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
-    use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
+    /// The CCTP leg's fee and the xReserve contract on Arc.
+    cctp_forwarding: (u64, Address),
     withdrawal_limit: u64,
     withdrawal_window_ms: i64,
     withdrawal_cap_error_message: Option<String>,
@@ -156,6 +170,18 @@ impl TryFrom<Cli> for Config {
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee).map_err(|source| {
             ConfigError::with_source("maximum withdrawal fee is invalid", source)
         })?;
+        let forwarder = cli
+            .cctp_forwarder_address
+            .parse::<Address>()
+            .map_err(|source| {
+                ConfigError::with_source("cctp forwarder address is invalid", source)
+            })?;
+        if cli.cctp_forwarding_max_fee >= cli.max_withdrawal_fee {
+            return Err(ConfigError::invalid(
+                "cctp forwarding max fee must be below the maximum withdrawal fee",
+            ));
+        }
+        let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder);
         let withdrawal_window_ms = cli
             .withdrawal_window_hours
             .checked_mul(3_600_000)
@@ -250,9 +276,9 @@ impl TryFrom<Cli> for Config {
             circle_request_timeout: cli.request_timeout,
             faucet_account_id,
             circle_api_base_url,
-            use_circle_forwarding: cli.use_circle_forwarding,
             max_withdrawal_fee,
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
+            cctp_forwarding,
             withdrawal_limit: cli.withdrawal_limit,
             withdrawal_window_ms,
             withdrawal_cap_error_message: cli.withdrawal_cap_error_message,
@@ -285,16 +311,16 @@ impl Config {
         &self.circle_api_base_url
     }
 
-    pub(crate) fn use_circle_forwarding(&self) -> bool {
-        self.use_circle_forwarding
-    }
-
     pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
     }
 
     pub(crate) fn max_withdrawal_fee_bps(&self) -> u64 {
         self.max_withdrawal_fee_bps
+    }
+
+    pub(crate) fn cctp_forwarding(&self) -> (u64, Address) {
+        self.cctp_forwarding
     }
 
     pub(crate) fn withdrawal_limit(&self) -> u64 {

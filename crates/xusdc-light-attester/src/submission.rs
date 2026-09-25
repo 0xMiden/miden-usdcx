@@ -61,7 +61,6 @@ pub struct SavedSubmission {
     pub(crate) endpoint: String,
     pub(crate) body: Vec<u8>,
     pub(crate) transfer_spec_hash: B256,
-    pub(crate) use_circle_forwarding: bool,
     pub(crate) status: SubmissionStatus,
     pub(crate) withdrawal_id: Option<String>,
     pub(crate) hold_reason: Option<HoldReason>,
@@ -124,8 +123,9 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    /// After Circle's prepare refused this burn and the cause is fixed, let the burn be checked
-    /// again. Capacity reservations and any cap-rejection cooldown remain unchanged.
+    /// After the cause of this burn's hold is fixed, such as Circle's prepare refusing it, let the
+    /// burn be checked again. Capacity reservations and any cap-rejection cooldown remain
+    /// unchanged.
     pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }
@@ -370,7 +370,7 @@ impl SavedSubmission {
 
         if !is_well_formed_id(&withdrawal.withdrawal_id)
             || !self.matches_note(&withdrawal.burn_note_id)
-            || withdrawal.use_circle_forwarding != self.use_circle_forwarding
+            || !withdrawal.use_circle_forwarding
             || withdrawal.transfer_spec_hashes.len() != 1
             || withdrawal.transfer_spec_hashes[0].parse::<B256>().ok()
                 != Some(self.transfer_spec_hash)

@@ -84,10 +84,12 @@ pub trait CircleApi: Send + Sync {
 
     /// Asks Circle to prepare the withdrawal of this burn. The reply is only decoded; it must be
     /// verified before anything is signed.
+    /// `cctp_forwarding_max_fee` caps the CCTP fee on the routes Circle serves through xReserve on
+    /// Arc plus a CCTP transfer; CCTP deducts only the fee it actually charges.
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a ValidatedBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>;
 
     /// Sends the saved withdrawal request to its saved endpoint, exactly as saved.
@@ -196,9 +198,9 @@ impl CircleClient {
     pub(crate) fn prepare_request(
         &self,
         burn: &ValidatedBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: u64,
     ) -> Result<reqwest::Request, CircleError> {
-        let batch = PrepareBatch::from_burn(burn, use_circle_forwarding);
+        let batch = PrepareBatch::from_burn(burn, cctp_forwarding_max_fee);
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
@@ -257,11 +259,11 @@ impl CircleApi for CircleClient {
     fn prepare_withdrawal<'a>(
         &'a self,
         burn: &'a ValidatedBurn,
-        use_circle_forwarding: bool,
+        cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move {
-            let request = self.prepare_request(burn, use_circle_forwarding)?;
+            let request = self.prepare_request(burn, cctp_forwarding_max_fee)?;
             read_prepared(self.send(request).await?)
         })
     }
@@ -334,21 +336,20 @@ pub(crate) struct PrepareBatch {
     value_including_fees: String,
     salt: String,
     use_circle_forwarding: bool,
+    forwarding_options: ForwardingOptions,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardingOptions {
+    max_fee: String,
+    uses_fast_finality: bool,
 }
 
 impl PrepareBatch {
-    pub(crate) fn from_burn(burn: &ValidatedBurn, use_circle_forwarding: bool) -> Self {
-        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+    pub(crate) fn from_burn(burn: &ValidatedBurn, cctp_forwarding_max_fee: u64) -> Self {
         let note = burn.burn.note().as_note();
-        let amount = burn.amount;
         let sender = EthEmbeddedAccountId::from_account_id(note.metadata().sender());
-        // Circle takes whole-USDC decimal strings, not smallest-unit integers.
-        let value_including_fees = format!(
-            "{}.{:0width$}",
-            amount / units_per_usdc,
-            amount % units_per_usdc,
-            width = usize::from(USDCX_DECIMALS),
-        );
         // Circle's salt is the note serial. The attachment only holds the destination.
         let salt = note.serial_num().to_hex();
         Self {
@@ -360,11 +361,26 @@ impl PrepareBatch {
                 "0x{}",
                 hex::encode(burn.items.dest_recipient.as_bytes())
             ),
-            value_including_fees,
+            value_including_fees: usdc_decimal(burn.amount),
             salt,
-            use_circle_forwarding,
+            use_circle_forwarding: true,
+            forwarding_options: ForwardingOptions {
+                max_fee: usdc_decimal(cctp_forwarding_max_fee),
+                uses_fast_finality: true,
+            },
         }
     }
+}
+
+/// Circle takes whole-USDC decimal strings, not smallest-unit integers.
+fn usdc_decimal(units: u64) -> String {
+    let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+    format!(
+        "{}.{:0width$}",
+        units / units_per_usdc,
+        units % units_per_usdc,
+        width = usize::from(USDCX_DECIMALS),
+    )
 }
 
 /// Decoded wire data, not a verified or signable withdrawal.

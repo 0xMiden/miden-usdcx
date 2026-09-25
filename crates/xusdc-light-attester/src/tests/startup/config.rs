@@ -6,7 +6,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{parse_note_ids, Command, Invocation};
+use crate::config::{parse_note_ids, Command, Invocation, SignerConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -38,6 +38,7 @@ fn cli_surface_is_explicit() {
     assert_eq!(local.load().miden_rpc_url(), &Endpoint::localhost());
 
     for required in [
+        "--signer-provider",
         "--miden-rpc-url",
         "--circle-url",
         "--request-timeout",
@@ -75,6 +76,7 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
+        ("--signer-provider", "development"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -382,4 +384,82 @@ fn note_ids_file_takes_the_first_word_of_each_line() {
         "no note IDs given"
     );
     assert_eq!(parse_note_ids(&[flagged], Some(&file)).unwrap().len(), 1);
+}
+
+#[test]
+fn signer_mode_validates_only_its_own_settings() {
+    const FIRST: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
+    const SECOND: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let development = TestArgs::new(&directory, 1);
+    assert!(matches!(
+        development.load().signer(),
+        SignerConfig::Development
+    ));
+    let mut unknown = development.clone();
+    unknown.replace("--signer-provider", "fallback");
+    assert_cli_error(&unknown, ErrorKind::InvalidValue);
+
+    let options = [
+        ("--aws-kms-region", "eu-north-1"),
+        ("--aws-kms-key-arn", FIRST),
+        ("--aws-kms-operation-timeout", "10s"),
+    ];
+    for (flag, value) in options {
+        let mut invalid = development.clone();
+        invalid.append(flag, value);
+        assert_config_error(&invalid, "KMS options require the aws-kms signer provider");
+    }
+    let mut kms = development;
+    kms.replace("--signer-provider", "aws-kms");
+    for (flag, value) in options {
+        kms.append(flag, value);
+    }
+    kms.append("--aws-kms-key-arn", SECOND);
+    let config = kms.load();
+    assert!(
+        matches!(config.signer(), SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
+            && *operation_timeout == std::time::Duration::from_secs(10))
+    );
+    let missing_errors = [
+        "AWS KMS region is required",
+        "exactly two distinct immutable KMS key ARNs are required",
+        "AWS KMS operation timeout must be supplied and greater than zero",
+    ];
+    for ((flag, _), expected_error) in options.into_iter().zip(missing_errors) {
+        let mut missing = kms.clone();
+        missing.remove(flag);
+        assert_config_error(&missing, expected_error);
+    }
+    for invalid_arn in [
+        SECOND,
+        "alias/testnet-usdcx-attester-1",
+        "arn:aws:kms:eu-north-1:584968076953:alias/testnet-usdcx-attester-1",
+        "arn:aws:kms:eu-west-1:584968076953:key/1234",
+        "arn:aws:kms:eu-north-1:111111111111:key/1234",
+        "arn:aws:kms:eu-north-1:584968076953:key/",
+    ] {
+        let mut invalid = kms.clone();
+        invalid.replace("--aws-kms-key-arn", invalid_arn);
+        assert_config_error(
+            &invalid,
+            "KMS key ARNs must be distinct immutable keys in the configured region and same account",
+        );
+    }
+    let mut extra = kms.clone();
+    extra.append("--aws-kms-key-arn", FIRST);
+    assert_config_error(
+        &extra,
+        "exactly two distinct immutable KMS key ARNs are required",
+    );
+    let mut zero = kms;
+    zero.replace("--aws-kms-operation-timeout", "0s");
+    assert_config_error(
+        &zero,
+        "AWS KMS operation timeout must be supplied and greater than zero",
+    );
 }

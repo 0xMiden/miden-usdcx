@@ -6,8 +6,8 @@ use tracing_subscriber::EnvFilter;
 
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
-use xusdc_attester::config::{Cli, Config};
-use xusdc_attester::signer::{DevelopmentSigner, Signer};
+use xusdc_attester::config::{Cli, Config, SignerConfig};
+use xusdc_attester::signer::{DevelopmentSigner, KmsSigner, Signer};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
@@ -15,7 +15,27 @@ async fn main() -> Result<()> {
     init_tracing();
     let config = Config::try_from(Cli::parse()).context("invalid configuration")?;
     let circle = CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
-    let signers = development_signers().context("failed to initialize development signers")?;
+    let (signers, provider): ([Box<dyn Signer>; 2], _) = match config.signer() {
+        SignerConfig::Development => (
+            development_signers().context("failed to initialize development signers")?,
+            "development",
+        ),
+        SignerConfig::AwsKms {
+            region,
+            key_arns,
+            operation_timeout,
+        } => {
+            let client = KmsSigner::client(region, *operation_timeout).await;
+            let expected = config.expected_signing_public_keys_hex();
+            let first = KmsSigner::connect(client.clone(), &key_arns[0], &expected[0])
+                .await
+                .context("failed to initialize first AWS KMS signer")?;
+            let second = KmsSigner::connect(client, &key_arns[1], &expected[1])
+                .await
+                .context("failed to initialize second AWS KMS signer")?;
+            ([Box::new(first), Box::new(second)], "aws-kms")
+        }
+    };
     let miden_rpc_url = config.miden_rpc_url().clone();
 
     let mut attester = Attester::start(
@@ -39,7 +59,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(%miden_rpc_url, "attester started with development signers");
+    warn!(%miden_rpc_url, signer_provider = provider, "attester started");
     attester.run(shutdown).await;
     signal_task.abort();
     Ok(())
@@ -54,7 +74,6 @@ fn init_tracing() {
 }
 
 fn development_signers() -> Result<[Box<dyn Signer>; 2]> {
-    // Replace only this construction with the two independent KMS providers for deployment.
     // Never include environment values or private-key bytes in an error.
     let load = |name: &str| {
         let value = std::env::var(name).with_context(|| format!("missing signing key: {name}"))?;

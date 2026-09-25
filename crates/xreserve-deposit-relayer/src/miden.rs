@@ -82,7 +82,7 @@ pub trait MidenClient: fmt::Debug + Send {
     /// Dropping a mint is final: the faucet only ever adds to its used-nonce map. Keeping one is
     /// not, because a mint note already on chain for the same deposit may be consumed before the
     /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
-    fn unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>>;
+    fn retain_unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>>;
 
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
@@ -255,8 +255,8 @@ impl MidenClient for NodeClient {
     /// The sync is what keeps the answer current: a relayer that has been caught up for a while
     /// has not synced since its last transaction, and the faucet has minted since. The reads
     /// themselves never reach the node.
-    #[instrument(name = "unminted", skip_all, fields(mints.count = mints.len(), unminted.count = Empty))]
-    fn unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>> {
+    #[instrument(name = "retain_unminted", skip_all, fields(mints.count = mints.len(), unminted.count = Empty))]
+    fn retain_unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>> {
         // A page with nothing to check is not worth a sync.
         if mints.is_empty() {
             return Ok(mints);

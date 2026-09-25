@@ -143,7 +143,7 @@ impl Relayer {
     /// scan and the stored progress for the page an interrupted scan stopped at.
     ///
     /// Malformed attestations are skipped inside [`Minter::build_notes`], and deposits the faucet
-    /// has already minted are dropped by [`MidenClient::unminted`], so no proof is spent on a note
+    /// has already minted are dropped by [`MidenClient::retain_unminted`], so no proof is spent on a note
     /// the faucet would refuse. Every remaining note goes into one transaction, and the page is
     /// done only once [`MidenClient::submit_notes`] confirms that transaction is included on
     /// chain — so returning is what entitles the caller to record the page as done. One page to
@@ -213,7 +213,7 @@ impl Relayer {
 
         // A deposit the faucet has already minted would only be refused, so it is dropped here
         // rather than proven. This is what makes a replay of the feed cheap.
-        let mints = self.miden_client.unminted(mints)?;
+        let mints = self.miden_client.retain_unminted(mints)?;
         span.record("notes.already_minted", built - mints.len());
 
         // The minter yields its own note type; the chain takes protocol notes, so the page is

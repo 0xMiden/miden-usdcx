@@ -278,7 +278,7 @@ async fn a_non_finalized_poll_answer_never_settles_the_burn(#[case] status: &str
 #[case::fee_not_deducted("value", json!("10000000"))]
 #[case::zero_net_value("value", json!("0"))]
 #[case::amount_overflow("value", json!("340282366920938463463374607431768211455"))]
-#[case::destination_domain("destinationDomain", json!(WRONG_DOMAIN))]
+#[case::destination_domain("destinationDomain", json!(WRONG_DOMAIN.as_u32()))]
 #[case::destination_recipient("destinationRecipient", json!(WRONG_RECIPIENT))]
 #[tokio::test]
 async fn a_b5_spec_mismatch_produces_no_signature_and_no_withdraw(

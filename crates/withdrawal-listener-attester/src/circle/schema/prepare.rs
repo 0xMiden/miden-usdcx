@@ -2,6 +2,7 @@
 
 use bon::Builder;
 use serde::{Deserialize, Serialize};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 use crate::circle::wire::{
     present_non_null, DecimalAmount, ForwardingFee, Hex32, HexBytes, SchemaError, Token,
@@ -74,14 +75,14 @@ pub struct PrepareBurnIntentInput {
 
     /// `minimum: 1` — Miden's domain ("typically greater than 10000"). MUST differ from
     /// [`Self::final_destination_domain`].
-    remote_domain: u32,
+    remote_domain: CircleDomain,
 
     /// The Miden account that initiated the withdrawal (the burn note's `metadata.sender`).
     remote_depositor: Hex32,
 
     /// `minimum: 0` — the CCTP or remote domain the funds finally land on. MUST differ from
     /// [`Self::remote_domain`].
-    final_destination_domain: u32,
+    final_destination_domain: CircleDomain,
 
     final_destination_recipient: Hex32,
 
@@ -127,9 +128,9 @@ struct PrepareBurnIntentInputRaw {
     value_excluding_fees: Option<DecimalAmount>,
     #[serde(default, deserialize_with = "present_non_null")]
     value_including_fees: Option<DecimalAmount>,
-    remote_domain: u32,
+    remote_domain: CircleDomain,
     remote_depositor: Hex32,
-    final_destination_domain: u32,
+    final_destination_domain: CircleDomain,
     final_destination_recipient: Hex32,
     #[serde(default, deserialize_with = "present_non_null")]
     final_destination_caller: Option<Hex32>,
@@ -186,7 +187,7 @@ impl PrepareBurnIntentInput {
         if self.value_excluding_fees.is_some() == self.value_including_fees.is_some() {
             return Err(SchemaError::ValueXor);
         }
-        if self.remote_domain < 1 {
+        if self.remote_domain.as_u32() < 1 {
             return Err(SchemaError::RemoteDomainBelowMinimum(self.remote_domain));
         }
         if self.remote_domain == self.final_destination_domain {
@@ -212,7 +213,7 @@ impl PrepareBurnIntentInput {
             .map(DecimalAmount::as_str)
     }
 
-    pub fn remote_domain(&self) -> u32 {
+    pub fn remote_domain(&self) -> CircleDomain {
         self.remote_domain
     }
 
@@ -221,7 +222,7 @@ impl PrepareBurnIntentInput {
         self.remote_depositor.as_str()
     }
 
-    pub fn final_destination_domain(&self) -> u32 {
+    pub fn final_destination_domain(&self) -> CircleDomain {
         self.final_destination_domain
     }
 

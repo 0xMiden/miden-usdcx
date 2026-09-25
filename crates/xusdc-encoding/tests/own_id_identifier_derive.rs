@@ -221,7 +221,7 @@ fn setup_production_derive_faucet() -> Result<DeriveHarness> {
         GuardSelection::ProductionAttestation,
         MAX_SUPPLY,
         0,
-        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        Word::from([TEST_DOMAIN.as_u32(), 0, 0, 0]),
         None,
         None,
         DERIVE_DRIVER_SRC,

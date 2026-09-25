@@ -44,6 +44,7 @@ use miden_standards::account::policies::{
 use miden_standards::account::upgrade::UpgradeManager;
 
 use crate::account::xreserve::XReserveAdminAuthority;
+use crate::xreserve::encoding::CircleDomain;
 
 mod construction;
 mod error;
@@ -158,7 +159,7 @@ impl XReserveStablecoinBuilder {
     /// `ATTEST_ADMIN`, `DOM_PAUSER` and `DOM_UNPAUSER`, and the
     /// `blocklist_manager_holder` seeded as the sole member of `BLK_MANAGER` (the external
     /// transfer-blocklist administrator), the network `fee_parameters` and `fee_asset_id`, plus the BUILD-SEEDED
-    /// u32 `domain`. The domain is required because a faucet without it would ship a domain
+    /// `domain`. The domain is required because a faucet without it would ship a domain
     /// compare that reads an empty slot. `attesters` (default empty) are allowlisted at
     /// composition time.
     ///
@@ -191,7 +192,7 @@ impl XReserveStablecoinBuilder {
         blocklist_manager_holders: Vec<AccountId>,
         fee_parameters: FeeParameters,
         fee_asset_id: AssetId,
-        domain: u32,
+        domain: CircleDomain,
         #[builder(default)] attesters: Vec<PublicKey>,
         min_burn_amount: Option<AssetAmount>,
     ) -> Result<Self, XReserveStablecoinBuilderError> {

@@ -20,7 +20,7 @@ use xusdc_encoding::note::costs::{
 use xusdc_encoding::note::xreserve_admin::XReserveSetAttesterNote;
 use xusdc_encoding::note::xreserve_burn::XReserveBurnNote;
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntentField, ForeignChainAddress, HookData, XReserveBurnItems,
+    CircleDomain, DepositIntentField, ForeignChainAddress, HookData, XReserveBurnItems,
 };
 
 const BURN_AMOUNT: u64 = 5_000;
@@ -174,7 +174,7 @@ async fn burn_cycles() -> Result<u32> {
         faucet.id(),
         AssetAmount::new(BURN_AMOUNT)?,
         XReserveBurnItems {
-            dest_domain: 9,
+            dest_domain: CircleDomain::new(9),
             dest_recipient: ForeignChainAddress::new([0xAB; 32]),
         },
         builder.rng_mut(),

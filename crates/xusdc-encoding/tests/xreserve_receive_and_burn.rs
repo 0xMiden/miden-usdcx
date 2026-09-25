@@ -42,7 +42,7 @@ use xusdc_encoding::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
-use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
 // Amounts are arbitrary: this suite asserts which code path runs and what it is gated by, never
 // the magnitudes themselves. They match the ones the burn-note suite uses so the shared harness
@@ -74,7 +74,7 @@ fn note_rng(seed: u64) -> RandomCoin {
 /// the off-chain listener to read; consuming the note does not look at them.
 fn items() -> XReserveBurnItems {
     XReserveBurnItems {
-        dest_domain: 9,
+        dest_domain: CircleDomain::new(9),
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     }
 }

@@ -23,7 +23,7 @@ use miden_standards::account::fees::FeePolicyManager;
 use super::{
     XReserveStablecoinBuilder, XReserveStablecoinBuilderError, USDCX_DECIMALS, USDCX_TOKEN_SYMBOL,
 };
-use crate::xreserve::encoding::DepositNonce;
+use crate::xreserve::encoding::{CircleDomain, DepositNonce};
 
 // CONSTANTS
 // ================================================================================================
@@ -86,7 +86,7 @@ static XRESERVE_ATTESTERS_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
 /// - the attester administration
 #[derive(Debug, Clone)]
 pub struct XReserveFaucetExtension {
-    domain: u32,
+    domain: CircleDomain,
     attesters: StorageMap,
 }
 
@@ -98,7 +98,7 @@ impl XReserveFaucetExtension {
     /// # Errors
     ///
     /// [`StorageMapError::DuplicateKey`] if a key is listed twice.
-    pub fn new(domain: u32, attesters: &[PublicKey]) -> Result<Self, StorageMapError> {
+    pub fn new(domain: CircleDomain, attesters: &[PublicKey]) -> Result<Self, StorageMapError> {
         let attesters = StorageMap::with_entries(attesters.iter().map(|key| {
             (
                 StorageMapKey::new(key.to_commitment()),
@@ -139,7 +139,7 @@ impl From<XReserveFaucetExtension> for AccountComponent {
             vec![
                 StorageSlot::with_value(
                     XReserveFaucetExtension::domain_config_slot().clone(),
-                    Word::from([faucet_ext.domain, 0, 0, 0]),
+                    Word::from([faucet_ext.domain.as_u32(), 0, 0, 0]),
                 ),
                 StorageSlot::with_empty_map(XReserveFaucetExtension::used_nonces_slot().clone()),
                 StorageSlot::with_map(
@@ -266,7 +266,7 @@ pub fn build_faucet_account(
     blocklist_manager_holders: Vec<AccountId>,
     fee_parameters: FeeParameters,
     fee_asset_id: AssetId,
-    domain: u32,
+    domain: CircleDomain,
 ) -> Result<Account, XReserveStablecoinBuilderError> {
     XReserveStablecoinBuilder::builder()
         .token_supply(token_supply)

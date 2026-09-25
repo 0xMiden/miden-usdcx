@@ -33,7 +33,8 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, DepositNonce, MintIntent, Signature, BYTES_PER_PACKED_FELT,
+    CircleDomain, DepositIntent, DepositIntentHeader, DepositNonce, MintIntent, Signature,
+    BYTES_PER_PACKED_FELT,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -234,7 +235,7 @@ impl XUsdcMintNote {
     pub fn new(
         sender: AccountId,
         target: AccountId,
-        remote_domain: u32,
+        remote_domain: CircleDomain,
         deposit_intent: DepositIntent,
         attestation: DepositAttestation,
         serial_number: Word,

@@ -208,20 +208,17 @@ impl Relayer {
             .iter()
             .collect();
 
-        let mints = self.minter.build_notes(&fresh);
-        let built = mints.len();
+        let notes = self.minter.build_notes(&fresh);
+        let built = notes.len();
 
         // A deposit the faucet has already minted would only be refused, so it is dropped here
         // rather than proven. This is what makes a replay of the feed cheap.
-        let mints = self.miden_client.retain_unminted(mints)?;
-        span.record("notes.already_minted", built - mints.len());
+        let notes = self.miden_client.retain_unminted(notes)?;
+        span.record("notes.already_minted", built - notes.len());
 
         // The minter yields its own note type; the chain takes protocol notes, so the page is
         // converted here, once, on its way to being submitted.
-        let notes: Vec<Note> = mints
-            .into_iter()
-            .map(|mint| Note::from(mint.note))
-            .collect();
+        let notes: Vec<Note> = notes.into_iter().map(Note::from).collect();
         span.record("notes.count", notes.len());
         span.record(
             "notes.ids",

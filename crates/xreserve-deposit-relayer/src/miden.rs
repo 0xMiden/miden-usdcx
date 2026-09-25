@@ -45,10 +45,10 @@ use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
 
 use xusdc_encoding::account::XReserveFaucetExtension;
+use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
 use crate::circle::PageSize;
 use crate::config::Config;
-use crate::mint::DepositMint;
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.
@@ -77,12 +77,12 @@ const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
 /// can be exercised without a node.
 pub trait MidenClient: fmt::Debug + Send {
-    /// Keeps the mints whose deposit the faucet has not minted yet, in their original order.
+    /// Keeps the notes whose deposit the faucet has not minted yet, in their original order.
     ///
-    /// Dropping a mint is final: the faucet only ever adds to its used-nonce map. Keeping one is
+    /// Dropping a note is final: the faucet only ever adds to its used-nonce map. Keeping one is
     /// not, because a mint note already on chain for the same deposit may be consumed before the
     /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
-    fn retain_unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>>;
+    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>>;
 
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
@@ -250,16 +250,16 @@ impl NodeClient {
 }
 
 impl MidenClient for NodeClient {
-    /// Syncs, then reads each mint's entry in the faucet's used-nonce map from the local store.
+    /// Syncs, then reads each note's nonce entry in the faucet's used-nonce map from the local store.
     ///
     /// The sync is what keeps the answer current: a relayer that has been caught up for a while
     /// has not synced since its last transaction, and the faucet has minted since. The reads
     /// themselves never reach the node.
-    #[instrument(name = "retain_unminted", skip_all, fields(mints.count = mints.len(), unminted.count = Empty))]
-    fn retain_unminted(&mut self, mints: Vec<DepositMint>) -> Result<Vec<DepositMint>> {
+    #[instrument(name = "retain_unminted", skip_all, fields(notes.count = notes.len(), unminted.count = Empty))]
+    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
         // A page with nothing to check is not worth a sync.
-        if mints.is_empty() {
-            return Ok(mints);
+        if notes.is_empty() {
+            return Ok(notes);
         }
 
         let slot = XReserveFaucetExtension::used_nonces_slot();
@@ -277,14 +277,14 @@ impl MidenClient for NodeClient {
                 .context("syncing before reading the used nonces")?;
 
             let faucet_storage = client.account_reader(*faucet);
-            let mut unminted = Vec::with_capacity(mints.len());
-            for mint in mints {
+            let mut unminted = Vec::with_capacity(notes.len());
+            for note in notes {
                 let value = faucet_storage
-                    .get_storage_map_item(slot.clone(), mint.nonce.to_storage_map_key())
+                    .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
                     .await
                     .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
                 if value == EMPTY_WORD {
-                    unminted.push(mint);
+                    unminted.push(note);
                 }
             }
 

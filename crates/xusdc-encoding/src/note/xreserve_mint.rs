@@ -33,7 +33,7 @@ use miden_standards::note::{
 };
 
 use crate::xreserve::encoding::{
-    DepositIntent, DepositIntentHeader, MintIntent, Signature, BYTES_PER_PACKED_FELT,
+    DepositIntent, DepositIntentHeader, DepositNonce, MintIntent, Signature, BYTES_PER_PACKED_FELT,
 };
 
 /// The mint-note transport attachment scheme (u16, project-chosen: >= 4, clear of
@@ -205,6 +205,16 @@ impl XUsdcMintNote {
     /// The [`MintNote`] script root.
     pub fn script_root() -> NoteScriptRoot {
         MintNote::script_root()
+    }
+
+    /// The Circle deposit the note carries.
+    pub fn deposit(&self) -> &XUsdcDeposit {
+        &self.deposit
+    }
+
+    /// The nonce of the carried deposit — the key of the faucet's replay guard.
+    pub fn nonce(&self) -> DepositNonce {
+        self.deposit.intent().nonce()
     }
 }
 

@@ -14,6 +14,12 @@
 //! whole or lands not at all, so a retry never re-mints a deposit an earlier attempt already got on
 //! chain. An operator who wants smaller proofs turns the page size down, which shrinks the
 //! transaction and the retry unit together.
+//!
+//! Before a page is submitted, the faucet's used-nonce map is read for the deposits on it, so a
+//! deposit the faucet has already minted is dropped before any proof is built for it. That is what
+//! keeps replaying the feed cheap after the state file is lost: the replay costs reads, not proofs.
+//! The client watches the faucet alongside the relayer's own account, so those reads are answered
+//! from the local store, as of the client's last sync.
 
 use std::fmt;
 use std::fs;
@@ -34,9 +40,12 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::Note;
 use miden_protocol::transaction::TransactionId;
-use miden_protocol::MAX_OUTPUT_NOTES_PER_TX;
+use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
+
+use xusdc_encoding::account::XReserveFaucetExtension;
+use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
 use crate::circle::PageSize;
 use crate::config::Config;
@@ -62,11 +71,19 @@ const KEYSTORE_DIR: &str = "keystore";
 /// rather than at the node.
 const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 
-/// Submits a page of mint notes to Miden and waits for them to be included on chain.
+/// Checks which deposits the faucet has already minted, then submits a page of mint notes to
+/// Miden and waits for them to be included on chain.
 ///
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
 /// can be exercised without a node.
 pub trait MidenClient: fmt::Debug + Send {
+    /// Keeps the notes whose deposit the faucet has not minted yet, in their original order.
+    ///
+    /// Dropping a note is final: the faucet only ever adds to its used-nonce map. Keeping one is
+    /// not, because a mint note already on chain for the same deposit may be consumed before the
+    /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
+    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>>;
+
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
     ///
@@ -122,12 +139,15 @@ impl fmt::Display for ExpirationDelta {
 }
 
 /// A Miden client pointed at a node, with the relayer's account tracked and its signing key to
-/// hand.
+/// hand, and the faucet watched so its storage can be read locally.
 pub struct NodeClient {
     /// `miden-client` is asynchronous and the relay loop is not, so every call is driven to
     /// completion on this runtime.
     runtime: tokio::runtime::Runtime,
     client: Client<FilesystemKeyStore>,
+    /// The faucet the client was told to watch at startup, and so the only one whose storage it
+    /// can read.
+    faucet: AccountId,
     expiration_delta: ExpirationDelta,
 }
 
@@ -136,25 +156,30 @@ pub struct NodeClient {
 impl fmt::Debug for NodeClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeClient")
+            .field("faucet", &self.faucet)
             .field("expiration_delta", &self.expiration_delta)
             .finish_non_exhaustive()
     }
 }
 
 impl NodeClient {
-    /// Connects to the configured node, opens the local store and keystore, and starts tracking
-    /// the relayer's account.
+    /// Connects to the configured node, opens the local store and keystore, starts tracking the
+    /// relayer's account and starts watching the faucet.
     ///
     /// The relayer account must already exist on chain and its signing key must already be in the
     /// keystore directory; this only teaches the local client about the account. Everything that
     /// can be refused is refused here, so the service never starts polling Circle unless it can
     /// also mint.
     ///
+    /// Watching the faucet on a fresh store downloads its whole used-nonce map, which holds one
+    /// entry per deposit ever minted, so the first start against a long-lived faucet is slow. A
+    /// store carried over from an earlier run already has it and only syncs what changed since.
+    ///
     /// # Errors
     ///
     /// - The node URL is not an endpoint, or the node cannot be reached.
     /// - The data directory, its store, or its keystore cannot be opened.
-    /// - The node does not know the relayer account.
+    /// - The node does not know the relayer account or the faucet.
     pub fn new(config: &Config) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -185,6 +210,7 @@ impl NodeClient {
             .context("building the miden client")?;
 
         let relayer = config.relayer_account_id;
+        let faucet = config.faucet_account_id;
         runtime.block_on(async {
             client
                 .sync_state()
@@ -202,18 +228,73 @@ impl NodeClient {
                     })?;
             }
 
+            // Watched rather than imported: the client keeps the faucet's storage current on every
+            // sync but does not pull the notes addressed to it, which are every mint note on chain.
+            if client.get_account(faucet).await?.is_none() {
+                client
+                    .import_watched_account_by_id(faucet)
+                    .await
+                    .with_context(|| format!("watching the faucet {faucet}"))?;
+            }
+
             Ok::<(), anyhow::Error>(())
         })?;
 
         Ok(Self {
             runtime,
             client,
+            faucet,
             expiration_delta: config.expiration_delta,
         })
     }
 }
 
 impl MidenClient for NodeClient {
+    /// Syncs, then reads each note's nonce entry in the faucet's used-nonce map from the local store.
+    ///
+    /// The sync is what keeps the answer current: a relayer that has been caught up for a while
+    /// has not synced since its last transaction, and the faucet has minted since. The reads
+    /// themselves never reach the node.
+    #[instrument(name = "retain_unminted", skip_all, fields(notes.count = notes.len(), unminted.count = Empty))]
+    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
+        // A page with nothing to check is not worth a sync.
+        if notes.is_empty() {
+            return Ok(notes);
+        }
+
+        let slot = XReserveFaucetExtension::used_nonces_slot();
+        let Self {
+            runtime,
+            client,
+            faucet,
+            ..
+        } = self;
+
+        let unminted = runtime.block_on(async {
+            client
+                .sync_state()
+                .await
+                .context("syncing before reading the used nonces")?;
+
+            let faucet_storage = client.account_reader(*faucet);
+            let mut unminted = Vec::with_capacity(notes.len());
+            for note in notes {
+                let value = faucet_storage
+                    .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
+                    .await
+                    .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
+                if value == EMPTY_WORD {
+                    unminted.push(note);
+                }
+            }
+
+            Ok::<_, anyhow::Error>(unminted)
+        })?;
+
+        Span::current().record("unminted.count", unminted.len());
+        Ok(unminted)
+    }
+
     /// Submits the whole page as one transaction and returns once the node has included it.
     ///
     /// The notes are the transaction's own output notes: the relayer's account creates them, and

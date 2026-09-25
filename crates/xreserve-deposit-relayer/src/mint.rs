@@ -160,12 +160,13 @@ mod tests {
     use miden_protocol::note::{Note, NoteId};
     use rstest::rstest;
 
+    use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
     use xusdc_encoding::vectors::load;
     use xusdc_encoding::xreserve::encoding::{
         DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
-    use super::{AttesterPublicKey, Minter, XUsdcMintNote};
+    use super::{AttesterPublicKey, Minter};
     use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
     use crate::config::Config;
     use crate::miden::ExpirationDelta;
@@ -314,6 +315,19 @@ mod tests {
     /// the caller's job, so these tests do it where they need an identifier.
     fn only_note_id(notes: Vec<XUsdcMintNote>) -> NoteId {
         Note::from(notes.into_iter().next().expect("the page built one note")).id()
+    }
+
+    /// Each note exposes the nonce of the deposit it mints, which is what the used-nonce check is
+    /// keyed by.
+    #[test]
+    fn each_note_carries_its_deposit_nonce() {
+        let notes =
+            Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
+        let nonces: Vec<_> = notes.iter().map(XUsdcMintNote::nonce).collect();
+        assert_eq!(
+            nonces,
+            [DepositNonce::new([1; 32]), DepositNonce::new([2; 32])]
+        );
     }
 
     /// Rebuilding the same deposit twice yields distinct notes because each receives a new serial

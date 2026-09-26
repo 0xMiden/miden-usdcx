@@ -35,9 +35,9 @@ That is not, by itself, a proof of one-to-one external backing. Local conservati
 
 ## 3. Permissionless submission and the capability boundary
 
-The faucet is a public network account with no signing key. Its outer external capability boundary is a fixed allowlist of note-script roots plus one transaction-script root (the `miden-standards` expiration script); inner boundaries are RBAC, Authority, the active policy roots, transfer callbacks, mint cryptography, and internal authentication and fee dispatch. A root commits to complete code, but admitting one branching root admits every action that script implements. Permissionless submission does not imply permissionless code execution.
+The faucet is a public network account with no signing key. Its outer external capability boundary is the note-script and transaction-script allowlists, seeded at build time (the transaction-script allowlist holds one root, the `miden-standards` expiration script) and changed at runtime only by `ADMIN` through the `miden-standards` network-account configuration note, where a change applies from the next transaction and a newly admitted note root also needs a fee schedule entry; inner boundaries are RBAC, Authority, the active policy roots, transfer callbacks, mint cryptography, and internal authentication and fee dispatch. A root commits to complete code, but admitting one branching root admits every action that script implements. Permissionless submission does not imply permissionless code execution.
 
-Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze, allowlist mutators) are installed by the `miden-standards` components but deliberately have no admitted entry path because their roots are absent from the note allowlist. The `UpgradeManager::upgrade` hook is installed on the same terms: it is part of the genesis code so a future upgrade path can reach it, and no admitted note or transaction script calls it.
+Standard configuration mutators (metadata setters, policy setters, freeze/unfreeze) are installed by the `miden-standards` components and have no admitted entry path under the seeded allowlists; `ADMIN` can admit one by allowlisting a note that calls it, subject to that procedure's own gate. The `UpgradeManager::upgrade` hook is installed on the same terms: it is part of the genesis code so a future upgrade path can reach it, and under the seeded allowlists no admitted note or transaction script calls it.
 
 Two properties are load-bearing:
 
@@ -50,8 +50,8 @@ The account is composed from the `miden-standards` components (`FungibleFaucet`,
 
 State, grouped by writer posture:
 
-- **Fixed by construction:** decimals, symbol, token metadata, destination domain, active policy roots, note & tx script allowlists, Authority mode, and the network sponsorship policy.
-- **Runtime-mutable through admitted authorized paths:** pause state, enabled attester commitments, `max_supply`, minimum burn amount, blocked accounts, the RBAC membership and role-admin graph, and the per-note-root fee schedule.
+- **Fixed by construction:** decimals, symbol, token metadata, destination domain, active policy roots, Authority mode, and the network sponsorship policy.
+- **Runtime-mutable through admitted authorized paths:** pause state, enabled attester commitments, `max_supply`, minimum burn amount, blocked accounts, the RBAC membership and role-admin graph, the per-note-root fee schedule, and the note-script, transaction-script and fee-policy allowlists.
 - **Append-only on accepted mints:** the used-nonce map, keyed by a deterministic hash of the 32-byte deposit nonce.
 
 Identity: construction produces a commitment-derived account identifier; the identifier is a function of the initialization seed and the composed code and storage commitments.
@@ -91,7 +91,7 @@ Authorization is decided by the *sender* of an admitted administrative note, che
 
 ```mermaid
 flowchart TD
-    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"] --- A1["set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes"]
+    ADMIN["<b>ADMIN</b><br/><i>root authority (owner-equivalent)</i>"] --- A1["set_max_supply<br/>set_min_burn_amount<br/>set_note_fee<br/>RBAC role changes<br/>allowlist changes"]
     ADMIN -->|administers| ATTEST_ADMIN["<b>ATTEST_ADMIN</b>"]
     ADMIN -->|administers| DOM_PAUSER["<b>DOM_PAUSER</b>"]
     ADMIN -->|administers| DOM_UNPAUSER["<b>DOM_UNPAUSER</b>"]
@@ -104,7 +104,7 @@ flowchart TD
 
 | Role | Initial administrator | Direct admitted powers |
 |---|---|---|
-| `ADMIN` | `ADMIN` (self) | Maximum supply, minimum burn, note fees, RBAC changes, and every fallback Authority path |
+| `ADMIN` | `ADMIN` (self) | Maximum supply, minimum burn, note fees, the note-script, transaction-script and fee-policy allowlists, RBAC changes, and every fallback Authority path |
 | `ATTEST_ADMIN` | `ADMIN` | Attester commitment map |
 | `DOM_PAUSER` | `ADMIN` | Pause |
 | `DOM_UNPAUSER` | `ADMIN` | Unpause |
@@ -112,7 +112,7 @@ flowchart TD
 
 Pause, unpause, the attester setter and the blocklist pair are individually role-gated; everything else Authority-gated falls back to `ADMIN`. The initial seed lets `ADMIN` administer every role directly. This mirrors the single all-powerful owner in Circle's reference token; the role split below `ADMIN` is operational hygiene, not a boundary against a compromised `ADMIN`. The mitigation for `ADMIN` compromise is custody (a multisig holding it), not code.
 
-What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the `miden-standards` RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself).
+What the RBAC deliberately lacks, and reviewers should treat as designed-in risk: the `miden-standards` RBAC root admits grant, revoke, change-role-admin, and self-renounce at runtime, with no two-step handover, no last-admin guard, no timelock, and no prohibition on cycles, overlapping memberships, or emptying a role (including `ADMIN` itself). `ADMIN` also moves the capability boundary itself: through the network-account configuration note it can admit any note or transaction script root, so every installed procedure is reachable by an `ADMIN`-admitted script, subject to that procedure's own gate.
 
 Administrative notes are target-bound: the local set-attester note enforces a consume gate against its `NetworkAccountTarget` attachment, and all the `miden-standards` configuration notes carry the same target binding.
 

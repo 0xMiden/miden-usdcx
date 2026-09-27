@@ -212,7 +212,7 @@ async fn mint_rejects_a_wrong_domain() -> Result<()> {
     bring_up(&mut pf, 1).await?;
     let mut payload = payload_for(pf.recipient_id, pf.faucet_id, MINT_AMOUNT, 14);
     payload[REMOTE_DOMAIN_BYTE_OFF..REMOTE_DOMAIN_BYTE_OFF + 4]
-        .copy_from_slice(&TEST_WRONG_DOMAIN.to_be_bytes());
+        .copy_from_slice(&TEST_WRONG_DOMAIN.as_u32().to_be_bytes());
     let note = honest_note(&pf, &payload, 83)?;
     expect_ecdsa_reject(&mut pf, note, &payload).await
 }

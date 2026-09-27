@@ -17,7 +17,7 @@ use withdrawal_listener_attester::validate::{
     sign_validated, validate_discovery, validate_returned, DiscoveredBurn, DiscoveredDetails,
     DiscoveryRecord,
 };
-use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress};
 
 #[path = "support/mod.rs"]
 mod support;
@@ -42,7 +42,7 @@ fn hex32(s: &str) -> [u8; 32] {
 /// `destinationDomain = 0`, `destinationRecipient = 0x…742d35cc…`.
 fn matching_payload() -> BurnPayload {
     BurnPayload {
-        dest_domain: 0,
+        dest_domain: CircleDomain::new(0),
         dest_recipient: ForeignChainAddress::new(hex32(
             "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         )),
@@ -116,7 +116,9 @@ fn cfg() -> ListenerConfig {
     let intent = &body["batches"][0]["burnIntents"][0];
     let spec = &intent["spec"];
     ListenerConfig::builder()
-        .miden_domain(spec["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .miden_domain(CircleDomain::new(
+            spec["hookData"]["remoteDomain"].as_u64().unwrap() as u32,
+        ))
         .max_withdrawal_fee(
             AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
         )
@@ -176,7 +178,7 @@ fn validate_returned_rejects_amount_mismatch() {
 fn validate_returned_rejects_destination_domain_mismatch() {
     let resp = response("prepare_withdrawal_200");
     let mut payload = matching_payload();
-    payload.dest_domain = 7;
+    payload.dest_domain = CircleDomain::new(7);
     let burn = discovered_burn(payload, matching_burn().amount());
 
     assert_matches!(

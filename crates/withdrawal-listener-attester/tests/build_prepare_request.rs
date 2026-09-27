@@ -37,7 +37,7 @@ use withdrawal_listener_attester::validate::{
     validate_discovery, DiscoveredBurn, DiscoveredDetails, DiscoveryRecord,
 };
 use withdrawal_listener_attester::withdrawal_api::build_prepare_request;
-use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress};
 
 // ================================================================================================
 // FIXTURES
@@ -57,9 +57,9 @@ const DEST_RECIPIENT: [u8; 32] = [
 
 const AMOUNT: u64 = 10_000_000;
 /// The user's `finalDestinationDomain`, from the burn note payload. Distinct from `MIDEN_DOMAIN`.
-const DEST_DOMAIN: u32 = 0;
+const DEST_DOMAIN: CircleDomain = CircleDomain::new(0);
 /// Miden's remote domain (from config). `>= 1` and `!= DEST_DOMAIN`, so the happy path validates.
-const MIDEN_DOMAIN: u32 = 99_999;
+const MIDEN_DOMAIN: CircleDomain = CircleDomain::new(99_999);
 
 /// The burn payload the burn note wrote, in the shape the xReserve burn evidence prescribes —
 /// `(destDomain, destRecipient)`.
@@ -71,7 +71,7 @@ fn a_payload() -> BurnPayload {
 }
 
 /// A config carrying a given Miden remote domain (every other field is the package default).
-fn cfg_with_domain(miden_domain: u32) -> ListenerConfig {
+fn cfg_with_domain(miden_domain: CircleDomain) -> ListenerConfig {
     ListenerConfig::builder()
         .miden_domain(miden_domain)
         .build()
@@ -356,10 +356,10 @@ fn rebuild_is_stable_with_salt_omitted() {
 fn rejects_when_domains_are_equal() {
     // both domains equal AND >= 1, so the collision (not the minimum) is what fires.
     let mut payload = a_payload();
-    payload.dest_domain = 5;
-    let cfg = cfg_with_domain(5); // remoteDomain forced equal to finalDestinationDomain
+    payload.dest_domain = CircleDomain::new(5);
+    let cfg = cfg_with_domain(CircleDomain::new(5)); // remoteDomain forced equal to finalDestinationDomain
     let result = build_prepare_request(&discovered_burn(&payload, a_sender(), &cfg), &cfg);
-    assert_matches!(result, Err(SchemaError::DomainsMustDiffer(5)));
+    assert_matches!(result, Err(SchemaError::DomainsMustDiffer(d)) if d == CircleDomain::new(5));
 }
 
 /// `remoteDomain < 1` → exact `RemoteDomainBelowMinimum`. The config's default Miden domain is the
@@ -368,10 +368,10 @@ fn rejects_when_domains_are_equal() {
 #[test]
 fn rejects_when_remote_domain_below_minimum() {
     let mut payload = a_payload();
-    payload.dest_domain = 7; // distinct, so the failure is the minimum, not the collision
-    let cfg = cfg_with_domain(0);
+    payload.dest_domain = CircleDomain::new(7); // distinct, so the failure is the minimum, not the collision
+    let cfg = cfg_with_domain(CircleDomain::new(0));
     let result = build_prepare_request(&discovered_burn(&payload, a_sender(), &cfg), &cfg);
-    assert_matches!(result, Err(SchemaError::RemoteDomainBelowMinimum(0)));
+    assert_matches!(result, Err(SchemaError::RemoteDomainBelowMinimum(d)) if d == CircleDomain::new(0));
 }
 
 /// A different sender maps to a different `remoteDepositor` — the mapping is not a constant.

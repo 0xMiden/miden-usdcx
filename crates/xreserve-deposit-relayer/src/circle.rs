@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
 
-use xusdc_encoding::xreserve::encoding::Signature;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, Signature};
 
 /// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
 ///
@@ -85,41 +85,6 @@ impl FromStr for PageSize {
 }
 
 impl fmt::Display for PageSize {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// The Circle domain identifier of the chain whose attestations are read — Miden. It names the
-/// feed in the request path and is the domain every mint note is built for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemoteDomain(u32);
-
-impl RemoteDomain {
-    /// Wraps a Circle domain identifier. Every `u32` is a well-formed identifier.
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<RemoteDomain> for u32 {
-    fn from(domain: RemoteDomain) -> Self {
-        domain.0
-    }
-}
-
-impl FromStr for RemoteDomain {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        let value: u32 = value
-            .parse()
-            .context("the remote domain is not a 32-bit number")?;
-        Ok(Self::new(value))
-    }
-}
-
-impl fmt::Display for RemoteDomain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -270,7 +235,7 @@ impl CircleClient {
     )]
     pub fn fetch_page(
         &self,
-        remote_domain: RemoteDomain,
+        remote_domain: CircleDomain,
         cursor: Option<&CircleCursor>,
     ) -> Result<Page> {
         let span = Span::current();
@@ -316,7 +281,7 @@ impl CircleClient {
     }
 
     /// The URL of one attestation page.
-    fn page_url(&self, remote_domain: RemoteDomain, cursor: Option<&CircleCursor>) -> Url {
+    fn page_url(&self, remote_domain: CircleDomain, cursor: Option<&CircleCursor>) -> Url {
         let mut url = self.base_url.clone();
         let path = format!(
             "{}/v1/remote-domains/{remote_domain}/attestations",
@@ -383,12 +348,12 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Attestation, CircleClient, CircleCursor, MessageHash, Page, PageSize, RemoteDomain,
+        Attestation, CircleClient, CircleCursor, CircleDomain, MessageHash, Page, PageSize,
         Signature,
     };
 
     /// The domain the request tests address.
-    const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(7);
+    const REMOTE_DOMAIN: CircleDomain = CircleDomain::new(7);
 
     /// A page size within the documented range.
     fn page_size(value: u16) -> PageSize {
@@ -473,16 +438,6 @@ mod tests {
         let json = serde_json::to_string(&cursor).unwrap();
 
         assert_eq!(serde_json::from_str::<CircleCursor>(&json).unwrap(), cursor);
-    }
-
-    /// A remote domain is any 32-bit number and nothing else.
-    #[test]
-    fn the_remote_domain_is_a_32_bit_number() {
-        assert_eq!("7".parse::<RemoteDomain>().unwrap(), REMOTE_DOMAIN);
-        assert_eq!(u32::from(REMOTE_DOMAIN), 7);
-        assert!("abc".parse::<RemoteDomain>().is_err());
-        assert!("-1".parse::<RemoteDomain>().is_err());
-        assert!("4294967296".parse::<RemoteDomain>().is_err());
     }
 
     /// The request is the documented endpoint carrying only `pageSize` and `pageAfter`.

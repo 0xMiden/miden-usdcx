@@ -51,7 +51,7 @@ use withdrawal_listener_attester::validate::{
 use withdrawal_listener_attester::withdrawal_api::{
     authorize_submission, build_withdraw_request, AuthorizedWithdrawal,
 };
-use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
 use mock_circle::{Endpoint, MockCircle};
 
@@ -136,7 +136,7 @@ pub fn payload_matching_fixture() -> BurnPayload {
     let intent = &fixture["batches"][0]["burnIntents"][0];
     let spec = &intent["spec"];
     XReserveBurnItems {
-        dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
+        dest_domain: CircleDomain::new(spec["destinationDomain"].as_u64().unwrap() as u32),
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),
@@ -181,7 +181,9 @@ pub fn config_matching_fixture() -> ListenerConfig {
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let intent = &fixture["batches"][0]["burnIntents"][0];
     ListenerConfig::builder()
-        .miden_domain(intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .miden_domain(CircleDomain::new(
+            intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32,
+        ))
         .max_withdrawal_fee(
             AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
         )
@@ -213,7 +215,9 @@ pub fn config_with_allowlist(addrs: impl IntoIterator<Item = Address>) -> Listen
     let fixture = support::fixture_json("prepare_withdrawal_200");
     let intent = &fixture["batches"][0]["burnIntents"][0];
     ListenerConfig::builder()
-        .miden_domain(intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32)
+        .miden_domain(CircleDomain::new(
+            intent["spec"]["hookData"]["remoteDomain"].as_u64().unwrap() as u32,
+        ))
         .max_withdrawal_fee(
             AssetAmount::new(intent["maxFee"].as_str().unwrap().parse().unwrap()).unwrap(),
         )
@@ -277,9 +281,9 @@ pub fn authorized_with_the_same_burn_twice() -> AuthorizedWithdrawal {
 pub fn a_prepare_request() -> PrepareWithdrawalRequest {
     let input = PrepareBurnIntentInput::builder()
         .value_including_fees(DecimalAmount::new("10000000").unwrap())
-        .remote_domain(10_001)
+        .remote_domain(CircleDomain::new(10_001))
         .remote_depositor(Hex32::new(format!("0x{}", "11".repeat(32))).unwrap())
-        .final_destination_domain(0)
+        .final_destination_domain(CircleDomain::new(0))
         .final_destination_recipient(Hex32::new(format!("0x{}", "22".repeat(32))).unwrap())
         .use_circle_forwarding(false)
         .build()

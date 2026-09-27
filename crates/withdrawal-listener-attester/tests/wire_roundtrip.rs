@@ -32,6 +32,7 @@ use withdrawal_listener_attester::circle::wire::{DecimalAmount, ForwardingFee, H
 mod support;
 
 use support::{fixture_json, fixture_text, walk_keys};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 /// `fixture → T → JSON` must reproduce the fixture EXACTLY. Returns the decoded value so a caller
 /// can go on to assert on its contents.
@@ -88,7 +89,7 @@ fn prepare_withdrawal_200_round_trips_through_the_batches_wrapper() {
     let spec = batch.burn_intents()[0].spec();
     assert_eq!(spec.version(), 1);
     assert_eq!(spec.value(), "9999000");
-    assert_eq!(spec.destination_domain(), 0);
+    assert_eq!(spec.destination_domain(), CircleDomain::new(0));
     assert_eq!(spec.hook_data().forwarding_calldata(), "0x");
 }
 
@@ -144,7 +145,7 @@ fn a_validation_mismatch_is_a_well_formed_200_that_only_semantics_can_catch() {
     assert_eq!(spec.value(), "99000000", "not the burned amount");
     assert_eq!(
         spec.destination_domain(),
-        7,
+        CircleDomain::new(7),
         "not the burn note's destDomain"
     );
 }
@@ -364,12 +365,12 @@ fn the_withdraw_response_modelled_as_an_object_is_not_the_withdraw_response() {
 fn sample_burn_intent_input() -> PrepareBurnIntentInput {
     PrepareBurnIntentInput::builder()
         .value_excluding_fees(DecimalAmount::new("10.00").unwrap())
-        .remote_domain(10001)
+        .remote_domain(CircleDomain::new(10001))
         .remote_depositor(
             Hex32::new("0x".to_string() + &"00".repeat(16) + "9a1b2c3d4e5f60718899aabbccdd0011")
                 .unwrap(),
         )
-        .final_destination_domain(0)
+        .final_destination_domain(CircleDomain::new(0))
         .final_destination_recipient(
             Hex32::new(
                 "0x".to_string() + &"00".repeat(12) + "742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -470,9 +471,9 @@ fn the_optional_request_fields_are_omitted_from_the_wire_not_sent_as_null() {
 fn a_fully_populated_request_round_trips_every_optional_field() {
     let input = PrepareBurnIntentInput::builder()
         .value_including_fees(DecimalAmount::new("10.50").unwrap())
-        .remote_domain(10001)
+        .remote_domain(CircleDomain::new(10001))
         .remote_depositor(Hex32::new("0x".to_string() + &"aa".repeat(32)).unwrap())
-        .final_destination_domain(0)
+        .final_destination_domain(CircleDomain::new(0))
         .final_destination_recipient(Hex32::new("0x".to_string() + &"bb".repeat(32)).unwrap())
         .final_destination_caller(Hex32::new("0x".to_string() + &"cc".repeat(32)).unwrap())
         .salt(Hex32::new("0x".to_string() + &"dd".repeat(32)).unwrap())

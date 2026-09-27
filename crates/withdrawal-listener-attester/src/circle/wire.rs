@@ -28,6 +28,7 @@
 use core::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 /// A value that violates the schema Circle published.
 ///
@@ -65,10 +66,10 @@ pub enum SchemaError {
     /// leaves the amount ambiguous in the field that decides how much USDC is released.
     ValueXor,
     /// `remoteDomain: minimum 1`.
-    RemoteDomainBelowMinimum(u32),
+    RemoteDomainBelowMinimum(CircleDomain),
     /// "`remoteDomain` must differ from `finalDestinationDomain`" — a withdrawal to the domain it
     /// came from is not a withdrawal.
-    DomainsMustDiffer(u32),
+    DomainsMustDiffer(CircleDomain),
     /// `WithdrawRequest.batches`: `minItems 1`, `maxItems 5`.
     BatchCountOutOfRange(usize),
     /// `WithdrawBatch.burnIntents`: `minItems 1`, `maxItems 10`.

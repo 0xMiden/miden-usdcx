@@ -12,6 +12,8 @@ use miden_protocol::{Felt, Word};
 use miden_standards::interop::eth::EthAmount;
 use serde::Deserialize;
 
+use crate::xreserve::encoding::CircleDomain;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VectorFile {
@@ -116,7 +118,7 @@ pub struct DiVector {
 pub struct DiFields {
     pub magic: u32,
     pub version: u32,
-    pub remote_domain: u32,
+    pub remote_domain: CircleDomain,
     pub hook_data_len: u32,
     /// The two amount-shaped fields as the values they reduce to.
     pub amount: u64,
@@ -160,7 +162,7 @@ pub struct MiVector {
     pub payload_hex: String,
     pub faucet_prefix_felt: String,
     pub faucet_suffix_felt: String,
-    pub remote_domain: u32,
+    pub remote_domain: CircleDomain,
     /// Accept rows only: the reduced amount the note carries and the faucet writes back.
     #[serde(default)]
     pub amount_felt: Option<String>,
@@ -210,7 +212,7 @@ pub struct BnVector {
     pub tv: Vec<String>,
     pub kind: String,
     #[serde(default)]
-    pub dest_domain: Option<u32>,
+    pub dest_domain: Option<CircleDomain>,
     #[serde(default)]
     pub dest_recipient: Option<String>,
     /// Accept: the 9-felt burn-payload golden layout (carried in note attachment scheme 6). Reject:

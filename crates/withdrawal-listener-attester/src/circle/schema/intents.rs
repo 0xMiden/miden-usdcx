@@ -4,6 +4,7 @@
 //! attesters sign.
 
 use serde::{Deserialize, Serialize};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 use crate::circle::wire::{Calldata, DecimalUint, Hex20, Hex32};
 
@@ -91,8 +92,8 @@ impl BurnIntent {
 #[serde(rename_all = "camelCase")]
 pub struct TransferSpec {
     version: u32,
-    source_domain: u32,
-    destination_domain: u32,
+    source_domain: CircleDomain,
+    destination_domain: CircleDomain,
     source_contract: Hex32,
     destination_contract: Hex32,
     source_token: Hex32,
@@ -121,13 +122,13 @@ impl TransferSpec {
         self.version
     }
 
-    pub fn source_domain(&self) -> u32 {
+    pub fn source_domain(&self) -> CircleDomain {
         self.source_domain
     }
 
     /// Compared against the burn note's `destDomain` by the pre-signing compare against the burn
     /// note.
-    pub fn destination_domain(&self) -> u32 {
+    pub fn destination_domain(&self) -> CircleDomain {
         self.destination_domain
     }
 
@@ -184,7 +185,7 @@ impl TransferSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StructuredHookData {
-    remote_domain: u32,
+    remote_domain: CircleDomain,
     remote_depositor: Hex32,
     remote_token: Hex32,
 
@@ -197,7 +198,7 @@ pub struct StructuredHookData {
 }
 
 impl StructuredHookData {
-    pub fn remote_domain(&self) -> u32 {
+    pub fn remote_domain(&self) -> CircleDomain {
         self.remote_domain
     }
 

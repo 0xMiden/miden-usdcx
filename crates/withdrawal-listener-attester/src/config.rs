@@ -22,6 +22,7 @@ use bon::Builder;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 use crate::attester::AttesterAllowlist;
 use crate::error::{Cause, ListenerError};
@@ -140,8 +141,8 @@ pub struct ListenerConfig {
     /// Miden's remote domain, as Circle assigns it. Which domain id Circle assigns Miden, and the
     /// forwarding scope, are OPEN (`REQUIRES CIRCLE CONFIRMATION`) — the value is discovered from
     /// `GET /v1/info`, never assumed, and the default here is a placeholder.
-    #[builder(default = 0)]
-    miden_domain: u32,
+    #[builder(default)]
+    miden_domain: CircleDomain,
 
     /// Maximum permitted withdrawal fee, in smallest token units.
     /// Defaults to zero, so fee-bearing withdrawals require an explicit operator setting. The
@@ -208,7 +209,7 @@ struct ListenerConfigRaw {
     #[serde(default)]
     burn_tag: u32,
     #[serde(default)]
-    miden_domain: u32,
+    miden_domain: CircleDomain,
     #[serde(default = "default_max_withdrawal_fee", with = "asset_amount_u64")]
     max_withdrawal_fee: AssetAmount,
     #[serde(default = "default_circle_base_url")]
@@ -353,7 +354,7 @@ impl ListenerConfig {
     }
 
     /// Miden's Circle-assigned remote domain (which id Circle assigns is still OPEN).
-    pub fn miden_domain(&self) -> u32 {
+    pub fn miden_domain(&self) -> CircleDomain {
         self.miden_domain
     }
 

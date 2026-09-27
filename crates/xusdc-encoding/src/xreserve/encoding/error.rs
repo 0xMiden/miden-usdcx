@@ -9,6 +9,7 @@ use miden_protocol::utils::serde::DeserializationError;
 use miden_standards::interop::eth::EthAmountError;
 
 use super::deposit_intent::DepositIntentField;
+use super::domain::CircleDomain;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodingError {
@@ -43,8 +44,8 @@ pub enum EncodingError {
     /// faucet writes its own configured domain into the message it rebuilds, so a divergent one
     /// changes the digest and the attestation stops verifying.
     RemoteDomainMismatch {
-        expected: u32,
-        actual: u32,
+        expected: CircleDomain,
+        actual: CircleDomain,
     },
     AccountIdOutOfRange,
     NonCanonicalAccountId,

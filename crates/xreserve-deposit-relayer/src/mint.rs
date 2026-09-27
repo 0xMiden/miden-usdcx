@@ -15,9 +15,9 @@ use miden_protocol::{Felt, Word};
 use tracing::{error, instrument};
 
 use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::DepositIntent;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositIntent};
 
-use crate::circle::{Attestation, RemoteDomain};
+use crate::circle::Attestation;
 use crate::config::Config;
 
 /// The public key of the Circle attester whose signatures the mint notes carry. Parsed from the
@@ -83,7 +83,7 @@ pub struct Minter {
     mint_account: AccountId,
     usdcx_faucet: AccountId,
     attester: AttesterPublicKey,
-    remote_domain: RemoteDomain,
+    remote_domain: CircleDomain,
     rng: RandomCoin,
 }
 
@@ -141,7 +141,7 @@ impl Minter {
         XUsdcMintNote::builder()
             .sender(self.mint_account)
             .target(self.usdcx_faucet)
-            .remote_domain(self.remote_domain.into())
+            .remote_domain(self.remote_domain)
             .deposit_intent(intent)
             .attestation(DepositAttestation::new(
                 attestation.signature,
@@ -160,19 +160,20 @@ mod tests {
     use miden_protocol::note::{Note, NoteId};
     use rstest::rstest;
 
+    use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
     use xusdc_encoding::vectors::load;
     use xusdc_encoding::xreserve::encoding::{
-        DepositIntent, DepositIntentHeader, DepositNonce, Signature,
+        CircleDomain, DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
-    use super::{AttesterPublicKey, Minter, XUsdcMintNote};
-    use crate::circle::{Attestation, MessageHash, PageSize, RemoteDomain};
+    use super::{AttesterPublicKey, Minter};
+    use crate::circle::{Attestation, MessageHash, PageSize};
     use crate::config::Config;
     use crate::miden::ExpirationDelta;
 
     /// The Miden destination domain these tests address payloads to — a placeholder value, since
     /// the real identifier is a Circle-owned decision that is still open.
-    const REMOTE_DOMAIN: RemoteDomain = RemoteDomain::new(10001);
+    const REMOTE_DOMAIN: CircleDomain = CircleDomain::new(10001);
 
     /// A valid 33-byte compressed SEC1 attester key (the pinned partner-fixture key). These tests
     /// never verify a signature, so it only has to be a real curve point.
@@ -217,7 +218,7 @@ mod tests {
 
         let rebuilt = DepositIntentHeader::builder()
             .amount(header.amount())
-            .remote_domain(REMOTE_DOMAIN.into())
+            .remote_domain(REMOTE_DOMAIN)
             .remote_token(faucet)
             .remote_recipient(header.remote_recipient())
             .local_token(header.local_token())
@@ -314,6 +315,19 @@ mod tests {
     /// the caller's job, so these tests do it where they need an identifier.
     fn only_note_id(notes: Vec<XUsdcMintNote>) -> NoteId {
         Note::from(notes.into_iter().next().expect("the page built one note")).id()
+    }
+
+    /// Each note exposes the nonce of the deposit it mints, which is what the used-nonce check is
+    /// keyed by.
+    #[test]
+    fn each_note_carries_its_deposit_nonce() {
+        let notes =
+            Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
+        let nonces: Vec<_> = notes.iter().map(XUsdcMintNote::nonce).collect();
+        assert_eq!(
+            nonces,
+            [DepositNonce::new([1; 32]), DepositNonce::new([2; 32])]
+        );
     }
 
     /// Rebuilding the same deposit twice yields distinct notes because each receives a new serial

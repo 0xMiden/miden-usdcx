@@ -142,15 +142,18 @@ impl Relayer {
     /// `resume` is the cursor of the page to fetch, which is `None` for the first page of a fresh
     /// scan and the stored progress for the page an interrupted scan stopped at.
     ///
-    /// Malformed attestations are skipped inside [`Minter::build_notes`]. Every buildable note
-    /// goes into one transaction, and the page is done only once [`MidenClient::submit_notes`]
-    /// confirms that transaction is included on chain — so returning is what entitles the caller
-    /// to record the page as done. One page to one transaction is what makes the retry of a failed
-    /// page clean: there is no part of it that could already be on chain.
+    /// Malformed attestations are skipped inside [`Minter::build_notes`], and deposits the faucet
+    /// has already minted are dropped by [`MidenClient::retain_unminted`], so no proof is spent on a note
+    /// the faucet would refuse. Every remaining note goes into one transaction, and the page is
+    /// done only once [`MidenClient::submit_notes`] confirms that transaction is included on
+    /// chain — so returning is what entitles the caller to record the page as done. One page to
+    /// one transaction is what makes the retry of a failed page clean: there is no part of it that
+    /// could already be on chain.
     ///
     /// # Errors
     ///
     /// - Fetching the page fails.
+    /// - Reading which deposits are already minted fails.
     /// - Submitting the mint notes fails.
     ///
     /// # Tracing
@@ -168,6 +171,7 @@ impl Relayer {
             cursor = Empty,
             attestations.count = Empty,
             attestations.message_hashes = Empty,
+            notes.already_minted = Empty,
             notes.count = Empty,
             notes.ids = Empty,
             transaction.id = Empty,
@@ -204,22 +208,27 @@ impl Relayer {
             .iter()
             .collect();
 
+        let notes = self.minter.build_notes(&fresh);
+        let built = notes.len();
+
+        // A deposit the faucet has already minted would only be refused, so it is dropped here
+        // rather than proven. This is what makes a replay of the feed cheap.
+        let notes = self.miden_client.retain_unminted(notes)?;
+        span.record("notes.already_minted", built - notes.len());
+
         // The minter yields its own note type; the chain takes protocol notes, so the page is
         // converted here, once, on its way to being submitted.
-        let notes: Vec<Note> = self
-            .minter
-            .build_notes(&fresh)
-            .into_iter()
-            .map(Note::from)
-            .collect();
+        let notes: Vec<Note> = notes.into_iter().map(Note::from).collect();
         span.record("notes.count", notes.len());
         span.record(
             "notes.ids",
             identifiers(notes.iter().map(|note| note.id().to_string())).as_str(),
         );
 
-        if notes.is_empty() && !fresh.is_empty() {
+        if built == 0 && !fresh.is_empty() {
             warn!(fresh.count = fresh.len(), "page produced no mint notes");
+        } else if notes.is_empty() && built > 0 {
+            info!("every deposit on the page is already minted");
         } else if !notes.is_empty() {
             let transaction = self
                 .miden_client

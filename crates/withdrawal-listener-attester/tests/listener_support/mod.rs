@@ -58,7 +58,7 @@ use withdrawal_listener_attester::types::BurnPayload;
 use withdrawal_listener_attester::validate::{
     DiscoveredDetails, DiscoveryRecord, ValidatedWithdrawal,
 };
-use xusdc_encoding::xreserve::encoding::ForeignChainAddress;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress};
 
 use evidence_support::UnitPort;
 use mock_circle::{Endpoint, MockCircle, Reply, Script};
@@ -72,10 +72,10 @@ pub const BURN_TAG: u32 = 0xB0_1E_5A_FE;
 
 /// Miden's remote domain in the config. `>= 1` (else `RemoteDomainBelowMinimum`) and different from
 /// the burn's `destDomain` (else `DomainsMustDiffer`), so the happy path builds a valid request.
-pub const MIDEN_DOMAIN: u32 = 10_001;
+pub const MIDEN_DOMAIN: CircleDomain = CircleDomain::new(10_001);
 
 /// A `destinationDomain` that is NOT the burn payload's — the domain-mismatch injection.
-pub const WRONG_DOMAIN: u32 = 7;
+pub const WRONG_DOMAIN: CircleDomain = CircleDomain::new(7);
 
 /// A `destinationRecipient` that is NOT the burn payload's — the recipient-mismatch injection.
 /// Well-formed 32-byte hex, so what the gate refuses is the VALUE rather than the shape.
@@ -104,7 +104,7 @@ pub fn payload() -> BurnPayload {
     let intent = &fixture["batches"][0]["burnIntents"][0];
     let spec = &intent["spec"];
     BurnPayload {
-        dest_domain: spec["destinationDomain"].as_u64().unwrap() as u32,
+        dest_domain: CircleDomain::new(spec["destinationDomain"].as_u64().unwrap() as u32),
         dest_recipient: ForeignChainAddress::new(decode_hex32(
             spec["destinationRecipient"].as_str().unwrap(),
         )),

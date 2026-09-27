@@ -44,6 +44,7 @@ use miden_standards::interop::eth::{EthAmount, EthEmbeddedAccountId};
 use super::account_id::EthEmbeddedAccountIdExt;
 use super::amount::uint256_to_asset_amount;
 use super::bytes32::{bytes32_to_packed_felts, bytes32_to_storage_map_key};
+use super::domain::CircleDomain;
 use super::error::EncodingError;
 use crate::note::xreserve_mint::XUSDC_MINT_TRANSPORT_HOOK_DATA_MAX_LEN;
 
@@ -231,7 +232,7 @@ const _: () = assert!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bon::Builder)]
 pub struct DepositIntentHeader {
     amount: AssetAmount,
-    remote_domain: u32,
+    remote_domain: CircleDomain,
     remote_token: AccountId,
     remote_recipient: AccountId,
     local_token: ForeignChainAddress,
@@ -255,7 +256,7 @@ impl DepositIntentHeader {
     }
 
     /// The destination domain the consuming faucet must have configured.
-    pub fn remote_domain(&self) -> u32 {
+    pub fn remote_domain(&self) -> CircleDomain {
         self.remote_domain
     }
 
@@ -312,7 +313,7 @@ impl DepositIntentHeader {
 
         Ok(Self {
             amount: reduce(amount, DepositIntentField::Amount)?,
-            remote_domain: be_u32(&bytes, DepositIntentField::RemoteDomain),
+            remote_domain: CircleDomain::new(be_u32(&bytes, DepositIntentField::RemoteDomain)),
             remote_token: account_id(&bytes, DepositIntentField::RemoteToken)?,
             remote_recipient: account_id(&bytes, DepositIntentField::RemoteRecipient)?,
             local_token: ForeignChainAddress::new(local_token),
@@ -338,7 +339,7 @@ impl Serializable for DepositIntentHeader {
         write_u32(
             &mut bytes,
             DepositIntentField::RemoteDomain,
-            self.remote_domain,
+            self.remote_domain.as_u32(),
         );
         write_bytes32(
             &mut bytes,

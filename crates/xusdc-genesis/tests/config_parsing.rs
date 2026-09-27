@@ -5,7 +5,7 @@ mod common;
 use assert_matches::assert_matches;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
-use xusdc_encoding::xreserve::encoding::DepositNonce;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositNonce};
 use xusdc_genesis::config::{ConfigError, GenesisToolConfig, Role, UsedNoncesFile};
 
 use crate::common::{
@@ -19,7 +19,7 @@ fn the_dev_fixture_round_trips() {
     let fixture = Fixture::new();
     let config = fixture.config();
     assert_eq!(config.faucet.token_supply.as_u64(), TOKEN_SUPPLY);
-    assert_eq!(config.faucet.domain, 7);
+    assert_eq!(config.faucet.domain, CircleDomain::new(7));
     assert_eq!(config.faucet.verification_base_fee, 500);
     assert!(config.faucet.min_burn_amount.is_none());
     assert_eq!(
@@ -231,7 +231,8 @@ fn the_template_parses_once_its_placeholders_are_filled() {
         "the template pre-fills the launch verification base fee"
     );
     assert_eq!(
-        config.faucet.domain, 10007,
+        config.faucet.domain,
+        CircleDomain::new(10007),
         "the template pre-fills the Miden domain"
     );
     assert_eq!(config.faucet.min_burn_amount, Some(1));

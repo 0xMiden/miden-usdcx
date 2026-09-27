@@ -443,7 +443,7 @@ async fn assembled_faucet_full_lifecycle() -> Result<()> {
         .get_item(XReserveFaucetExtension::domain_config_slot())?;
     assert_eq!(
         domain0,
-        Word::from([TEST_DOMAIN, 0, 0, 0]),
+        Word::from([TEST_DOMAIN.as_u32(), 0, 0, 0]),
         "S0: domain ships BUILD-SEEDED (DEC-4)"
     );
     assert_supply(&pf.mock_chain, faucet_id, 0, "S0 assembly")?;

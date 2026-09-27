@@ -57,7 +57,7 @@ use xusdc_encoding::note::xreserve_mint::{
     XUSDC_MINT_TRANSPORT_PAYLOAD_WORD_OFF,
 };
 use xusdc_encoding::xreserve::encoding::{
-    DepositIntent, ForeignChainAddress, MintIntent, Signature, XReserveBurnItems,
+    CircleDomain, DepositIntent, ForeignChainAddress, MintIntent, Signature, XReserveBurnItems,
 };
 
 // HELPERS
@@ -76,7 +76,7 @@ fn note_rng(seed: u64) -> RandomCoin {
 /// A representative burn payload with arbitrary destination fields that round-trip.
 fn sample_burn_items() -> XReserveBurnItems {
     XReserveBurnItems {
-        dest_domain: 9,
+        dest_domain: CircleDomain::new(9),
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     }
 }

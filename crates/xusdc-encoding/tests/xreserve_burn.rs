@@ -37,7 +37,7 @@ use xusdc_encoding::note::xreserve_burn::{
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use xusdc_encoding::vectors::load;
-use xusdc_encoding::xreserve::encoding::{ForeignChainAddress, XReserveBurnItems};
+use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
 // HARNESS
 // ================================================================================================
@@ -56,7 +56,7 @@ fn note_rng(seed: u64) -> RandomCoin {
 /// A representative withdrawal payload with arbitrary destination fields that round-trip.
 fn sample_items() -> XReserveBurnItems {
     XReserveBurnItems {
-        dest_domain: 9,
+        dest_domain: CircleDomain::new(9),
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     }
 }
@@ -343,7 +343,7 @@ async fn burn_note_consumed_by_faucet_decrements() -> anyhow::Result<()> {
 
     // The REAL XReserveBurnNote with the same faucet + user + amount as the harness asset.
     let items = XReserveBurnItems {
-        dest_domain: 9,
+        dest_domain: CircleDomain::new(9),
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     };
     let note = XReserveBurnNote::create(
@@ -399,7 +399,7 @@ async fn burn_note_insufficient_balance_rejects_create() -> anyhow::Result<()> {
     // A note demanding MORE than the holder's balance.
     let over = HELD + 1;
     let items = XReserveBurnItems {
-        dest_domain: 9,
+        dest_domain: CircleDomain::new(9),
         dest_recipient: ForeignChainAddress::new([0xABu8; 32]),
     };
     let note = XReserveBurnNote::create(

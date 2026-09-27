@@ -26,6 +26,7 @@ mod mock_circle;
 mod support;
 
 use mock_circle::{Endpoint, MockCircle, Reply, Script};
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 // THE STREAMING COLLECTOR — the production enforcement, tested without a socket via ChunkSource
 // ================================================================================================
@@ -205,9 +206,9 @@ fn a_prepare_request() -> withdrawal_listener_attester::circle::schema::PrepareW
 
     let input = PrepareBurnIntentInput::builder()
         .value_including_fees(DecimalAmount::new("10000000").unwrap())
-        .remote_domain(10_001)
+        .remote_domain(CircleDomain::new(10_001))
         .remote_depositor(Hex32::new(format!("0x{}", "11".repeat(32))).unwrap())
-        .final_destination_domain(0)
+        .final_destination_domain(CircleDomain::new(0))
         .final_destination_recipient(Hex32::new(format!("0x{}", "22".repeat(32))).unwrap())
         .use_circle_forwarding(false)
         .build()

@@ -22,6 +22,7 @@ use super::deposit_intent::{
     DepositIntent, DepositIntentField, DepositIntentHeader, DepositNonce, ForeignChainAddress,
     HookData, BYTES32_LEN, BYTES32_PACKED_LIMBS, BYTES_PER_PACKED_FELT,
 };
+use super::domain::CircleDomain;
 use super::error::EncodingError;
 
 // MINT PAYLOAD
@@ -83,7 +84,7 @@ impl MintIntent {
     pub fn from_deposit_intent(
         intent: &DepositIntent,
         target: AccountId,
-        remote_domain: u32,
+        remote_domain: CircleDomain,
     ) -> Result<Self, EncodingError> {
         let header = intent.header();
 
@@ -117,7 +118,7 @@ impl MintIntent {
     pub fn to_deposit_intent(
         &self,
         amount: AssetAmount,
-        remote_domain: u32,
+        remote_domain: CircleDomain,
         remote_token: AccountId,
     ) -> DepositIntent {
         let header = DepositIntentHeader::builder()
@@ -390,7 +391,7 @@ mod tests {
             MintIntent::from_deposit_intent(
                 &intent(vec),
                 vec.faucet_id(),
-                vec.remote_domain.wrapping_add(1)
+                CircleDomain::new(vec.remote_domain.as_u32().wrapping_add(1))
             ),
             Err(EncodingError::RemoteDomainMismatch { .. })
         );

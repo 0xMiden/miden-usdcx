@@ -9,7 +9,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::utils::serde::Deserializable;
 use serde::de::{DeserializeOwned, Deserializer, Error as _};
 use serde::Deserialize;
-use xusdc_encoding::xreserve::encoding::DepositNonce;
+use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositNonce};
 
 // ROLES
 // ================================================================================================
@@ -104,7 +104,7 @@ pub struct FaucetConfig {
     #[serde(deserialize_with = "asset_amount")]
     pub token_supply: AssetAmount,
     /// The Circle domain id.
-    pub domain: u32,
+    pub domain: CircleDomain,
     pub min_burn_amount: Option<u64>,
     pub verification_base_fee: u32,
     /// The deposit attesters allowlisted at build time, each as the hex string of the key's 33

@@ -18,6 +18,7 @@ use rstest::rstest;
 use serde_json::{json, Value};
 use withdrawal_listener_attester::config::{ListenerConfig, SecretString};
 use withdrawal_listener_attester::error::ListenerError;
+use xusdc_encoding::xreserve::encoding::CircleDomain;
 
 const OUT_OF_BAND_KEY: &str = "circle-out-of-band-key-Ic4RaK9v";
 const FAUCET_ID_HEX: &str = "0xbb405fd9fe431bd1135a292de098cb";
@@ -39,7 +40,7 @@ fn the_baseline_config_file_loads_so_every_negative_below_isolates_one_rule() {
     let config: ListenerConfig =
         serde_json::from_value(valid_config_json()).expect("the baseline must load");
 
-    assert_eq!(config.miden_domain(), 10_001);
+    assert_eq!(config.miden_domain(), CircleDomain::new(10_001));
     assert_eq!(config.max_withdrawal_fee().as_u64(), 1_000);
     assert!(config.api_auth_token().is_none());
 }

@@ -11,6 +11,7 @@ use miden_protocol::Felt;
 
 use super::bytes32::packed_felts_to_bytes32;
 use super::deposit_intent::ForeignChainAddress;
+use super::domain::CircleDomain;
 use super::error::EncodingError;
 
 /// Felt width of the burn-note withdrawal payload: `destDomain` (1) then `destRecipient`
@@ -20,13 +21,13 @@ pub const BURN_NOTE_ITEMS_FELTS: usize = 9;
 /// The destination domain and recipient carried in the burn note's withdrawal attachment.
 #[derive(Debug, Clone, PartialEq, Eq, bon::Builder)]
 pub struct XReserveBurnItems {
-    pub dest_domain: u32,
+    pub dest_domain: CircleDomain,
     pub dest_recipient: ForeignChainAddress,
 }
 
 impl XReserveBurnItems {
     /// Encodes `(destDomain, destRecipient)` into the payload felt layout
-    /// (`destDomain` at `[0]`, `destRecipient` at `[1..9]`). Infallible: `destDomain` is a `u32`,
+    /// (`destDomain` at `[0]`, `destRecipient` at `[1..9]`). Infallible: `destDomain` is a u32 [`CircleDomain`],
     /// and the bytes32 field packs via the shared `bytes32` codec.
     pub fn encode(&self) -> Vec<Felt> {
         let mut out = Vec::with_capacity(BURN_NOTE_ITEMS_FELTS);
@@ -46,6 +47,7 @@ impl XReserveBurnItems {
             return Err(EncodingError::BurnItemsMalformed);
         }
         let dest_domain = u32::try_from(items[0].as_canonical_u64())
+            .map(CircleDomain::new)
             .map_err(|_| EncodingError::BurnItemsMalformed)?;
         // The length was checked above, so each slice is exactly 8 felts. Unpacking goes through the
         // shared bytes32 inverse; a limb that is not a valid u32 is reported as a malformed payload

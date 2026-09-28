@@ -1,5 +1,7 @@
 //! Saves signed requests before sending them, then resumes uncertain submissions unchanged.
 
+use std::time::SystemTime;
+
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
@@ -139,8 +141,13 @@ impl Attester {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }
 
+    /// The system clock's time in milliseconds since the Unix epoch, read at each decision.
     pub(crate) fn now_ms(&self) -> Result<i64, SubmitError> {
-        let elapsed = (self.now)()
+        #[cfg(test)]
+        let now = self.now.unwrap_or_else(SystemTime::now);
+        #[cfg(not(test))]
+        let now = SystemTime::now();
+        let elapsed = now
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| SubmitError::Clock)?;
         elapsed

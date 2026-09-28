@@ -164,6 +164,9 @@ enum InvalidStoreCase {
     MalformedWithdrawalPayload,
     Unversioned,
     NewerVersion,
+    ReservationMismatch,
+    ReservationWithoutHistory,
+    HistoryWithoutReservation,
 }
 
 fn create_valid_store(path: &Path) {
@@ -323,6 +326,34 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .pragma_update(None, "user_version", STORE_VERSION + 1)
                 .unwrap();
         }
+        // A burn's copy of its reservation that differs from the reservation its history holds.
+        InvalidStoreCase::ReservationMismatch
+        | InvalidStoreCase::ReservationWithoutHistory
+        | InvalidStoreCase::HistoryWithoutReservation => {
+            create_valid_store(path);
+            let (burn, history) = match case {
+                InvalidStoreCase::ReservationMismatch => ("1000, 5", Some("1000, 6")),
+                InvalidStoreCase::ReservationWithoutHistory => ("1000, 5", None),
+                _ => ("NULL, NULL", Some("1000, 5")),
+            };
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection
+                .execute_batch(&format!(
+                    "INSERT INTO burns (note_id, nullifier, note, creation_block,
+                        consumption_block, burn_tx_id, status, reservation_amount, admitted_at_ms)
+                     VALUES (X'01', X'02', X'03', 1, 2, X'04', 'DISCOVERED', {burn});"
+                ))
+                .unwrap();
+            if let Some(history) = history {
+                connection
+                    .execute_batch(&format!(
+                        "INSERT INTO submission_events (note_id, recorded_at, kind,
+                            reservation_amount, admitted_at_ms)
+                         VALUES (X'01', 0, 'AUTHORIZED', {history});"
+                    ))
+                    .unwrap();
+            }
+        }
     }
 }
 
@@ -341,6 +372,9 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::MalformedWithdrawalPayload,
         InvalidStoreCase::Unversioned,
         InvalidStoreCase::NewerVersion,
+        InvalidStoreCase::ReservationMismatch,
+        InvalidStoreCase::ReservationWithoutHistory,
+        InvalidStoreCase::HistoryWithoutReservation,
     ] {
         let tempdir = tempfile::tempdir().unwrap();
         let store_path = create_store_parent(&tempdir);
@@ -377,6 +411,14 @@ async fn invalid_store_is_rejected() {
         }
         if matches!(case, InvalidStoreCase::MalformedWithdrawalPayload) {
             assert!(cause.contains("attester store is invalid"), "{cause}");
+        }
+        if matches!(
+            case,
+            InvalidStoreCase::ReservationMismatch
+                | InvalidStoreCase::ReservationWithoutHistory
+                | InvalidStoreCase::HistoryWithoutReservation
+        ) {
+            assert!(cause.ends_with(": attester store is invalid"), "{cause}");
         }
     }
 }

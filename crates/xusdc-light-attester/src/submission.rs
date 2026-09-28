@@ -196,7 +196,7 @@ impl Attester {
             }
             // Only a confirmed cap rejection releases capacity. Discard its signed bytes;
             // after the cooldown it must be prepared and signed again, not replayed stale.
-            self.store.record_cap_rejection(saved.note_id)?;
+            self.store.record_cap_rejection(&saved)?;
             eprintln!(
                 "withdrawal note={} waiting after Circle's capacity rejection",
                 saved.note_id

@@ -206,7 +206,7 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             connection
                 .execute(
                     "INSERT INTO attester_state
-                     SELECT 2, faucet_account_id, anchor_block, anchor_commitment,
+                     SELECT 2, faucet_account_id, anchor_block, anchor_commitment, scan_start,
                             next_block, authenticated_parent
                      FROM attester_state WHERE singleton = 1",
                     [],

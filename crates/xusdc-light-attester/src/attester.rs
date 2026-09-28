@@ -112,9 +112,6 @@ impl Attester {
         let scan_state = store
             .scan_state()
             .context("failed to load attester scan state")?;
-        if trusted_anchor.block_num > scan_state.cursor.next_block {
-            anyhow::bail!("trusted anchor must not be after the scan start");
-        }
         let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
 
         Ok(Self {

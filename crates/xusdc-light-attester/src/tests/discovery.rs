@@ -637,16 +637,6 @@ async fn bad_blocks_are_rejected() {
         .await
         .is_err());
 
-    let mut factory = BlockFactory::new();
-    factory.push(Vec::new(), Vec::new());
-    let later_anchor = factory.push(Vec::new(), Vec::new());
-    let tempdir = tempfile::tempdir().unwrap();
-    let config = write_config(&tempdir, 0, &later_anchor, 1);
-    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    assert!(Attester::start(config, Box::new(chain), ready_circle())
-        .await
-        .is_err());
-
     let cases = [
         ("missing", 0u8, 1u32, Expected::ReadFailure),
         ("skipped", 1u8, 1u32, Expected::Divergence),
@@ -855,6 +845,38 @@ async fn raised_deployment_block_keeps_the_saved_scan_start() {
             .map(DiscoveredBurn::note_id)
             .collect::<Vec<_>>(),
         [burn.id]
+    );
+}
+
+/// An anchor after the scan start is refused before a store exists, so the corrected config
+/// starts at the same path.
+#[tokio::test]
+async fn anchor_after_scan_start_leaves_no_store() {
+    let mut factory = BlockFactory::new();
+    factory.push(Vec::new(), Vec::new());
+    let anchor = factory.push(Vec::new(), Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let config = write_config(&tempdir, 0, &anchor, 1);
+    let store_path = config.store_path().to_path_buf();
+    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
+    let error = Attester::start(config, Box::new(chain), ready_circle())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("trusted anchor must not be after the scan start"),
+        "{error:#}"
+    );
+    assert!(!store_path.exists());
+
+    let config = write_config(&tempdir, 1, &anchor, 1);
+    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
+    let attester = Attester::start(config, Box::new(chain), ready_circle())
+        .await
+        .unwrap();
+    assert_eq!(
+        attester.store.scan_state().unwrap().cursor.next_block,
+        BlockNumber::from(1u32)
     );
 }
 

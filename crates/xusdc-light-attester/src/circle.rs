@@ -265,8 +265,9 @@ impl PrepareBatch {
             amount % units_per_usdc,
             width = usize::from(USDCX_DECIMALS),
         );
-        // Circle's salt is the note serial. The attachment only holds the destination.
-        let salt = note.serial_num().to_hex();
+        // The burn's note ID: unique to this burn and fixed by the note itself, unlike the serial
+        // number, which the burner chooses.
+        let salt = burn.note_id().to_hex();
         Self {
             token: "USDC",
             remote_domain: CircleDomain::MIDEN.as_u32(),

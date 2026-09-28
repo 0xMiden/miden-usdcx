@@ -13,9 +13,10 @@ async fn main() -> Result<()> {
 
     let config = Config::load(&config_path)
         .with_context(|| format!("failed to load {}", config_path.display()))?;
-    let circle = CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
+    let (circle, circle_worker) =
+        CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
 
-    let _attester = Attester::start(
+    let attester = Attester::start(
         config,
         Box::new(MidenChainReader::devnet()),
         Box::new(circle),
@@ -23,6 +24,12 @@ async fn main() -> Result<()> {
     .await
     .context("startup failed")?;
     println!("startup preflight passed; the attester loop is not implemented yet");
+    // Dropping the attester closes the request queue; the worker then finishes any request in
+    // flight and stops.
+    drop(attester);
+    circle_worker
+        .await
+        .context("Circle request worker failed")?;
     Ok(())
 }
 

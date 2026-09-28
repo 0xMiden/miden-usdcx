@@ -240,7 +240,7 @@ impl CircleApi for FakeCircle {
         saved: &'a SavedSubmission,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
         let answer = self.reply(ObservedRequest::Submit {
-            endpoint: saved.endpoint.clone(),
+            endpoint: saved.endpoint.to_string(),
             body: saved.body.clone(),
         });
         Box::pin(async move { answer })
@@ -252,7 +252,7 @@ impl CircleApi for FakeCircle {
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
         let answer = self.reply(ObservedRequest::Lookup {
-            endpoint: saved.endpoint.clone(),
+            endpoint: saved.endpoint.to_string(),
             id: id.to_owned(),
         });
         Box::pin(async move { answer })

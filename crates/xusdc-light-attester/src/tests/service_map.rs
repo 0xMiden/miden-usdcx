@@ -194,9 +194,8 @@ async fn circle_response_is_checked_before_signing() {
         let burn = &ledger.burns[order[0]];
         // Circle's forwarded Linea reply, scaled to this burn and the configured CCTP fee of 1000.
         let forwarded = |payout: u64, fee: u64| {
-            let mut batch = captured(FORWARDED_FIXTURE);
+            let mut batch = captured(FORWARDED_FIXTURE, burn);
             let spec = &mut batch.burn_intents[0].spec;
-            spec.salt = burn.note_id().to_hex();
             spec.value = payout.to_string();
             batch.burn_intents[0].max_fee = fee.to_string();
             let mut call = decode_call(&batch);

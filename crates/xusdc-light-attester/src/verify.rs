@@ -106,7 +106,7 @@ impl VerifiedWithdrawal {
             signer_address(signers[1]).await?,
         ];
         if addresses[0] == addresses[1] {
-            return Err(SignerError);
+            return Err(SignerError::new("both signers have the same address"));
         }
         if addresses[1] < addresses[0] {
             signers.swap(0, 1);
@@ -124,8 +124,11 @@ impl VerifiedWithdrawal {
 }
 
 async fn signer_address(signer: &dyn Signer) -> Result<Address, SignerError> {
-    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0)
-        .map_err(|_| SignerError)?;
+    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0).map_err(
+        |source| {
+            SignerError::with_source("signer public key is not a valid secp256k1 point", source)
+        },
+    )?;
     Ok(Address::from_public_key(&key))
 }
 

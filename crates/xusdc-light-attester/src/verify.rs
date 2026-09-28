@@ -28,6 +28,8 @@ const WITHDRAW_HOOK_DATA_VERSION: u32 = 1;
 // The hook Circle's forwarder passes to CCTP: the ASCII marker "cctp-forward", zero-padded.
 const CCTP_FORWARD_MARKER: [u8; 32] = *b"cctp-forward\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 const CCTP_FAST_FINALITY: u32 = 1000;
+// The Gateway domain of Arc, where Circle's xReserve contract forwards withdrawals over CCTP.
+const ARC_DOMAIN: u32 = 26;
 
 // Names and field order are part of Circle's EIP-712 type hashes.
 mod eip712 {
@@ -342,7 +344,7 @@ fn verify_forwarded_leg(
     if spec.destinationCaller != forwarder {
         return Err(ForwardedField("destinationCaller"));
     }
-    if spec.destinationDomain != spec.sourceDomain {
+    if spec.sourceDomain != ARC_DOMAIN || spec.destinationDomain != ARC_DOMAIN {
         return Err(ForwardedField("destinationDomain"));
     }
     let call = cctp::depositForBurnWithHookCall::abi_decode(&hook.forwarding_calldata)

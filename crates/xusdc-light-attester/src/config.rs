@@ -64,6 +64,12 @@ pub struct Cli {
     #[arg(long)]
     cctp_forwarder_address: String,
 
+    /// 0x-prefixed address of CCTP's TokenMessengerV2 contract on Arc for the environment
+    /// --circle-url points at. A forwarded response must name it as the forwarding contract: the
+    /// contract xReserve calls with the CCTP transfer.
+    #[arg(long)]
+    cctp_token_messenger_address: String,
+
     /// Delay between attester cycles (for example, "1s" or "500ms").
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
@@ -145,8 +151,8 @@ pub struct Config {
     circle_api_base_url: Url,
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
-    /// The CCTP leg's fee and the xReserve contract on Arc.
-    cctp_forwarding: (u64, Address),
+    /// The CCTP leg's fee, the xReserve contract on Arc and CCTP's TokenMessengerV2 there.
+    cctp_forwarding: (u64, Address, Address),
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -168,10 +174,17 @@ impl TryFrom<Cli> for Config {
             .cctp_forwarder_address
             .parse::<Address>()
             .context("cctp forwarder address is invalid")?;
+        let token_messenger = cli
+            .cctp_token_messenger_address
+            .parse::<Address>()
+            .context("cctp token messenger address is invalid")?;
+        if token_messenger == Address::ZERO {
+            bail!("cctp token messenger address must not be zero");
+        }
         if cli.cctp_forwarding_max_fee >= cli.max_withdrawal_fee {
             bail!("cctp forwarding max fee must be below the maximum withdrawal fee");
         }
-        let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder);
+        let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder, token_messenger);
 
         if cli.request_timeout.is_zero() {
             bail!("circle request timeout must be greater than zero");
@@ -261,7 +274,7 @@ impl Config {
         self.max_withdrawal_fee_bps
     }
 
-    pub(crate) fn cctp_forwarding(&self) -> (u64, Address) {
+    pub(crate) fn cctp_forwarding(&self) -> (u64, Address, Address) {
         self.cctp_forwarding
     }
 

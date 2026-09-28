@@ -54,6 +54,8 @@ impl TestArgs {
                 "0".into(),
                 "--cctp-forwarder-address".into(),
                 "0x008888878f94c0d87defdf0b07f46b93c1934442".into(),
+                "--cctp-token-messenger-address".into(),
+                "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa".into(),
                 "--poll-interval".into(),
                 "1s".into(),
                 "--faucet-deployment-block".into(),

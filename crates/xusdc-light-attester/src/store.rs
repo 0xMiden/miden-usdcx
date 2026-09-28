@@ -535,7 +535,7 @@ fn select_submissions(
     let mut rows = statement
         .query(params![
             note_id.map(|id| id.to_bytes()),
-            status.map(SubmissionStatus::as_str)
+            status.as_ref().map(SubmissionStatus::as_ref)
         ])
         .map_err(classify_error)?;
     let mut records = Vec::new();

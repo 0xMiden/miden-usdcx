@@ -13,8 +13,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::chain::ChainError;
+use crate::circle::CircleError;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
-use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted};
+use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted, Submitting};
 use crate::verify::VerifyError;
 
 use super::discovery::write_config;
@@ -444,6 +445,81 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
     }
     shutdown.cancel();
     run.await;
+}
+
+/// A 429 anywhere in a cycle ends its Circle traffic: nothing more is prepared, signed, sent or
+/// polled. The row keeps Circle's reply when it could be read, and the next direct cycle starts
+/// without the 429.
+#[tokio::test]
+async fn rate_limit_ends_the_cycle_where_it_comes() {
+    let slow_down = || reply(429, json!({"message": "slow down"}));
+    let reply_body = Some(br#"{"message":"slow down"}"#.to_vec());
+    for case in ["recovery", "lookup", "prepare", "submission"] {
+        let ledger = Ledger::new().await;
+        seed(&ledger, &[(0, None), (1, Some("created"))]).await;
+        let id = ledger.response(0, "created")["withdrawalId"].clone();
+        let (mut replies, signed, limited) = match case {
+            "recovery" => (vec![slow_down()], false, Some((0, reply_body.clone()))),
+            "lookup" => (
+                vec![
+                    reply(409, json!({"conflict": {"withdrawalId": id}})),
+                    CircleState::RateLimitedUnread,
+                ],
+                false,
+                Some((0, None)),
+            ),
+            "prepare" => (
+                vec![accepted(&ledger, 0, "created"), slow_down()],
+                false,
+                None,
+            ),
+            _ => (
+                vec![
+                    accepted(&ledger, 0, "created"),
+                    reply(200, ledger.prepared_response(2)),
+                    slow_down(),
+                ],
+                true,
+                Some((2, reply_body.clone())),
+            ),
+        };
+        let sent = replies.len();
+        replies.push(slow_down());
+        let (signers, calls) = signers(None);
+        let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
+        let polled = ledger.record(&attester, 1);
+
+        let report = attester.run_one_cycle().await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), sent, "{case}");
+        assert_eq!(counts(&calls), [usize::from(signed); 2], "{case}");
+        assert_eq!(ledger.record(&attester, 1), polled, "{case}");
+        match limited {
+            Some((index, body)) => {
+                let saved = ledger.record(&attester, index);
+                assert_eq!(saved.status, Submitting, "{case}");
+                assert_eq!(saved.withdrawal_id.is_some(), case == "lookup", "{case}");
+                assert_eq!(
+                    (saved.last_http_status, saved.last_response),
+                    (body.as_ref().map(|_| 429), body),
+                    "{case}"
+                );
+            }
+            None => {
+                assert!(matches!(
+                    report.submit,
+                    Err(SubmitError::Prepare(CircleError::RateLimited { .. }))
+                ));
+                assert!(attester
+                    .store
+                    .submission(ledger.burns[2].burn.note_id())
+                    .unwrap()
+                    .is_none());
+            }
+        }
+
+        attester.run_one_cycle().await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), sent + 1, "{case}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::CircleApi;
+use crate::circle::{CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::{Signer, SignerPair};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
@@ -391,7 +391,10 @@ impl Attester {
         let prepared = self
             .circle
             .prepare_withdrawal(burn, self.config.use_circle_forwarding())
-            .await?;
+            .await
+            .inspect_err(|error| {
+                *rate_limited |= matches!(error, CircleError::RateLimited { .. });
+            })?;
         let verified = prepared
             .verify(burn, &self.config)
             .map_err(|error| SubmitError::Verification(Box::new(error)))?;

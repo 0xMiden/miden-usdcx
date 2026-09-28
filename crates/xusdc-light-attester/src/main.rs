@@ -59,12 +59,9 @@ fn development_signers() -> Result<[Box<dyn Signer>; 2]> {
     // Replace only this construction with the two independent KMS providers for deployment.
     // Never include environment values or private-key bytes in an error.
     let load = |name: &str| {
-        let value = std::env::var(name).with_context(|| format!("missing signing key: {name}"))?;
-        let mut bytes = [0; 32];
-        hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(&value), &mut bytes)
-            .map_err(|_| anyhow!("{name} must contain a 32-byte hex signing key"))?;
-        DevelopmentSigner::from_bytes(bytes)
-            .map_err(|_| anyhow!("{name} is not a valid signing key"))
+        let value = std::env::var(name).map_err(|_| anyhow!("missing signing key: {name}"))?;
+        DevelopmentSigner::from_hex(&value)
+            .with_context(|| format!("{name} is not a valid signing key"))
     };
     Ok([
         Box::new(load("XUSDC_ATTESTER_SIGNING_KEY_1_HEX")?),

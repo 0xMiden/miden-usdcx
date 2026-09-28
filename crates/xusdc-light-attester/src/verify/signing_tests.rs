@@ -45,6 +45,23 @@ async fn development_signers_sign_the_exact_digest() {
     }
 }
 
+/// A malformed public key keeps the decoder's error as its cause, but a malformed private key is
+/// refused without quoting any of the key.
+#[test]
+fn key_errors_keep_their_cause_but_never_quote_a_private_key() {
+    let Err(error) = SigningPublicKey::from_hex("0x02zz") else {
+        panic!("a malformed public key must be refused");
+    };
+    assert!(std::error::Error::source(&error).is_some());
+
+    let private_key = format!("0x{}#", "5".repeat(63));
+    let Err(error) = DevelopmentSigner::from_hex(&private_key) else {
+        panic!("a malformed private key must be refused");
+    };
+    let shown = format!("{error:?}");
+    assert!(!shown.contains('#') && !shown.contains("555"), "{shown}");
+}
+
 struct RecordingSigner {
     id: u8,
     calls: Arc<Mutex<Vec<(u8, B256)>>>,

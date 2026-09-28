@@ -139,7 +139,7 @@ impl CircleApi for ScriptedCircle {
         Box::pin(async move {
             self.reply_after_save(
                 ObservedRequest::Submit {
-                    endpoint: saved.endpoint.clone(),
+                    endpoint: saved.endpoint.to_string(),
                     body: saved.body.clone(),
                 },
                 "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND body = ?1 AND withdrawal_id IS NULL",
@@ -156,7 +156,7 @@ impl CircleApi for ScriptedCircle {
         Box::pin(async move {
             self.reply_after_save(
                 ObservedRequest::Lookup {
-                    endpoint: saved.endpoint.clone(),
+                    endpoint: saved.endpoint.to_string(),
                     id: id.to_owned(),
                 },
                 "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND withdrawal_id = ?1",
@@ -486,7 +486,7 @@ async fn submit_sends_checked_request() {
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;
-            let fresh_body = fresh.submission(ENDPOINT.into()).unwrap().body;
+            let fresh_body = fresh.submission(ENDPOINT.parse().unwrap()).unwrap().body;
             assert_ne!(fresh_body, saved.body);
             drop(attester);
 
@@ -702,6 +702,26 @@ async fn retries_use_saved_request() {
     assert_eq!(
         ledger.record(&attester, 0).status,
         SubmissionStatus::Finalized
+    );
+}
+
+/// A saved endpoint that no longer parses is refused when loaded, and the refusal keeps the parse
+/// error that says why.
+#[tokio::test]
+async fn malformed_saved_endpoint_keeps_its_cause() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    drop(attester);
+    ledger.sql("UPDATE submissions SET endpoint = 'circle.example.invalid/v1/withdraw'");
+    let error = ledger
+        .open_store()
+        .unwrap()
+        .submissions_to_recover()
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("relative URL without a base"),
+        "{error:#}"
     );
 }
 
@@ -944,7 +964,7 @@ async fn submission_requests_use_the_saved_request() {
     let saved = ledger
         .signed(0)
         .await
-        .submission("https://saved.example.invalid/v1/withdraw".into())
+        .submission("https://saved.example.invalid/v1/withdraw".parse().unwrap())
         .unwrap();
     let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
     let client = CircleClient::start(&config).unwrap().0;
@@ -984,7 +1004,11 @@ async fn submission_requests_use_the_saved_request() {
 async fn circle_answers_are_read_into_the_saved_row() {
     use SubmissionStatus::*;
     let ledger = Ledger::new().await;
-    let queued = ledger.signed(0).await.submission(ENDPOINT.into()).unwrap();
+    let queued = ledger
+        .signed(0)
+        .await
+        .submission(ENDPOINT.parse().unwrap())
+        .unwrap();
     let body = |value: Value| serde_json::to_vec(&value).unwrap();
     let created = ledger.response(0, "created");
     let mut failed = ledger.response(0, "failed");

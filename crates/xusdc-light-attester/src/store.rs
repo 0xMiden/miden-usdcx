@@ -13,6 +13,7 @@ use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
+use reqwest::Url;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -160,7 +161,7 @@ impl Store {
                 AND submissions.withdrawal_id IS NOT NULL",
                 params![
                     record.note_id.to_bytes(),
-                    record.endpoint,
+                    record.endpoint.as_str(),
                     record.body,
                     record.transfer_spec_hash.as_slice(),
                     record.use_circle_forwarding
@@ -507,7 +508,8 @@ fn load_submissions(
         };
         let record = SavedSubmission {
             note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
-            endpoint: row.get(1).map_err(classify_error)?,
+            endpoint: Url::parse(&row.get::<_, String>(1).map_err(classify_error)?)
+                .context(INVALID)?,
             body: row.get(2).map_err(classify_error)?,
             transfer_spec_hash: B256::from(row.get::<_, [u8; 32]>(3).map_err(classify_error)?),
             use_circle_forwarding: match row.get::<_, i64>(4).map_err(classify_error)? {
@@ -537,7 +539,7 @@ fn load_submissions(
 }
 
 fn validate_submission(record: &SavedSubmission) -> anyhow::Result<()> {
-    let endpoint = reqwest::Url::parse(&record.endpoint).context(INVALID)?;
+    let endpoint = &record.endpoint;
     if endpoint.scheme() != "https"
         || endpoint.host_str().is_none()
         || endpoint.path() != "/v1/withdraw"

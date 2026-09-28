@@ -36,6 +36,8 @@ pub enum CircleError {
     InvalidResponse(#[source] serde_json::Error),
     #[error("Circle response body exceeds {MAX_RESPONSE_BODY_BYTES} bytes")]
     BodyTooLarge,
+    #[error("Circle request URL is invalid")]
+    InvalidUrl(#[source] url::ParseError),
 }
 
 #[derive(Debug)]
@@ -139,7 +141,7 @@ impl CircleClient {
         let url = self
             .base_url
             .join("/v1/info")
-            .map_err(|_| CircleError::Unavailable)?;
+            .map_err(CircleError::InvalidUrl)?;
         let mut request = reqwest::Request::new(reqwest::Method::GET, url);
         *request.timeout_mut() = Some(self.request_timeout);
         Ok(request)
@@ -169,7 +171,7 @@ impl CircleClient {
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
-            .map_err(|_| CircleError::Unavailable)?;
+            .map_err(CircleError::InvalidUrl)?;
         let mut request = reqwest::Request::new(reqwest::Method::POST, url);
         *request.timeout_mut() = Some(self.request_timeout);
         request.headers_mut().insert(
@@ -184,8 +186,7 @@ impl CircleClient {
         &self,
         saved: &SavedSubmission,
     ) -> Result<reqwest::Request, CircleError> {
-        let url = Url::parse(&saved.endpoint).map_err(|_| CircleError::Unavailable)?;
-        let mut request = reqwest::Request::new(reqwest::Method::POST, url);
+        let mut request = reqwest::Request::new(reqwest::Method::POST, saved.endpoint.clone());
         *request.timeout_mut() = Some(self.request_timeout);
         request.headers_mut().insert(
             reqwest::header::CONTENT_TYPE,
@@ -201,9 +202,10 @@ impl CircleClient {
         saved: &SavedSubmission,
         id: &str,
     ) -> Result<reqwest::Request, CircleError> {
-        let mut url = Url::parse(&saved.endpoint)
-            .and_then(|url| url.join("/v1/withdrawal/"))
-            .map_err(|_| CircleError::Unavailable)?;
+        let mut url = saved
+            .endpoint
+            .join("/v1/withdrawal/")
+            .map_err(CircleError::InvalidUrl)?;
         url.path_segments_mut()
             .map_err(|_| CircleError::Unavailable)?
             .pop_if_empty()
@@ -318,11 +320,10 @@ pub(crate) fn read_prepared(
 
 /// Where a signed withdrawal request is sent. It is saved with the request, so a retry goes to the
 /// same place even if the configured URL changes.
-pub(crate) fn submission_endpoint(base_url: &Url) -> Result<String, CircleError> {
+pub(crate) fn submission_endpoint(base_url: &Url) -> Result<Url, CircleError> {
     base_url
         .join("/v1/withdraw")
-        .map(|url| url.to_string())
-        .map_err(|_| CircleError::Unavailable)
+        .map_err(CircleError::InvalidUrl)
 }
 
 /// One burn's entry in the prepare-withdrawal request, with Circle's field names.

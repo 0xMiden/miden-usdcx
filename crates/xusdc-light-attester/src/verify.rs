@@ -5,6 +5,7 @@ use alloy_sol_types::{eip712_domain, SolStruct};
 use miden_protocol::note::NoteId;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
 use miden_usdcx::xreserve::encoding::CircleDomain;
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -143,7 +144,7 @@ pub(crate) struct SignedWithdrawal {
 }
 
 impl SignedWithdrawal {
-    pub(crate) fn submission(&self, endpoint: String) -> Result<SavedSubmission, SubmitError> {
+    pub(crate) fn submission(&self, endpoint: Url) -> Result<SavedSubmission, SubmitError> {
         let signed = &self.batch;
         let batch = &signed.batch;
         let body = serde_json::to_vec(&json!({

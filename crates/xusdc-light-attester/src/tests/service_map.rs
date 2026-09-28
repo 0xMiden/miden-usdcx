@@ -12,6 +12,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use crate::attester::{Attester, DiscoverError, SubmitError};
+use crate::chain::ChainError;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted};
 use crate::verify::VerifyError;
@@ -236,31 +237,49 @@ async fn expiry_waits_for_the_next_cycle() {
     assert_eq!(ledger.record(&attester, 0).status, Submitted);
 }
 
+/// Any failed chain read, an unreachable node or an answer it cannot decode, still lets the
+/// saved submissions be recovered and polled.
 #[tokio::test]
 async fn discovery_failure_still_recovers_and_polls() {
-    let ledger = Ledger::new().await;
-    seed(&ledger, &[(0, None), (1, Some("created"))]).await;
-    let (signers, calls) = signers(None);
-    let replies = vec![
-        accepted(&ledger, 0, "created"),
-        reply(200, ledger.response(1, "finalized")),
-    ];
-    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
-    *chain.scan_limits.lock().unwrap() = scan_limits(4, 3);
-    let checkpoint = attester.store.scan_state().unwrap();
-    let report = attester.run_one_cycle().await.unwrap();
-    assert!(matches!(report.discover, Err(DiscoverError::Chain(_))));
-    assert!(report.submit.is_ok());
-    assert_eq!(counts(&calls), [0, 0]);
-    assert_eq!(requests.lock().unwrap().len(), 2);
-    assert_eq!(ledger.record(&attester, 0).status, Submitted);
-    assert_eq!(ledger.record(&attester, 1).status, Finalized);
-    assert!(attester
-        .store
-        .submission(ledger.burns[2].burn.note_id())
-        .unwrap()
-        .is_none());
-    assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
+    for invalid_answer in [false, true] {
+        let ledger = Ledger::new().await;
+        seed(&ledger, &[(0, None), (1, Some("created"))]).await;
+        let (signers, calls) = signers(None);
+        let replies = vec![
+            accepted(&ledger, 0, "created"),
+            reply(200, ledger.response(1, "finalized")),
+        ];
+        let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+        if invalid_answer {
+            *chain.invalid_scan_limits.lock().unwrap() = true;
+        } else {
+            *chain.scan_limits.lock().unwrap() = scan_limits(4, 3);
+        }
+        let checkpoint = attester.store.scan_state().unwrap();
+        let report = attester.run_one_cycle().await.unwrap();
+        if invalid_answer {
+            assert!(matches!(
+                report.discover,
+                Err(DiscoverError::Chain(ChainError::Rpc(_)))
+            ));
+        } else {
+            assert!(matches!(
+                report.discover,
+                Err(DiscoverError::Chain(ChainError::Unavailable))
+            ));
+        }
+        assert!(report.submit.is_ok());
+        assert_eq!(counts(&calls), [0, 0]);
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        assert_eq!(ledger.record(&attester, 0).status, Submitted);
+        assert_eq!(ledger.record(&attester, 1).status, Finalized);
+        assert!(attester
+            .store
+            .submission(ledger.burns[2].burn.note_id())
+            .unwrap()
+            .is_none());
+        assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
+    }
 }
 
 #[tokio::test]
@@ -295,6 +314,12 @@ async fn submission_store_failure_stops_remaining_work() {
             error.downcast_ref::<SubmitError>(),
             Some(SubmitError::Store(_))
         ));
+        let stage = if recovering {
+            "recovery stopped"
+        } else {
+            "submission stopped"
+        };
+        assert!(format!("{error:#}").starts_with(stage), "{error:#}");
         assert!(format!("{error:#}").contains("disk full"));
         assert_eq!(counts(&calls), [usize::from(!recovering); 2]);
         assert_eq!(

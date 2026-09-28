@@ -190,7 +190,7 @@ impl Store {
              WHERE note_id = ?7 AND status = 'SUBMITTING'
                 AND (withdrawal_id IS NULL OR withdrawal_id = ?2)",
                 params![
-                    outcome.status.as_str(),
+                    outcome.status.as_ref(),
                     outcome.withdrawal_id,
                     outcome.hold_reason.map(HoldReason::as_str),
                     outcome.last_http_status,
@@ -447,19 +447,6 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     Ok(())
 }
 
-impl SubmissionStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Submitting => "SUBMITTING",
-            Self::Submitted => "SUBMITTED",
-            Self::Finalized => "FINALIZED",
-            Self::Expired => "EXPIRED",
-            Self::Failed => "FAILED",
-            Self::Held => "HELD",
-        }
-    }
-}
-
 impl HoldReason {
     fn as_str(self) -> &'static str {
         match self {
@@ -487,15 +474,11 @@ fn load_submissions(
         .map_err(classify_error)?;
     let mut records = Vec::new();
     while let Some(row) = rows.next().map_err(classify_error)? {
-        let status = match row.get::<_, String>(5).map_err(classify_error)?.as_str() {
-            "SUBMITTING" => SubmissionStatus::Submitting,
-            "SUBMITTED" => SubmissionStatus::Submitted,
-            "FINALIZED" => SubmissionStatus::Finalized,
-            "EXPIRED" => SubmissionStatus::Expired,
-            "FAILED" => SubmissionStatus::Failed,
-            "HELD" => SubmissionStatus::Held,
-            _ => bail!(INVALID),
-        };
+        let status: SubmissionStatus = row
+            .get::<_, String>(5)
+            .map_err(classify_error)?
+            .parse()
+            .context(INVALID)?;
         let hold_reason = match row
             .get::<_, Option<String>>(7)
             .map_err(classify_error)?

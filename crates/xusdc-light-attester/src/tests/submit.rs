@@ -348,6 +348,24 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
     assert!(requests.lock().unwrap().is_empty());
 }
 
+/// The stored status names never change, and any other name is refused when a row is read.
+#[test]
+fn submission_status_names_are_fixed() {
+    use SubmissionStatus::*;
+    for (status, name) in [
+        (Submitting, "SUBMITTING"),
+        (Submitted, "SUBMITTED"),
+        (Finalized, "FINALIZED"),
+        (Expired, "EXPIRED"),
+        (Failed, "FAILED"),
+        (Held, "HELD"),
+    ] {
+        assert_eq!(status.as_ref(), name);
+        assert_eq!(name.parse::<SubmissionStatus>(), Ok(status));
+    }
+    assert!("submitting".parse::<SubmissionStatus>().is_err());
+}
+
 // Synthetic packed TransferSpec vector, independently transcribed from Circle's Solidity layout.
 // This tests our encoder, not the still-unobserved correspondence to REST transferSpecHashes.
 fn reference_hash(burn: &DiscoveredBurn) -> String {

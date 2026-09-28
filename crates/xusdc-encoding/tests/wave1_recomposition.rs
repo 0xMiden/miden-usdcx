@@ -39,6 +39,7 @@ use miden_protocol::account::{
 use miden_protocol::{Felt, Word};
 use miden_standards::account::policies::{MinBurnAmount, TokenPolicyManager};
 use miden_standards::note::MintNote;
+use support::w2admin::PRODUCTION_ALLOWLIST_ROOTS;
 use support::*;
 use xusdc_encoding::account::xreserve::XReserveStablecoinBuilderError;
 
@@ -304,13 +305,17 @@ fn builder_rejects_a_zero_min_burn_floor() -> Result<()> {
 // 4 — POSTURE: the note-script allowlist pins the stock MintNote
 // ================================================================================================
 
-/// The ten-root allowlist uses the standard `MintNote::script_root()` for minting.
+/// The allowlist uses the standard `MintNote::script_root()` for minting.
 #[test]
 fn note_allowlist_pins_the_stock_mint_note() -> Result<()> {
     let _serial = tripwire_serial_guard_blocking();
     let allowlist =
         xusdc_encoding::account::xreserve::XReserveStablecoinBuilder::allowed_note_scripts();
-    assert_eq!(allowlist.len(), 10, "the allowlist contains 10 roots");
+    assert_eq!(
+        allowlist.len(),
+        PRODUCTION_ALLOWLIST_ROOTS,
+        "the allowlist contains {PRODUCTION_ALLOWLIST_ROOTS} roots"
+    );
     assert!(
         allowlist.contains(&MintNote::script_root()),
         "row 1 must be the STOCK miden-standards MintNote script root"

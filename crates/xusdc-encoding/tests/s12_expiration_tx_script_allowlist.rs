@@ -1,8 +1,8 @@
-//! The transaction-script allowlist: exactly one script may run against the faucet.
+//! The transaction-script allowlist: the faucet is built admitting exactly one script.
 //!
 //! A network account's transaction-script allowlist decides which scripts a transaction may carry.
 //! Left empty it admits none, and left open it would admit any script an attacker cared to write —
-//! against an account whose own procedures move supply. The faucet allowlists precisely one entry,
+//! against an account whose own procedures move supply. The faucet is built allowlisting one entry,
 //! the canonical expiration script, which is what a relayer needs to set a transaction's expiry and
 //! nothing more.
 //!
@@ -15,7 +15,7 @@
 //!
 //! - the tx-script allowlist holds exactly the one expiration root — an extra entry is as much a
 //!   failure as a missing one;
-//! - the note-script allowlist contains all ten roots independently of the transaction-script
+//! - the note-script allowlist holds the builder's roots independently of the transaction-script
 //!   allowlist;
 //! - and enforcement actually happens on-chain: the expiration script is admitted and executes,
 //!   while an arbitrary no-op script is refused with the allowlist's own error.
@@ -91,13 +91,14 @@ fn auth_component_note_script_allowlist_is_untouched_by_s12() -> Result<()> {
             .expect("the auth component is yielded first");
 
     let note_keys = allowlisted_keys(&component, AuthNetworkAccount::allowed_note_scripts_slot());
+    let expected: BTreeSet<Word> = XReserveStablecoinBuilder::allowed_note_scripts()
+        .iter()
+        .map(|root| root.as_word())
+        .collect();
     assert_eq!(
-        note_keys.len(),
-        10,
-        "S12 must leave the note-script allowlist at EXACTLY the 10 roots; found {}",
-        note_keys.len(),
+        note_keys, expected,
+        "the auth component's note-script allowlist must equal the builder's roots"
     );
-    // The exact ten-root set is checked in `f5_network_account_auth.rs`.
     Ok(())
 }
 

@@ -6,7 +6,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::Word;
 
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor};
+use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
 
 use super::{
     config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
@@ -59,6 +59,8 @@ async fn new_store_starts_at_deployment_block() {
         attester.store.scan_state().unwrap().cursor.next_block,
         BlockNumber::from(1_234_567u32)
     );
+    drop(attester);
+    assert_eq!(store_version(&store_path), STORE_VERSION);
 }
 
 /// A bad anchor must not claim the store; fixing the config lets the same path start normally.
@@ -153,6 +155,8 @@ enum InvalidStoreCase {
     OutOfRange,
     WrongFaucet,
     CorruptParent,
+    Unversioned,
+    NewerVersion,
 }
 
 fn create_valid_store(path: &Path) {
@@ -169,6 +173,13 @@ fn create_valid_store(path: &Path) {
     );
 }
 
+fn store_version(path: &Path) -> u32 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
+}
+
 fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
     match case {
         InvalidStoreCase::ZeroByte => std::fs::write(path, b"").unwrap(),
@@ -177,6 +188,9 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             let connection = rusqlite::Connection::open(path).unwrap();
             connection
                 .execute("CREATE TABLE unrelated (value INTEGER NOT NULL)", [])
+                .unwrap();
+            connection
+                .pragma_update(None, "user_version", STORE_VERSION)
                 .unwrap();
         }
         InvalidStoreCase::MissingColumn => {
@@ -188,6 +202,9 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                         faucet_account_id TEXT NOT NULL
                     ) STRICT;",
                 )
+                .unwrap();
+            connection
+                .pragma_update(None, "user_version", STORE_VERSION)
                 .unwrap();
         }
         InvalidStoreCase::MissingRow => {
@@ -250,6 +267,21 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 )
                 .unwrap();
         }
+        // What an attester wrote before stores had a version.
+        InvalidStoreCase::Unversioned => {
+            create_valid_store(path);
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .pragma_update(None, "user_version", 0)
+                .unwrap();
+        }
+        InvalidStoreCase::NewerVersion => {
+            create_valid_store(path);
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .pragma_update(None, "user_version", STORE_VERSION + 1)
+                .unwrap();
+        }
     }
 }
 
@@ -265,25 +297,41 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::OutOfRange,
         InvalidStoreCase::WrongFaucet,
         InvalidStoreCase::CorruptParent,
+        InvalidStoreCase::Unversioned,
+        InvalidStoreCase::NewerVersion,
     ] {
         let tempdir = tempfile::tempdir().unwrap();
         let store_path = create_store_parent(&tempdir);
         write_invalid_store(&store_path, case);
+        let before = std::fs::read(&store_path).unwrap();
 
-        let result = start(
+        let error = start(
             load_config(&tempdir, 1),
             TestChain::anchor_only(),
             ready_circle(),
         )
-        .await;
-        let error = result.err().unwrap();
+        .await
+        .err()
+        .unwrap();
         assert_eq!(error.to_string(), "failed to open attester store");
+        // Taking the store's lock writes SQLite's header into an empty file; any other refused
+        // store is left exactly as it was.
+        if !matches!(case, InvalidStoreCase::ZeroByte) {
+            assert_eq!(std::fs::read(&store_path).unwrap(), before);
+        }
+        let cause = format!("{error:#}");
         // SQLite's own finding is kept as the cause.
         if matches!(case, InvalidStoreCase::OutOfRange) {
             assert!(
-                format!("{error:#}").contains("CHECK constraint failed in attester_state"),
-                "{error:#}"
+                cause.contains("CHECK constraint failed in attester_state"),
+                "{cause}"
             );
+        }
+        if matches!(case, InvalidStoreCase::Unversioned) {
+            assert!(cause.contains(CANNOT_UPGRADE), "{cause}");
+        }
+        if matches!(case, InvalidStoreCase::NewerVersion) {
+            assert!(cause.contains("is newer than this attester"), "{cause}");
         }
     }
 }

@@ -52,28 +52,24 @@ impl KmsSigner {
         key_arn: &str,
         expected_public_key: &str,
     ) -> Result<Self, SignerError> {
-        let mut expected = [0; 33];
-        hex::decode_to_slice(
-            expected_public_key
-                .strip_prefix("0x")
-                .unwrap_or(expected_public_key),
-            &mut expected,
-        )
-        .map_err(|_| SignerError)?;
-        let expected = SigningPublicKey::from_compressed(expected)?;
+        let expected = SigningPublicKey::from_hex(expected_public_key)?;
         let description = client
             .describe_key()
             .key_id(key_arn)
             .send()
             .await
-            .map_err(|_| SignerError)?;
+            .map_err(|source| {
+                SignerError::with_source("AWS KMS DescribeKey request failed", source)
+            })?;
         check_key_metadata(description.key_metadata(), key_arn)?;
         let response = client
             .get_public_key()
             .key_id(key_arn)
             .send()
             .await
-            .map_err(|_| SignerError)?;
+            .map_err(|source| {
+                SignerError::with_source("AWS KMS GetPublicKey request failed", source)
+            })?;
         let public_key = pinned_public_key(&response, key_arn, expected)?;
         Ok(Self {
             client,
@@ -95,7 +91,9 @@ impl Signer for KmsSigner {
             let response = sign_request(&self.key_arn, digest)
                 .send_with(&self.client)
                 .await
-                .map_err(|_| SignerError)?;
+                .map_err(|source| {
+                    SignerError::with_source("AWS KMS Sign request failed", source)
+                })?;
             signature_from_response(&response, &self.key_arn, digest, &self.public_key)
         })
     }
@@ -103,14 +101,17 @@ impl Signer for KmsSigner {
 
 /// DescribeKey must show the enabled secp256k1 signing key with exactly this ARN.
 fn check_key_metadata(metadata: Option<&KeyMetadata>, key_arn: &str) -> Result<(), SignerError> {
-    let metadata = metadata.ok_or(SignerError)?;
+    let metadata = metadata
+        .ok_or_else(|| SignerError::new("AWS KMS described the key without its metadata"))?;
     if metadata.arn() != Some(key_arn)
         || !metadata.enabled()
         || metadata.key_state() != Some(&KeyState::Enabled)
         || metadata.key_spec() != Some(&KeySpec::EccSecgP256K1)
         || metadata.key_usage() != Some(&KeyUsageType::SignVerify)
     {
-        return Err(SignerError);
+        return Err(SignerError::new(
+            "AWS KMS key is not the enabled secp256k1 signing key with this ARN",
+        ));
     }
     Ok(())
 }
@@ -129,22 +130,30 @@ fn pinned_public_key(
             .signing_algorithms()
             .contains(&SigningAlgorithmSpec::EcdsaSha256)
     {
-        return Err(SignerError);
+        return Err(SignerError::new(
+            "AWS KMS public key is not the secp256k1 signing key with this ARN",
+        ));
     }
-    let spki = response.public_key().ok_or(SignerError)?;
+    let spki = response
+        .public_key()
+        .ok_or_else(|| SignerError::new("AWS KMS returned no public key"))?;
     // KMS returns the key as a DER-encoded SubjectPublicKeyInfo.
     let public_key = k256::PublicKey::from_public_key_der(spki.as_ref())
         .map(VerifyingKey::from)
-        .map_err(|_| SignerError)?;
+        .map_err(|source| {
+            SignerError::with_source("AWS KMS public key is not a secp256k1 key", source)
+        })?;
     let compressed_public_key = SigningPublicKey(
         public_key
             .to_encoded_point(true)
             .as_bytes()
             .try_into()
-            .map_err(|_| SignerError)?,
+            .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?,
     );
     if compressed_public_key != expected {
-        return Err(SignerError);
+        return Err(SignerError::new(
+            "AWS KMS public key is not the expected signing public key",
+        ));
     }
     Ok(public_key)
 }
@@ -170,9 +179,13 @@ fn signature_from_response(
     if response.key_id() != Some(key_arn)
         || response.signing_algorithm() != Some(&SigningAlgorithmSpec::EcdsaSha256)
     {
-        return Err(SignerError);
+        return Err(SignerError::new(
+            "AWS KMS signed with another key or algorithm",
+        ));
     }
-    let der = response.signature().ok_or(SignerError)?;
+    let der = response
+        .signature()
+        .ok_or_else(|| SignerError::new("AWS KMS returned no signature"))?;
     signature_from_der(digest, der.as_ref(), key)
 }
 
@@ -183,18 +196,23 @@ fn signature_from_der(
     der: &[u8],
     key: &VerifyingKey,
 ) -> Result<Signature, SignerError> {
-    let signature = k256::ecdsa::Signature::from_der(der).map_err(|_| SignerError)?;
+    let signature = k256::ecdsa::Signature::from_der(der)
+        .map_err(|source| SignerError::with_source("AWS KMS signature is not DER", source))?;
     // KMS may return either of the two valid s values; a signer must return the low one.
     let signature = signature.normalize_s().unwrap_or(signature);
     key.verify_prehash(digest.as_slice(), &signature)
-        .map_err(|_| SignerError)?;
+        .map_err(|source| {
+            SignerError::with_source("AWS KMS signature does not verify with its key", source)
+        })?;
     // KMS returns no recovery ID, so find the one that recovers the pinned key. Normalize before
     // recovering: changing s also changes the required recovery parity.
     let recovery = RecoveryId::trial_recovery_from_prehash(key, digest.as_slice(), &signature)
-        .map_err(|_| SignerError)?;
+        .map_err(|source| {
+            SignerError::with_source("AWS KMS signature has no recovery ID", source)
+        })?;
     // The recoverable form keeps only the y parity, so an x-reduced recovery ID cannot be written.
     if recovery.is_x_reduced() {
-        return Err(SignerError);
+        return Err(SignerError::new("signature has an x-reduced recovery ID"));
     }
     Ok(Signature::from_signature_and_parity(
         signature,

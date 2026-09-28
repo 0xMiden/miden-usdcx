@@ -245,6 +245,11 @@ fn invalid_config_is_rejected() {
     forwarding.replace("--cctp-forwarding-max-fee", "999");
     forwarding.replace("--cctp-forwarder-address", "0x1234");
     assert_config_error(&forwarding, "cctp forwarder address is invalid");
+    forwarding.replace(
+        "--cctp-forwarder-address",
+        "0x0000000000000000000000000000000000000000",
+    );
+    assert_config_error(&forwarding, "cctp forwarder address must not be zero");
     forwarding.replace("--cctp-forwarder-address", FORWARDER);
     for (messenger, expected_error) in [
         ("0x1234", "cctp token messenger address is invalid"),

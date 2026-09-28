@@ -54,7 +54,8 @@ pub struct Cli {
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
 
-    /// Block at which the faucet was deployed.
+    /// Block at which the faucet was deployed, where a new store starts scanning; an existing store
+    /// keeps the scan start it was created with.
     #[arg(long)]
     faucet_deployment_block: u32,
 

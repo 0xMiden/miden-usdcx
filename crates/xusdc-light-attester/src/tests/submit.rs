@@ -746,12 +746,16 @@ async fn failed_history_write_changes_nothing() {
         ])
         .await;
     recover(&mut attester).await.unwrap();
+    // Each send renews the reservation first, so the send whose answer could not be saved left a
+    // renewal too.
     assert_eq!(
         ledger.history(0),
         [
             event("AUTHORIZED", Submitting),
             event("OUTCOME", Held),
             event("OPERATOR_RETRY", Submitting),
+            event("RESERVATION_RENEWED", Submitting),
+            event("RESERVATION_RENEWED", Submitting),
             event("OUTCOME", Submitted),
         ]
     );

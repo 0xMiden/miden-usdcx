@@ -46,7 +46,7 @@ async fn expired_is_saved() {
     let (mut attester, _) = ledger
         .start(vec![reply(200, ledger.response(0, "expired"))])
         .await;
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(ledger.record(&attester, 0).status, Expired);
 }
 
@@ -66,7 +66,7 @@ async fn only_submitted_withdrawals_are_polled() {
             ledger.submit(&mut attester, index).await.unwrap();
         }
         let excluded = [ledger.record(&attester, 1), ledger.record(&attester, 2)];
-        attester.poll_withdrawal_statuses().await.unwrap();
+        attester.poll_withdrawal_statuses(&mut false).await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), 4, "{status}");
         assert!(matches!(
             requests.lock().unwrap()[3],
@@ -86,9 +86,9 @@ async fn each_withdrawal_is_polled_once_per_pass() {
         reply(200, ledger.response(second, "verified")),
     ];
     let (mut attester, requests) = ledger.start([replies.clone(), replies].concat()).await;
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(requests.lock().unwrap().len(), 2);
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert!(requests
@@ -129,7 +129,10 @@ async fn only_expired_submissions_allow_fresh_work() {
     let fresh = ledger
         .signed_with_max_height(0, Some("184467440737095516170001"))
         .await;
-    attester.submit_signed_withdrawal(&fresh).await.unwrap();
+    attester
+        .submit_signed_withdrawal(&fresh, &mut false)
+        .await
+        .unwrap();
     assert!(ready(&attester).is_empty());
     assert_ne!(ledger.record(&attester, 0).body, expired.body);
     assert_eq!(ledger.record(&attester, 0).status, Submitting);
@@ -143,7 +146,7 @@ async fn failed_without_a_reason_is_saved() {
     let (mut attester, _) = ledger
         .start(vec![reply(200, ledger.response(0, "failed"))])
         .await;
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     let saved = ledger.record(&attester, 0);
     assert_eq!(saved.status, Failed);
     assert_eq!(saved.last_error, None);
@@ -160,7 +163,7 @@ async fn transport_failure_does_not_block_others() {
         ])
         .await;
     let before = ledger.record(&attester, first);
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(
         ledger.record(&attester, first),
         SavedSubmission {
@@ -185,7 +188,7 @@ async fn missing_lookup_does_not_block_others() {
         ])
         .await;
     let before = ledger.record(&attester, first);
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(
         ledger.record(&attester, first),
         SavedSubmission {
@@ -198,7 +201,7 @@ async fn missing_lookup_does_not_block_others() {
     assert_eq!(ledger.record(&attester, second).status, Finalized);
     assert_eq!(requests.lock().unwrap().len(), 2);
     // A status lookup never holds: the next pass asks again with the same request.
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(ledger.record(&attester, first).status, Submitted);
     assert_eq!(ledger.record(&attester, first).body, before.body);
     let requests = requests.lock().unwrap();
@@ -219,7 +222,7 @@ async fn wrong_response_is_retried_without_blocking_others() {
             reply(200, ledger.response(first, "finalized")),
         ])
         .await;
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     let saved = ledger.record(&attester, first);
     assert_eq!(
         (saved.status, saved.hold_reason, saved.last_error.as_deref()),
@@ -230,7 +233,7 @@ async fn wrong_response_is_retried_without_blocking_others() {
         )
     );
     assert_eq!(ledger.record(&attester, second).status, Finalized);
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(ledger.record(&attester, first).status, Finalized);
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
@@ -252,7 +255,10 @@ async fn failed_store_write_preserves_the_old_row() {
         ledger.record(&attester, second),
     ];
     let old_ready = ready(&attester);
-    let error = attester.poll_withdrawal_statuses().await.unwrap_err();
+    let error = attester
+        .poll_withdrawal_statuses(&mut false)
+        .await
+        .unwrap_err();
     assert!(matches!(error, SubmitError::Store(_)));
     assert_eq!(ledger.record(&attester, first), old[0]);
     assert_eq!(ledger.record(&attester, second), old[1]);
@@ -267,7 +273,7 @@ async fn saved_poll_result_survives_restart() {
     let (mut attester, first) = ledger
         .start(vec![reply(200, ledger.response(0, "verified"))])
         .await;
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     let saved = ledger.record(&attester, 0);
     assert_eq!(saved.last_http_status, Some(200));
     drop(attester);
@@ -275,7 +281,40 @@ async fn saved_poll_result_survives_restart() {
         .start(vec![reply(200, ledger.response(0, "finalized"))])
         .await;
     assert_eq!(ledger.record(&attester, 0), saved);
-    attester.poll_withdrawal_statuses().await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
     assert_eq!(*first.lock().unwrap(), *resumed.lock().unwrap());
     assert_eq!(ledger.record(&attester, 0).status, Finalized);
+}
+
+/// A 429 to a status check keeps Circle's reply on the row and leaves every other check for the
+/// next cycle.
+#[tokio::test]
+async fn rate_limited_status_check_stops_the_cycle() {
+    let (ledger, [first, second]) = pending_pair().await;
+    let (mut attester, requests) = ledger
+        .start(vec![
+            reply(429, json!({"message": "slow down"})),
+            reply(200, ledger.response(first, "finalized")),
+            reply(200, ledger.response(second, "finalized")),
+        ])
+        .await;
+    let mut rate_limited = false;
+    attester
+        .poll_withdrawal_statuses(&mut rate_limited)
+        .await
+        .unwrap();
+    assert!(rate_limited);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    let saved = ledger.record(&attester, first);
+    assert_eq!(
+        (saved.status, saved.last_http_status, saved.last_response),
+        (
+            Submitted,
+            Some(429),
+            Some(br#"{"message":"slow down"}"#.to_vec())
+        )
+    );
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    assert_eq!(ledger.record(&attester, first).status, Finalized);
+    assert_eq!(ledger.record(&attester, second).status, Finalized);
 }

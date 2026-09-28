@@ -58,6 +58,11 @@ impl Store {
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
         let exists = path.try_exists().context(INVALID)?;
+        // A new store keeps its anchor and scan start for good, so a bad pair is refused before
+        // anything is created and the corrected config can use the same path.
+        if !exists && trusted_anchor.block_num > initial_cursor.next_block {
+            bail!("trusted anchor must not be after the scan start");
+        }
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
         // Keep the exclusive connection lock for the store's lifetime so a second attester cannot

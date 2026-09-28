@@ -281,7 +281,7 @@ impl Ledger {
     pub(super) fn prepared_response(&self, index: usize) -> Value {
         let burn = &self.burns[index];
         let prepared = batch(
-            &burn.note().as_note().serial_num().to_hex(),
+            &burn.note_id().to_hex(),
             burn.amount(),
             burn.items().dest_domain.as_u32(),
         );

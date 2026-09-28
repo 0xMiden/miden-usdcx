@@ -67,6 +67,7 @@ async fn existing_store_resumes_from_saved_block() {
     );
 }
 
+#[derive(Clone, Copy)]
 enum InvalidStoreCase {
     ZeroByte,
     Corrupt,
@@ -133,7 +134,25 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap();
         }
         InvalidStoreCase::OutOfRange => {
-            state_database(path, FAUCET_ACCOUNT_ID, 4_294_967_296);
+            let store = Store::open_or_create(
+                path,
+                faucet_account_id(),
+                ScanCursor {
+                    next_block: BlockNumber::from(1u32),
+                },
+            )
+            .unwrap();
+            drop(store);
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection
+                .pragma_update(None, "ignore_check_constraints", true)
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE attester_state SET next_block = 4294967296 WHERE singleton = 1",
+                    [],
+                )
+                .unwrap();
         }
         InvalidStoreCase::WrongFaucet => {
             let store = Store::open_or_create(
@@ -166,10 +185,15 @@ async fn invalid_store_is_rejected() {
         write_invalid_store(&store_path, case);
 
         let result = start(load_config(&tempdir, 1), ChainState::Ready, ready_circle()).await;
-        assert_eq!(
-            result.err().unwrap().to_string(),
-            "failed to open attester store"
-        );
+        let error = result.err().unwrap();
+        assert_eq!(error.to_string(), "failed to open attester store");
+        // SQLite's own finding is kept as the cause.
+        if matches!(case, InvalidStoreCase::OutOfRange) {
+            assert!(
+                format!("{error:#}").contains("CHECK constraint failed in attester_state"),
+                "{error:#}"
+            );
+        }
     }
 }
 

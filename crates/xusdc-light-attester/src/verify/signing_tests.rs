@@ -75,7 +75,7 @@ impl Signer for RecordingSigner {
             let mut calls = self.calls.lock().unwrap();
             calls.push((self.id, digest));
             if self.fail_at == Some(calls.len()) {
-                return Err(SignerError);
+                return Err(SignerError::new("signer refused"));
             }
             // Distinct markers per signer and call, not cryptographic signatures.
             Ok(Signature::new(
@@ -129,10 +129,8 @@ async fn signing_failure_returns_no_result() {
             fail_at: Some(fail_at),
         });
 
-        assert!(matches!(
-            verified.sign([&signers[0], &signers[1]]).await,
-            Err(SignerError)
-        ));
+        let error = verified.sign([&signers[0], &signers[1]]).await.unwrap_err();
+        assert_eq!(error.to_string(), "signer refused");
         assert_eq!(calls.lock().unwrap().as_slice(), &expected[..fail_at]);
     }
 }
@@ -171,10 +169,11 @@ async fn signatures_follow_signer_address_order() {
         calls: calls.clone(),
         fail_at: None,
     });
-    assert!(matches!(
-        verified_withdrawal().sign([&same[0], &same[1]]).await,
-        Err(SignerError)
-    ));
+    let error = verified_withdrawal()
+        .sign([&same[0], &same[1]])
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "both signers have the same address");
     assert_eq!(
         calls.lock().unwrap().len(),
         2,

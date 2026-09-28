@@ -1,5 +1,6 @@
 //! Signing-provider boundary; AWS KMS is not connected yet.
 
+use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -13,14 +14,37 @@ pub struct SigningPublicKey(pub(crate) [u8; 33]);
 impl SigningPublicKey {
     /// Validate a compressed SEC1 secp256k1 public key.
     pub fn from_compressed(bytes: [u8; 33]) -> Result<Self, SignerError> {
-        VerifyingKey::from_sec1_bytes(&bytes).map_err(|_| SignerError)?;
+        VerifyingKey::from_sec1_bytes(&bytes).map_err(|source| {
+            SignerError::with_source("public key is not a valid secp256k1 point", source)
+        })?;
         Ok(Self(bytes))
     }
 }
 
+/// What a signer could not do, and the error behind it when there is one.
 #[derive(Debug, thiserror::Error)]
-#[error("signer operation failed")]
-pub struct SignerError;
+#[error("{context}")]
+pub struct SignerError {
+    context: &'static str,
+    #[source]
+    source: Option<Box<dyn Error + Send + Sync>>,
+}
+
+impl SignerError {
+    pub fn new(context: &'static str) -> Self {
+        Self {
+            context,
+            source: None,
+        }
+    }
+
+    pub fn with_source(context: &'static str, source: impl Error + Send + Sync + 'static) -> Self {
+        Self {
+            context,
+            source: Some(Box::new(source)),
+        }
+    }
+}
 
 pub trait Signer: Send + Sync {
     fn public_key(
@@ -85,7 +109,9 @@ pub struct DevelopmentSigner {
 
 impl DevelopmentSigner {
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, SignerError> {
-        let key = SigningKey::from_bytes(&bytes.into()).map_err(|_| SignerError)?;
+        let key = SigningKey::from_bytes(&bytes.into()).map_err(|source| {
+            SignerError::with_source("private key is not a valid secp256k1 scalar", source)
+        })?;
         Ok(Self { key })
     }
 }
@@ -96,7 +122,10 @@ impl Signer for DevelopmentSigner {
     ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>> {
         Box::pin(async move {
             let encoded = self.key.verifying_key().to_encoded_point(true);
-            let bytes = encoded.as_bytes().try_into().map_err(|_| SignerError)?;
+            let bytes = encoded
+                .as_bytes()
+                .try_into()
+                .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?;
             Ok(SigningPublicKey(bytes))
         })
     }
@@ -109,10 +138,10 @@ impl Signer for DevelopmentSigner {
             let (signature, recovery_id) = self
                 .key
                 .sign_prehash_recoverable(digest.as_slice())
-                .map_err(|_| SignerError)?;
+                .map_err(|source| SignerError::with_source("development signing failed", source))?;
             // Alloy cannot represent the recovery ID's x-reduction bit.
             if recovery_id.is_x_reduced() {
-                return Err(SignerError);
+                return Err(SignerError::new("signature has an x-reduced recovery ID"));
             }
             Ok(Signature::from_signature_and_parity(
                 signature,

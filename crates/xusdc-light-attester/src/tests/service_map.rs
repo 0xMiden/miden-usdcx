@@ -197,9 +197,10 @@ async fn circle_response_is_checked_before_signing() {
     assert_eq!(ledger.record(&attester, order[1]).status, Submitted);
     assert_eq!(ledger.record(&attester, order[2]).status, Finalized);
     let error = report.submit.unwrap_err();
-    assert!(
-        matches!(error, SubmitError::Verification(cause) if cause.downcast_ref::<VerifyError>() == Some(&VerifyError::DigestMismatch))
-    );
+    assert!(matches!(
+        error,
+        SubmitError::Verification(VerifyError::DigestMismatch)
+    ));
 }
 
 #[tokio::test]

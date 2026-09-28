@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use rusqlite::params;
@@ -132,7 +132,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(classify_error)?;
     if quick_check != "ok" {
-        bail!(INVALID);
+        // SQLite names what it found, such as a failed CHECK constraint.
+        return Err(anyhow!(quick_check).context(INVALID));
     }
 
     connection

@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -22,6 +23,7 @@ use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use reqwest::StatusCode;
+use rusqlite::{Connection, OpenFlags};
 use xusdc_encoding::note::xreserve_burn::XUsdcBurnAttachment;
 use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
@@ -429,4 +431,19 @@ pub(super) fn startup_anchor() -> &'static SignedBlock {
         factory.push(Vec::new(), Vec::new())
     });
     &ANCHOR
+}
+
+/// A read-only view of a store file that ignores the running attester's exclusive lock.
+fn read_store(path: &Path) -> Connection {
+    Connection::open_with_flags(
+        format!("file:{}?immutable=1", path.display()),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .unwrap()
+}
+
+pub(super) fn store_version(path: &Path) -> u32 {
+    read_store(path)
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
 }

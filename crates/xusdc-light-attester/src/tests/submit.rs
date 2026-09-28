@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
-use miden_protocol::block::SignedBlock;
+use miden_protocol::block::{BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
@@ -22,7 +22,7 @@ use crate::circle::{
 };
 use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
-use crate::store::CONFLICT;
+use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
@@ -36,7 +36,7 @@ use super::verify::{batch, serial};
 
 const ID: &str = "6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70";
 const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
-type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
+pub(super) type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
 
 struct TestSigner(u8);
 impl Signer for TestSigner {
@@ -170,14 +170,14 @@ impl CircleApi for ScriptedCircle {
     }
 }
 
-struct Ledger {
+pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<SignedBlock>,
     burns: Vec<ValidatedBurn>,
 }
 
 impl Ledger {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let mut burns: Vec<_> = (0..3)
             .map(|i| validated_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
@@ -222,11 +222,11 @@ impl Ledger {
         }
     }
 
-    fn path(&self) -> PathBuf {
+    pub(super) fn path(&self) -> PathBuf {
         self.directory.path().join("state.sqlite3")
     }
 
-    async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
+    pub(super) async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let circle = ScriptedCircle {
             replies: Mutex::new(replies.into()),
@@ -266,13 +266,17 @@ impl Ledger {
         .unwrap()
     }
 
-    async fn submit(&self, attester: &mut Attester, index: usize) -> Result<(), SubmitError> {
+    pub(super) async fn submit(
+        &self,
+        attester: &mut Attester,
+        index: usize,
+    ) -> Result<(), SubmitError> {
         attester
             .submit_signed_withdrawal(&self.signed(index).await)
             .await
     }
 
-    fn record(&self, attester: &Attester, index: usize) -> SavedSubmission {
+    pub(super) fn record(&self, attester: &Attester, index: usize) -> SavedSubmission {
         attester
             .store
             .submission(self.burns[index].burn.note_id())
@@ -280,14 +284,29 @@ impl Ledger {
             .unwrap()
     }
 
-    fn sql(&self, sql: &str) {
+    /// Opens the ledger's store directly, as a starting attester would.
+    pub(super) fn open_store(&self) -> anyhow::Result<Store> {
+        Store::open_or_create(
+            &self.path(),
+            faucet_account_id(),
+            ScanCursor {
+                next_block: BlockNumber::from(1u32),
+            },
+            TrustedAnchor {
+                block_num: BlockNumber::GENESIS,
+                commitment: self.blocks[0].header().commitment(),
+            },
+        )
+    }
+
+    pub(super) fn sql(&self, sql: &str) {
         Connection::open(self.path())
             .unwrap()
             .execute_batch(sql)
             .unwrap();
     }
 
-    fn response(&self, index: usize, status: &str) -> Value {
+    pub(super) fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].burn.note_id().to_hex(),
             "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(&self.burns[index])]})
     }
@@ -357,7 +376,7 @@ fn reference_hash(burn: &ValidatedBurn) -> String {
     keccak256(hex::decode(packed).unwrap()).to_string()
 }
 
-fn reply(status: u16, value: Value) -> CircleState {
+pub(super) fn reply(status: u16, value: Value) -> CircleState {
     CircleState::ResponseBody(
         StatusCode::from_u16(status).unwrap(),
         serde_json::to_vec(&value).unwrap(),

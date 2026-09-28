@@ -331,25 +331,6 @@ fn initialize_store(
     let transaction = connection.transaction().map_err(classify_error)?;
     upgrade(&transaction, 0)?;
     transaction
-        .execute_batch(
-            "CREATE TABLE submissions (
-            note_id BLOB PRIMARY KEY,
-            endpoint TEXT NOT NULL,
-            body BLOB NOT NULL,
-            transfer_spec_hash BLOB NOT NULL,
-            use_circle_forwarding INTEGER NOT NULL CHECK (use_circle_forwarding IN (0, 1)),
-            status TEXT NOT NULL CHECK (status IN (
-                'SUBMITTING', 'SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED', 'HELD'
-            )),
-            withdrawal_id TEXT,
-            hold_reason TEXT CHECK (hold_reason IN ('http_rejected')),
-            last_http_status INTEGER,
-            last_response BLOB,
-            last_error TEXT
-        ) STRICT;",
-        )
-        .map_err(classify_error)?;
-    transaction
         .execute(
             "INSERT INTO attester_state (
                 singleton,

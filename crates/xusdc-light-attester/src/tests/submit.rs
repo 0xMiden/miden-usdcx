@@ -289,7 +289,7 @@ impl Ledger {
 
     fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].note_id().to_hex(),
-            "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(index)]})
+            "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(&self.burns[index])]})
     }
 }
 
@@ -331,7 +331,7 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
 
 // Synthetic packed TransferSpec vector, independently transcribed from Circle's Solidity layout.
 // This tests our encoder, not the still-unobserved correspondence to REST transferSpecHashes.
-fn reference_hash(index: usize) -> String {
+fn reference_hash(burn: &DiscoveredBurn) -> String {
     let packed = format!(
         concat!(
             "ca85def7000000010000000600000009",
@@ -352,7 +352,7 @@ fn reference_hash(index: usize) -> String {
         "44".repeat(32),
         "55".repeat(32),
         "00".repeat(32),
-        hex::encode(serial(0x3132_3334_3536_3738 + index as u64).as_bytes())
+        hex::encode(burn.note_id().as_bytes())
     );
     keccak256(hex::decode(packed).unwrap()).to_string()
 }
@@ -393,7 +393,10 @@ async fn submit_sends_checked_request() {
         let saved = ledger.record(&attester, 0);
         assert_eq!(saved.status, expected, "{status}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
-        assert_eq!(saved.transfer_spec_hash.to_string(), reference_hash(0));
+        assert_eq!(
+            saved.transfer_spec_hash.to_string(),
+            reference_hash(&ledger.burns[0])
+        );
         if status == "failed" {
             assert_eq!(
                 saved.last_error.as_deref(),
@@ -429,13 +432,9 @@ async fn submit_sends_checked_request() {
             assert_eq!(endpoint, ENDPOINT);
             let body: Value = serde_json::from_slice(body).unwrap();
             let expected_intent = serde_json::to_value(
-                batch(
-                    &ledger.burns[0].note_id().to_hex(),
-                    1_000,
-                    9,
-                )
-                .burn_intents
-                .remove(0),
+                batch(&ledger.burns[0].note_id().to_hex(), 1_000, 9)
+                    .burn_intents
+                    .remove(0),
             )
             .unwrap();
             assert_eq!(
@@ -954,7 +953,7 @@ async fn circle_answers_are_read_into_the_saved_row() {
     let mut failed = ledger.response(0, "failed");
     failed["failureReason"] = json!("Circle's reported failure");
     let mut wrong_hash = ledger.response(0, "created");
-    wrong_hash["transferSpecHashes"] = json!([reference_hash(1)]);
+    wrong_hash["transferSpecHashes"] = json!([reference_hash(&ledger.burns[1])]);
     let mut other_id = ledger.response(0, "finalized");
     other_id["withdrawalId"] = json!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71");
     let not_named = Some("response does not identify the saved withdrawal");

@@ -158,7 +158,6 @@ impl DiscoveredBurn {
 /// A consumed burn whose Circle withdrawal fields decoded successfully.
 ///
 /// This local validation is not permission to sign.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ValidatedBurn {
     pub(crate) burn: DiscoveredBurn,

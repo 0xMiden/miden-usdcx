@@ -6717,6 +6717,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "url",
  "xusdc-encoding",
 ]
 

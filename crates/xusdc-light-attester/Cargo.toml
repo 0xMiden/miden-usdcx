@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = "0.7"
 toml = "1"
+url = "2"
 
 [dev-dependencies]
 http = "1"

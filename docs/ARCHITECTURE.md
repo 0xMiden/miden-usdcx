@@ -81,6 +81,8 @@ The burn note factory builds a public note carrying the `miden-standards` `BurnN
 
 **Lifecycle is not staged.** A note can be created and consumed in the same block; the test suite demonstrates that supply then decreases while the note, its commitment, and its nullifier are absent from the discoverable record. A public note is not automatically a durable event-log equivalent. External release needs authenticated inclusion or state paths, the actual burned asset and amount, and an explicit finality rule.
 
+Withdrawals therefore currently require the node's network transaction builder to consume only burn notes committed in earlier blocks, since the withdrawal attester recognizes a burn only by a burn note it saw committed in an earlier block.
+
 The burn policy decodes no destination domain or recipient; these fields are validated off chain.
 
 The burn policy requires exactly two attachments: a scheme-2 routing target and a scheme-6 withdrawal attachment of three words, with content verified against the note commitment.

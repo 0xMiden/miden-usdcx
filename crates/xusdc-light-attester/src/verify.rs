@@ -55,7 +55,8 @@ mod eip712 {
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum VerifyError {
+#[non_exhaustive]
+pub enum VerifyError {
     #[error("Circle returned a different number of batches or intents")]
     WrongCount,
     #[error("Circle returned an unknown salt")]

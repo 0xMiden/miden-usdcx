@@ -30,6 +30,7 @@ pub enum DiscoverError {
 }
 
 pub use crate::submission::SubmitError;
+pub use crate::verify::VerifyError;
 
 /// While Circle keeps answering 429, the pause between cycles doubles up to this limit.
 const MAX_RATE_LIMITED_PAUSE: Duration = Duration::from_secs(60);
@@ -377,9 +378,7 @@ impl Attester {
             .inspect_err(|error| {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });
             })?;
-        let verified = prepared
-            .verify(burn, &self.config)
-            .map_err(|error| SubmitError::Verification(Box::new(error)))?;
+        let verified = prepared.verify(burn, &self.config)?;
         let signed = verified.sign(self.signers.signers()).await?;
         self.submit_signed_withdrawal(&signed, rate_limited).await
     }

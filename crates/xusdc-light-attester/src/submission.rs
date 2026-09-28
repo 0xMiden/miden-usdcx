@@ -7,7 +7,7 @@ use reqwest::{StatusCode, Url};
 use crate::attester::Attester;
 use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
 use crate::signer::SignerError;
-use crate::verify::SignedWithdrawal;
+use crate::verify::{SignedWithdrawal, VerifyError};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -21,7 +21,7 @@ pub enum SubmitError {
     #[error("Circle prepare failed")]
     Prepare(#[from] CircleError),
     #[error("Circle's prepared withdrawal failed verification")]
-    Verification(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Verification(#[from] VerifyError),
     #[error("withdrawal signing failed")]
     Signing(#[from] SignerError),
 }

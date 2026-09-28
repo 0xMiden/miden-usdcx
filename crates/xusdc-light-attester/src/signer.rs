@@ -12,6 +12,14 @@ use k256::ecdsa::{SigningKey, VerifyingKey};
 pub struct SigningPublicKey(pub(crate) [u8; 33]);
 
 impl SigningPublicKey {
+    /// Parses a compressed SEC1 secp256k1 public key written as hex, with or without `0x`.
+    pub fn from_hex(value: &str) -> Result<Self, SignerError> {
+        let bytes = decode_hex(value).map_err(|source| {
+            SignerError::with_source("public key is not 33 bytes of hex", source)
+        })?;
+        Self::from_compressed(bytes)
+    }
+
     /// Validate a compressed SEC1 secp256k1 public key.
     pub fn from_compressed(bytes: [u8; 33]) -> Result<Self, SignerError> {
         VerifyingKey::from_sec1_bytes(&bytes).map_err(|source| {
@@ -71,11 +79,7 @@ impl SignerPair {
             anyhow::bail!("exactly two distinct, valid signing public keys are required");
         };
         let parse_key = |value: &str| {
-            let mut bytes = [0; 33];
-            hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)
-                .context("configured signing public key is not valid hex")?;
-            SigningPublicKey::from_compressed(bytes)
-                .context("configured signing public key is not a valid curve point")
+            SigningPublicKey::from_hex(value).context("configured signing public key is invalid")
         };
         let expected = [parse_key(first)?, parse_key(second)?];
         let loaded = [
@@ -108,6 +112,14 @@ pub struct DevelopmentSigner {
 }
 
 impl DevelopmentSigner {
+    /// Reads a 32-byte private key written as hex, with or without `0x`. A malformed key is
+    /// refused without the hex decoder's error, which can quote a character of the key.
+    pub fn from_hex(value: &str) -> Result<Self, SignerError> {
+        let bytes = decode_hex(value)
+            .map_err(|_| SignerError::new("private key is not 32 bytes of hex"))?;
+        Self::from_bytes(bytes)
+    }
+
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, SignerError> {
         let key = SigningKey::from_bytes(&bytes.into()).map_err(|source| {
             SignerError::with_source("private key is not a valid secp256k1 scalar", source)
@@ -149,4 +161,11 @@ impl Signer for DevelopmentSigner {
             ))
         })
     }
+}
+
+/// Decodes `N` bytes written as hex, with or without `0x`.
+fn decode_hex<const N: usize>(value: &str) -> Result<[u8; N], hex::FromHexError> {
+    let mut bytes = [0; N];
+    hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)?;
+    Ok(bytes)
 }

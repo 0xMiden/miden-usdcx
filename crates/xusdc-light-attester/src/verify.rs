@@ -147,10 +147,7 @@ pub(crate) struct SignedWithdrawal {
 }
 
 impl SignedWithdrawal {
-    pub(crate) fn submission(
-        &self,
-        endpoint: Url,
-    ) -> Result<(SavedSubmission, u64), SubmitError> {
+    pub(crate) fn submission(&self, endpoint: Url) -> Result<(SavedSubmission, u64), SubmitError> {
         let signed = &self.batch;
         let batch = &signed.batch;
         let body = serde_json::to_vec(&json!({

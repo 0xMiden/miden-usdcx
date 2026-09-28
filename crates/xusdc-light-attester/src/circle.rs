@@ -361,7 +361,7 @@ pub(crate) struct PrepareBatch {
     remote_depositor: String,
     final_destination_domain: u32,
     final_destination_recipient: String,
-    value_including_fees: String,
+    value_including_fees: UsdcDecimals,
     salt: String,
     use_circle_forwarding: bool,
     forwarding_options: ForwardingOptions,
@@ -370,7 +370,7 @@ pub(crate) struct PrepareBatch {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ForwardingOptions {
-    max_fee: String,
+    max_fee: UsdcDecimals,
     uses_fast_finality: bool,
 }
 
@@ -390,26 +390,32 @@ impl PrepareBatch {
                 "0x{}",
                 hex::encode(burn.items().dest_recipient.as_bytes())
             ),
-            value_including_fees: usdc_decimal(burn.amount()),
+            value_including_fees: burn.amount().into(),
             salt,
             use_circle_forwarding: true,
             forwarding_options: ForwardingOptions {
-                max_fee: usdc_decimal(cctp_forwarding_max_fee),
+                max_fee: cctp_forwarding_max_fee.into(),
                 uses_fast_finality: true,
             },
         }
     }
 }
 
-/// Circle takes whole-USDC decimal strings, not smallest-unit integers.
-fn usdc_decimal(units: u64) -> String {
-    let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
-    format!(
-        "{}.{:0width$}",
-        units / units_per_usdc,
-        units % units_per_usdc,
-        width = usize::from(USDCX_DECIMALS),
-    )
+/// An amount as Circle takes it: a whole-USDC decimal string, not a smallest-unit integer.
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+struct UsdcDecimals(String);
+
+impl From<u64> for UsdcDecimals {
+    fn from(units: u64) -> Self {
+        let units_per_usdc = 10_u64.pow(u32::from(USDCX_DECIMALS));
+        Self(format!(
+            "{}.{:0width$}",
+            units / units_per_usdc,
+            units % units_per_usdc,
+            width = usize::from(USDCX_DECIMALS),
+        ))
+    }
 }
 
 /// Decoded wire data, not a verified or signable withdrawal.

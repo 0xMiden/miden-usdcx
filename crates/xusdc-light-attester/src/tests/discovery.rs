@@ -825,6 +825,39 @@ async fn repeated_note_is_skipped() {
     );
 }
 
+/// A store keeps the scan start it was created with: raising the configured deployment block
+/// after a note was saved does not stop that note's burn from being recorded.
+#[tokio::test]
+async fn raised_deployment_block_keeps_the_saved_scan_start() {
+    let mut factory = BlockFactory::new();
+    factory.push(Vec::new(), Vec::new());
+    let burn = note(BurnNote::script(), NoteType::Public, 1, 41);
+    factory.push(vec![burn.output], Vec::new());
+    factory.push(
+        Vec::new(),
+        vec![transaction(faucet_account_id(), &[burn.nullifier])],
+    );
+    let tempdir = tempfile::tempdir().unwrap();
+    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
+    attester.discover_burns().await.unwrap();
+    assert_eq!(attester.store.candidates().unwrap().len(), 1);
+    drop(attester);
+
+    let (mut attester, _) = start(&tempdir, 2, factory.blocks(), scan_limits(3, 2)).await;
+    attester.discover_burns().await.unwrap();
+    assert!(attester.store.candidates().unwrap().is_empty());
+    assert_eq!(
+        attester
+            .store
+            .discovered_burns()
+            .unwrap()
+            .iter()
+            .map(DiscoveredBurn::note_id)
+            .collect::<Vec<_>>(),
+        [burn.id]
+    );
+}
+
 /// Before any block is authenticated, a node still short of the anchor is not a divergence.
 #[tokio::test]
 async fn node_behind_the_anchor_waits_on_a_fresh_store() {

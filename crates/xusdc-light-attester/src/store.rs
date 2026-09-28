@@ -42,11 +42,15 @@ pub(crate) struct ScanState {
 
 pub(crate) struct Store {
     connection: rusqlite::Connection,
+    /// Where this store started scanning, saved when it was created.
     initial_cursor: ScanCursor,
     faucet_account_id: AccountId,
 }
 
 impl Store {
+    /// Opens the store at `path`, or creates it there starting at `initial_cursor`. An existing
+    /// store keeps the scan start it was created with, so changing the configured deployment block
+    /// later cannot turn notes it already saved into conflicts.
     pub(crate) fn open_or_create(
         path: &Path,
         faucet_account_id: AccountId,
@@ -68,13 +72,8 @@ impl Store {
             .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
             .map_err(classify_error)?;
 
-        if exists {
-            validate_store(
-                &connection,
-                faucet_account_id,
-                initial_cursor,
-                trusted_anchor,
-            )?;
+        let initial_cursor = if exists {
+            validate_store(&connection, faucet_account_id, trusted_anchor)?
         } else {
             initialize_store(
                 &mut connection,
@@ -82,7 +81,8 @@ impl Store {
                 initial_cursor,
                 trusted_anchor,
             )?;
-        }
+            initial_cursor
+        };
 
         Ok(Self {
             connection,
@@ -195,6 +195,7 @@ fn initialize_store(
                 faucet_account_id BLOB NOT NULL,
                 anchor_block INTEGER NOT NULL CHECK (anchor_block BETWEEN 0 AND 4294967295),
                 anchor_commitment BLOB NOT NULL,
+                scan_start INTEGER NOT NULL CHECK (scan_start BETWEEN 0 AND 4294967295),
                 next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 4294967295),
                 authenticated_parent BLOB
             ) STRICT;
@@ -221,9 +222,10 @@ fn initialize_store(
                 faucet_account_id,
                 anchor_block,
                 anchor_commitment,
+                scan_start,
                 next_block,
                 authenticated_parent
-             ) VALUES (1, ?1, ?2, ?3, ?4, NULL)",
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?4, NULL)",
             params![
                 faucet_account_id.to_bytes(),
                 i64::from(trusted_anchor.block_num.as_u32()),
@@ -235,12 +237,12 @@ fn initialize_store(
     transaction.commit().map_err(classify_error)
 }
 
+/// Checks an existing store and returns the scan start it was created with.
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-    initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ScanCursor> {
     validate_store_format(connection)?;
 
     // Stored chain state becomes the next run's trust base, so reject any malformed or
@@ -255,9 +257,9 @@ fn validate_store(
         bail!(INVALID);
     }
 
-    let (stored_faucet, anchor_block, anchor_commitment) = connection
+    let (stored_faucet, anchor_block, anchor_commitment, scan_start) = connection
         .query_row(
-            "SELECT faucet_account_id, anchor_block, anchor_commitment
+            "SELECT faucet_account_id, anchor_block, anchor_commitment, scan_start
              FROM attester_state WHERE singleton = 1",
             [],
             |row| {
@@ -265,6 +267,7 @@ fn validate_store(
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         )
@@ -281,6 +284,12 @@ fn validate_store(
     if stored_anchor != trusted_anchor {
         bail!("configured trusted anchor differs from the store");
     }
+    let initial_cursor = ScanCursor {
+        next_block: decode_block_number(scan_start)?,
+    };
+    if trusted_anchor.block_num > initial_cursor.next_block {
+        bail!(INVALID);
+    }
     let state = load_scan_state(connection, initial_cursor)?;
     if state
         .authenticated_parent
@@ -290,7 +299,7 @@ fn validate_store(
         bail!(INVALID);
     }
 
-    Ok(())
+    Ok(initial_cursor)
 }
 
 fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -303,7 +312,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     }
 
     for probe in [
-        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment,
+        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
             FROM burns LIMIT 0",

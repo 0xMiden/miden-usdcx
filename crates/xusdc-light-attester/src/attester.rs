@@ -225,7 +225,7 @@ impl Attester {
         };
 
         // The anchor may predate the faucet. Authenticate the intervening headers, but do not
-        // inspect their notes because the configured deployment block is the scan start.
+        // inspect their notes because scanning starts at the store's scan start.
         if last_verified_header.block_num() < saved_scan.cursor.next_block {
             let first_predeployment_block = last_verified_header.block_num().child();
             let last_predeployment_block = saved_scan

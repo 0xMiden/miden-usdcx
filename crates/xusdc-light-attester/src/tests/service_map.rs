@@ -22,7 +22,7 @@ use super::discovery::write_config;
 use super::submit::{reply, Ledger, ScriptedCircle};
 use super::support::{
     development_signers, faucet_account_id, scan_limits, test_note, transaction, BlockFactory,
-    CircleState, ObservedRequest, TestChain,
+    ChainControls, CircleState, ObservedRequest, TestChain,
 };
 use super::validation::{discovered_burn, NoteFixture};
 use super::verify::serial;
@@ -520,6 +520,83 @@ async fn rate_limit_ends_the_cycle_where_it_comes() {
         attester.run_one_cycle().await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), sent + 1, "{case}");
     }
+}
+
+/// Advances paused time around each expected cycle start and checks that the cycle started then,
+/// and not before.
+async fn assert_cycle_starts(
+    run: &mut Pin<Box<impl Future<Output = ()>>>,
+    chain: &ChainControls,
+    starts_ms: &[u64],
+) {
+    let mut elapsed = 0;
+    for (started, &start) in starts_ms.iter().enumerate() {
+        if start > 0 {
+            let early = Duration::from_millis(start - 1 - elapsed);
+            assert!(tokio::time::timeout(early, &mut *run).await.is_err());
+            assert_eq!(*chain.scan_limit_requests.lock().unwrap(), started);
+            elapsed = start - 1;
+        }
+        let due = Duration::from_millis(start + 1 - elapsed);
+        assert!(tokio::time::timeout(due, &mut *run).await.is_err());
+        assert_eq!(*chain.scan_limit_requests.lock().unwrap(), started + 1);
+        elapsed = start + 1;
+    }
+}
+
+/// Only a 429 lengthens the pause, even when the cycle then stops on a store failure; a cycle that
+/// fails without one goes back to the poll interval.
+#[tokio::test(start_paused = true)]
+async fn only_a_rate_limit_lengthens_the_pause() {
+    // (the Circle status whose saved outcome fails to write, Circle's answers, cycle starts)
+    for (failing, statuses, starts_ms) in [
+        (429, [429, 429, 429], [0, 200, 600]),
+        (201, [429, 201, 201], [0, 200, 300]),
+    ] {
+        let ledger = Ledger::new().await;
+        seed(&ledger, &[(0, None)]).await;
+        ledger.sql(&format!(
+            "CREATE TRIGGER fail_outcome BEFORE UPDATE ON submissions \
+             WHEN NEW.last_http_status = {failing} BEGIN SELECT RAISE(FAIL, 'disk full'); END;"
+        ));
+        let replies = statuses
+            .map(|status| match status {
+                429 => reply(429, json!({"message": "slow down"})),
+                _ => accepted(&ledger, 0, "created"),
+            })
+            .to_vec();
+        let (signers, _) = signers(None);
+        let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+        let shutdown = CancellationToken::new();
+        let mut run = Box::pin(attester.run(shutdown.clone()));
+        assert_cycle_starts(&mut run, &chain, &starts_ms).await;
+        assert_eq!(requests.lock().unwrap().len(), 3);
+        shutdown.cancel();
+        run.await;
+    }
+}
+
+/// A poll interval above the one-minute cap is still the least pause after a 429.
+#[tokio::test(start_paused = true)]
+async fn long_poll_interval_is_kept_after_a_rate_limit() {
+    let ledger = Ledger::new().await;
+    seed(&ledger, &[(0, None)]).await;
+    let config = ledger.path().with_file_name("attester.toml");
+    let settings = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        settings.replace("poll_interval_ms = 100\n", "poll_interval_ms = 90000\n"),
+    )
+    .unwrap();
+    let replies = vec![reply(429, json!({"message": "slow down"})); 3];
+    let (signers, _) = signers(None);
+    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+    let shutdown = CancellationToken::new();
+    let mut run = Box::pin(attester.run(shutdown.clone()));
+    assert_cycle_starts(&mut run, &chain, &[0, 90_000, 180_000]).await;
+    assert_eq!(requests.lock().unwrap().len(), 3);
+    shutdown.cancel();
+    run.await;
 }
 
 #[tokio::test(start_paused = true)]

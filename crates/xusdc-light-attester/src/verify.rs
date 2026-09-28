@@ -117,7 +117,8 @@ impl UnverifiedPrepareResponse {
         );
         let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64());
 
-        if B256::from(burn.burn.note().as_note().serial_num().as_bytes()) != spec.salt {
+        // Prepare asked for the burn's note ID as the salt; derive it again from the burn.
+        if B256::from(burn.burn.note_id().as_bytes()) != spec.salt {
             return Err(VerifyError::UnknownSalt);
         }
         if spec.destinationDomain != burn.items.dest_domain.as_u32() {

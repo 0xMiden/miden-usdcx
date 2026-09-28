@@ -508,9 +508,7 @@ pub(crate) fn burn_hold(error: &SubmitError) -> (Option<BurnHoldReason>, Option<
         }
         // A forwarded burn too small to pay the configured CCTP fee fails the same way every
         // cycle until that fee changes.
-        SubmitError::Verification(cause)
-            if cause.downcast_ref::<VerifyError>() == Some(&VerifyError::TooSmallToForward) =>
-        {
+        SubmitError::Verification(VerifyError::TooSmallToForward) => {
             (Some(BurnHoldReason::TooSmallToForward), None)
         }
         // Any other failure, including a reply that fails our other checks, is tried again next

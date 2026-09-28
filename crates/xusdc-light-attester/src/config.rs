@@ -175,6 +175,9 @@ impl TryFrom<Cli> for Config {
             .cctp_forwarder_address
             .parse::<Address>()
             .context("cctp forwarder address is invalid")?;
+        if forwarder == Address::ZERO {
+            bail!("cctp forwarder address must not be zero");
+        }
         let token_messenger = cli
             .cctp_token_messenger_address
             .parse::<Address>()

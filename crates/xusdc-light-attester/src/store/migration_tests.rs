@@ -1,10 +1,11 @@
-//! A migration runs inside the transaction that creates the store.
+//! What the store's layout guarantees: a migration runs inside the transaction that creates the
+//! store, and the history table's foreign key is enforced.
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::Word;
 
-use super::{initialize_store, ScanCursor, TrustedAnchor};
+use super::{initialize_store, ScanCursor, Store, TrustedAnchor};
 
 /// A migration that fails part way leaves the store as it was: no partial layout and no version.
 #[test]
@@ -41,4 +42,37 @@ fn failed_migration_changes_nothing() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(version, 0);
+}
+
+/// The store's connection enforces the history table's foreign key, so a history row needs a burn
+/// the store knows.
+#[test]
+fn history_rows_need_a_known_burn() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_or_create(
+        &directory.path().join("store.sqlite3"),
+        AccountId::from_hex("0xbb405fd9fe431bd1135a292de098cb").unwrap(),
+        ScanCursor {
+            next_block: BlockNumber::GENESIS,
+        },
+        TrustedAnchor {
+            block_num: BlockNumber::GENESIS,
+            commitment: Word::empty(),
+        },
+    )
+    .unwrap();
+    let enforced: bool = store
+        .connection
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .unwrap();
+    assert!(enforced);
+    let error = store
+        .connection
+        .execute(
+            "INSERT INTO submission_events (note_id, recorded_at, kind)
+             VALUES (X'00', 0, 'OUTCOME')",
+            [],
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), "FOREIGN KEY constraint failed");
 }

@@ -32,6 +32,20 @@ pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
 /// Why a store this attester cannot bring to [`STORE_VERSION`] is refused. It is left as it was.
 pub(crate) const CANNOT_UPGRADE: &str = "attester store cannot be upgraded; start a new store";
 
+/// What one row of a burn's submission history records. Each kind is stored under its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr)]
+enum EventKind {
+    /// A newly signed request, saved before it is sent.
+    #[strum(serialize = "AUTHORIZED")]
+    Authorized,
+    /// Circle's answer, or a lost reply, when it changes the request's recorded state.
+    #[strum(serialize = "OUTCOME")]
+    Outcome,
+    /// An operator queued a held request to be sent again.
+    #[strum(serialize = "OPERATOR_RETRY")]
+    OperatorRetry,
+}
+
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -142,10 +156,10 @@ impl Store {
 
     /// Saves a signed request before it is sent. It can replace only an expired withdrawal; any
     /// other saved submission, a failed one included, stays as it is.
-    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> anyhow::Result<()> {
+    pub(crate) fn save_submission(&mut self, record: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission(record)?;
-        let written = self
-            .connection
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let written = transaction
             .execute(
                 "INSERT INTO submissions (
                 note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
@@ -171,7 +185,8 @@ impl Store {
             )
             .map_err(classify_write_error)?;
         ensure!(written == 1, CONFLICT);
-        Ok(())
+        record_submission(&transaction, record.note_id, EventKind::Authorized)?;
+        transaction.commit().map_err(classify_error)
     }
 
     /// The saved submission for `note_id`, if there is one.
@@ -192,12 +207,12 @@ impl Store {
     /// Saves the latest outcome of a submission that is being sent or polled. Only the outcome
     /// changes: the saved signed request and a known withdrawal ID stay as they are.
     pub(crate) fn update_submission_outcome(
-        &self,
+        &mut self,
         outcome: &SavedSubmission,
     ) -> anyhow::Result<()> {
         validate_submission_outcome(outcome)?;
-        let updated = self
-            .connection
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let updated = transaction
             .execute(
                 "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
                 last_http_status = ?4, last_response = ?5, last_error = ?6
@@ -214,14 +229,17 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        Ok(())
+        if !repeats_latest_outcome(&transaction, outcome)? {
+            record_submission(&transaction, outcome.note_id, EventKind::Outcome)?;
+        }
+        transaction.commit().map_err(classify_error)
     }
 
     /// Puts a held withdrawal back to be sent. Its saved request and any known withdrawal ID stay,
     /// so recovery asks Circle for its status instead of posting it again once the ID is known.
-    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
-        let updated = self
-            .connection
+    pub(crate) fn retry_held_submission(&mut self, note_id: NoteId) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let updated = transaction
             .execute(
                 "UPDATE submissions SET status = ?2, hold_reason = NULL
              WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
@@ -234,7 +252,8 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        Ok(())
+        record_submission(&transaction, note_id, EventKind::OperatorRetry)?;
+        transaction.commit().map_err(classify_error)
     }
 
     /// Records a burn whose withdrawal payload does not decode, without changing its evidence or
@@ -387,6 +406,65 @@ fn upgrade(connection: &rusqlite::Connection, version: u32) -> anyhow::Result<()
         connection.execute_batch(sql).map_err(classify_error)?;
     }
     set_version(connection)
+}
+
+/// Appends one burn's submission, as it now stands, to the burn's history. Only a new
+/// authorization keeps the request itself. History belongs to the burn, which is never deleted; the
+/// history table's foreign key refuses a row for a burn the store does not know.
+fn record_submission(
+    connection: &rusqlite::Connection,
+    note_id: NoteId,
+    kind: EventKind,
+) -> anyhow::Result<()> {
+    let recorded = connection
+        .execute(
+            "INSERT INTO submission_events (
+                note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
+                http_status, response, error, endpoint, hold_reason
+             )
+             SELECT note_id, unixepoch(), ?2, status, withdrawal_id, iif(?3, body, NULL),
+                transfer_spec_hash, last_http_status, last_response, last_error,
+                iif(?3, endpoint, NULL), hold_reason
+             FROM submissions
+             WHERE note_id = ?1",
+            params![
+                note_id.to_bytes(),
+                kind.as_ref(),
+                kind == EventKind::Authorized
+            ],
+        )
+        .map_err(classify_error)?;
+    ensure!(recorded == 1, CONFLICT);
+    Ok(())
+}
+
+/// Whether the request's latest outcome in the burn's history, since the request was authorized or
+/// last retried by an operator, already has this outcome's status, withdrawal ID, HTTP status and
+/// error text. A retry puts a held request back without recording an outcome, so the answer after
+/// it is recorded even when it repeats the one before. Circle's reply body is not compared: it can
+/// change from one poll to the next while the state stays the same.
+fn repeats_latest_outcome(
+    connection: &rusqlite::Connection,
+    outcome: &SavedSubmission,
+) -> anyhow::Result<bool> {
+    exists(
+        connection,
+        "SELECT EXISTS (SELECT 1 FROM submission_events
+         WHERE seq = (SELECT MAX(seq) FROM submission_events
+                WHERE note_id = ?1 AND kind = ?2 AND seq > (SELECT COALESCE(MAX(seq), 0)
+                    FROM submission_events WHERE note_id = ?1 AND kind IN (?3, ?4)))
+            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8)",
+        params![
+            outcome.note_id.to_bytes(),
+            EventKind::Outcome.as_ref(),
+            EventKind::Authorized.as_ref(),
+            EventKind::OperatorRetry.as_ref(),
+            outcome.status.as_ref(),
+            outcome.withdrawal_id,
+            outcome.last_http_status,
+            outcome.last_error,
+        ],
+    )
 }
 
 fn set_version(connection: &rusqlite::Connection) -> anyhow::Result<()> {

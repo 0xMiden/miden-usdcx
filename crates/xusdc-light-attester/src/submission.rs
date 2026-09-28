@@ -170,7 +170,7 @@ impl Attester {
         Some(response)
     }
 
-    fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {
+    fn save_outcome(&mut self, saved: &SavedSubmission) -> Result<(), SubmitError> {
         self.store.update_submission_outcome(saved)?;
         if saved.hold_reason.is_some()
             || saved.last_error.is_some()

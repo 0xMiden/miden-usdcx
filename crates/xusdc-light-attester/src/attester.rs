@@ -13,6 +13,7 @@ use crate::circle::CircleApi;
 use crate::config::Config;
 use crate::signer::{Signer, SignerPair};
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -160,38 +161,34 @@ impl Attester {
     /// Circle's 429 sets `rate_limited`: the rest of the cycle then leaves Circle alone, and
     /// [`Self::run`] reads it to pace the next cycle.
     async fn cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<CycleReport> {
-        let discover = self.discover_burns().await;
-        // Only an unreachable node lets the rest of the cycle run. A store failure or a diverged
-        // chain ends this cycle; the next one starts after the usual pause, and a diverged chain
-        // keeps stopping every cycle until an operator has looked.
-        if let Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) = discover {
-            return Err(error).context("discovery stopped");
-        }
+        let (proof_lag_block, discover) = discovery_outcome(self.discover_burns().await)?;
 
-        // Snapshot the ledger before any submission changes status. Work that expires or is
-        // newly submitted in this cycle must not be prepared or polled again in the same cycle.
-        let recovery = self.store.submissions_to_recover()?;
-        let polling = self.store.submissions_to_poll()?;
-        let fresh = match &discover {
-            Ok(proof_lag_block) => self.ready_burns(*proof_lag_block)?,
-            Err(_) => Vec::new(),
+        let (to_recover, to_poll) = self.snapshot_submissions()?;
+        let fresh_burns = match proof_lag_block {
+            Some(block) => self.ready_burns(block)?,
+            None => Vec::new(),
         };
-        self.advance_submissions(recovery, rate_limited)
+
+        self.advance_submissions(to_recover, rate_limited)
             .await
-            .context("withdrawal processing stopped")?;
-        let submit = match self.submit_withdrawals(fresh, rate_limited).await {
-            Err(error) if error.is_fatal() => {
-                return Err(error).context("withdrawal processing stopped")
-            }
-            submit => submit,
-        };
-        self.advance_submissions(polling, rate_limited)
+            .context("recovery stopped")?;
+        let submit = self
+            .submit_withdrawals(fresh_burns, rate_limited)
+            .await
+            .context("submission stopped")?;
+        self.advance_submissions(to_poll, rate_limited)
             .await
             .context("polling stopped")?;
-        Ok(CycleReport {
-            discover: discover.map(|_| ()),
-            submit,
-        })
+        Ok(CycleReport { discover, submit })
+    }
+
+    /// Loads the saved submissions to recover and to poll before anything changes their status,
+    /// so work that expires or is newly submitted in this cycle waits for the next one.
+    fn snapshot_submissions(&self) -> anyhow::Result<(Vec<SavedSubmission>, Vec<SavedSubmission>)> {
+        Ok((
+            self.store.submissions_to_recover()?,
+            self.store.submissions_to_poll()?,
+        ))
     }
 
     /// Scans the blocks that became final since the saved checkpoint. Each block's burn
@@ -340,14 +337,14 @@ impl Attester {
     }
 
     /// Takes each eligible burn through prepare, verify, sign and submit. A store failure or a
-    /// conflict stops the pass; any other failure is logged, that burn stays eligible for the
-    /// next cycle, and the remaining burns are still tried. After a 429 the remaining burns wait
-    /// for the next cycle.
+    /// conflict stops the pass and is the outer error; any other failure is logged, that burn
+    /// stays eligible for the next cycle, the remaining burns are still tried, and the first such
+    /// failure is the inner result. After a 429 the remaining burns wait for the next cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
         rate_limited: &mut bool,
-    ) -> Result<(), SubmitError> {
+    ) -> Result<Result<(), SubmitError>, SubmitError> {
         let mut first_error = None;
         for burn in burns {
             if *rate_limited {
@@ -364,7 +361,7 @@ impl Attester {
                 first_error.get_or_insert(error);
             }
         }
-        first_error.map_or(Ok(()), Err)
+        Ok(first_error.map_or(Ok(()), Err))
     }
 
     /// Prepares one burn's withdrawal with Circle, verifies the reply, signs it and submits it.
@@ -382,6 +379,23 @@ impl Attester {
             .map_err(|error| SubmitError::Verification(Box::new(error)))?;
         let signed = verified.sign(self.signers.as_refs()).await?;
         self.submit_signed_withdrawal(&signed, rate_limited).await
+    }
+}
+
+/// Decides what discovery's result means for the rest of the cycle: the proof-lag height when
+/// new burns may be prepared, and the result for the report. A failed chain read still lets the
+/// saved submissions be recovered and polled, but prepares nothing new. A store failure or a
+/// diverged chain ends the cycle; the next one starts after the usual pause, and a diverged chain
+/// keeps stopping every cycle until an operator has looked.
+fn discovery_outcome(
+    discover: Result<BlockNumber, DiscoverError>,
+) -> anyhow::Result<(Option<BlockNumber>, Result<(), DiscoverError>)> {
+    match discover {
+        Ok(proof_lag_block) => Ok((Some(proof_lag_block), Ok(()))),
+        Err(error @ DiscoverError::Chain(_)) => Ok((None, Err(error))),
+        Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) => {
+            Err(error).context("discovery stopped")
+        }
     }
 }
 

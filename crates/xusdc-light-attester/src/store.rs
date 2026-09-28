@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use alloy_primitives::B256;
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail, ensure, Context};
 use miden_objects::prost::Message;
 use miden_objects::{proto, DecodeMessageExt};
 use miden_protocol::account::AccountId;
@@ -166,9 +166,8 @@ impl Store {
                 ],
             )
             .map_err(classify_write_error)?;
-        (written == 1)
-            .then_some(())
-            .ok_or_else(|| anyhow!(CONFLICT))
+        ensure!(written == 1, CONFLICT);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -201,9 +200,8 @@ impl Store {
                 ],
             )
             .map_err(classify_error)?;
-        (updated == 1)
-            .then_some(())
-            .ok_or_else(|| anyhow!(CONFLICT))
+        ensure!(updated == 1, CONFLICT);
+        Ok(())
     }
 
     pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
@@ -216,9 +214,8 @@ impl Store {
                 [note_id.to_bytes()],
             )
             .map_err(classify_error)?;
-        (updated == 1)
-            .then_some(())
-            .ok_or_else(|| anyhow!(CONFLICT))
+        ensure!(updated == 1, CONFLICT);
+        Ok(())
     }
 
     #[cfg(test)]

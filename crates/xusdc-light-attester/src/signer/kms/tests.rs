@@ -63,7 +63,7 @@ fn key(index: usize) -> VerifyingKey {
 
 /// `result` failed with exactly `message`.
 fn refused<T: std::fmt::Debug>(result: Result<T, SignerError>, message: &str) {
-    assert!(result.is_err(), "{message}");
+    assert_eq!(result.unwrap_err().to_string(), message);
 }
 
 #[test]
@@ -208,4 +208,19 @@ fn der_conversion_normalizes_s_and_rejects_other_digests_keys_or_trailing_bytes(
         trailing.push(0);
         refused(signature_from_der(DIGEST, &trailing, &key), not_der);
     }
+}
+
+/// A public key or signature from KMS that does not decode is refused with the decoder's error as
+/// its cause.
+#[test]
+fn malformed_kms_output_keeps_its_cause() {
+    let mut response = public_key_output(0);
+    response.public_key = Some(Blob::new([0]));
+    let error = pinned_public_key(&response, FIXTURES[0].0, pin(0)).unwrap_err();
+    assert!(std::error::Error::source(&error).is_some(), "{error}");
+
+    let mut response = sign_output(0);
+    response.signature = Some(Blob::new([0]));
+    let error = signature_from_response(&response, FIXTURES[0].0, DIGEST, &key(0)).unwrap_err();
+    assert!(std::error::Error::source(&error).is_some(), "{error}");
 }

@@ -56,7 +56,7 @@ impl Signer for CountedSigner {
                 shutdown.cancel();
             }
             if self.fail {
-                return Err(SignerError);
+                return Err(SignerError::new("scripted signer failure"));
             }
             self.inner.sign_digest(digest).await
         })
@@ -111,6 +111,7 @@ async fn either_signer_failure_leaves_burns_retryable_without_submitting() {
                     .map(|&i| reply(200, ledger.prepared_response(i)))
             })
             .collect();
+        let signers = SignerPair::new(signers).await.unwrap();
         let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
         for cycle in 1..=2 {
             let report = attester.run_one_cycle().await.unwrap();

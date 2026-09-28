@@ -546,7 +546,7 @@ fn failures_that_hold_a_burn() {
         ),
         (
             "too small to forward",
-            SubmitError::Verification(Box::new(VerifyError::TooSmallToForward)),
+            SubmitError::Verification(VerifyError::TooSmallToForward),
             (Some(BurnHoldReason::TooSmallToForward), None, None),
         ),
     ] {

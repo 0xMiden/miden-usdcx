@@ -67,42 +67,56 @@ pub trait Signer: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Signature, SignerError>> + Send + '_>>;
 }
 
-/// The two independent signers, checked at startup against the configured public keys.
-pub(crate) struct SignerPair([Box<dyn Signer>; 2]);
+/// The two independent signers, with the public keys they reported when the pair was built.
+pub struct SignerPair {
+    signers: [Box<dyn Signer>; 2],
+    public_keys: [SigningPublicKey; 2],
+}
 
 impl SignerPair {
-    pub(crate) async fn new(
-        signers: [Box<dyn Signer>; 2],
-        expected_hex: &[String],
-    ) -> anyhow::Result<Self> {
-        let [first, second] = expected_hex else {
-            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+    /// Reads each signer's public key once; the two keys must differ.
+    pub async fn new(signers: [Box<dyn Signer>; 2]) -> Result<Self, SignerError> {
+        let read = |source| {
+            SignerError::with_source("could not read a signing provider's public key", source)
         };
-        let parse_key = |value: &str| {
-            SigningPublicKey::from_hex(value).context("configured signing public key is invalid")
-        };
-        let expected = [parse_key(first)?, parse_key(second)?];
-        let loaded = [
-            signers[0]
-                .public_key()
-                .await
-                .context("could not read a signing provider's public key")?,
-            signers[1]
-                .public_key()
-                .await
-                .context("could not read a signing provider's public key")?,
+        let public_keys = [
+            signers[0].public_key().await.map_err(read)?,
+            signers[1].public_key().await.map_err(read)?,
         ];
-        if expected[0] == expected[1] || loaded[0] == loaded[1] {
-            anyhow::bail!("exactly two distinct, valid signing public keys are required");
+        if public_keys[0] == public_keys[1] {
+            return Err(SignerError::new(
+                "the two signing providers hold the same key",
+            ));
         }
-        if !loaded.iter().all(|key| expected.contains(key)) {
-            anyhow::bail!("loaded signing public keys do not match configuration");
-        }
-        Ok(Self(signers))
+        Ok(Self {
+            signers,
+            public_keys,
+        })
     }
 
-    pub(crate) fn as_refs(&self) -> [&dyn Signer; 2] {
-        [self.0[0].as_ref(), self.0[1].as_ref()]
+    /// Checks that the pair holds exactly the two configured public keys, in either order, using
+    /// the keys read when the pair was built.
+    pub(crate) fn check_expected(&self, expected_hex: &[String]) -> anyhow::Result<()> {
+        let [first, second] = expected_hex else {
+            anyhow::bail!("exactly two signing public keys must be configured");
+        };
+        let expected = [
+            SigningPublicKey::from_hex(first)
+                .context("configured signing public key is invalid")?,
+            SigningPublicKey::from_hex(second)
+                .context("configured signing public key is invalid")?,
+        ];
+        if expected[0] == expected[1] {
+            anyhow::bail!("the two configured signing public keys must differ");
+        }
+        if !self.public_keys.iter().all(|key| expected.contains(key)) {
+            anyhow::bail!("loaded signing public keys do not match configuration");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn signers(&self) -> [&dyn Signer; 2] {
+        [self.signers[0].as_ref(), self.signers[1].as_ref()]
     }
 }
 

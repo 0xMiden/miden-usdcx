@@ -23,14 +23,14 @@ use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::config::Config;
-use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
 use super::support::{
-    development_signers, faucet_account_id, history, read_store, scan_limits, transaction,
+    development_pair, faucet_account_id, history, read_store, scan_limits, transaction,
     BlockFactory, ChainControls, CircleState, ObservedRequest, TestChain,
 };
 use super::validation::discovered_burn;
@@ -254,14 +254,14 @@ impl Ledger {
     }
 
     pub(super) async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
-        let (attester, requests, _) = self.runtime(replies, development_signers()).await;
+        let (attester, requests, _) = self.runtime(replies, development_pair().await).await;
         (attester, requests)
     }
 
     pub(super) async fn runtime(
         &self,
         replies: Vec<CircleState>,
-        signers: [Box<dyn Signer>; 2],
+        signers: SignerPair,
     ) -> (Attester, Requests, ChainControls) {
         let (circle, requests) = ScriptedCircle::new(self.path(), replies);
         let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
@@ -404,7 +404,7 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         config,
         Box::new(chain),
         Box::new(circle),
-        development_signers(),
+        development_pair().await,
     )
     .await
     .expect("startup checks structure, not submission contents");

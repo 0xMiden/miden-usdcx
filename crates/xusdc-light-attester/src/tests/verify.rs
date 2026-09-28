@@ -10,7 +10,8 @@ use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifyError};
 use super::startup::{config_toml, create_store_parent};
 use super::validation::discovered_burn;
 
-const FIRST_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
+/// The note serial of the test burns, which prepare sent as the salt before it sent the note ID.
+const SERIAL_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
 const ZERO_WORD: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 pub(super) fn serial(last: u64) -> Word {
@@ -77,12 +78,18 @@ fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareB
 fn circle_response_matches_burns() {
     use VerifyError::*;
     let burn = discovered_burn(1_000, serial(0x3132_3334_3536_3738), 9);
+    let salt = burn.note_id().to_hex();
     let config = config(None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let field_cases: [Case; 7] = [
+    let field_cases: [Case; 8] = [
         (
             "unknown salt",
             |b| b.burn_intents[0].spec.salt = ZERO_WORD.into(),
+            UnknownSalt,
+        ),
+        (
+            "the note serial",
+            |b| b.burn_intents[0].spec.salt = SERIAL_SALT.into(),
             UnknownSalt,
         ),
         (
@@ -125,7 +132,7 @@ fn circle_response_matches_burns() {
         );
     };
     for (name, edit, expected) in field_cases {
-        let mut changed = batch(FIRST_SALT, 1_000, 9);
+        let mut changed = batch(&salt, 1_000, 9);
         edit(&mut changed);
         rebuild_for_test(&mut changed).unwrap();
         refuse(name, vec![changed], expected);
@@ -133,30 +140,30 @@ fn circle_response_matches_burns() {
     refuse("missing batch", vec![], WrongCount);
     refuse(
         "extra batch",
-        vec![batch(FIRST_SALT, 1_000, 9), batch(FIRST_SALT, 1_000, 9)],
+        vec![batch(&salt, 1_000, 9), batch(&salt, 1_000, 9)],
         WrongCount,
     );
-    let mut empty = batch(FIRST_SALT, 1_000, 9);
+    let mut empty = batch(&salt, 1_000, 9);
     empty.burn_intents.clear();
     refuse("empty batch", vec![empty], WrongCount);
-    let mut split = batch(FIRST_SALT, 1_000, 9);
+    let mut split = batch(&salt, 1_000, 9);
     split
         .burn_intents
-        .push(batch(FIRST_SALT, 1_000, 9).burn_intents.remove(0));
+        .push(batch(&salt, 1_000, 9).burn_intents.remove(0));
     refuse("two intents in one batch", vec![split], WrongCount);
 
     let response = UnverifiedPrepareResponse {
-        batches: vec![batch(FIRST_SALT, 1_000, 9)],
+        batches: vec![batch(&salt, 1_000, 9)],
     };
     assert_eq!(response.verify(&burn, &config).err(), None);
 
-    let mut changed = batch(FIRST_SALT, 1_000, 9);
+    let mut changed = batch(&salt, 1_000, 9);
     changed.message_hash_to_sign = ZERO_WORD.into();
     refuse("different digest", vec![changed], DigestMismatch);
-    let mut set_header = batch(FIRST_SALT, 1_000, 9);
+    let mut set_header = batch(&salt, 1_000, 9);
     set_header.encoded.replace_range(..10, "0xe999239b");
     refuse("burn-intent-set header", vec![set_header], EncodedMismatch);
-    let mut mismatched = batch(FIRST_SALT, 1_000, 9);
+    let mut mismatched = batch(&salt, 1_000, 9);
     let original = mismatched.encoded.clone();
     let mut altered = hex::decode(&original[2..]).unwrap();
     altered[100] ^= 1;
@@ -171,11 +178,11 @@ fn circle_response_matches_burns() {
             vec![mismatched],
             EncodedMismatch,
         );
-        mismatched = batch(FIRST_SALT, 1_000, 9);
+        mismatched = batch(&salt, 1_000, 9);
     }
 
     let verified = UnverifiedPrepareResponse {
-        batches: vec![batch(FIRST_SALT, 1_000, 9)],
+        batches: vec![batch(&salt, 1_000, 9)],
     }
     .verify(&burn, &config)
     .unwrap();
@@ -191,6 +198,7 @@ fn circle_response_matches_burns() {
 fn circle_response_checks_amount_fee_and_forwarding() {
     use VerifyError::*;
     let burns = [discovered_burn(1_000, serial(0x3132_3334_3536_3738), 9)];
+    let salt = burns[0].note_id().to_hex();
     let check = |name: &str, batch, ceiling, expected| {
         let response = UnverifiedPrepareResponse {
             batches: vec![batch],
@@ -228,7 +236,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         ("total above burn", "1001", "0", None, Some(BadAmount)),
     ];
     for (name, value, fee, ceiling, expected) in amount_cases {
-        let mut changed = batch(FIRST_SALT, 1_000, 9);
+        let mut changed = batch(&salt, 1_000, 9);
         changed.burn_intents[0].spec.value = value.into();
         changed.burn_intents[0].max_fee = fee.into();
         rebuild_for_test(&mut changed).unwrap();
@@ -256,7 +264,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         ),
     ];
     for (name, edit, expected) in forwarding_cases {
-        let mut changed = batch(FIRST_SALT, 1_000, 9);
+        let mut changed = batch(&salt, 1_000, 9);
         edit(&mut changed);
         rebuild_for_test(&mut changed).unwrap();
         check(name, changed, None, Some(expected));

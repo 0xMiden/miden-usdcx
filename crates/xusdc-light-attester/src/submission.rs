@@ -2,7 +2,7 @@
 
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
-use reqwest::StatusCode;
+use reqwest::{StatusCode, Url};
 
 use crate::attester::Attester;
 use crate::circle::{self, ConflictResponse, RawResponse, WithdrawalResponse};
@@ -12,7 +12,7 @@ use crate::verify::SignedWithdrawal;
 #[non_exhaustive]
 pub enum SubmitError {
     #[error("submission request is invalid")]
-    InvalidRequest,
+    InvalidRequest(#[source] circle::CircleError),
     #[error("attester store failed")]
     Store(#[from] anyhow::Error),
     #[error("could not encode the signed withdrawal")]
@@ -45,7 +45,7 @@ pub(crate) enum HoldReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedSubmission {
     pub(crate) note_id: NoteId,
-    pub(crate) endpoint: String,
+    pub(crate) endpoint: Url,
     pub(crate) body: Vec<u8>,
     pub(crate) transfer_spec_hash: B256,
     pub(crate) use_circle_forwarding: bool,
@@ -59,7 +59,7 @@ pub struct SavedSubmission {
 
 impl SavedSubmission {
     /// Where the signed withdrawal request is sent.
-    pub fn endpoint(&self) -> &str {
+    pub fn endpoint(&self) -> &Url {
         &self.endpoint
     }
 
@@ -75,7 +75,7 @@ impl Attester {
         withdrawal: &SignedWithdrawal,
     ) -> Result<(), SubmitError> {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
-            .map_err(|_| SubmitError::InvalidRequest)?;
+            .map_err(SubmitError::InvalidRequest)?;
         let saved = withdrawal.submission(endpoint)?;
         // Only confirmed failed/expired attempts may receive a fresh authorization.
         self.store.save_submission(&saved)?;

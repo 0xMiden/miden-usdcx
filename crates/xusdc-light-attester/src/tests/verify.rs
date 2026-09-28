@@ -406,7 +406,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 15] = [
+    let cases: [(&str, Edit, VerifyError); 17] = [
         (
             "zero forwarding contract",
             |b, _| {
@@ -441,6 +441,19 @@ fn forwarded_route_is_bound_to_the_burn() {
         (
             "leg leaves the reserve chain",
             |b, _| b.burn_intents[0].spec.destination_domain = 6,
+            ForwardedField("destinationDomain"),
+        ),
+        (
+            "leg starts outside Arc",
+            |b, _| b.burn_intents[0].spec.source_domain = 6,
+            ForwardedField("destinationDomain"),
+        ),
+        (
+            "leg stays on a chain other than Arc",
+            |b, _| {
+                b.burn_intents[0].spec.source_domain = 6;
+                b.burn_intents[0].spec.destination_domain = 6;
+            },
             ForwardedField("destinationDomain"),
         ),
         (

@@ -11,7 +11,7 @@ CREATE TABLE attester_state (
     authenticated_parent BLOB
 ) STRICT;
 
--- Every burn found so far.
+-- Every burn found so far, with its withdrawal-limit reservation and hold.
 CREATE TABLE burns (
     note_id BLOB PRIMARY KEY,
     nullifier BLOB NOT NULL UNIQUE,
@@ -20,9 +20,15 @@ CREATE TABLE burns (
     consumption_block INTEGER
         CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
     burn_tx_id BLOB,
-    status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
+    status TEXT NOT NULL
+        CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED', 'CAP_REJECTED')),
+    hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected')),
+    reservation_amount INTEGER CHECK (reservation_amount >= 0),
+    admitted_at_ms INTEGER CHECK (admitted_at_ms >= 0),
     CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
-    CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
+    CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL)),
+    CHECK ((reservation_amount IS NULL) = (admitted_at_ms IS NULL)),
+    CHECK (status != 'CAP_REJECTED' OR admitted_at_ms IS NOT NULL)
 ) STRICT;
 
 -- Each burn's saved, signed withdrawal request and Circle's latest answer to it.
@@ -57,7 +63,16 @@ CREATE TABLE submission_events (
     response BLOB,
     error TEXT,
     endpoint TEXT,
-    hold_reason TEXT
+    hold_reason TEXT,
+    -- What the row records about the burn itself. A reservation is the amount and admission time a
+    -- new or renewed request holds against the limit.
+    reservation_amount INTEGER CHECK (reservation_amount >= 0),
+    admitted_at_ms INTEGER
+        CHECK (admitted_at_ms >= 0 AND (admitted_at_ms IS NULL) = (reservation_amount IS NULL)),
+    burn_status TEXT,
+    burn_hold_reason TEXT
 ) STRICT;
 
 CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);
+CREATE INDEX submission_events_reservations ON submission_events (note_id, seq DESC)
+    WHERE reservation_amount IS NOT NULL;

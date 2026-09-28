@@ -82,10 +82,42 @@ async fn prepare_400_holds_survive_restart_until_released() {
             CircleState::TransportError,
         ])
         .await;
+    assert_eq!(
+        recorded::<i64>(&ledger, order[0], "BURN_RELEASED", "burn_hold_reason"),
+        [BurnHoldReason::PrepareRejected.code()]
+    );
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0], ObservedRequest::Prepare);
+}
+
+/// Releasing every hold is all or nothing: when a history row cannot be written, no hold is
+/// cleared, no held request is deleted and no history row is kept.
+#[tokio::test]
+async fn failed_release_keeps_every_hold() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    attester
+        .store
+        .hold_burn(
+            ledger.burns[1].burn.note_id(),
+            BurnHoldReason::PrepareRejected,
+        )
+        .unwrap();
+    drop(attester);
+    ledger.sql(
+        "CREATE TRIGGER fail_release BEFORE INSERT ON submission_events
+         WHEN NEW.kind = 'OPERATOR_RELEASE' BEGIN SELECT RAISE(FAIL, 'disk full'); END;",
+    );
+    let before = std::fs::read(ledger.path()).unwrap();
+    let mut store = ledger.open_store().unwrap();
+    assert!(store.release_all_holds().is_err());
+    drop(store);
+    assert_eq!(std::fs::read(ledger.path()).unwrap(), before);
 }
 
 #[tokio::test]

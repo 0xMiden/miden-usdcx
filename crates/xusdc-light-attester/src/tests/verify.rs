@@ -5,6 +5,7 @@ use alloy_sol_types::SolCall;
 use miden_protocol::{Felt, Word};
 use serde_json::json;
 
+use crate::burn::ValidatedBurn;
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
 use crate::verify::{
@@ -60,9 +61,11 @@ fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
 /// A captured reply, rebound to the test faucet: the probes ran against Circle's registered remote
 /// domain and token, so those two hook fields are replaced and the digest rebuilt, keeping every
 /// other field exactly as Circle laid it out.
-pub(super) fn captured(fixture: &str) -> UnverifiedPrepareBatch {
+pub(super) fn captured(fixture: &str, burn: &ValidatedBurn) -> UnverifiedPrepareBatch {
     let mut response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
     let mut batch = response.batches.remove(0);
+    // The capture was prepared with the note serial as the salt; bind it to this burn instead.
+    batch.burn_intents[0].spec.salt = burn.burn.note_id().to_hex();
     let hook = &mut batch.burn_intents[0].spec.hook_data;
     hook.remote_domain = 10007;
     hook.remote_token = "0x00000000000000000000000000000000bb405fd9fe431bd1135a292de098cb00".into();
@@ -399,7 +402,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         (&burn, FORWARDED_FIXTURE),
         (&solana, FORWARDED_SOLANA_FIXTURE),
     ] {
-        assert_eq!(verify(burn, captured(fixture), &forwarding), None);
+        assert_eq!(verify(burn, captured(fixture, burn), &forwarding), None);
     }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
@@ -477,7 +480,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         ),
     ];
     for (name, edit, expected) in cases {
-        let mut batch = captured(FORWARDED_FIXTURE);
+        let mut batch = captured(FORWARDED_FIXTURE, &burn);
         let mut call = decode_call(&batch);
         edit(&mut batch, &mut call);
         let batch = with_calldata(batch, call.abi_encode());
@@ -485,7 +488,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     }
 
     // A fee at or above the amount reverts the CCTP leg on chain, even when it is the configured one.
-    let batch = captured(FORWARDED_FIXTURE);
+    let batch = captured(FORWARDED_FIXTURE, &burn);
     let mut call = decode_call(&batch);
     call.maxFee = call.amount;
     let batch = with_calldata(batch, call.abi_encode());
@@ -494,7 +497,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         Some(TooSmallToForward),
         "fee at the amount"
     );
-    let batch = captured(FORWARDED_FIXTURE);
+    let batch = captured(FORWARDED_FIXTURE, &burn);
     let padded = [decode_call(&batch).abi_encode(), vec![0]].concat();
     assert_eq!(
         verify(&burn, with_calldata(batch, padded), &forwarding),
@@ -504,7 +507,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     assert_eq!(
         verify(
             &burn,
-            with_calldata(captured(FORWARDED_FIXTURE), vec![]),
+            with_calldata(captured(FORWARDED_FIXTURE, &burn), vec![]),
             &forwarding
         ),
         Some(ForwardedField("forwardingCalldata")),
@@ -513,7 +516,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     assert_eq!(
         verify(
             &burn,
-            captured(FORWARDED_FIXTURE),
+            captured(FORWARDED_FIXTURE, &burn),
             &forwarding_config(518_248, 500_000)
         ),
         Some(FeeTooHigh),
@@ -524,13 +527,13 @@ fn forwarded_route_is_bound_to_the_burn() {
     assert_eq!(
         verify(
             &base_burn,
-            captured(DIRECT_WITH_OPTIONS_FIXTURE),
+            captured(DIRECT_WITH_OPTIONS_FIXTURE, &base_burn),
             &forwarding
         ),
         None,
         "a direct reply prepared with forwarding on"
     );
-    let mut restricted = captured(DIRECT_WITH_OPTIONS_FIXTURE);
+    let mut restricted = captured(DIRECT_WITH_OPTIONS_FIXTURE, &base_burn);
     restricted.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32));
     rebuild_for_test(&mut restricted).unwrap();
     assert_eq!(

@@ -1,6 +1,6 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
@@ -50,7 +50,9 @@ pub struct Attester {
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
-    pub(crate) now: Box<dyn Fn() -> SystemTime + Send + Sync>,
+    /// A fixed time for tests in place of the system clock.
+    #[cfg(test)]
+    pub(crate) now: Option<std::time::SystemTime>,
 }
 
 impl Attester {
@@ -126,7 +128,8 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
-            now: Box::new(SystemTime::now),
+            #[cfg(test)]
+            now: None,
         })
     }
 

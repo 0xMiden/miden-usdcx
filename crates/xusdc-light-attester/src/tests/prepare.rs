@@ -1,11 +1,13 @@
 //! Prepare requests and unverified responses, without signing or submitting a withdrawal.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use miden_protocol::{Felt, Word};
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use serde_json::{json, Value};
 
+use crate::burn::ValidatedBurn;
 use crate::circle::{read_prepared, CircleClient, CircleError, PrepareBatch, RawResponse};
 use crate::config::Config;
 
@@ -32,7 +34,8 @@ fn client() -> CircleClient {
         .0
 }
 
-/// Every wire field comes from the right burn value, and the salt is the note serial.
+/// Every wire field comes from the right burn value, and the salt is the burn's note ID, so burns
+/// whose notes reuse one serial number still get different salts.
 #[tokio::test]
 async fn prepare_sends_the_right_values() {
     let cases = [
@@ -42,12 +45,11 @@ async fn prepare_sends_the_right_values() {
         (10_000_000, "10.000000", 9),
         (9_223_372_034_707_292_160, "9223372034707.292160", 9),
     ];
-    // These expected values are written independently, not produced by the request helpers.
-    let expected_salt = "0x0807060504030201181716151413121128272625242322213837363534333231";
-    let other_salt = "0x0807060504030201181716151413121128272625242322213937363534333231";
     let client = client();
     for forwarding in [false, true] {
-        let expected = |value: &str, domain: u32, salt: &str| {
+        // Apart from the salt, which is each burn's note ID, these expected values are written
+        // independently, not produced by the request helpers.
+        let expected = |burn: &ValidatedBurn, value: &str, domain: u32| {
             json!({
                 "token": "USDC",
                 "remoteDomain": 10007,
@@ -55,7 +57,7 @@ async fn prepare_sends_the_right_values() {
                 "finalDestinationDomain": domain,
                 "finalDestinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
                 "valueIncludingFees": value,
-                "salt": salt,
+                "salt": burn.burn.note_id().to_hex(),
                 "useCircleForwarding": forwarding,
             })
         };
@@ -63,17 +65,24 @@ async fn prepare_sends_the_right_values() {
             .iter()
             .map(|&(amount, value, domain)| {
                 let burn = validated_burn(amount, serial(0x3132_3334_3536_3738), domain);
-                (burn, expected(value, domain, expected_salt))
+                let expected = expected(&burn, value, domain);
+                (burn, expected)
             })
             .collect();
         let burn = validated_burn(10_000_000, serial(0x3132_3334_3536_3739), 9);
-        burns.push((burn, expected("10.000000", 9, other_salt)));
+        let other = expected(&burn, "10.000000", 9);
+        burns.push((burn, other));
         for (burn, expected) in &burns {
             assert_eq!(
                 serde_json::to_value(PrepareBatch::from_burn(burn, forwarding)).unwrap(),
                 *expected
             );
         }
+        let salts: BTreeSet<_> = burns
+            .iter()
+            .map(|(_, expected)| expected["salt"].to_string())
+            .collect();
+        assert_eq!(salts.len(), burns.len());
 
         let (burn, expected) = &burns[0];
         let request = client.prepare_request(burn, forwarding).unwrap();
@@ -95,6 +104,24 @@ async fn prepare_sends_the_right_values() {
             json!({"batches": [expected]})
         );
     }
+}
+
+#[test]
+fn prepare_salt_is_unique_per_burn_and_stable_on_retry() {
+    let first = validated_burn(1_000_000, serial(7), 9);
+    let second = validated_burn(2_000_000, serial(7), 9);
+    assert_ne!(
+        first.burn.note().as_note().id(),
+        second.burn.note().as_note().id(),
+    );
+    let salt =
+        |burn| serde_json::to_value(PrepareBatch::from_burn(burn, false)).unwrap()["salt"].clone();
+    assert_eq!(salt(&first), salt(&first), "retry must keep the salt");
+    assert_ne!(
+        salt(&first),
+        salt(&second),
+        "distinct burns need distinct salts"
+    );
 }
 
 /// Only a 200 is decoded, and decoding does not approve a response. Any other status keeps

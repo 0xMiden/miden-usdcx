@@ -172,10 +172,7 @@ pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Option<ValidatedBurn> {
     let withdrawal = note.attachments().iter().find(|attachment| {
         attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
     })?;
-    let items = XUsdcBurnAttachment::try_from(withdrawal)
-        .ok()?
-        .items()
-        .clone();
+    let items = XUsdcBurnAttachment::try_from(withdrawal).ok()?.into_items();
     // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
     // of the faucet.
     let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());

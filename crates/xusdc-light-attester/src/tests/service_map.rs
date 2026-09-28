@@ -201,7 +201,7 @@ async fn circle_response_is_checked_before_signing() {
         .collect();
     assert_eq!(
         pending,
-        [ledger.burns[order[0]].burn.note_id()],
+        [ledger.burns[order[0]].note_id()],
         "a failed check leaves the burn unsigned and ready for the next cycle"
     );
     assert_eq!(ledger.record(&attester, order[1]).status, Submitted);

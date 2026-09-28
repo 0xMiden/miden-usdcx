@@ -13,8 +13,8 @@ use crate::store::BurnHoldReason;
 use crate::submission::{is_limit_rejection, SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
-use super::submit::{poll, recover, reply, Ledger};
-use super::support::{CircleState, ObservedRequest};
+use super::submit::{event, poll, recover, reply, Ledger};
+use super::support::{read_store, CircleState, ObservedRequest};
 
 const WINDOW: i64 = 86_400_000;
 const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
@@ -28,6 +28,27 @@ fn admission(ledger: &Ledger, index: usize) -> i64 {
         "SELECT admitted_at_ms FROM burns WHERE note_id = x'{}'",
         hex::encode(ledger.burns[index].note_id().to_bytes())
     ))
+}
+
+/// One column of a burn's history rows of one kind, oldest first.
+fn recorded<T: rusqlite::types::FromSql>(
+    ledger: &Ledger,
+    index: usize,
+    kind: &str,
+    column: &str,
+) -> Vec<T> {
+    read_store(&ledger.path())
+        .prepare(&format!(
+            "SELECT {column} FROM submission_events WHERE note_id = ?1 AND kind = ?2 ORDER BY seq"
+        ))
+        .unwrap()
+        .query_map(
+            rusqlite::params![ledger.burns[index].note_id().to_bytes(), kind],
+            |row| row.get(0),
+        )
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 #[tokio::test]
@@ -174,6 +195,11 @@ async fn retries_recheck_capacity_without_changing_signed_bytes() {
         }
     );
     assert_eq!(admission(&ledger, 0), 3 * WINDOW);
+    // Only the resend that fit renewed the reservation, and the history records when.
+    assert_eq!(
+        recorded::<i64>(&ledger, 0, "RESERVATION_RENEWED", "admitted_at_ms"),
+        [3 * WINDOW]
+    );
 }
 
 /// Lowering the limit below an in-flight burn's amount must not strand its uncertain POST.
@@ -297,6 +323,37 @@ async fn cap_rejection_releases_capacity_but_waits_for_fresh_signing() {
     assert_eq!(requests.lock().unwrap().len(), 2);
     assert_eq!(requests.lock().unwrap()[0], ObservedRequest::Prepare);
     assert_eq!(admission(&ledger, order[0]), 2 * WINDOW);
+
+    // The history keeps Circle's refusal, the hold and its release with the hold's reason, and
+    // the new authorization's later reservation.
+    let kinds: Vec<_> = ledger
+        .history(order[0])
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "AUTHORIZED",
+            "CAP_REJECTED",
+            "BURN_HELD",
+            "BURN_RELEASED",
+            "AUTHORIZED",
+            "OUTCOME"
+        ]
+    );
+    assert_eq!(
+        recorded::<Vec<u8>>(&ledger, order[0], "CAP_REJECTED", "response"),
+        [br#"{"message":"synthetic cap rejection"}"#.to_vec()]
+    );
+    assert_eq!(
+        recorded::<String>(&ledger, order[0], "BURN_RELEASED", "burn_hold_reason"),
+        ["prepare_rejected"]
+    );
+    assert_eq!(
+        recorded::<i64>(&ledger, order[0], "AUTHORIZED", "admitted_at_ms"),
+        [WINDOW, 2 * WINDOW]
+    );
 }
 
 #[tokio::test]
@@ -369,7 +426,7 @@ async fn only_the_configured_post_400_releases_capacity() {
     );
     assert!(!attester
         .store
-        .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
+        .can_submit_burn(ledger.burns[1].note_id(), 1_000, WINDOW, WINDOW, 1_000)
         .unwrap());
     assert!(!attester
         .store
@@ -379,29 +436,76 @@ async fn only_the_configured_post_400_releases_capacity() {
         .any(|burn| burn.note_id() == saved.note_id));
 }
 
+/// A cap rejection is recorded whole or not at all: when the burn's change or its history row
+/// cannot be written, the request, the reservation and the history stay as they were.
 #[tokio::test]
 async fn failed_cap_cleanup_keeps_the_request_and_reservation() {
+    for failing in [
+        "BEFORE UPDATE ON burns WHEN NEW.status = 'CAP_REJECTED'",
+        "BEFORE INSERT ON submission_events WHEN NEW.kind = 'CAP_REJECTED'",
+    ] {
+        let ledger = Ledger::new().await;
+        ledger.configure(1_000, true);
+        ledger.sql(&format!(
+            "CREATE TRIGGER fail_cap {failing} BEGIN SELECT RAISE(FAIL, 'disk full'); END;"
+        ));
+        let (mut attester, _) = ledger
+            .start(vec![reply(
+                400,
+                json!({"message": "synthetic cap rejection"}),
+            )])
+            .await;
+        at(&mut attester, WINDOW);
+        assert!(matches!(
+            ledger.submit(&mut attester, 0).await,
+            Err(SubmitError::Store(_))
+        ));
+        let saved = ledger.record(&attester, 0);
+        assert_eq!(
+            (saved.status, saved.last_http_status),
+            (SubmissionStatus::Submitting, None),
+            "{failing}"
+        );
+        assert_eq!(
+            ledger.history(0),
+            [event("AUTHORIZED", SubmissionStatus::Submitting)],
+            "{failing}"
+        );
+        assert!(!attester
+            .store
+            .can_submit_burn(ledger.burns[1].note_id(), 1_000, WINDOW, WINDOW, 1_000)
+            .unwrap());
+    }
+}
+
+/// A burn authorized again after its withdrawal expired holds one reservation, not one for each
+/// authorization.
+#[tokio::test]
+async fn a_new_authorization_replaces_the_burns_reservation() {
     let ledger = Ledger::new().await;
-    ledger.configure(1_000, true);
-    ledger.sql("CREATE TRIGGER fail_cap BEFORE UPDATE ON burns WHEN NEW.status = 'CAP_REJECTED' BEGIN SELECT RAISE(FAIL, 'disk full'); END;");
     let (mut attester, _) = ledger
-        .start(vec![reply(
-            400,
-            json!({"message": "synthetic cap rejection"}),
-        )])
+        .start(vec![
+            reply(201, json!([ledger.response(0, "created")])),
+            reply(200, ledger.response(0, "expired")),
+            CircleState::TransportError,
+        ])
         .await;
     at(&mut attester, WINDOW);
-    assert!(matches!(
-        ledger.submit(&mut attester, 0).await,
-        Err(SubmitError::Store(_))
-    ));
+    ledger.submit(&mut attester, 0).await.unwrap();
+    poll(&mut attester).await.unwrap();
+    ledger.submit(&mut attester, 0).await.unwrap();
     assert_eq!(
-        ledger.record(&attester, 0).status,
-        SubmissionStatus::Submitting
+        recorded::<i64>(&ledger, 0, "AUTHORIZED", "reservation_amount"),
+        [1_000, 1_000]
     );
+    let next = ledger.burns[1].note_id();
+    assert!(attester
+        .store
+        .can_submit_burn(next, 1_000, WINDOW, WINDOW, 2_000)
+        .unwrap());
     assert!(!attester
         .store
-        .can_submit_burn(ledger.burns[1].note_id(), 1_000, WINDOW, WINDOW, 1_000)
+        .can_submit_burn(next, 1_001, WINDOW, WINDOW, 2_000)
         .unwrap());
 }
 

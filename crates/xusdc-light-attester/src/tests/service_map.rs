@@ -663,13 +663,11 @@ async fn only_a_rate_limit_lengthens_the_pause() {
 async fn long_poll_interval_is_kept_after_a_rate_limit() {
     let ledger = Ledger::new().await;
     seed(&ledger, &[(0, None)]).await;
-    let config = ledger.path().with_file_name("attester.toml");
-    let settings = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(
-        &config,
-        settings.replace("poll_interval_ms = 100\n", "poll_interval_ms = 90000\n"),
-    )
-    .unwrap();
+    ledger
+        .config
+        .lock()
+        .unwrap()
+        .replace("--poll-interval", "90s");
     let replies = vec![reply(429, json!({"message": "slow down"})); 3];
     let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;

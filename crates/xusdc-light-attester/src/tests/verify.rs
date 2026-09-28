@@ -286,7 +286,8 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     }
     // Circle charged 11099 on a 1 USDC burn to Base: more than a fixed 11000, but within the
     // ceiling once one basis point of the burn (100) is added.
-    let mut base_fee = batch(FIRST_SALT, 1_000_000, 9);
+    let usdc = validated_burn(1_000_000, serial(0x3132_3334_3536_3738), 9);
+    let mut base_fee = batch(&usdc.burn.note_id().to_hex(), 1_000_000, 9);
     base_fee.burn_intents[0].spec.value = "988901".into();
     base_fee.burn_intents[0].max_fee = "11099".into();
     rebuild_for_test(&mut base_fee).unwrap();
@@ -295,7 +296,6 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     let mut args = TestArgs::new(&directory, 1);
     args.replace("--max-withdrawal-fee", "11000");
     args.replace("--max-withdrawal-fee-bps", "1");
-    let usdc = validated_burn(1_000_000, serial(0x3132_3334_3536_3738), 9);
     let response = UnverifiedPrepareResponse {
         batches: vec![base_fee],
     };

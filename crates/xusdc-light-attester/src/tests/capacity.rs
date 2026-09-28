@@ -20,7 +20,7 @@ const WINDOW: i64 = 86_400_000;
 const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
 
 fn at(attester: &mut Attester, millis: i64) {
-    attester.now = Box::new(move || UNIX_EPOCH + Duration::from_millis(millis as u64));
+    attester.now = Some(UNIX_EPOCH + Duration::from_millis(millis as u64));
 }
 
 fn admission(ledger: &Ledger, index: usize) -> i64 {
@@ -613,7 +613,7 @@ async fn transient_prepare_failures_retry_next_cycle() {
 async fn unusable_clock_stops_the_cycle() {
     let ledger = Ledger::new().await;
     let (mut attester, requests) = ledger.start(vec![]).await;
-    attester.now = Box::new(|| UNIX_EPOCH - Duration::from_millis(1));
+    attester.now = Some(UNIX_EPOCH - Duration::from_millis(1));
     let error = attester.run_one_cycle().await.unwrap_err();
     assert!(matches!(
         error.downcast_ref::<SubmitError>(),

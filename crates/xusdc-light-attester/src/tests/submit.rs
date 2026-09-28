@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -72,7 +71,6 @@ struct ScriptedCircle {
     replies: Mutex<VecDeque<CircleState>>,
     requests: Requests,
     store_path: PathBuf,
-    rate_limited: AtomicBool,
 }
 
 impl ScriptedCircle {
@@ -101,18 +99,12 @@ impl ScriptedCircle {
 
     fn next_reply(&self, request: ObservedRequest) -> Result<RawResponse, CircleError> {
         self.requests.lock().unwrap().push(request);
-        let answer = self
-            .replies
+        self.replies
             .lock()
             .unwrap()
             .pop_front()
             .expect("unexpected extra Circle request")
-            .answer();
-        // Like the real client, a 429 pauses the rest of the cycle.
-        if matches!(&answer, Ok(response) if response.status == StatusCode::TOO_MANY_REQUESTS) {
-            self.rate_limited.store(true, Ordering::Relaxed);
-        }
-        answer
+            .answer()
     }
 }
 
@@ -163,10 +155,6 @@ impl CircleApi for ScriptedCircle {
                 id,
             )
         })
-    }
-
-    fn rate_limited(&self) -> bool {
-        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 
@@ -232,7 +220,6 @@ impl Ledger {
             replies: Mutex::new(replies.into()),
             requests: requests.clone(),
             store_path: self.path(),
-            rate_limited: AtomicBool::new(false),
         };
         let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
         let chain = TestChain::new(self.blocks.clone(), scan_limits(3, 3)).0;
@@ -272,7 +259,7 @@ impl Ledger {
         index: usize,
     ) -> Result<(), SubmitError> {
         attester
-            .submit_signed_withdrawal(&self.signed(index).await)
+            .submit_signed_withdrawal(&self.signed(index).await, &mut false)
             .await
     }
 
@@ -333,7 +320,6 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         replies: Mutex::new(VecDeque::new()),
         requests: requests.clone(),
         store_path: directory.path().join("state.sqlite3"),
-        rate_limited: AtomicBool::new(false),
     };
     let config = Config::load(&directory.path().join("attester.toml")).unwrap();
     let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
@@ -342,7 +328,7 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         .expect("startup checks structure, not submission contents");
 
     assert!(matches!(
-        attester.recover_submissions().await,
+        attester.recover_submissions(&mut false).await,
         Err(SubmitError::Store(_))
     ));
     assert!(requests.lock().unwrap().is_empty());
@@ -453,7 +439,7 @@ async fn submit_sends_checked_request() {
                 .await;
             assert!(
                 matches!(
-                    attester.submit_signed_withdrawal(&fresh).await,
+                    attester.submit_signed_withdrawal(&fresh, &mut false).await,
                     Err(SubmitError::Store(error)) if error.to_string() == CONFLICT
                 ),
                 "{status}"
@@ -494,7 +480,7 @@ async fn submit_sends_checked_request() {
             let (mut attester, requests) = ledger.start(vec![]).await;
             assert!(
                 matches!(
-                    attester.submit_signed_withdrawal(&fresh).await,
+                    attester.submit_signed_withdrawal(&fresh, &mut false).await,
                     Err(SubmitError::Store(_))
                 ),
                 "{status}"
@@ -512,7 +498,10 @@ async fn submit_sends_checked_request() {
             let (mut attester, requests) = ledger
                 .start(vec![reply(201, json!([ledger.response(0, "created")]))])
                 .await;
-            attester.submit_signed_withdrawal(&fresh).await.unwrap();
+            attester
+                .submit_signed_withdrawal(&fresh, &mut false)
+                .await
+                .unwrap();
             assert_eq!(
                 requests.lock().unwrap()[0],
                 ObservedRequest::Submit {
@@ -573,7 +562,10 @@ async fn submit_saves_before_sending() {
     ledger.sql("DROP TRIGGER fail_insert;");
     let (mut attester, requests) = ledger.start(vec![CircleState::TransportError]).await;
     let signed = ledger.signed(0).await;
-    attester.submit_signed_withdrawal(&signed).await.unwrap();
+    attester
+        .submit_signed_withdrawal(&signed, &mut false)
+        .await
+        .unwrap();
     let original = ledger.record(&attester, 0);
     assert_eq!(
         attester
@@ -588,7 +580,7 @@ async fn submit_saves_before_sending() {
         .signed_with_max_height(0, Some("184467440737095516170001"))
         .await;
     assert!(matches!(
-        attester.submit_signed_withdrawal(&fresh).await,
+        attester.submit_signed_withdrawal(&fresh, &mut false).await,
         Err(SubmitError::Store(error)) if error.to_string() == CONFLICT
     ));
     assert_eq!(ledger.record(&attester, 0), original);
@@ -609,6 +601,7 @@ async fn retries_use_saved_request() {
             reply(503, json!({"message": "unavailable"})),
         ),
         ("rate limited", reply(429, json!({"message": "slow down"}))),
+        ("rate limited, reply unread", CircleState::RateLimitedUnread),
         (
             "request timeout",
             reply(408, json!({"message": "request timeout"})),
@@ -636,20 +629,33 @@ async fn retries_use_saved_request() {
             first
         };
         let (mut attester, first_requests) = ledger.start(vec![first]).await;
-        ledger.submit(&mut attester, 0).await.unwrap();
+        let mut rate_limited = false;
+        attester
+            .submit_signed_withdrawal(&ledger.signed(0).await, &mut rate_limited)
+            .await
+            .unwrap();
         assert_eq!(
             first_requests.lock().unwrap().len(),
             1,
             "{name}: wait for the next explicit recovery pass"
         );
-        assert_eq!(ledger.record(&attester, 0).withdrawal_id, None);
-        assert_eq!(
-            ledger.record(&attester, 0).status,
-            SubmissionStatus::Submitting,
-            "{name}"
-        );
-        if name == "rate limited" {
-            attester.recover_submissions().await.unwrap();
+        let saved = ledger.record(&attester, 0);
+        assert_eq!(saved.withdrawal_id, None);
+        assert_eq!(saved.status, SubmissionStatus::Submitting, "{name}");
+        // Only a 429 stops the rest of the cycle; a 408 is retried like any other status.
+        assert_eq!(rate_limited, name.starts_with("rate limited"), "{name}");
+        if rate_limited {
+            // Circle's reply is saved when it was read, and never made up when it was not.
+            let reply = (name == "rate limited").then(|| br#"{"message":"slow down"}"#.to_vec());
+            assert_eq!(
+                (saved.last_http_status, saved.last_response),
+                (reply.as_ref().map(|_| 429), reply),
+                "{name}"
+            );
+            attester
+                .recover_submissions(&mut rate_limited)
+                .await
+                .unwrap();
             assert_eq!(
                 first_requests.lock().unwrap().len(),
                 1,
@@ -665,7 +671,7 @@ async fn retries_use_saved_request() {
         let (mut attester, retried) = ledger
             .start(vec![reply(201, json!([ledger.response(0, "created")]))])
             .await;
-        attester.recover_submissions().await.unwrap();
+        attester.recover_submissions(&mut false).await.unwrap();
         assert_eq!(
             *first_requests.lock().unwrap(),
             *retried.lock().unwrap(),
@@ -697,7 +703,7 @@ async fn retries_use_saved_request() {
             reply(200, ledger.response(0, "finalized")),
         ])
         .await;
-    attester.recover_submissions().await.unwrap();
+    attester.recover_submissions(&mut false).await.unwrap();
     assert_eq!(first.lock().unwrap()[0], retry.lock().unwrap()[0]);
     assert_eq!(
         ledger.record(&attester, 0).status,
@@ -764,19 +770,25 @@ async fn conflicts_are_checked() {
         ("server error", reply(503, json!({}))),
         ("not found", reply(404, json!({}))),
         ("malformed", reply(200, json!({}))),
+        ("rate limited", reply(429, json!({}))),
     ] {
         let ledger = Ledger::new().await;
         let (mut attester, requests) = ledger.start(vec![conflict(), unavailable]).await;
-        ledger.submit(&mut attester, 0).await.unwrap();
+        let mut rate_limited = false;
+        attester
+            .submit_signed_withdrawal(&ledger.signed(0).await, &mut rate_limited)
+            .await
+            .unwrap();
         let saved = ledger.record(&attester, 0);
         assert_eq!(saved.status, Submitting, "{name}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
+        assert_eq!(rate_limited, name == "rate limited", "{name}");
         drop(attester);
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
-        attester.recover_submissions().await.unwrap();
+        attester.recover_submissions(&mut false).await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],
             ObservedRequest::Lookup {
@@ -904,14 +916,14 @@ async fn held_submissions_do_not_block_others() {
         rejected
     );
     ledger.submit(&mut attester, 1).await.unwrap();
-    attester.recover_submissions().await.unwrap();
+    attester.recover_submissions(&mut false).await.unwrap();
     assert_eq!(
         requests.lock().unwrap().len(),
         2,
         "holds do not retry automatically"
     );
     attester.retry_held_submission(held.note_id).unwrap();
-    attester.recover_submissions().await.unwrap();
+    attester.recover_submissions(&mut false).await.unwrap();
     {
         let observed = requests.lock().unwrap();
         assert_eq!(observed.len(), 3);
@@ -948,7 +960,7 @@ async fn held_submissions_do_not_block_others() {
     let (mut attester, retry) = ledger
         .start(vec![reply(200, ledger.response(0, "created"))])
         .await;
-    attester.recover_submissions().await.unwrap();
+    attester.recover_submissions(&mut false).await.unwrap();
     assert_eq!(*retry.lock().unwrap(), requests.lock().unwrap()[1..]);
     assert_eq!(
         ledger.record(&attester, 0).status,

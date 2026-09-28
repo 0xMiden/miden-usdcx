@@ -4,7 +4,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
@@ -38,6 +37,14 @@ pub enum CircleError {
     BodyTooLarge,
     #[error("Circle request URL is invalid")]
     InvalidUrl(#[source] url::ParseError),
+    /// Circle asks the attester to slow down, so the rest of the cycle leaves Circle alone.
+    #[error("Circle returned HTTP 429 Too Many Requests")]
+    RateLimited {
+        /// Circle's reply, unless it could not be read in full.
+        body: Option<Vec<u8>>,
+        #[source]
+        read_error: Option<Box<CircleError>>,
+    },
 }
 
 #[derive(Debug)]
@@ -92,9 +99,6 @@ pub trait CircleApi: Send + Sync {
         saved: &'a SavedSubmission,
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
-
-    /// Whether Circle has answered 429. The remaining requests then wait for a later cycle.
-    fn rate_limited(&self) -> bool;
 }
 
 /// Circle's xReserve API over HTTPS. Every request goes through one worker, which sends them one
@@ -103,7 +107,6 @@ pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
     requests: mpsc::Sender<Job>,
-    rate_limited: AtomicBool,
 }
 
 /// A request queued for the worker, and where its answer goes.
@@ -132,7 +135,6 @@ impl CircleClient {
             base_url: config.circle_api_base_url().clone(),
             request_timeout: config.circle_request_timeout(),
             requests,
-            rate_limited: AtomicBool::new(false),
         };
         Ok((circle, worker))
     }
@@ -154,12 +156,7 @@ impl CircleClient {
             .send(Job { request, reply })
             .await
             .map_err(|_| CircleError::Unavailable)?;
-        let raw = response.await.map_err(|_| CircleError::Unavailable)??;
-        // A 429 is remembered, so the rest of the cycle leaves Circle alone.
-        if raw.status == StatusCode::TOO_MANY_REQUESTS {
-            self.rate_limited.store(true, Ordering::Relaxed);
-        }
-        Ok(raw)
+        response.await.map_err(|_| CircleError::Unavailable)?
     }
 
     pub(crate) fn prepare_request(
@@ -272,13 +269,10 @@ impl CircleApi for CircleClient {
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
         Box::pin(async move { self.send(self.status_request(saved, id)?).await })
     }
-
-    fn rate_limited(&self) -> bool {
-        self.rate_limited.load(Ordering::Relaxed)
-    }
 }
 
-/// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`].
+/// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`]. A 429 comes back
+/// as [`CircleError::RateLimited`], with Circle's reply if it could be read in full.
 pub(crate) async fn read_reply(
     mut response: reqwest::Response,
 ) -> Result<RawResponse, CircleError> {
@@ -286,13 +280,28 @@ pub(crate) async fn read_reply(
     // Read chunk by chunk and stop once the total passes the cap, so an oversized or endless
     // reply is refused before it is buffered; the declared length is not trusted.
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
-        if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-            return Err(CircleError::BodyTooLarge);
+    let read = async {
+        while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                return Err(CircleError::BodyTooLarge);
+            }
+            body.extend_from_slice(&chunk);
         }
-        body.extend_from_slice(&chunk);
+        Ok(())
     }
-    Ok(RawResponse::new(status, body))
+    .await;
+    match read {
+        Ok(()) if status == StatusCode::TOO_MANY_REQUESTS => Err(CircleError::RateLimited {
+            body: Some(body),
+            read_error: None,
+        }),
+        Err(error) if status == StatusCode::TOO_MANY_REQUESTS => Err(CircleError::RateLimited {
+            body: None,
+            read_error: Some(Box::new(error)),
+        }),
+        Ok(()) => Ok(RawResponse::new(status, body)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Circle's API counts as reachable only when its info endpoint answers 200.

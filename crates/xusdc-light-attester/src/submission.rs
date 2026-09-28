@@ -5,14 +5,14 @@ use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
 
 use crate::attester::Attester;
-use crate::circle::{self, ConflictResponse, RawResponse, WithdrawalResponse};
+use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
 use crate::verify::SignedWithdrawal;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SubmitError {
     #[error("submission request is invalid")]
-    InvalidRequest(#[source] circle::CircleError),
+    InvalidRequest(#[source] CircleError),
     #[error("attester store failed")]
     Store(#[from] anyhow::Error),
     #[error("could not encode the signed withdrawal")]
@@ -70,24 +70,30 @@ impl SavedSubmission {
 }
 
 impl Attester {
+    /// `rate_limited` belongs to the current cycle: once Circle answers 429 it is set, and the
+    /// rest of the cycle leaves Circle alone.
     pub(crate) async fn submit_signed_withdrawal(
         &mut self,
         withdrawal: &SignedWithdrawal,
+        rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(SubmitError::InvalidRequest)?;
         let saved = withdrawal.submission(endpoint)?;
         // Only confirmed failed/expired attempts may receive a fresh authorization.
         self.store.save_submission(&saved)?;
-        self.advance_submission(saved).await
+        self.advance_submission(saved, rate_limited).await
     }
 
     /// Resends every saved request whose outcome is still unknown, one attempt each, and writes
     /// Circle's answer back onto its row; the outer cycle supplies the delay between attempts.
     /// A store write failure stops the pass so no answer is lost unrecorded.
-    pub(crate) async fn recover_submissions(&mut self) -> Result<(), SubmitError> {
+    pub(crate) async fn recover_submissions(
+        &mut self,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
         for saved in self.store.submissions_to_recover()? {
-            self.advance_submission(saved).await?;
+            self.advance_submission(saved, rate_limited).await?;
         }
         Ok(())
     }
@@ -100,12 +106,16 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    async fn advance_submission(&mut self, mut saved: SavedSubmission) -> Result<(), SubmitError> {
+    async fn advance_submission(
+        &mut self,
+        mut saved: SavedSubmission,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
         // After a 429 the rest of the cycle leaves Circle alone; the row stays queued.
-        if self.circle.rate_limited() {
+        if *rate_limited {
             return Ok(());
         }
-        let mut response = self.send_saved_request(&mut saved).await;
+        let mut response = self.send_saved_request(&mut saved, rate_limited).await;
         if saved.withdrawal_id.is_none()
             && response
                 .as_ref()
@@ -117,7 +127,7 @@ impl Attester {
             // The conflict ID is a lookup handle, not proof of success. Save it before GET so
             // a lost GET response or restart does not send another POST.
             self.save_outcome(&saved)?;
-            response = self.send_saved_request(&mut saved).await;
+            response = self.send_saved_request(&mut saved, rate_limited).await;
         }
         if let Some(response) = response {
             saved.read_response(response);
@@ -125,26 +135,38 @@ impl Attester {
         self.save_outcome(&saved)
     }
 
-    async fn send_saved_request(&self, saved: &mut SavedSubmission) -> Option<RawResponse> {
+    async fn send_saved_request(
+        &self,
+        saved: &mut SavedSubmission,
+        rate_limited: &mut bool,
+    ) -> Option<RawResponse> {
         let result = match &saved.withdrawal_id {
             Some(id) => self.circle.get_withdrawal(saved, id).await,
             None => self.circle.post_submission(saved).await,
         };
-        match result {
-            Ok(response) => {
-                saved.last_http_status = Some(response.status.as_u16());
-                saved.last_response = Some(response.body.clone());
-                saved.last_error = None;
-                Some(response)
+        let response = match result {
+            Ok(response) => response,
+            // A 429 ends Circle traffic for this cycle, before anything is written; Circle's
+            // reply is kept like any other.
+            Err(CircleError::RateLimited {
+                body: Some(body), ..
+            }) => {
+                *rate_limited = true;
+                RawResponse::new(StatusCode::TOO_MANY_REQUESTS, body)
             }
             Err(error) => {
+                *rate_limited |= matches!(error, CircleError::RateLimited { .. });
                 // A lost response says nothing about whether Circle accepted the request.
                 saved.last_http_status = None;
                 saved.last_response = None;
                 saved.last_error = Some(error.to_string());
-                None
+                return None;
             }
-        }
+        };
+        saved.last_http_status = Some(response.status.as_u16());
+        saved.last_response = Some(response.body.clone());
+        saved.last_error = None;
+        Some(response)
     }
 
     fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {

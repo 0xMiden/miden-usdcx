@@ -1,7 +1,6 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use miden_protocol::account::AccountId;
@@ -164,16 +163,32 @@ pub(super) enum CircleState {
     Response(StatusCode),
     ResponseBody(StatusCode, Vec<u8>),
     TransportError,
+    /// A 429 whose reply could not be read.
+    RateLimitedUnread,
 }
 
 impl CircleState {
-    /// What a call to Circle gets back in this state.
+    /// What a call to Circle gets back in this state. Like the real client, a 429 comes back as an
+    /// error that keeps Circle's reply.
     pub(super) fn answer(self) -> Result<RawResponse, CircleError> {
-        match self {
-            CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
-            CircleState::ResponseBody(status, body) => Ok(RawResponse::new(status, body)),
-            CircleState::TransportError => Err(CircleError::Unavailable),
+        let (status, body) = match self {
+            CircleState::Response(status) => (status, Vec::new()),
+            CircleState::ResponseBody(status, body) => (status, body),
+            CircleState::TransportError => return Err(CircleError::Unavailable),
+            CircleState::RateLimitedUnread => {
+                return Err(CircleError::RateLimited {
+                    body: None,
+                    read_error: Some(Box::new(CircleError::BodyTooLarge)),
+                })
+            }
+        };
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(CircleError::RateLimited {
+                body: Some(body),
+                read_error: None,
+            });
         }
+        Ok(RawResponse::new(status, body))
     }
 }
 
@@ -189,7 +204,6 @@ pub(super) enum ObservedRequest {
 pub(super) struct FakeCircle {
     state: CircleState,
     requests: Arc<Mutex<Vec<ObservedRequest>>>,
-    rate_limited: AtomicBool,
 }
 
 impl FakeCircle {
@@ -199,21 +213,15 @@ impl FakeCircle {
             Self {
                 state,
                 requests: Arc::clone(&requests),
-                rate_limited: AtomicBool::new(false),
             },
             requests,
         )
     }
 
-    /// Records the call and answers it with the fixed state. Like the real client, a 429 pauses
-    /// the rest of the cycle.
+    /// Records the call and answers it with the fixed state.
     fn reply(&self, request: ObservedRequest) -> Result<RawResponse, CircleError> {
         self.requests.lock().unwrap().push(request);
-        let answer = self.state.clone().answer();
-        if matches!(&answer, Ok(response) if response.status == StatusCode::TOO_MANY_REQUESTS) {
-            self.rate_limited.store(true, Ordering::Relaxed);
-        }
-        answer
+        self.state.clone().answer()
     }
 }
 
@@ -256,10 +264,6 @@ impl CircleApi for FakeCircle {
             id: id.to_owned(),
         });
         Box::pin(async move { answer })
-    }
-
-    fn rate_limited(&self) -> bool {
-        self.rate_limited.load(Ordering::Relaxed)
     }
 }
 

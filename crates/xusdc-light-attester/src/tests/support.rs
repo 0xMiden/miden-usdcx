@@ -3,6 +3,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use miden_client::rpc::RpcError;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::block::{
@@ -66,6 +67,7 @@ pub(super) struct TestChain {
     scan_limits: Arc<Mutex<ScanLimits>>,
     requests: Arc<Mutex<Vec<BlockNumber>>>,
     scan_limit_requests: Arc<Mutex<usize>>,
+    invalid_scan_limits: Arc<Mutex<bool>>,
     missing: Option<BlockNumber>,
     reachable: bool,
     faucet_present: bool,
@@ -75,6 +77,8 @@ pub(super) struct ChainControls {
     pub(super) scan_limits: Arc<Mutex<ScanLimits>>,
     pub(super) requests: Arc<Mutex<Vec<BlockNumber>>>,
     pub(super) scan_limit_requests: Arc<Mutex<usize>>,
+    /// Makes the node answer the scan-limits request with something it cannot decode.
+    pub(super) invalid_scan_limits: Arc<Mutex<bool>>,
 }
 
 impl TestChain {
@@ -82,12 +86,14 @@ impl TestChain {
         let scan_limits = Arc::new(Mutex::new(scan_limits));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let scan_limit_requests = Arc::new(Mutex::new(0));
+        let invalid_scan_limits = Arc::new(Mutex::new(false));
         (
             Self {
                 blocks,
                 scan_limits: Arc::clone(&scan_limits),
                 requests: Arc::clone(&requests),
                 scan_limit_requests: Arc::clone(&scan_limit_requests),
+                invalid_scan_limits: Arc::clone(&invalid_scan_limits),
                 missing: None,
                 reachable: true,
                 faucet_present: true,
@@ -96,6 +102,7 @@ impl TestChain {
                 scan_limits,
                 requests,
                 scan_limit_requests,
+                invalid_scan_limits,
             },
         )
     }
@@ -146,8 +153,14 @@ impl ChainReader for TestChain {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<ScanLimits, ChainError>> + Send + '_>> {
         *self.scan_limit_requests.lock().unwrap() += 1;
-        let scan_limits = *self.scan_limits.lock().unwrap();
-        Box::pin(async move { Ok(scan_limits) })
+        let result = if *self.invalid_scan_limits.lock().unwrap() {
+            Err(ChainError::Rpc(RpcError::InvalidResponse(
+                "scan limits".into(),
+            )))
+        } else {
+            Ok(*self.scan_limits.lock().unwrap())
+        };
+        Box::pin(async move { result })
     }
 
     fn block_by_number(

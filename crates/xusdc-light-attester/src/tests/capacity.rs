@@ -71,7 +71,7 @@ async fn reservations_use_the_rolling_boundary_and_never_move_backwards() {
     let (saved, amount) = ledger
         .signed_with_max_height(0, None)
         .await
-        .submission(ENDPOINT.into())
+        .submission(ENDPOINT.parse().unwrap())
         .unwrap();
     let (mut attester, _) = ledger.start(vec![]).await;
     assert!(attester
@@ -605,7 +605,7 @@ fn failures_that_hold_a_burn() {
         ),
         (
             "failed verification",
-            SubmitError::Verification(Box::new(VerifyError::DigestMismatch)),
+            SubmitError::Verification(VerifyError::DigestMismatch),
             None,
         ),
     ] {

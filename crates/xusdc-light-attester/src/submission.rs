@@ -19,14 +19,21 @@ pub enum SubmitError {
     Encoding(#[source] serde_json::Error),
 }
 
-/// Failed and expired attempts can be replaced; they do not permanently retire the burn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Failed and expired attempts can be replaced; they do not permanently retire the burn. Each
+/// status is stored under the name given here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::EnumString)]
 pub(crate) enum SubmissionStatus {
+    #[strum(serialize = "SUBMITTING")]
     Submitting,
+    #[strum(serialize = "SUBMITTED")]
     Submitted,
+    #[strum(serialize = "FINALIZED")]
     Finalized,
+    #[strum(serialize = "EXPIRED")]
     Expired,
+    #[strum(serialize = "FAILED")]
     Failed,
+    #[strum(serialize = "HELD")]
     Held,
 }
 

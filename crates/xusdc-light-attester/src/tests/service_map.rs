@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::chain::ChainError;
 use crate::circle::CircleError;
-use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted, Submitting};
 use crate::verify::VerifyError;
 
@@ -56,7 +56,7 @@ impl Signer for CountedSigner {
     }
 }
 
-fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts) {
+async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
     let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let mut index = 0;
     let signers = development_signers().map(|inner| {
@@ -68,7 +68,7 @@ fn signers(shutdown: Option<CancellationToken>) -> ([Box<dyn Signer>; 2], Counts
         index += 1;
         signer
     });
-    (signers, calls)
+    (SignerPair::new(signers).await.unwrap(), calls)
 }
 
 fn counts(calls: &Counts) -> [usize; 2] {
@@ -109,7 +109,7 @@ async fn cycle_runs_in_order() {
     let mut replies = vec![accepted(&ledger, 0, "created")];
     replies.extend(fresh_replies(&ledger, &[2]));
     replies.push(reply(200, ledger.response(1, "finalized")));
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let saved = ledger.record(&attester, 0);
     let report = attester.run_one_cycle().await.unwrap();
@@ -157,7 +157,7 @@ async fn invalid_burns_are_not_signed() {
     let config = write_config(&directory, 0, &blocks.blocks()[0], 1);
     let (circle, requests) = ScriptedCircle::new(directory.path().join("state.sqlite3"), vec![]);
     let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 1));
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let mut attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
         .await
         .unwrap();
@@ -177,7 +177,7 @@ async fn circle_response_is_checked_before_signing() {
     let mut replies = vec![reply(200, response)];
     replies.extend(fresh_replies(&ledger, &order[1..2]));
     replies.push(reply(200, ledger.response(order[2], "finalized")));
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
     let report = attester.run_one_cycle().await.unwrap();
     assert!(report.discover.is_ok());
@@ -223,7 +223,7 @@ async fn expiry_waits_for_the_next_cycle() {
             .map(|i| reply(200, ledger.response(i, "finalized"))),
     );
     replies.extend(fresh_replies(&ledger, &[0]));
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
     let report = attester.run_one_cycle().await.unwrap();
     assert!(report.discover.is_ok() && report.submit.is_ok());
@@ -245,7 +245,7 @@ async fn discovery_failure_still_recovers_and_polls() {
     for invalid_answer in [false, true] {
         let ledger = Ledger::new().await;
         seed(&ledger, &[(0, None), (1, Some("created"))]).await;
-        let (signers, calls) = signers(None);
+        let (signers, calls) = signers(None).await;
         let replies = vec![
             accepted(&ledger, 0, "created"),
             reply(200, ledger.response(1, "finalized")),
@@ -302,7 +302,7 @@ async fn submission_store_failure_stops_remaining_work() {
             reply(200, ledger.prepared_response(second)),
             reply(200, ledger.response(polled, "finalized")),
         ];
-        let (signers, calls) = signers(None);
+        let (signers, calls) = signers(None).await;
         let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
         let before = [first, second, polled].map(|i| {
             attester
@@ -349,7 +349,7 @@ async fn diverged_chain_stops_the_cycle() {
         accepted(&ledger, 0, "created"),
         reply(200, ledger.response(1, "finalized")),
     ];
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     *chain.scan_limits.lock().unwrap() = scan_limits(2, 2);
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
@@ -375,7 +375,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
         accepted(&ledger, 0, "created"),
         reply(200, ledger.response(1, "finalized")),
     ];
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let checkpoint = attester.store.scan_state().unwrap();
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
@@ -421,7 +421,7 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
         accepted(&ledger, 2, "finalized"),
         reply(200, ledger.response(1, "finalized")),
     ];
-    let (signers, _) = signers(None);
+    let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let shutdown = CancellationToken::new();
     let mut run = Box::pin(attester.run(shutdown.clone()));
@@ -485,7 +485,7 @@ async fn rate_limit_ends_the_cycle_where_it_comes() {
         };
         let sent = replies.len();
         replies.push(slow_down());
-        let (signers, calls) = signers(None);
+        let (signers, calls) = signers(None).await;
         let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
         let polled = ledger.record(&attester, 1);
 
@@ -565,7 +565,7 @@ async fn only_a_rate_limit_lengthens_the_pause() {
                 _ => accepted(&ledger, 0, "created"),
             })
             .to_vec();
-        let (signers, _) = signers(None);
+        let (signers, _) = signers(None).await;
         let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
         let shutdown = CancellationToken::new();
         let mut run = Box::pin(attester.run(shutdown.clone()));
@@ -589,7 +589,7 @@ async fn long_poll_interval_is_kept_after_a_rate_limit() {
     )
     .unwrap();
     let replies = vec![reply(429, json!({"message": "slow down"})); 3];
-    let (signers, _) = signers(None);
+    let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let shutdown = CancellationToken::new();
     let mut run = Box::pin(attester.run(shutdown.clone()));
@@ -612,7 +612,7 @@ async fn restart_and_shutdown_do_not_lose_work() {
     let mut replies = fresh_replies(&ledger, &fresh);
     replies.push(reply(200, ledger.response(1, "finalized")));
     let shutdown = CancellationToken::new();
-    let (signers, calls) = signers(Some(shutdown.clone()));
+    let (signers, calls) = signers(Some(shutdown.clone())).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let started = tokio::time::Instant::now();
     attester.run(shutdown.clone()).await;

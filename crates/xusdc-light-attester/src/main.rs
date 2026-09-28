@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
 use xusdc_attester::config::Config;
-use xusdc_attester::signer::{DevelopmentSigner, Signer};
+use xusdc_attester::signer::{DevelopmentSigner, Signer, SignerPair};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,6 +18,9 @@ async fn main() -> Result<()> {
     let (circle, circle_worker) =
         CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
     let signers = development_signers().context("failed to initialize development signers")?;
+    let signers = SignerPair::new(signers)
+        .await
+        .context("failed to initialize the signer pair")?;
 
     let mut attester = Attester::start(
         config,

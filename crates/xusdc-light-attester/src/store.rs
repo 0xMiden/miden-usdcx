@@ -60,6 +60,18 @@ enum EventKind {
     OperatorRetry,
 }
 
+impl EventKind {
+    /// Whether the row keeps the signed request itself: only a new authorization does.
+    fn keeps_request(self) -> bool {
+        matches!(self, Self::Authorized)
+    }
+
+    /// Whether the row sets the burn's reservation against the withdrawal limit.
+    fn keeps_reservation(self) -> bool {
+        matches!(self, Self::Authorized)
+    }
+}
+
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -337,7 +349,7 @@ impl Store {
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
         if !repeats_latest_outcome(&transaction, outcome)? {
-            record_submission(&transaction, outcome.note_id, EventKind::Outcome)?;
+            record_event(&transaction, outcome.note_id, EventKind::Outcome)?;
         }
         transaction.commit().map_err(classify_error)
     }
@@ -360,7 +372,7 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        record_submission(&transaction, note_id, EventKind::OperatorRetry)?;
+        record_event(&transaction, note_id, EventKind::OperatorRetry)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -566,7 +578,7 @@ fn save_submission(
         )
         .map_err(classify_write_error)?;
     ensure!(written == 1, CONFLICT);
-    record_submission(connection, record.note_id, EventKind::Authorized)
+    record_event(connection, record.note_id, EventKind::Authorized)
 }
 
 fn initialize_store(
@@ -633,10 +645,10 @@ fn upgrade(connection: &rusqlite::Connection, version: u32) -> anyhow::Result<()
     set_version(connection)
 }
 
-/// Appends one burn's submission, as it now stands, to the burn's history. Only a new
-/// authorization keeps the request itself. History belongs to the burn, which is never deleted; the
-/// history table's foreign key refuses a row for a burn the store does not know.
-fn record_submission(
+/// Appends one row to a burn's history, recording the burn as it now stands: its status and hold
+/// and, when it has one, its submission; only some kinds keep the request or the reservation.
+/// History belongs to the burn, which is never deleted, so the burn must be one the store knows.
+fn record_event(
     connection: &rusqlite::Connection,
     note_id: NoteId,
     kind: EventKind,
@@ -645,17 +657,23 @@ fn record_submission(
         .execute(
             "INSERT INTO submission_events (
                 note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
-                http_status, response, error, endpoint, hold_reason
+                http_status, response, error, endpoint, hold_reason, reservation_amount,
+                admitted_at_ms, burn_status, burn_hold_reason
              )
-             SELECT note_id, unixepoch(), ?2, status, withdrawal_id, iif(?3, body, NULL),
-                transfer_spec_hash, last_http_status, last_response, last_error,
-                iif(?3, endpoint, NULL), hold_reason
-             FROM submissions
-             WHERE note_id = ?1",
+             SELECT burns.note_id, unixepoch(), ?2, submissions.status,
+                submissions.withdrawal_id, iif(?3, submissions.body, NULL),
+                submissions.transfer_spec_hash, submissions.last_http_status,
+                submissions.last_response, submissions.last_error,
+                iif(?3, submissions.endpoint, NULL), submissions.hold_reason,
+                iif(?4, burns.reservation_amount, NULL), iif(?4, burns.admitted_at_ms, NULL),
+                burns.status, burns.hold_reason
+             FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
+             WHERE burns.note_id = ?1",
             params![
                 note_id.to_bytes(),
                 kind.as_ref(),
-                kind == EventKind::Authorized
+                kind.keeps_request(),
+                kind.keeps_reservation()
             ],
         )
         .map_err(classify_error)?;

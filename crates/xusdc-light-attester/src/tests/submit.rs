@@ -1202,7 +1202,7 @@ async fn held_submissions_do_not_block_others() {
         .collect();
     let mut replies = fresh_replies(&ledger, &ready);
     replies.push(reply(200, ledger.response(1, "created")));
-    let (signers, calls) = signers(None);
+    let (signers, calls) = signers(None).await;
     let (mut attester, released, _) = ledger.runtime(replies, signers).await;
     assert!(attester.store.submission(held.note_id).unwrap().is_none());
     assert!(attester

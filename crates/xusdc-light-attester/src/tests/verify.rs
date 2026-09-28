@@ -406,13 +406,26 @@ fn forwarded_route_is_bound_to_the_burn() {
     }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 13] = [
+    let cases: [(&str, Edit, VerifyError); 15] = [
         (
             "zero forwarding contract",
             |b, _| {
                 b.burn_intents[0].spec.hook_data.forwarding_contract_address =
                     format!("0x{}", "00".repeat(20))
             },
+            ForwardedField("forwardingContractAddress"),
+        ),
+        (
+            "forwarding contract is not TokenMessengerV2",
+            |b, _| {
+                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
+                    format!("0x{}", "ee".repeat(20))
+            },
+            ForwardedField("forwardingContractAddress"),
+        ),
+        (
+            "forwarding contract is xReserve itself",
+            |b, _| b.burn_intents[0].spec.hook_data.forwarding_contract_address = FORWARDER.into(),
             ForwardedField("forwardingContractAddress"),
         ),
         (

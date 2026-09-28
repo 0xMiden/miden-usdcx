@@ -243,8 +243,8 @@ impl UnverifiedPrepareResponse {
         let forwarded =
             hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
         let cctp_fee = if forwarded {
-            let (fee, forwarder) = config.cctp_forwarding();
-            verify_forwarded_leg(&intent, &hook, burn, fee, forwarder)?;
+            let (fee, forwarder, token_messenger) = config.cctp_forwarding();
+            verify_forwarded_leg(&intent, &hook, burn, fee, forwarder, token_messenger)?;
             U256::from(fee)
         } else {
                 if spec.destinationDomain != burn.items().dest_domain.as_u32() {
@@ -326,11 +326,12 @@ fn verify_forwarded_leg(
     burn: &DiscoveredBurn,
     cctp_fee: u64,
     forwarder: Address,
+    token_messenger: Address,
 ) -> Result<(), VerifyError> {
     use VerifyError::ForwardedField;
-    // xReserve only forwards when the hook names a forwarding contract. With zero it keeps the
-    // minted USDC itself and nothing reaches the burn's recipient.
-    if hook.forwarding_contract == Address::ZERO {
+    // xReserve calls this contract with the calldata below, so it must be CCTP's TokenMessengerV2;
+    // the checks on that calldata only hold if TokenMessengerV2 is the contract that runs it.
+    if hook.forwarding_contract != token_messenger {
         return Err(ForwardedField("forwardingContractAddress"));
     }
     let spec = &intent.spec;

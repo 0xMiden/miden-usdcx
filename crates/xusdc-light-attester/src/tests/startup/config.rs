@@ -46,6 +46,7 @@ fn cli_surface_is_explicit() {
         "--max-withdrawal-fee-bps",
         "--cctp-forwarding-max-fee",
         "--cctp-forwarder-address",
+        "--cctp-token-messenger-address",
         "--poll-interval",
         "--faucet-deployment-block",
         "--trusted-anchor-block",
@@ -233,6 +234,7 @@ fn invalid_config_is_rejected() {
     }
 
     const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
+    const TOKEN_MESSENGER: &str = "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa";
     let mut forwarding = valid.clone();
     forwarding.replace("--max-withdrawal-fee", "1000");
     forwarding.replace("--cctp-forwarding-max-fee", "1000");
@@ -244,9 +246,24 @@ fn invalid_config_is_rejected() {
     forwarding.replace("--cctp-forwarder-address", "0x1234");
     assert_config_error(&forwarding, "cctp forwarder address is invalid");
     forwarding.replace("--cctp-forwarder-address", FORWARDER);
+    for (messenger, expected_error) in [
+        ("0x1234", "cctp token messenger address is invalid"),
+        (
+            "0x0000000000000000000000000000000000000000",
+            "cctp token messenger address must not be zero",
+        ),
+    ] {
+        let mut args = forwarding.clone();
+        args.replace("--cctp-token-messenger-address", messenger);
+        assert_config_error(&args, expected_error);
+    }
     assert_eq!(
         forwarding.load().cctp_forwarding(),
-        (999, FORWARDER.parse().unwrap())
+        (
+            999,
+            FORWARDER.parse().unwrap(),
+            TOKEN_MESSENGER.parse().unwrap()
+        )
     );
 
     for (flag, value, kind) in [

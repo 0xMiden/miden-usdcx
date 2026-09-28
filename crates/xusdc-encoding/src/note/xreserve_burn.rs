@@ -78,6 +78,11 @@ impl XUsdcBurnAttachment {
     pub fn items(&self) -> &XReserveBurnItems {
         &self.items
     }
+
+    /// Consumes the attachment, returning the carried withdrawal payload.
+    pub fn into_items(self) -> XReserveBurnItems {
+        self.items
+    }
 }
 
 impl From<&XUsdcBurnAttachment> for NoteAttachment {

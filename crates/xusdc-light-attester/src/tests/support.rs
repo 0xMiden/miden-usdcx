@@ -32,7 +32,7 @@ use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{
     read_info, read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
-use crate::signer::{DevelopmentSigner, Signer};
+use crate::signer::{DevelopmentSigner, Signer, SignerPair};
 use crate::submission::SavedSubmission;
 
 pub(super) const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
@@ -47,6 +47,10 @@ pub(super) fn development_signers() -> [Box<dyn Signer>; 2] {
         key[31] = scalar;
         Box::new(DevelopmentSigner::from_bytes(key).unwrap()) as Box<dyn Signer>
     })
+}
+
+pub(super) async fn development_pair() -> SignerPair {
+    SignerPair::new(development_signers()).await.unwrap()
 }
 
 pub(super) fn scan_limits(latest_committed_block: u32, proof_lag_block: u32) -> ScanLimits {

@@ -11,7 +11,7 @@ use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleApi, CircleError};
 use crate::config::Config;
-use crate::signer::{Signer, SignerPair};
+use crate::signer::SignerPair;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
 
@@ -55,7 +55,7 @@ impl Attester {
         config: Config,
         chain: Box<dyn ChainReader>,
         circle: Box<dyn CircleApi>,
-        signers: [Box<dyn Signer>; 2],
+        signers: SignerPair,
     ) -> anyhow::Result<Self> {
         let trusted_anchor = TrustedAnchor {
             block_num: config.trusted_anchor_block(),
@@ -88,7 +88,7 @@ impl Attester {
             );
         }
 
-        let signers = SignerPair::new(signers, config.expected_signing_public_keys_hex()).await?;
+        signers.check_expected(config.expected_signing_public_keys_hex())?;
 
         circle
             .check_connection()
@@ -398,7 +398,7 @@ impl Attester {
         let verified = prepared
             .verify(burn, &self.config)
             .map_err(|error| SubmitError::Verification(Box::new(error)))?;
-        let signed = verified.sign(self.signers.as_refs()).await?;
+        let signed = verified.sign(self.signers.signers()).await?;
         self.submit_signed_withdrawal(&signed, rate_limited).await
     }
 }

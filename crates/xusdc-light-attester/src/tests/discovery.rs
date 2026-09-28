@@ -19,8 +19,8 @@ use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALI
 
 use super::startup::start as start_attester;
 use super::support::{
-    development_signers, faucet_account_id, note, ready_circle, scan_limits, test_note,
-    transaction, BlockFactory, ChainControls, TestChain,
+    development_pair, faucet_account_id, note, ready_circle, scan_limits, test_note, transaction,
+    BlockFactory, ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
@@ -1067,7 +1067,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
         config,
         Box::new(chain),
         ready_circle(),
-        development_signers(),
+        development_pair().await,
     )
     .await
     .unwrap();

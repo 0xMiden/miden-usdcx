@@ -1235,6 +1235,17 @@ async fn held_submissions_do_not_block_others() {
             SubmissionStatus::Submitted
         );
     }
+    // The history keeps the released request before the burn's new authorization.
+    assert_eq!(
+        ledger.history(0),
+        [
+            event("AUTHORIZED", SubmissionStatus::Submitting),
+            event("OUTCOME", SubmissionStatus::Held),
+            event("OPERATOR_RELEASE", SubmissionStatus::Held),
+            event("AUTHORIZED", SubmissionStatus::Submitting),
+            event("OUTCOME", SubmissionStatus::Submitted),
+        ]
+    );
 
     // A status lookup never holds: after a 400 to the GET the saved ID stays queued.
     let ledger = Ledger::new().await;

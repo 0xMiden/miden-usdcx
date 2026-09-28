@@ -61,6 +61,10 @@ enum EventKind {
     /// An operator released the burn's hold; the row keeps the hold's reason.
     #[strum(serialize = "BURN_RELEASED")]
     BurnReleased,
+    /// An operator released a held request, which is deleted so that the burn is prepared and
+    /// signed again.
+    #[strum(serialize = "OPERATOR_RELEASE")]
+    OperatorRelease,
 }
 
 impl EventKind {
@@ -213,9 +217,17 @@ impl Store {
     }
 
     /// Releases every burn hold and every withdrawal hold in one transaction, and returns how many
-    /// burns and withdrawals it released.
+    /// burns and withdrawals it released. Each release is recorded in the burn's history first, so
+    /// the history keeps the hold's reason and the released request.
     pub(crate) fn release_all_holds(&mut self) -> anyhow::Result<(usize, usize)> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
+        for note_id in note_ids(
+            &transaction,
+            "SELECT note_id FROM burns WHERE hold_reason IS NOT NULL",
+            [],
+        )? {
+            record_event(&transaction, note_id, EventKind::BurnReleased)?;
+        }
         let burns = transaction
             .execute(
                 "UPDATE burns SET hold_reason = NULL WHERE hold_reason IS NOT NULL",
@@ -229,11 +241,25 @@ impl Store {
         // whose transfer spec differs, for example after a fee change. The new request passes the
         // same checks against the burn, so the recipient, chain and burned amount cannot change;
         // only Circle's fee can, within the ceiling.
+        for note_id in note_ids(
+            &transaction,
+            "SELECT note_id FROM submissions WHERE status = ?1
+                AND hold_reason = ?2 AND withdrawal_id IS NULL",
+            params![
+                SubmissionStatus::Held.as_ref(),
+                HoldReason::HttpRejected.as_str()
+            ],
+        )? {
+            record_event(&transaction, note_id, EventKind::OperatorRelease)?;
+        }
         let withdrawals = transaction
             .execute(
-                "DELETE FROM submissions WHERE status = 'HELD' AND hold_reason = 'http_rejected'
+                "DELETE FROM submissions WHERE status = ?1 AND hold_reason = ?2
                     AND withdrawal_id IS NULL",
-                [],
+                params![
+                    SubmissionStatus::Held.as_ref(),
+                    HoldReason::HttpRejected.as_str()
+                ],
             )
             .map_err(classify_error)?;
         transaction.commit().map_err(classify_error)?;
@@ -1015,6 +1041,20 @@ where
         bail!(INVALID);
     }
     Ok(value)
+}
+
+/// The note IDs a query selects, in its first column.
+fn note_ids<P: Params>(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    params: P,
+) -> anyhow::Result<Vec<NoteId>> {
+    let mut statement = connection.prepare(sql).map_err(classify_error)?;
+    let rows = statement
+        .query_map(params, |row| row.get::<_, Vec<u8>>(0))
+        .map_err(classify_error)?;
+    rows.map(|note_id| decode_canonical(&note_id.map_err(classify_error)?))
+        .collect()
 }
 
 fn exists<P: Params>(

@@ -15,13 +15,12 @@ use k256::pkcs8::DecodePublicKey;
 
 use super::{Signer, SignerError, SignerFuture, SigningPublicKey};
 
-/// A secp256k1 key in AWS KMS, pinned at startup to an independently configured public key.
+/// A secp256k1 key in AWS KMS, pinned when the signer connects.
 pub struct KmsSigner {
     client: Client,
     key_arn: String,
     /// The pinned key: every signature KMS returns must verify with it.
     public_key: VerifyingKey,
-    compressed_public_key: SigningPublicKey,
 }
 
 impl KmsSigner {
@@ -41,14 +40,9 @@ impl KmsSigner {
         Client::new(&config)
     }
 
-    /// Checks that `key_arn` is an enabled secp256k1 signing key whose public key is
-    /// `expected_public_key`, and pins that key. A key that fails a check never signs.
-    pub async fn connect(
-        client: Client,
-        key_arn: &str,
-        expected_public_key: &str,
-    ) -> Result<Self, SignerError> {
-        let expected = SigningPublicKey::from_hex(expected_public_key)?;
+    /// Checks that `key_arn` is an enabled secp256k1 signing key and pins the public key KMS
+    /// returns for it. A key that fails a check never signs.
+    pub async fn connect(client: Client, key_arn: &str) -> Result<Self, SignerError> {
         let description = client
             .describe_key()
             .key_id(key_arn)
@@ -66,12 +60,11 @@ impl KmsSigner {
             .map_err(|source| {
                 SignerError::with_source("AWS KMS GetPublicKey request failed", source)
             })?;
-        let public_key = pinned_public_key(&response, key_arn, expected)?;
+        let public_key = public_key_from_response(&response, key_arn)?;
         Ok(Self {
             client,
             key_arn: key_arn.to_owned(),
             public_key,
-            compressed_public_key: expected,
         })
     }
 }
@@ -79,7 +72,14 @@ impl KmsSigner {
 impl Signer for KmsSigner {
     fn public_key(&self) -> SignerFuture<'_, SigningPublicKey> {
         // The key pinned at startup; KMS is not asked again.
-        Box::pin(async { Ok(self.compressed_public_key) })
+        Box::pin(async move {
+            let encoded = self.public_key.to_encoded_point(true);
+            let bytes = encoded
+                .as_bytes()
+                .try_into()
+                .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?;
+            Ok(SigningPublicKey(bytes))
+        })
     }
 
     fn sign_digest(&self, digest: B256) -> SignerFuture<'_, Signature> {
@@ -112,12 +112,11 @@ fn check_key_metadata(metadata: Option<&KeyMetadata>, key_arn: &str) -> Result<(
     Ok(())
 }
 
-/// Reads the key from GetPublicKey's answer and pins it: it must equal the configured public key,
-/// so a replaced or misconfigured KMS key is refused before it signs anything.
-fn pinned_public_key(
+/// Reads the key from GetPublicKey's answer, which must describe the secp256k1 signing key with
+/// this ARN.
+fn public_key_from_response(
     response: &GetPublicKeyOutput,
     key_arn: &str,
-    expected: SigningPublicKey,
 ) -> Result<VerifyingKey, SignerError> {
     if response.key_id() != Some(key_arn)
         || response.key_spec() != Some(&KeySpec::EccSecgP256K1)
@@ -134,24 +133,11 @@ fn pinned_public_key(
         .public_key()
         .ok_or_else(|| SignerError::new("AWS KMS returned no public key"))?;
     // KMS returns the key as a DER-encoded SubjectPublicKeyInfo.
-    let public_key = k256::PublicKey::from_public_key_der(spki.as_ref())
+    k256::PublicKey::from_public_key_der(spki.as_ref())
         .map(VerifyingKey::from)
         .map_err(|source| {
             SignerError::with_source("AWS KMS public key is not a secp256k1 key", source)
-        })?;
-    let compressed_public_key = SigningPublicKey(
-        public_key
-            .to_encoded_point(true)
-            .as_bytes()
-            .try_into()
-            .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?,
-    );
-    if compressed_public_key != expected {
-        return Err(SignerError::new(
-            "AWS KMS public key is not the expected signing public key",
-        ));
-    }
-    Ok(public_key)
+        })
 }
 
 /// The Sign request for `digest`. In digest mode KMS signs the 32 bytes as given; as a message,

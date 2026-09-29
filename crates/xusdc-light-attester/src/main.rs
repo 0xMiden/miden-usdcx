@@ -73,11 +73,10 @@ async fn main() -> Result<()> {
             operation_timeout,
         } => {
             let client = KmsSigner::client(region, *operation_timeout).await;
-            let expected = config.expected_signing_public_keys_hex();
-            let first = KmsSigner::connect(client.clone(), &key_arns[0], &expected[0])
+            let first = KmsSigner::connect(client.clone(), &key_arns[0])
                 .await
                 .context("failed to initialize first AWS KMS signer")?;
-            let second = KmsSigner::connect(client, &key_arns[1], &expected[1])
+            let second = KmsSigner::connect(client, &key_arns[1])
                 .await
                 .context("failed to initialize second AWS KMS signer")?;
             ([Box::new(first), Box::new(second)], "aws-kms")

@@ -3146,9 +3146,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protobuf"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cd12d8c9ab2aef91ecb3a22b3095ed910ede5a45d61576255a4f730cd62e01a"
+checksum = "78c413453ee552611d3a45e06e43d64436fcea61d17ba45709d0b0caf5a49e5d"
 dependencies = [
  "miden-protobuf-derive",
  "proc-macro-crate",
@@ -3159,9 +3159,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protobuf-derive"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09808d0fd16160275d7648efda3c05402c8ea142869b9ebd36d93539ddbfb8a4"
+checksum = "8cadf573070d3b2aab3bfb39ce3441342439c2004aab0a718fca4e7f5c1bed8b"
 dependencies = [
  "heck",
  "proc-macro-crate",
@@ -3204,9 +3204,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol-build-utils"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "107bd48942e06ea09591101ae6f0dbeb7f568f41841712177c6d46c00c6b18b5"
+checksum = "74ab122a13dcdcb6bb0df76b521bfd36336bc29a4084c0ab8d4704c77c8abe19"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -6415,6 +6415,26 @@ dependencies = [
  "tracing-forest",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "xusdc-attester"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "miden-client",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "miden-usdcx",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::error::ErrorKind;
@@ -398,51 +399,60 @@ fn signer_mode_validates_only_its_own_settings() {
     unknown.replace("--signer-provider", "fallback");
     assert_cli_error(&unknown, ErrorKind::InvalidValue);
 
-    let options = [
-        ("--aws-kms-region", "eu-north-1"),
-        ("--aws-kms-key-arn", FIRST),
-        ("--aws-kms-operation-timeout", "10s"),
+    let options: [(&str, &[&str]); 3] = [
+        ("--aws-kms-region", &["eu-north-1"]),
+        ("--aws-kms-key-arn", &[FIRST, SECOND]),
+        ("--aws-kms-operation-timeout", &["10s"]),
     ];
+    let values = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
     for (flag, value) in options {
         let mut invalid = development.clone();
-        invalid.append(flag, value);
+        invalid.append_values(flag, &values(value));
         assert_config_error(&invalid, "KMS options require the aws-kms signer provider");
     }
     let mut kms = development;
     kms.replace("--signer-provider", "aws-kms");
     for (flag, value) in options {
-        kms.append(flag, value);
+        kms.append_values(flag, &values(value));
     }
-    kms.append("--aws-kms-key-arn", SECOND);
     let config = kms.load();
     assert!(
         matches!(config.signer(), SignerConfig::AwsKms { region, key_arns, operation_timeout }
         if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
             && *operation_timeout == std::time::Duration::from_secs(10))
     );
-    let missing_errors = [
-        "AWS KMS region is required",
-        "exactly two distinct immutable KMS key ARNs are required",
-        "AWS KMS operation timeout must be supplied and greater than zero",
-    ];
-    for ((flag, _), expected_error) in options.into_iter().zip(missing_errors) {
+    for (flag, _) in options {
         let mut missing = kms.clone();
         missing.remove(flag);
-        assert_config_error(&missing, expected_error);
+        assert_cli_error(&missing, ErrorKind::MissingRequiredArgument);
     }
+
+    // One --aws-kms-key-arn with exactly two ARNs.
+    for (arns, kind) in [
+        (&[FIRST][..], ErrorKind::WrongNumberOfValues),
+        (&[FIRST, SECOND, FIRST][..], ErrorKind::UnknownArgument),
+    ] {
+        let mut wrong_count = kms.clone();
+        wrong_count.remove("--aws-kms-key-arn");
+        wrong_count.append_values("--aws-kms-key-arn", &values(arns));
+        assert_cli_error(&wrong_count, kind);
+    }
+    let mut repeated_flag = kms.clone();
+    repeated_flag.remove("--aws-kms-key-arn");
+    repeated_flag.append("--aws-kms-key-arn", FIRST);
+    repeated_flag.append("--aws-kms-key-arn", SECOND);
+    assert_cli_error(&repeated_flag, ErrorKind::WrongNumberOfValues);
+    let mut second_pair = kms.clone();
+    second_pair.append_values("--aws-kms-key-arn", &values(&[FIRST, SECOND]));
+    assert_cli_error(&second_pair, ErrorKind::ArgumentConflict);
+
     let mut same_arn = kms.clone();
     same_arn.replace("--aws-kms-key-arn", SECOND);
     assert_config_error(&same_arn, "the two KMS key ARNs must differ");
-    let mut extra = kms.clone();
-    extra.append("--aws-kms-key-arn", FIRST);
-    assert_config_error(
-        &extra,
-        "exactly two distinct immutable KMS key ARNs are required",
-    );
+    let mut empty_region = kms.clone();
+    empty_region.replace("--aws-kms-region", "");
+    assert_cli_error(&empty_region, ErrorKind::InvalidValue);
     let mut zero = kms;
     zero.replace("--aws-kms-operation-timeout", "0s");
-    assert_config_error(
-        &zero,
-        "AWS KMS operation timeout must be supplied and greater than zero",
-    );
+    assert_config_error(&zero, "AWS KMS operation timeout must be greater than zero");
 }

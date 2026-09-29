@@ -88,15 +88,24 @@ impl TestArgs {
         self.args[position + 1] = value.into();
     }
 
+    /// Removes every occurrence of `flag` with all of its values.
     pub(super) fn remove(&mut self, flag: &str) {
         while let Some(position) = self.args.iter().position(|argument| argument == flag) {
-            self.args.drain(position..=position + 1);
+            let values = self.args[position + 1..]
+                .iter()
+                .take_while(|argument| !argument.to_string_lossy().starts_with("--"))
+                .count();
+            self.args.drain(position..=position + values);
         }
     }
 
     pub(super) fn append(&mut self, flag: &str, value: impl Into<OsString>) {
+        self.append_values(flag, &[value.into()]);
+    }
+
+    pub(super) fn append_values(&mut self, flag: &str, values: &[OsString]) {
         self.args.push(flag.into());
-        self.args.push(value.into());
+        self.args.extend_from_slice(values);
     }
 
     pub(super) fn switch(&mut self, flag: &str) {

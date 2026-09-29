@@ -104,16 +104,11 @@ fn only_the_enabled_signing_key_with_this_arn_is_accepted() {
 }
 
 #[test]
-fn the_public_key_is_pinned_to_the_configured_key() {
+fn only_the_secp256k1_signing_key_with_this_arn_is_read() {
     for (index, (arn, ..)) in FIXTURES.into_iter().enumerate() {
         assert_eq!(
-            pinned_public_key(&public_key_output(index), arn, pin(index)).unwrap(),
+            public_key_from_response(&public_key_output(index), arn).unwrap(),
             key(index)
-        );
-        // Swapping just the expected key is not a valid reordering of the pair.
-        refused(
-            pinned_public_key(&public_key_output(index), arn, pin(1 - index)),
-            "AWS KMS public key is not the expected signing public key",
         );
     }
     let not_the_key = "AWS KMS public key is not the secp256k1 signing key with this ARN";
@@ -134,7 +129,24 @@ fn the_public_key_is_pinned_to_the_configured_key() {
     for (edit, message) in cases {
         let mut changed = public_key_output(0);
         edit(&mut changed);
-        refused(pinned_public_key(&changed, FIXTURES[0].0, pin(0)), message);
+        refused(public_key_from_response(&changed, FIXTURES[0].0), message);
+    }
+}
+
+/// A connected signer reports its key in the compressed form the configured keys use.
+#[tokio::test]
+async fn signers_report_the_compressed_form_of_their_key() {
+    let config = aws_sdk_kms::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("eu-north-1"))
+        .build();
+    for (index, (arn, ..)) in FIXTURES.into_iter().enumerate() {
+        let signer = KmsSigner {
+            client: Client::from_conf(config.clone()),
+            key_arn: arn.to_owned(),
+            public_key: key(index),
+        };
+        assert!(signer.public_key().await.unwrap() == pin(index));
     }
 }
 
@@ -216,7 +228,7 @@ fn der_conversion_normalizes_s_and_rejects_other_digests_keys_or_trailing_bytes(
 fn malformed_kms_output_keeps_its_cause() {
     let mut response = public_key_output(0);
     response.public_key = Some(Blob::new([0]));
-    let error = pinned_public_key(&response, FIXTURES[0].0, pin(0)).unwrap_err();
+    let error = public_key_from_response(&response, FIXTURES[0].0).unwrap_err();
     assert!(std::error::Error::source(&error).is_some(), "{error}");
 
     let mut response = sign_output(0);

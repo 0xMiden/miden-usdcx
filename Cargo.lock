@@ -6672,6 +6672,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "xusdc-attester"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "miden-client",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "xusdc-encoding",
+]
+
+[[package]]
 name = "xusdc-encoding"
 version = "0.0.0"
 dependencies = [

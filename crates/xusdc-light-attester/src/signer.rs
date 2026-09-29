@@ -54,17 +54,15 @@ impl SignerError {
     }
 }
 
+/// The future every [`Signer`] method returns.
+pub type SignerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, SignerError>> + Send + 'a>>;
+
 pub trait Signer: Send + Sync {
-    fn public_key(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>>;
+    fn public_key(&self) -> SignerFuture<'_, SigningPublicKey>;
 
     /// Sign this digest unchanged, without another hash or personal-message prefix.
     /// The provider must return a recoverable, low-s secp256k1 signature.
-    fn sign_digest(
-        &self,
-        digest: B256,
-    ) -> Pin<Box<dyn Future<Output = Result<Signature, SignerError>> + Send + '_>>;
+    fn sign_digest(&self, digest: B256) -> SignerFuture<'_, Signature>;
 }
 
 /// The two independent signers, with the public keys they reported when the pair was built.
@@ -143,9 +141,7 @@ impl DevelopmentSigner {
 }
 
 impl Signer for DevelopmentSigner {
-    fn public_key(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>> {
+    fn public_key(&self) -> SignerFuture<'_, SigningPublicKey> {
         Box::pin(async move {
             let encoded = self.key.verifying_key().to_encoded_point(true);
             let bytes = encoded
@@ -156,10 +152,7 @@ impl Signer for DevelopmentSigner {
         })
     }
 
-    fn sign_digest(
-        &self,
-        digest: B256,
-    ) -> Pin<Box<dyn Future<Output = Result<Signature, SignerError>> + Send + '_>> {
+    fn sign_digest(&self, digest: B256) -> SignerFuture<'_, Signature> {
         Box::pin(async move {
             let (signature, recovery_id) = self
                 .key

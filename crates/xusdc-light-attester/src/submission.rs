@@ -170,7 +170,7 @@ impl Attester {
     }
 
     fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {
-        self.store.save_submission_outcome(saved)?;
+        self.store.update_submission_outcome(saved)?;
         if saved.hold_reason.is_some() || saved.last_error.is_some() {
             eprintln!(
                 "withdrawal {}: {:?}, hold={:?}",

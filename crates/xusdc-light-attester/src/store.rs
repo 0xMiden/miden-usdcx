@@ -147,23 +147,26 @@ impl Store {
             .execute(
                 "INSERT INTO submissions (
                 note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
-             ) SELECT ?1, ?2, ?3, ?4, ?5, 'SUBMITTING'
+             ) SELECT ?1, ?2, ?3, ?4, ?5, ?6
              WHERE EXISTS (SELECT 1 FROM burns
                  WHERE note_id = ?1 AND status = 'DISCOVERED')
              ON CONFLICT (note_id) DO UPDATE SET
                 endpoint = excluded.endpoint, body = excluded.body,
                 transfer_spec_hash = excluded.transfer_spec_hash,
                 use_circle_forwarding = excluded.use_circle_forwarding,
-                status = 'SUBMITTING', withdrawal_id = NULL, hold_reason = NULL,
+                status = ?6, withdrawal_id = NULL, hold_reason = NULL,
                 last_http_status = NULL, last_response = NULL, last_error = NULL
-             WHERE submissions.status IN ('FAILED', 'EXPIRED')
+             WHERE submissions.status IN (?7, ?8)
                 AND submissions.withdrawal_id IS NOT NULL",
                 params![
                     record.note_id.to_bytes(),
                     record.endpoint.as_str(),
                     record.body,
                     record.transfer_spec_hash.as_slice(),
-                    record.use_circle_forwarding
+                    record.use_circle_forwarding,
+                    SubmissionStatus::Submitting.as_ref(),
+                    SubmissionStatus::Failed.as_ref(),
+                    SubmissionStatus::Expired.as_ref(),
                 ],
             )
             .map_err(classify_write_error)?;
@@ -171,24 +174,30 @@ impl Store {
         Ok(())
     }
 
+    /// The saved submission for `note_id`, if there is one.
     #[cfg(test)]
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
-        Ok(load_submissions(&self.connection, Some(note_id), false)?.pop())
+        Ok(select_submissions(&self.connection, Some(note_id), false)?.pop())
     }
 
+    /// The submissions still being sent, which recovery resumes.
     pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
-        load_submissions(&self.connection, None, true)
+        select_submissions(&self.connection, None, true)
     }
 
-    pub(crate) fn save_submission_outcome(&self, outcome: &SavedSubmission) -> anyhow::Result<()> {
+    /// Saves the latest outcome of a submission that is still being sent. Only the outcome
+    /// changes: the saved signed request and a known withdrawal ID stay as they are.
+    pub(crate) fn update_submission_outcome(
+        &self,
+        outcome: &SavedSubmission,
+    ) -> anyhow::Result<()> {
         validate_submission_outcome(outcome)?;
-        // The sequential submitter changes only outcomes, never a request or a known ID.
         let updated = self
             .connection
             .execute(
                 "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
                 last_http_status = ?4, last_response = ?5, last_error = ?6
-             WHERE note_id = ?7 AND status = 'SUBMITTING'
+             WHERE note_id = ?7 AND status = ?8
                 AND (withdrawal_id IS NULL OR withdrawal_id = ?2)",
                 params![
                     outcome.status.as_ref(),
@@ -198,6 +207,7 @@ impl Store {
                     outcome.last_response,
                     outcome.last_error,
                     outcome.note_id.to_bytes(),
+                    SubmissionStatus::Submitting.as_ref(),
                 ],
             )
             .map_err(classify_error)?;
@@ -205,14 +215,20 @@ impl Store {
         Ok(())
     }
 
+    /// Puts a held withdrawal back to be sent. Its saved request and any known withdrawal ID stay,
+    /// so recovery asks Circle for its status instead of posting it again once the ID is known.
     pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
-        // Keep the saved ID and bytes: recovery resumes GET if an ID is already known.
         let updated = self
             .connection
             .execute(
-                "UPDATE submissions SET status = 'SUBMITTING', hold_reason = NULL
-             WHERE note_id = ?1 AND status = 'HELD' AND hold_reason = 'http_rejected'",
-                [note_id.to_bytes()],
+                "UPDATE submissions SET status = ?2, hold_reason = NULL
+             WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
+                params![
+                    note_id.to_bytes(),
+                    SubmissionStatus::Submitting.as_ref(),
+                    SubmissionStatus::Held.as_ref(),
+                    HoldReason::HttpRejected.as_str()
+                ],
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
@@ -456,7 +472,10 @@ impl HoldReason {
     }
 }
 
-fn load_submissions(
+/// Reads the saved submissions in note order: only `note_id`'s when it is given, and only those
+/// still being sent when `recoverable_only` is set. A row that fails its checks makes the store
+/// invalid.
+fn select_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
     recoverable_only: bool,
@@ -466,12 +485,16 @@ fn load_submissions(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
             use_circle_forwarding, status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
-         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = 'SUBMITTING')
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = ?3)
          ORDER BY note_id",
         )
         .map_err(classify_error)?;
     let mut rows = statement
-        .query(params![note_id.map(|id| id.to_bytes()), recoverable_only])
+        .query(params![
+            note_id.map(|id| id.to_bytes()),
+            recoverable_only,
+            SubmissionStatus::Submitting.as_ref()
+        ])
         .map_err(classify_error)?;
     let mut records = Vec::new();
     while let Some(row) = rows.next().map_err(classify_error)? {

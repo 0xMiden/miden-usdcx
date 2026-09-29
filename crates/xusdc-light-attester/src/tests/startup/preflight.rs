@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use reqwest::{Method, StatusCode};
 
 use crate::chain::ChainError;
@@ -83,49 +81,55 @@ async fn unreachable_circle_api_is_rejected() {
     assert!(request.body().is_none());
 }
 
-/// Requests go out one gap apart even when their callers fall behind, a queued request whose
-/// caller gave up is skipped, and the worker ends once the client is dropped.
-#[tokio::test]
+/// Requests go out one gap apart even after the worker falls behind, a queued request whose caller
+/// gave up is skipped, and the worker ends once the client is dropped.
+#[tokio::test(start_paused = true)]
 async fn circle_requests_are_paced() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let (client, worker) = CircleClient::start(&load_config(&tempdir, 1)).unwrap();
-    let client = Arc::new(client);
-    // Plain HTTP is refused before any network I/O, so every attempt fails at once.
-    let request = || {
+    let (circle, worker) = CircleClient::start(&load_config(&tempdir, 1)).unwrap();
+    let client = &circle;
+    // Plain HTTP is refused before any network I/O, so every attempt fails at once. A call returns
+    // the time its answer arrived.
+    let call = || async move {
         let url = "http://circle.example.invalid/".parse().unwrap();
-        reqwest::Request::new(Method::GET, url)
+        let error = client
+            .send(reqwest::Request::new(Method::GET, url))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CircleError::Transport(source) if source.is_builder()));
+        tokio::time::Instant::now()
     };
-    let calls: Vec<_> = (0..3)
-        .map(|_| {
-            let client = Arc::clone(&client);
-            tokio::spawn(async move {
-                let error = client.send(request()).await.unwrap_err();
-                assert!(matches!(error, CircleError::Transport(source) if source.is_builder()));
-                std::time::Instant::now()
-            })
-        })
-        .collect();
-    tokio::task::yield_now().await;
-    // Block the runtime past every slot the queued requests could have been given up front.
-    std::thread::sleep(2 * REQUEST_GAP);
-    let mut answered = Vec::new();
-    for call in calls {
-        answered.push(call.await.unwrap());
+    // The first request sets the earliest time the next one may go out.
+    let mut answered = vec![call().await];
+
+    // Polling each call once puts its request in the queue.
+    let mut queued = [Box::pin(call()), Box::pin(call()), Box::pin(call())];
+    std::future::poll_fn(|context| {
+        for pending in &mut queued {
+            assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+        }
+        std::task::Poll::Ready(())
+    })
+    .await;
+    // The worker falls behind: before it runs again, the clock passes every slot the queued
+    // requests could have been given up front.
+    tokio::time::advance(3 * REQUEST_GAP).await;
+    for pending in queued {
+        answered.push(pending.await);
     }
     for pair in answered.windows(2) {
         assert!(pair[1] - pair[0] >= REQUEST_GAP);
     }
 
-    let given_up = tokio::time::timeout(REQUEST_GAP / 2, client.send(request())).await;
+    let given_up = tokio::time::timeout(REQUEST_GAP / 2, call()).await;
     assert!(given_up.is_err());
-    let asked = std::time::Instant::now();
-    assert!(client.send(request()).await.is_err());
+    let asked = tokio::time::Instant::now();
     assert!(
-        asked.elapsed() < REQUEST_GAP,
+        call().await - asked < REQUEST_GAP,
         "the skipped request took no turn"
     );
 
-    drop(client);
+    drop(circle);
     worker.await.unwrap();
 }

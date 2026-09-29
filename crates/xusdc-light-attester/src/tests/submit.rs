@@ -448,6 +448,7 @@ async fn submit_sends_checked_request() {
         }
         assert!(attester.retry_held_submission(saved.note_id).is_err());
         if matches!(status, "created" | "finalized" | "failed" | "new_status") {
+            let history = ledger.history(0);
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;
@@ -459,6 +460,7 @@ async fn submit_sends_checked_request() {
                 "{status}"
             );
             assert_eq!(ledger.record(&attester, 0), saved);
+            assert_eq!(ledger.history(0), history, "{status}");
         }
         {
             let requests = requests.lock().unwrap();

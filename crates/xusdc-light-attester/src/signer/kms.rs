@@ -1,5 +1,3 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use alloy_primitives::{Signature, B256};
@@ -15,9 +13,7 @@ use aws_sdk_kms::Client;
 use k256::ecdsa::{signature::hazmat::PrehashVerifier, RecoveryId, VerifyingKey};
 use k256::pkcs8::DecodePublicKey;
 
-use super::{Signer, SignerError, SigningPublicKey};
-
-type KmsFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, SignerError>> + Send + 'a>>;
+use super::{Signer, SignerError, SignerFuture, SigningPublicKey};
 
 /// A secp256k1 key in AWS KMS, pinned at startup to an independently configured public key.
 pub struct KmsSigner {
@@ -81,12 +77,12 @@ impl KmsSigner {
 }
 
 impl Signer for KmsSigner {
-    fn public_key(&self) -> KmsFuture<'_, SigningPublicKey> {
+    fn public_key(&self) -> SignerFuture<'_, SigningPublicKey> {
         // The key pinned at startup; KMS is not asked again.
         Box::pin(async { Ok(self.compressed_public_key) })
     }
 
-    fn sign_digest(&self, digest: B256) -> KmsFuture<'_, Signature> {
+    fn sign_digest(&self, digest: B256) -> SignerFuture<'_, Signature> {
         Box::pin(async move {
             let response = sign_request(&self.key_arn, digest)
                 .send_with(&self.client)

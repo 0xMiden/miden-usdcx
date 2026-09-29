@@ -433,7 +433,7 @@ async fn submit_sends_checked_request() {
             );
         }
         assert!(attester.retry_held_submission(saved.note_id).is_err());
-        if matches!(status, "created" | "finalized" | "new_status") {
+        if matches!(status, "created" | "finalized" | "failed" | "new_status") {
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;
@@ -468,7 +468,7 @@ async fn submit_sends_checked_request() {
             "burnTxId": ledger.burns[0].note_id().to_hex(), "useCircleForwarding": false}]})
             );
         }
-        if matches!(expected, Failed | Expired) {
+        if expected == Expired {
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;

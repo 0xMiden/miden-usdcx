@@ -19,8 +19,8 @@ pub enum SubmitError {
     Encoding(#[source] serde_json::Error),
 }
 
-/// Failed and expired attempts can be replaced; they do not permanently retire the burn. Each
-/// status is stored under the name given here.
+/// A submission's status, stored under the name given here. A fresh authorization can replace an
+/// expired withdrawal, but not a failed one: that stays for an operator to investigate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::EnumString)]
 pub(crate) enum SubmissionStatus {
     #[strum(serialize = "SUBMITTING")]
@@ -80,7 +80,7 @@ impl Attester {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(SubmitError::InvalidRequest)?;
         let saved = withdrawal.submission(endpoint)?;
-        // Only confirmed failed/expired attempts may receive a fresh authorization.
+        // Only a confirmed expired attempt may receive a fresh authorization.
         self.store.save_submission(&saved)?;
         self.advance_submission(saved, rate_limited).await
     }
@@ -278,8 +278,8 @@ impl SavedSubmission {
             "finalized" => SubmissionStatus::Finalized,
             "expired" => SubmissionStatus::Expired,
             "failed" => {
-                // Circle allows re-signing/resubmitting after the cause is fixed, without a
-                // reset on their side. Keep the reason; do not retry every failure automatically.
+                // Circle allows re-signing and resubmitting once the cause is fixed. The attester
+                // does not: it keeps Circle's reason and leaves the withdrawal to an operator.
                 self.last_error = withdrawal.failure_reason;
                 SubmissionStatus::Failed
             }

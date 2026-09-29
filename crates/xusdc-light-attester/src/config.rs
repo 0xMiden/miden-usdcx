@@ -28,7 +28,7 @@ pub struct Cli {
     #[arg(long)]
     aws_kms_region: Option<String>,
 
-    /// Immutable KMS key ARN; provide twice in the same order as --expected-signing-public-key.
+    /// Immutable KMS key ARN; provide twice, once for each signer.
     #[arg(long, action = ArgAction::Append)]
     aws_kms_key_arn: Vec<String>,
 
@@ -395,7 +395,7 @@ impl Config {
         self.minimum_finality_depth_blocks
     }
 
-    pub fn expected_signing_public_keys_hex(&self) -> &[String] {
+    pub(crate) fn expected_signing_public_keys_hex(&self) -> &[String] {
         &self.expected_signing_public_keys_hex
     }
 

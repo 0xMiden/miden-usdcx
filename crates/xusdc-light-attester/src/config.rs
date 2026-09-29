@@ -195,26 +195,8 @@ impl SignerConfig {
                 let [first, second] = cli.aws_kms_key_arn.as_slice() else {
                     bail!("exactly two distinct immutable KMS key ARNs are required");
                 };
-                let account = |arn: &str| -> Option<String> {
-                    let parts: Vec<_> = arn.split(':').collect();
-                    let ["arn", "aws", "kms", arn_region, account, resource] = parts.as_slice()
-                    else {
-                        return None;
-                    };
-                    let key = resource.strip_prefix("key/")?;
-                    (*arn_region == region
-                        && region
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-                        && account.len() == 12
-                        && account.bytes().all(|c| c.is_ascii_digit())
-                        && !key.is_empty()
-                        && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
-                    .then(|| (*account).to_owned())
-                };
-                if first == second || account(first).is_none() || account(first) != account(second)
-                {
-                    bail!("KMS key ARNs must be distinct immutable keys in the configured region and same account");
+                if first == second {
+                    bail!("the two KMS key ARNs must differ");
                 }
                 let operation_timeout = cli
                     .aws_kms_operation_timeout

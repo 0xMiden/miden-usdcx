@@ -435,21 +435,9 @@ fn signer_mode_validates_only_its_own_settings() {
         missing.remove(flag);
         assert_config_error(&missing, expected_error);
     }
-    for invalid_arn in [
-        SECOND,
-        "alias/testnet-usdcx-attester-1",
-        "arn:aws:kms:eu-north-1:584968076953:alias/testnet-usdcx-attester-1",
-        "arn:aws:kms:eu-west-1:584968076953:key/1234",
-        "arn:aws:kms:eu-north-1:111111111111:key/1234",
-        "arn:aws:kms:eu-north-1:584968076953:key/",
-    ] {
-        let mut invalid = kms.clone();
-        invalid.replace("--aws-kms-key-arn", invalid_arn);
-        assert_config_error(
-            &invalid,
-            "KMS key ARNs must be distinct immutable keys in the configured region and same account",
-        );
-    }
+    let mut same_arn = kms.clone();
+    same_arn.replace("--aws-kms-key-arn", SECOND);
+    assert_config_error(&same_arn, "the two KMS key ARNs must differ");
     let mut extra = kms.clone();
     extra.append("--aws-kms-key-arn", FIRST);
     assert_config_error(

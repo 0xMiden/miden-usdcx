@@ -24,8 +24,11 @@ pub struct KmsSigner {
 }
 
 impl KmsSigner {
-    /// The KMS client both signers share. Credentials come from the SDK's default chain. Each
-    /// operation gets at most three attempts, and `operation_timeout` bounds all of them together.
+    /// The KMS client both signers share. Credentials come from the SDK's default chain, which is
+    /// built without SSO support: a profile that signs in with SSO cannot supply them. The chain
+    /// still reads other sources, such as environment variables or a static profile, so using only
+    /// workload identity is up to the deployment. Each operation gets at most three attempts, and
+    /// `operation_timeout` bounds all of them together.
     pub async fn client(region: &str, operation_timeout: Duration) -> Client {
         let config = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new(region.to_owned()))

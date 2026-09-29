@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use alloy_primitives::Address;
 use anyhow::{anyhow, bail, ensure, Context};
+use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
@@ -25,15 +26,31 @@ pub struct Cli {
     signer_provider: SignerProvider,
 
     /// AWS region containing both KMS keys; required for aws-kms only.
-    #[arg(long)]
+    #[arg(
+        long,
+        required_if_eq("signer_provider", "aws-kms"),
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     aws_kms_region: Option<String>,
 
-    /// Immutable KMS key ARN; provide twice, once for each signer.
-    #[arg(long, action = ArgAction::Append)]
+    /// The two immutable KMS key ARNs, one for each signer, in either order; required for aws-kms
+    /// only.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["ARN1", "ARN2"],
+        action = ArgAction::Set,
+        required_if_eq("signer_provider", "aws-kms")
+    )]
     aws_kms_key_arn: Vec<String>,
 
-    /// Deadline for each KMS operation, including retries (for example, "10s").
-    #[arg(long, value_parser = humantime::parse_duration)]
+    /// Deadline for each KMS operation, including retries (for example, "10s"); required for
+    /// aws-kms only.
+    #[arg(
+        long,
+        value_parser = humantime::parse_duration,
+        required_if_eq("signer_provider", "aws-kms")
+    )]
     aws_kms_operation_timeout: Option<Duration>,
 
     /// Miden node RPC URL, for example https://rpc.devnet.miden.io
@@ -178,32 +195,30 @@ impl SignerConfig {
     fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
         match cli.signer_provider {
             SignerProvider::Development => {
-                if cli.aws_kms_region.is_some()
-                    || !cli.aws_kms_key_arn.is_empty()
-                    || cli.aws_kms_operation_timeout.is_some()
-                {
-                    bail!("KMS options require the aws-kms signer provider");
-                }
+                // Clap requires these options for aws-kms but cannot refuse them for development.
+                ensure!(
+                    cli.aws_kms_region.is_none()
+                        && cli.aws_kms_key_arn.is_empty()
+                        && cli.aws_kms_operation_timeout.is_none(),
+                    "KMS options require the aws-kms signer provider"
+                );
                 Ok(Self::Development)
             }
             SignerProvider::AwsKms => {
-                let region = cli
-                    .aws_kms_region
-                    .as_deref()
-                    .filter(|region| !region.is_empty())
-                    .context("AWS KMS region is required")?;
-                let [first, second] = cli.aws_kms_key_arn.as_slice() else {
-                    bail!("exactly two distinct immutable KMS key ARNs are required");
+                let (Some(region), [first, second], Some(operation_timeout)) = (
+                    &cli.aws_kms_region,
+                    cli.aws_kms_key_arn.as_slice(),
+                    cli.aws_kms_operation_timeout,
+                ) else {
+                    bail!("the AWS KMS options are incomplete");
                 };
-                if first == second {
-                    bail!("the two KMS key ARNs must differ");
-                }
-                let operation_timeout = cli
-                    .aws_kms_operation_timeout
-                    .filter(|timeout| !timeout.is_zero())
-                    .context("AWS KMS operation timeout must be supplied and greater than zero")?;
+                ensure!(first != second, "the two KMS key ARNs must differ");
+                ensure!(
+                    !operation_timeout.is_zero(),
+                    "AWS KMS operation timeout must be greater than zero"
+                );
                 Ok(Self::AwsKms {
-                    region: region.to_owned(),
+                    region: region.clone(),
                     key_arns: [first.clone(), second.clone()],
                     operation_timeout,
                 })

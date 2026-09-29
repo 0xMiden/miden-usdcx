@@ -153,8 +153,9 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    /// Saves a signed request before it is sent. It can replace only an expired withdrawal; any
-    /// other saved submission, a failed one included, stays as it is.
+    /// Saves a signed request before it is sent, and records it in the burn's history. It can
+    /// replace only an expired withdrawal; any other saved submission, a failed one included, stays
+    /// as it is.
     pub(crate) fn save_submission(&mut self, record: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission(record)?;
         let transaction = self.connection.transaction().map_err(classify_error)?;
@@ -199,12 +200,15 @@ impl Store {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
     }
 
+    /// The submissions Circle accepted that are not final yet, which polling checks.
     pub(crate) fn submissions_to_poll(&self) -> anyhow::Result<Vec<SavedSubmission>> {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
     }
 
-    /// Saves the latest outcome of a submission that is being sent or polled. Only the outcome
-    /// changes: the saved signed request and a known withdrawal ID stay as they are.
+    /// Saves the latest outcome of a submission that is being sent or polled. In the same
+    /// transaction, the burn's history gets a row when the outcome's status, withdrawal ID, HTTP
+    /// status or error changed. Only the outcome changes: the saved signed request and a known
+    /// withdrawal ID stay as they are.
     pub(crate) fn update_submission_outcome(
         &mut self,
         outcome: &SavedSubmission,
@@ -234,8 +238,9 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    /// Puts a held withdrawal back to be sent. Its saved request and any known withdrawal ID stay,
-    /// so recovery asks Circle for its status instead of posting it again once the ID is known.
+    /// Puts a held withdrawal back to be sent, and records that in the burn's history. Its saved
+    /// request and any known withdrawal ID stay, so recovery asks Circle for its status instead of
+    /// posting it again once the ID is known.
     pub(crate) fn retry_held_submission(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let updated = transaction

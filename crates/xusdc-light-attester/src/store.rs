@@ -140,9 +140,10 @@ impl Store {
         Ok(candidates.pop())
     }
 
+    /// Saves a signed request before it is sent. It can replace only an expired withdrawal; any
+    /// other saved submission, a failed one included, stays as it is.
     pub(crate) fn save_submission(&self, record: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission(record)?;
-        // Only an explicitly supplied fresh authorization can replace a confirmed failure.
         let written = self
             .connection
             .execute(
@@ -157,8 +158,7 @@ impl Store {
                 use_circle_forwarding = excluded.use_circle_forwarding,
                 status = ?6, withdrawal_id = NULL, hold_reason = NULL,
                 last_http_status = NULL, last_response = NULL, last_error = NULL
-             WHERE submissions.status IN (?7, ?8)
-                AND submissions.withdrawal_id IS NOT NULL",
+             WHERE submissions.status = ?7 AND submissions.withdrawal_id IS NOT NULL",
                 params![
                     record.note_id.to_bytes(),
                     record.endpoint.as_str(),
@@ -166,7 +166,6 @@ impl Store {
                     record.transfer_spec_hash.as_slice(),
                     record.use_circle_forwarding,
                     SubmissionStatus::Submitting.as_ref(),
-                    SubmissionStatus::Failed.as_ref(),
                     SubmissionStatus::Expired.as_ref(),
                 ],
             )

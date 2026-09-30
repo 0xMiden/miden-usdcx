@@ -50,9 +50,6 @@ pub struct Attester {
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
-    /// A fixed time for tests in place of the system clock.
-    #[cfg(test)]
-    pub(crate) now: Option<std::time::SystemTime>,
 }
 
 impl Attester {
@@ -128,8 +125,6 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
-            #[cfg(test)]
-            now: None,
         })
     }
 
@@ -378,7 +373,7 @@ impl Attester {
         Ok(validated)
     }
 
-    /// Takes each validated burn through prepare, verify, sign and submit. A store or clock error
+    /// Takes each validated burn through prepare, verify, sign and submit. A store error
     /// stops the cycle. A prepare 400 holds the burn. Other errors are retried next cycle while
     /// later burns continue. A 429 stops Circle requests for this cycle.
     async fn submit_withdrawals(
@@ -392,16 +387,6 @@ impl Attester {
                 break;
             }
             let note_id = burn.burn.note_id();
-            // A waiting burn must not spend a prepare call or block smaller burns behind it.
-            if !self.store.can_submit_burn(
-                note_id,
-                burn.amount,
-                self.now_ms()?,
-                self.config.withdrawal_window_ms(),
-                self.config.withdrawal_limit(),
-            )? {
-                continue;
-            }
             if let Err(error) = self.withdraw(&burn, rate_limited).await {
                 if error.is_fatal() {
                     return Err(error);

@@ -117,22 +117,12 @@ fn invalid_config_is_rejected() {
     for (key, replacement, expected_error) in cases {
         assert_config_error(&replace_setting(&valid, key, replacement), expected_error);
     }
-    for setting in [
-        "withdrawal_window_hours = 0",
-        "withdrawal_window_hours = 2562047788016",
-    ] {
-        assert_config_error(
-            &format!("{valid}{setting}\n"),
-            "withdrawal window must be positive and fit in milliseconds",
-        );
-    }
 
     for missing_key in [
         "circle_request_timeout_ms",
         "faucet_account_id_hex",
         "circle_api_base_url",
         "use_circle_forwarding",
-        "withdrawal_limit",
         "poll_interval_ms",
         "faucet_deployment_block",
         "trusted_anchor_block",
@@ -206,19 +196,12 @@ fn invalid_config_is_rejected() {
     assert_eq!(config.minimum_finality_depth_blocks(), 1);
     assert_eq!(config.expected_signing_public_keys_hex(), ["unchecked"]);
     assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
-    assert_eq!(config.withdrawal_limit(), 10_000_000_000_000);
-    assert_eq!(config.withdrawal_window_ms(), 86_400_000);
 
-    let paused = replace_setting(&valid, "withdrawal_limit", "withdrawal_limit = 0");
-    std::fs::write(
-        &path,
-        format!("{paused}max_withdrawal_fee = 3500\nwithdrawal_window_hours = 2\n"),
-    )
-    .unwrap();
-    let config = Config::load(&path).unwrap();
-    assert_eq!(config.max_withdrawal_fee().as_u64(), 3500);
-    assert_eq!(config.withdrawal_limit(), 0);
-    assert_eq!(config.withdrawal_window_ms(), 7_200_000);
+    std::fs::write(&path, format!("{valid}max_withdrawal_fee = 3500\n")).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().max_withdrawal_fee().as_u64(),
+        3500
+    );
     assert_config_error(
         &format!(
             "{valid}max_withdrawal_fee = {}\n",

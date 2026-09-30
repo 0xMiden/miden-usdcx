@@ -243,20 +243,10 @@ async fn expiry_waits_for_the_next_cycle() {
     assert_eq!(ledger.record(&attester, 2).status, Finalized);
     assert_eq!(counts(&calls), [0, 0]);
     assert_eq!(requests.lock().unwrap().len(), 4);
-    assert_eq!(
-        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount = 1000"),
-        3,
-        "expiry and finalization keep their capacity charges"
-    );
     attester.run_one_cycle().await.unwrap();
     assert_eq!(counts(&calls), [1, 1]);
     assert_eq!(requests.lock().unwrap().len(), 6);
     assert_eq!(ledger.record(&attester, 0).status, Submitted);
-    assert_eq!(
-        ledger.stored("SELECT count(*) FROM burns WHERE reservation_amount = 1000"),
-        3,
-        "a replacement must not add or remove a burn's reservation"
-    );
 }
 
 /// Any failed chain read, an unreachable node or an answer it cannot decode, still lets the

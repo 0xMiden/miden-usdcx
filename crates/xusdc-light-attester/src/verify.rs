@@ -220,6 +220,10 @@ fn parse<T: std::str::FromStr>(text: &str, field: &'static str) -> Result<T, Ver
 }
 
 fn decimal(text: &str, field: &'static str) -> Result<U256, VerifyError> {
+    // `from_str_radix` also reads an empty string and underscores; Circle sends plain digits.
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(VerifyError::MalformedField(field));
+    }
     U256::from_str_radix(text, 10).map_err(|_| VerifyError::MalformedField(field))
 }
 

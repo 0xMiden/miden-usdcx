@@ -378,3 +378,20 @@ async fn kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies() {
         ]
     );
 }
+
+#[tokio::test]
+async fn the_kms_client_keeps_the_region_attempts_and_timeout() {
+    const NAME: &str = "signer::kms::tests::the_kms_client_keeps_the_region_attempts_and_timeout";
+    if !in_isolated_process(NAME) {
+        return;
+    }
+    let timeout = std::time::Duration::from_secs(7);
+    let client = KmsSigner::client("eu-north-1", timeout).await;
+    let config = client.config();
+    assert_eq!(config.region().unwrap().as_ref(), "eu-north-1");
+    assert_eq!(config.retry_config().unwrap().max_attempts(), 3);
+    assert_eq!(
+        config.timeout_config().unwrap().operation_timeout(),
+        Some(timeout)
+    );
+}

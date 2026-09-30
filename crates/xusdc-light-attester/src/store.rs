@@ -206,10 +206,8 @@ impl Store {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
     }
 
-    /// Saves the latest outcome of a submission that is being sent or polled. In the same
-    /// transaction, the burn's history gets a row when the outcome's status, withdrawal ID, HTTP
-    /// status or error changed. Only the outcome changes: the saved signed request and a known
-    /// withdrawal ID stay as they are.
+    /// Save the latest reply. Add a history event if the status, withdrawal ID, HTTP status, or
+    /// error changed. Keep the signed request and any known withdrawal ID.
     pub(crate) fn update_submission_outcome(
         &mut self,
         outcome: &SavedSubmission,
@@ -458,11 +456,9 @@ fn record_submission(
     Ok(())
 }
 
-/// Whether the request's latest outcome in the burn's history, since the request was authorized or
-/// last retried by an operator, already has this outcome's status, withdrawal ID, HTTP status and
-/// error text. A retry puts a held request back without recording an outcome, so the answer after
-/// it is recorded even when it repeats the one before. Circle's reply body is not compared: it can
-/// change from one poll to the next while the state stays the same.
+/// Return true if the latest outcome since authorization or operator retry matches the status,
+/// withdrawal ID, HTTP status, and error. Record the first reply after an operator retry. Ignore
+/// response body changes when those fields stay the same.
 fn repeats_latest_outcome(
     connection: &rusqlite::Connection,
     outcome: &SavedSubmission,
@@ -599,8 +595,8 @@ impl HoldReason {
     }
 }
 
-/// Reads the saved submissions in note order: only `note_id`'s when it is given, and only those
-/// with `status` when it is given. A row that fails its checks makes the store invalid.
+/// Load saved submissions in note order. Apply `note_id` and `status` filters when supplied. Reject
+/// the store if a selected row fails validation.
 fn select_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,

@@ -1,7 +1,5 @@
 //! Saves signed requests before sending them, then resumes uncertain submissions unchanged.
 
-use std::time::SystemTime;
-
 use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
@@ -26,15 +24,13 @@ pub enum SubmitError {
     Verification(#[from] VerifyError),
     #[error("withdrawal signing failed")]
     Signing(#[from] SignerError),
-    #[error("system time cannot be used for withdrawal capacity accounting")]
-    Clock,
 }
 
 impl SubmitError {
     /// A failure that stops the rest of the cycle: the store can no longer record what Circle
-    /// answers, or the clock cannot be used for capacity accounting.
+    /// answers.
     pub(crate) fn is_fatal(&self) -> bool {
-        matches!(self, Self::Store(_) | Self::Clock)
+        matches!(self, Self::Store(_))
     }
 }
 
@@ -98,18 +94,10 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         let endpoint = circle::submission_endpoint(self.config.circle_api_base_url())
             .map_err(SubmitError::InvalidRequest)?;
-        let (saved, amount) = withdrawal.submission(endpoint)?;
-        // The final fit check, reservation and exact request become durable together.
-        if !self.store.admit_submission(
-            &saved,
-            amount,
-            self.now_ms()?,
-            self.config.withdrawal_window_ms(),
-            self.config.withdrawal_limit(),
-        )? {
-            return Ok(());
-        }
-        self.send_admitted_submission(saved, rate_limited).await
+        let saved = withdrawal.submission(endpoint)?;
+        // Only a confirmed expired attempt may receive a fresh authorization.
+        self.store.save_submission(&saved)?;
+        self.advance_submission(saved, rate_limited).await
     }
 
     /// Try each saved request once. POST if Circle's ID is unknown. Otherwise, check its status
@@ -135,56 +123,20 @@ impl Attester {
     }
 
     /// After Circle's prepare refused this burn and the cause is fixed, let the burn be checked
-    /// again. Capacity reservations and any cap-rejection cooldown remain unchanged.
+    /// again.
     pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }
 
-    /// The system clock's time in milliseconds since the Unix epoch, read at each decision.
-    pub(crate) fn now_ms(&self) -> Result<i64, SubmitError> {
-        #[cfg(test)]
-        let now = self.now.unwrap_or_else(SystemTime::now);
-        #[cfg(not(test))]
-        let now = SystemTime::now();
-        let elapsed = now
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| SubmitError::Clock)?;
-        elapsed
-            .as_millis()
-            .try_into()
-            .map_err(|_| SubmitError::Clock)
-    }
-
     pub(crate) async fn advance_submission(
         &mut self,
-        saved: SavedSubmission,
+        mut saved: SavedSubmission,
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
         // After a 429 the rest of the cycle leaves Circle alone; the row stays queued.
         if *rate_limited {
             return Ok(());
         }
-        // GET needs no capacity. Before each retry POST, renew the one reservation for this
-        // note: the previous attempt may have been accepted even if its response was lost.
-        if saved.withdrawal_id.is_none()
-            && !self.store.renew_submission(
-                saved.note_id,
-                self.now_ms()?,
-                self.config.withdrawal_window_ms(),
-                self.config.withdrawal_limit(),
-            )?
-        {
-            return Ok(());
-        }
-        self.send_admitted_submission(saved, rate_limited).await
-    }
-
-    /// Sends the saved request once.
-    async fn send_admitted_submission(
-        &mut self,
-        mut saved: SavedSubmission,
-        rate_limited: &mut bool,
-    ) -> Result<(), SubmitError> {
         let mut response = self.send_saved_request(&mut saved, rate_limited).await;
         if saved.withdrawal_id.is_none()
             && response

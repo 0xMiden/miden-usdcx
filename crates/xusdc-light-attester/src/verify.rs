@@ -1,6 +1,6 @@
 //! Checks Circle's prepared authorization against the burns, then signs only the checked digest.
 
-use alloy_primitives::{keccak256, Address, Bytes, Signature, B256, U256};
+use alloy_primitives::{address, keccak256, Address, Bytes, Signature, B256, U256};
 use alloy_sol_types::{eip712_domain, SolCall, SolStruct};
 use miden_protocol::note::NoteId;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
@@ -30,6 +30,8 @@ const CCTP_FORWARD_MARKER: [u8; 32] = *b"cctp-forward\0\0\0\0\0\0\0\0\0\0\0\0\0\
 const CCTP_FAST_FINALITY: u32 = 1000;
 // The Gateway domain of Arc, where Circle's xReserve contract forwards withdrawals over CCTP.
 const ARC_DOMAIN: u32 = 26;
+// Arc's USDC, the token the forwarded leg moves on Arc, at the same address on mainnet and testnet.
+const ARC_USDC: Address = address!("3600000000000000000000000000000000000000");
 
 // Names and field order are part of Circle's EIP-712 type hashes.
 mod eip712 {
@@ -350,6 +352,9 @@ fn verify_forwarded_leg(
     if spec.destinationDomain != ARC_DOMAIN {
         return Err(ForwardedField("destinationDomain"));
     }
+    if spec.destinationToken != ARC_USDC.into_word() {
+        return Err(ForwardedField("destinationToken"));
+    }
     let call = cctp::depositForBurnWithHookCall::abi_decode(&hook.forwarding_calldata)
         .map_err(|_| ForwardedField("forwardingCalldata"))?;
     // Decoding alone accepts trailing bytes or odd padding, so the calldata must re-encode exactly.
@@ -365,7 +370,7 @@ fn verify_forwarded_leg(
     if call.mintRecipient.as_slice() != burn.items().dest_recipient.as_bytes() {
         return Err(ForwardedField("calldata mintRecipient"));
     }
-    if call.burnToken != Address::from_word(spec.destinationToken) {
+    if call.burnToken.into_word() != spec.destinationToken {
         return Err(ForwardedField("calldata burnToken"));
     }
     if call.destinationCaller != B256::ZERO {

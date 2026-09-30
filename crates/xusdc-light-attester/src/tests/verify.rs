@@ -406,7 +406,7 @@ fn forwarded_route_is_bound_to_the_burn() {
     }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 17] = [
+    let cases: [(&str, Edit, VerifyError); 19] = [
         (
             "zero forwarding contract",
             |b, _| {
@@ -455,6 +455,22 @@ fn forwarded_route_is_bound_to_the_burn() {
                 b.burn_intents[0].spec.destination_domain = 6;
             },
             ForwardedField("sourceDomain"),
+        ),
+        (
+            "token has nonzero upper bytes",
+            |b, _| {
+                b.burn_intents[0].spec.destination_token =
+                    "0x0100000000000000000000003600000000000000000000000000000000000000".into()
+            },
+            ForwardedField("destinationToken"),
+        ),
+        (
+            "both tokens change together",
+            |b, c| {
+                b.burn_intents[0].spec.destination_token = format!("0x{}", "ee".repeat(32));
+                c.burnToken = Address::repeat_byte(0xee);
+            },
+            ForwardedField("destinationToken"),
         ),
         (
             "amount",

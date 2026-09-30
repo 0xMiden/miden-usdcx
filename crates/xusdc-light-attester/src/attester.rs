@@ -1,13 +1,16 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -98,7 +101,7 @@ impl Attester {
             .await
             .context("failed to connect to the Circle API")?;
 
-        let mut store = Store::open_or_create(
+        let store = Store::open_or_create(
             config.store_path(),
             config.faucet_account_id(),
             ScanCursor {
@@ -118,13 +121,6 @@ impl Attester {
                 .await
                 .context("failed to check the saved checkpoint against the Miden node")?;
         }
-        if config.release_holds() {
-            let (burns, withdrawals) = store
-                .release_all_holds()
-                .context("failed to release held burns and withdrawals")?;
-            info!(burns, withdrawals, "released held burns and withdrawals");
-        }
-
         Ok(Self {
             config,
             store,
@@ -439,6 +435,25 @@ impl Attester {
         let signed = verified.sign(&self.signers).await?;
         self.submit_signed_withdrawal(&signed, rate_limited).await
     }
+}
+
+/// Releases every held burn and held withdrawal in an existing store, and returns how many of
+/// each. Only the store is opened: no Miden node, Circle service or signer is contacted.
+pub fn release_holds(
+    path: &Path,
+    faucet_account_id: AccountId,
+    anchor_block: BlockNumber,
+    anchor_commitment: Word,
+) -> anyhow::Result<(usize, usize)> {
+    Store::open_existing(
+        path,
+        faucet_account_id,
+        TrustedAnchor {
+            block_num: anchor_block,
+            commitment: anchor_commitment,
+        },
+    )?
+    .release_all_holds()
 }
 
 /// Successful discovery returns the proof-lag height. A chain read failure lets recovery and

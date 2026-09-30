@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 use crate::attester::Attester;
 use crate::circle::CircleApi;
-use crate::config::{Cli, Config};
+use crate::config::{Cli, Config, Invocation};
 
 use super::support::{
     development_pair, development_signers, faucet_account_id, ready_circle, startup_anchor,
@@ -99,6 +99,10 @@ impl TestArgs {
 
     pub(super) fn parse(&self) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(&self.args)
+    }
+
+    pub(super) fn invocation(&self) -> Result<Invocation, clap::Error> {
+        Invocation::try_parse_from(&self.args)
     }
 
     pub(super) fn config(&self) -> anyhow::Result<Config> {

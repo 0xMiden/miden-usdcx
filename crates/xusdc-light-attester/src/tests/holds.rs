@@ -1,17 +1,18 @@
 //! Burn holds: which failures hold a burn, and how a hold is recorded and released.
 
+use miden_protocol::block::BlockNumber;
 use miden_protocol::utils::serde::Serializable;
 use reqwest::StatusCode;
 use serde_json::json;
 
-use crate::attester::burn_hold;
+use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
 use crate::store::BurnHoldReason;
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
 use super::submit::{reply, Ledger};
-use super::support::{read_store, CircleState, ObservedRequest};
+use super::support::{faucet_account_id, read_store, CircleState, ObservedRequest};
 
 /// One column of a burn's history rows of one kind, oldest first.
 fn recorded<T: rusqlite::types::FromSql>(
@@ -111,7 +112,44 @@ async fn prepare_400_holds_survive_restart_until_released() {
         SubmissionStatus::Expired
     );
     drop(attester);
-    ledger.config.lock().unwrap().switch("--release-holds");
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+        )
+        .unwrap(),
+        (1, 0)
+    );
+    let mut store = ledger.open_store().unwrap();
+    store
+        .hold_burn(
+            ledger.burns[order[0]].burn.note_id(),
+            BurnHoldReason::PrepareRejected,
+            None,
+        )
+        .unwrap();
+    drop(store);
+    let (attester, requests) = ledger.start(vec![]).await;
+    assert!(attester
+        .store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .all(|burn| burn.note_id() != ledger.burns[order[0]].burn.note_id()));
+    assert!(requests.lock().unwrap().is_empty());
+    drop(attester);
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+        )
+        .unwrap(),
+        (1, 0)
+    );
     let (mut attester, requests) = ledger
         .start(vec![
             reply(200, ledger.prepared_response(order[0])),
@@ -120,7 +158,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
         .await;
     assert_eq!(
         recorded::<i64>(&ledger, order[0], "BURN_RELEASED", "burn_hold_reason"),
-        [BurnHoldReason::PrepareRejected.code()]
+        [BurnHoldReason::PrepareRejected.code(); 2]
     );
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
     let requests = requests.lock().unwrap();

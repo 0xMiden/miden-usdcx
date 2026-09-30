@@ -446,7 +446,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         (
             "leg starts outside Arc",
             |b, _| b.burn_intents[0].spec.source_domain = 6,
-            ForwardedField("destinationDomain"),
+            ForwardedField("sourceDomain"),
         ),
         (
             "leg stays on a chain other than Arc",
@@ -454,7 +454,7 @@ fn forwarded_route_is_bound_to_the_burn() {
                 b.burn_intents[0].spec.source_domain = 6;
                 b.burn_intents[0].spec.destination_domain = 6;
             },
-            ForwardedField("destinationDomain"),
+            ForwardedField("sourceDomain"),
         ),
         (
             "amount",

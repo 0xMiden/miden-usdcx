@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::signer::{Signer, SignerError};
+use crate::signer::{Signer, SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
 // Circle's Gateway contracts (BurnIntents.sol) start an encoded burn intent with
@@ -97,11 +97,8 @@ impl VerifiedWithdrawal {
     /// Keep the checked batch with both signatures; return no partial result on failure. The
     /// signatures are ordered by signer address, ascending, the only order Circle's attester
     /// contract accepts.
-    pub(crate) async fn sign(
-        self,
-        signers: [&dyn Signer; 2],
-    ) -> Result<SignedWithdrawal, SignerError> {
-        let mut signers = signers;
+    pub(crate) async fn sign(self, signers: &SignerPair) -> Result<SignedWithdrawal, SignerError> {
+        let mut signers = signers.signers();
         let addresses = [
             signer_address(signers[0]).await?,
             signer_address(signers[1]).await?,

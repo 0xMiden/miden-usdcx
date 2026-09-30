@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Signature, B256, U256};
 
-use crate::signer::{DevelopmentSigner, Signer, SignerError, SigningPublicKey};
+use crate::signer::{DevelopmentSigner, Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::tests::verified_withdrawal;
 
 #[tokio::test]
@@ -116,8 +116,11 @@ async fn verified_withdrawal_gets_two_signatures() {
         calls: calls.clone(),
         fail_at: None,
     });
+    let signers = SignerPair::new(signers.map(|signer| Box::new(signer) as Box<dyn Signer>))
+        .await
+        .unwrap();
 
-    let signed = verified.sign([&signers[0], &signers[1]]).await.unwrap();
+    let signed = verified.sign(&signers).await.unwrap();
     assert_eq!(*calls.lock().unwrap(), [(1, digest), (2, digest)]);
     assert_eq!(signed.batch.batch.note_id, expected.batch.note_id);
     assert_eq!(signed.batch.batch.digest, digest);
@@ -145,8 +148,11 @@ async fn signing_failure_returns_no_result() {
             calls: calls.clone(),
             fail_at: Some(fail_at),
         });
+        let signers = SignerPair::new(signers.map(|signer| Box::new(signer) as Box<dyn Signer>))
+            .await
+            .unwrap();
 
-        let error = verified.sign([&signers[0], &signers[1]]).await.unwrap_err();
+        let error = verified.sign(&signers).await.unwrap_err();
         assert_eq!(error.to_string(), "signer refused");
         assert_eq!(calls.lock().unwrap().as_slice(), &expected[..fail_at]);
     }
@@ -157,16 +163,16 @@ async fn signing_failure_returns_no_result() {
 #[tokio::test]
 async fn signatures_follow_signer_address_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let signers = [1, 2].map(|id| RecordingSigner {
-        id,
-        calls: calls.clone(),
-        fail_at: None,
+    let signers = [2, 1].map(|id| {
+        Box::new(RecordingSigner {
+            id,
+            calls: calls.clone(),
+            fail_at: None,
+        }) as Box<dyn Signer>
     });
+    let signers = SignerPair::new(signers).await.unwrap();
 
-    let signed = verified_withdrawal()
-        .sign([&signers[1], &signers[0]])
-        .await
-        .unwrap();
+    let signed = verified_withdrawal().sign(&signers).await.unwrap();
     assert_eq!(
         calls
             .lock()
@@ -181,16 +187,18 @@ async fn signatures_follow_signer_address_order() {
         Signature::new(U256::from(1), U256::from(1), false)
     );
 
-    let same = [1, 1].map(|id| RecordingSigner {
-        id,
-        calls: calls.clone(),
-        fail_at: None,
+    let same = [1, 1].map(|id| {
+        Box::new(RecordingSigner {
+            id,
+            calls: calls.clone(),
+            fail_at: None,
+        }) as Box<dyn Signer>
     });
-    let error = verified_withdrawal()
-        .sign([&same[0], &same[1]])
-        .await
-        .unwrap_err();
-    assert_eq!(error.to_string(), "both signers have the same address");
+    let error = SignerPair::new(same).await.err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "the two signing providers hold the same key"
+    );
     assert_eq!(
         calls.lock().unwrap().len(),
         2,

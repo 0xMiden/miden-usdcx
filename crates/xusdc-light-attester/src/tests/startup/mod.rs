@@ -51,7 +51,7 @@ impl TestArgs {
                 "--max-withdrawal-fee-bps".into(),
                 "0".into(),
                 "--cctp-forwarding-max-fee".into(),
-                "0".into(),
+                "500000".into(),
                 "--cctp-forwarder-address".into(),
                 "0x008888878f94c0d87defdf0b07f46b93c1934442".into(),
                 "--cctp-token-messenger-address".into(),

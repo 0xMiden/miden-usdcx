@@ -1,19 +1,45 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use miden_protocol::block::BlockNumber;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use xusdc_attester::attester::release_holds;
 use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
-use xusdc_attester::config::{Cli, Config};
+use xusdc_attester::config::{
+    parse_faucet_account_id, parse_trusted_anchor_commitment, Command, Config, Invocation,
+};
 use xusdc_attester::signer::{DevelopmentSigner, Signer, SignerPair};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     init_tracing();
-    let config = Config::try_from(Cli::parse()).context("invalid configuration")?;
+    let invocation = Invocation::parse();
+    if let Some(Command::ReleaseHolds {
+        store_path,
+        faucet_account_id,
+        trusted_anchor_block,
+        trusted_anchor_commitment,
+    }) = invocation.command
+    {
+        let faucet_account_id = parse_faucet_account_id(&faucet_account_id)?;
+        let trusted_anchor_commitment =
+            parse_trusted_anchor_commitment(&trusted_anchor_commitment)?;
+        let (burns, withdrawals) = release_holds(
+            std::path::Path::new(&store_path),
+            faucet_account_id,
+            BlockNumber::from(trusted_anchor_block),
+            trusted_anchor_commitment,
+        )
+        .context("failed to release held burns and withdrawals")?;
+        info!(burns, withdrawals, "released held burns and withdrawals");
+        return Ok(());
+    }
+    let config = Config::try_from(invocation.run.context("missing run arguments")?)
+        .context("invalid configuration")?;
     let (circle, circle_worker) =
         CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
     let signers = development_signers().context("failed to initialize development signers")?;

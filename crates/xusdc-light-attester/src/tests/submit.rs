@@ -17,7 +17,7 @@ use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
-use crate::attester::Attester;
+use crate::attester::{release_holds, Attester};
 use crate::burn::{DiscoveredBurn, ValidatedBurn};
 use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
@@ -1196,10 +1196,19 @@ async fn held_submissions_do_not_block_others() {
         "holds do not retry automatically"
     );
 
-    // Releasing the hold at startup starts the withdrawal over: the burn is prepared and signed
-    // again, and the old signed request is never sent.
+    // Releasing the hold starts the withdrawal over: the burn is prepared and signed again, and
+    // the old signed request is never sent.
     drop(attester);
-    ledger.config.lock().unwrap().switch("--release-holds");
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+        )
+        .unwrap(),
+        (0, 1)
+    );
     let ready: Vec<_> = ledger
         .fresh_indices
         .iter()

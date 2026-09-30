@@ -37,6 +37,7 @@ async fn new_store_starts_at_deployment_block() {
         faucet_account_id(),
         BlockNumber::GENESIS,
         startup_anchor().header().commitment(),
+        &[],
     )
     .is_err());
     assert!(
@@ -349,6 +350,7 @@ async fn store_cannot_be_opened_twice() {
         faucet_account_id(),
         trusted_anchor().block_num,
         trusted_anchor().commitment,
+        &[],
     )
     .unwrap_err();
     assert!(

@@ -20,15 +20,13 @@ CREATE TABLE burns (
     consumption_block INTEGER
         CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
     burn_tx_id BLOB,
-    status TEXT NOT NULL
-        CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED', 'CAP_REJECTED')),
+    status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
     hold_reason TEXT CHECK (hold_reason IN ('prepare_rejected')),
     reservation_amount INTEGER CHECK (reservation_amount >= 0),
     admitted_at_ms INTEGER CHECK (admitted_at_ms >= 0),
     CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
     CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL)),
-    CHECK ((reservation_amount IS NULL) = (admitted_at_ms IS NULL)),
-    CHECK (status != 'CAP_REJECTED' OR admitted_at_ms IS NOT NULL)
+    CHECK ((reservation_amount IS NULL) = (admitted_at_ms IS NULL))
 ) STRICT;
 
 -- Each burn's saved, signed withdrawal request and Circle's latest answer to it.

@@ -1,4 +1,4 @@
-//! Local queue rules. The cap-error text here is synthetic, not a claimed Circle message.
+//! Local queue rules.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -8,12 +8,12 @@ use reqwest::StatusCode;
 use serde_json::json;
 
 use crate::attester::{burn_hold, Attester};
-use crate::circle::{CircleError, RawResponse};
+use crate::circle::CircleError;
 use crate::store::BurnHoldReason;
-use crate::submission::{is_limit_rejection, SubmissionStatus, SubmitError};
+use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
-use super::submit::{event, poll, recover, reply, Ledger};
+use super::submit::{poll, recover, reply, Ledger};
 use super::support::{read_store, CircleState, ObservedRequest};
 
 const WINDOW: i64 = 86_400_000;
@@ -54,7 +54,7 @@ fn recorded<T: rusqlite::types::FromSql>(
 #[tokio::test]
 async fn smaller_burns_continue_while_large_burns_wait() {
     let ledger = Ledger::with_amounts([2_000, 300, 700]).await;
-    ledger.configure(1_000, false);
+    ledger.configure(1_000);
     let fitting: Vec<_> = ledger
         .fresh_indices
         .iter()
@@ -133,7 +133,7 @@ async fn reservations_use_the_rolling_boundary_and_never_move_backwards() {
 async fn summing_large_reservations_does_not_overflow() {
     let amount = FungibleAsset::MAX_AMOUNT.as_u64();
     let ledger = Ledger::with_amounts([amount; 3]).await;
-    ledger.configure(u64::MAX, false);
+    ledger.configure(u64::MAX);
     let (mut attester, requests) = ledger
         .start(vec![
             CircleState::TransportError,
@@ -159,7 +159,7 @@ async fn summing_large_reservations_does_not_overflow() {
 #[tokio::test]
 async fn retries_recheck_capacity_without_changing_signed_bytes() {
     let ledger = Ledger::new().await;
-    ledger.configure(1_000, false);
+    ledger.configure(1_000);
     let (mut attester, requests) = ledger
         .start(vec![
             CircleState::TransportError,
@@ -211,7 +211,7 @@ async fn recovery_is_not_gated_by_the_per_burn_cap() {
     ledger.submit(&mut attester, 0).await.unwrap();
     drop(attester);
 
-    ledger.configure(500, false);
+    ledger.configure(500);
     let (mut attester, requests) = ledger
         .start(vec![reply(201, json!([ledger.response(0, "created")]))])
         .await;
@@ -250,7 +250,7 @@ async fn live_reservations_are_resent_after_the_limit_drops() {
         ledger.submit(&mut attester, 1).await.unwrap();
         drop(attester);
 
-        ledger.configure(0, false);
+        ledger.configure(0);
         let (mut attester, requests) = ledger
             .start(vec![
                 CircleState::TransportError,
@@ -263,218 +263,6 @@ async fn live_reservations_are_resent_after_the_limit_drops() {
         let mut stored = [admission(&ledger, 0), admission(&ledger, 1)];
         stored.sort();
         assert_eq!(stored, admissions, "{restart_at}");
-    }
-}
-
-#[tokio::test]
-async fn cap_rejection_releases_capacity_but_waits_for_fresh_signing() {
-    let ledger = Ledger::new().await;
-    ledger.configure(1_000, true);
-    let order = &ledger.fresh_indices;
-    let (mut attester, requests) = ledger
-        .start(vec![
-            reply(200, ledger.prepared_response(order[0])),
-            reply(400, json!({"message": "synthetic cap rejection"})),
-            reply(200, ledger.prepared_response(order[1])),
-            CircleState::TransportError,
-        ])
-        .await;
-    at(&mut attester, WINDOW);
-    attester.run_one_cycle().await.unwrap();
-    let rejected = ledger.burns[order[0]].burn.note_id();
-    assert!(
-        attester.store.submission(rejected).unwrap().is_none(),
-        "discard rejected signed bytes"
-    );
-    assert_eq!(admission(&ledger, order[0]), WINDOW);
-    assert_eq!(
-        requests.lock().unwrap().len(),
-        4,
-        "released capacity serves another burn"
-    );
-    attester
-        .store
-        .hold_burn(rejected, BurnHoldReason::PrepareRejected)
-        .unwrap();
-    attester
-        .store
-        .hold_burn(
-            ledger.burns[order[2]].burn.note_id(),
-            BurnHoldReason::PrepareRejected,
-        )
-        .unwrap();
-    drop(attester);
-
-    // A restart and manual hold release must not erase the cap cooldown.
-    ledger.sql("UPDATE submissions SET status = 'HELD', hold_reason = 'http_rejected'");
-    let (mut attester, requests) = ledger
-        .start(vec![
-            reply(200, ledger.prepared_response(order[0])),
-            CircleState::TransportError,
-        ])
-        .await;
-    attester.release_burn_hold(rejected).unwrap();
-    assert!(!attester
-        .store
-        .can_submit_burn(rejected, 1_000, 2 * WINDOW - 1, WINDOW, 2_000)
-        .unwrap());
-    at(&mut attester, 2 * WINDOW);
-    assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
-    assert_eq!(requests.lock().unwrap().len(), 2);
-    assert_eq!(requests.lock().unwrap()[0], ObservedRequest::Prepare);
-    assert_eq!(admission(&ledger, order[0]), 2 * WINDOW);
-
-    // The history keeps Circle's refusal, the hold and its release with the hold's reason, and
-    // the new authorization's later reservation.
-    let kinds: Vec<_> = ledger
-        .history(order[0])
-        .into_iter()
-        .map(|(kind, _)| kind)
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            "AUTHORIZED",
-            "CAP_REJECTED",
-            "BURN_HELD",
-            "BURN_RELEASED",
-            "AUTHORIZED",
-            "OUTCOME"
-        ]
-    );
-    assert_eq!(
-        recorded::<Vec<u8>>(&ledger, order[0], "CAP_REJECTED", "response"),
-        [br#"{"message":"synthetic cap rejection"}"#.to_vec()]
-    );
-    assert_eq!(
-        recorded::<String>(&ledger, order[0], "BURN_RELEASED", "burn_hold_reason"),
-        ["prepare_rejected"]
-    );
-    assert_eq!(
-        recorded::<i64>(&ledger, order[0], "AUTHORIZED", "admitted_at_ms"),
-        [WINDOW, 2 * WINDOW]
-    );
-}
-
-#[tokio::test]
-async fn only_the_configured_post_400_releases_capacity() {
-    // Only a POST 400 whose message starts with the configured text releases capacity.
-    let numbered =
-        "synthetic cap rejection for USDC. Current total: 900000. Limit: 1000000 per 24-hour window";
-    for (configured, status, message, lookup, released) in [
-        (false, 400, "synthetic cap rejection", false, false),
-        (true, 400, " synthetic cap rejection", false, false),
-        (true, 503, "synthetic cap rejection", false, false),
-        (true, 400, "synthetic cap rejection", true, false),
-        (true, 400, numbered, false, true),
-    ] {
-        let ledger = Ledger::new().await;
-        ledger.configure(1_000, configured);
-        let rejection = reply(status, json!({"message": message}));
-        let replies = if lookup {
-            vec![
-                reply(201, json!([ledger.response(0, "created")])),
-                rejection,
-            ]
-        } else {
-            vec![rejection]
-        };
-        let (mut attester, _) = ledger.start(replies).await;
-        at(&mut attester, WINDOW);
-        ledger.submit(&mut attester, 0).await.unwrap();
-        if lookup {
-            poll(&mut attester).await.unwrap();
-        }
-        let kept = attester
-            .store
-            .submission(ledger.burns[0].burn.note_id())
-            .unwrap()
-            .is_some_and(|saved| !saved.body.is_empty());
-        assert_eq!(kept, !released, "{message}");
-        assert_eq!(
-            attester
-                .store
-                .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
-                .unwrap(),
-            released,
-            "{message}"
-        );
-    }
-
-    // The reply to the first POST is lost, so Circle may have accepted it. The limit 400 on the
-    // resend then keeps the signed request queued, and the burn is never signed a second time.
-    let ledger = Ledger::new().await;
-    ledger.configure(1_000, true);
-    let (mut attester, _) = ledger
-        .start(vec![
-            CircleState::TransportError,
-            reply(400, json!({"message": "synthetic cap rejection"})),
-        ])
-        .await;
-    at(&mut attester, WINDOW);
-    ledger.submit(&mut attester, 0).await.unwrap();
-    let sent = ledger.record(&attester, 0);
-    recover(&mut attester).await.unwrap();
-    let saved = ledger.record(&attester, 0);
-    assert_eq!(
-        (saved.status, saved.body, saved.last_error.as_deref()),
-        (
-            SubmissionStatus::Submitting,
-            sent.body,
-            Some("Circle's withdrawal limit is reached")
-        )
-    );
-    assert!(!attester
-        .store
-        .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
-        .unwrap());
-    assert!(!attester
-        .store
-        .burns_ready_for_withdrawal(3u32.into(), 1)
-        .unwrap()
-        .iter()
-        .any(|burn| burn.note_id() == saved.note_id));
-}
-
-/// A cap rejection is recorded whole or not at all: when the burn's change or its history row
-/// cannot be written, the request, the reservation and the history stay as they were.
-#[tokio::test]
-async fn failed_cap_cleanup_keeps_the_request_and_reservation() {
-    for failing in [
-        "BEFORE UPDATE ON burns WHEN NEW.status = 'CAP_REJECTED'",
-        "BEFORE INSERT ON submission_events WHEN NEW.kind = 'CAP_REJECTED'",
-    ] {
-        let ledger = Ledger::new().await;
-        ledger.configure(1_000, true);
-        ledger.sql(&format!(
-            "CREATE TRIGGER fail_cap {failing} BEGIN SELECT RAISE(FAIL, 'disk full'); END;"
-        ));
-        let (mut attester, _) = ledger
-            .start(vec![reply(
-                400,
-                json!({"message": "synthetic cap rejection"}),
-            )])
-            .await;
-        at(&mut attester, WINDOW);
-        assert!(matches!(
-            ledger.submit(&mut attester, 0).await,
-            Err(SubmitError::Store(_))
-        ));
-        let saved = ledger.record(&attester, 0);
-        assert_eq!(
-            (saved.status, saved.last_http_status),
-            (SubmissionStatus::Submitting, None),
-            "{failing}"
-        );
-        assert_eq!(
-            ledger.history(0),
-            [event("AUTHORIZED", SubmissionStatus::Submitting)],
-            "{failing}"
-        );
-        assert!(!attester
-            .store
-            .can_submit_burn(ledger.burns[1].burn.note_id(), 1_000, WINDOW, WINDOW, 1_000)
-            .unwrap());
     }
 }
 
@@ -641,61 +429,6 @@ async fn unusable_clock_stops_the_cycle() {
         Some(SubmitError::Clock)
     ));
     assert!(requests.lock().unwrap().is_empty());
-}
-
-/// Circle's limit message is recognised by its configured start, and only in a 400.
-#[test]
-fn limit_message_is_recognised_by_its_start() {
-    let start = Some("synthetic cap rejection");
-    let numbered =
-        "synthetic cap rejection for USDC. Current total: 900000. Limit: 1000000 per 24-hour window";
-    let message = |value| serde_json::to_vec(&json!({ "message": value })).unwrap();
-    for (name, configured, status, body, expected) in [
-        ("not configured", None, 400, message(json!(numbered)), false),
-        (
-            "the exact start",
-            start,
-            400,
-            message(json!("synthetic cap rejection")),
-            true,
-        ),
-        (
-            "the numbered message",
-            start,
-            400,
-            message(json!(numbered)),
-            true,
-        ),
-        (
-            "a leading space",
-            start,
-            400,
-            message(json!(" synthetic cap rejection")),
-            false,
-        ),
-        ("a 503", start, 503, message(json!(numbered)), false),
-        (
-            "a body that is not JSON",
-            start,
-            400,
-            b"synthetic cap rejection".to_vec(),
-            false,
-        ),
-        (
-            "a message that is not text",
-            start,
-            400,
-            message(json!(7)),
-            false,
-        ),
-    ] {
-        let response = RawResponse::new(StatusCode::from_u16(status).unwrap(), body);
-        assert_eq!(
-            is_limit_rejection(&response, configured),
-            expected,
-            "{name}"
-        );
-    }
 }
 
 /// Only a 400 from prepare holds a burn; any other failure before submission is tried again.

@@ -266,18 +266,13 @@ impl Ledger {
         self.directory.path().join("state.sqlite3")
     }
 
-    pub(super) fn configure(&self, limit: u64, cap_message: bool) {
+    pub(super) fn configure(&self, limit: u64) {
         let path = self.directory.path().join("attester.toml");
         let text = std::fs::read_to_string(&path).unwrap().replace(
             "withdrawal_limit = 10_000_000_000_000",
             &format!("withdrawal_limit = {limit}"),
         );
-        let extra = if cap_message {
-            "\nwithdrawal_cap_error_message = 'synthetic cap rejection'\n"
-        } else {
-            ""
-        };
-        std::fs::write(path, format!("{text}{extra}")).unwrap();
+        std::fs::write(path, text).unwrap();
     }
 
     pub(super) fn stored(&self, sql: &str) -> i64 {

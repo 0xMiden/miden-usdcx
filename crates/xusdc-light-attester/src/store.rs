@@ -22,7 +22,6 @@ use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
-const CAP_REJECTED: &str = "CAP_REJECTED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnHoldReason {
@@ -61,9 +60,6 @@ enum EventKind {
     /// A request about to be sent again renewed its reservation.
     #[strum(serialize = "RESERVATION_RENEWED")]
     ReservationRenewed,
-    /// Circle refused a first send because its withdrawal limit was reached; the request is gone.
-    #[strum(serialize = "CAP_REJECTED")]
-    CapRejected,
     /// Circle refused to prepare the burn, which now waits for an operator.
     #[strum(serialize = "BURN_HELD")]
     BurnHeld,
@@ -280,46 +276,6 @@ impl Store {
         Ok(true)
     }
 
-    /// Circle refused the first send of `rejected` because its withdrawal limit was reached. The
-    /// burn stops counting against the limit and its signed bytes are discarded, but its
-    /// reservation keeps it waiting until its window passes. Circle's answer goes into the burn's
-    /// history before the request is deleted.
-    pub(crate) fn record_cap_rejection(
-        &mut self,
-        rejected: &SavedSubmission,
-    ) -> anyhow::Result<()> {
-        let note_id = rejected.note_id.to_bytes();
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        let answered = transaction
-            .execute(
-                "UPDATE submissions SET last_http_status = ?2, last_response = ?3, last_error = ?4
-                 WHERE note_id = ?1 AND status = ?5 AND withdrawal_id IS NULL",
-                params![
-                    note_id,
-                    rejected.last_http_status,
-                    rejected.last_response,
-                    rejected.last_error,
-                    SubmissionStatus::Submitting.as_ref()
-                ],
-            )
-            .map_err(classify_error)?;
-        ensure!(answered == 1, CONFLICT);
-        let updated = transaction
-            .execute(
-                "UPDATE burns SET status = 'CAP_REJECTED' WHERE note_id = ?1
-                    AND status = 'DISCOVERED' AND admitted_at_ms IS NOT NULL",
-                [&note_id],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        record_event(&transaction, rejected.note_id, EventKind::CapRejected)?;
-        let removed = transaction
-            .execute("DELETE FROM submissions WHERE note_id = ?1", [&note_id])
-            .map_err(classify_error)?;
-        ensure!(removed == 1, CONFLICT);
-        transaction.commit().map_err(classify_error)
-    }
-
     pub(crate) fn hold_burn(
         &mut self,
         note_id: NoteId,
@@ -329,7 +285,7 @@ impl Store {
         let updated = transaction
             .execute(
                 "UPDATE burns SET hold_reason = ?2
-                 WHERE note_id = ?1 AND status IN ('DISCOVERED', 'CAP_REJECTED')
+                 WHERE note_id = ?1 AND status = 'DISCOVERED'
                     AND (hold_reason IS NULL OR hold_reason = ?2)
                     AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1
                         AND status != ?3)",
@@ -439,9 +395,9 @@ impl Store {
             .connection
             .execute(
                 "UPDATE burns SET status = ?1
-             WHERE note_id = ?2 AND status IN ('DISCOVERED', 'CAP_REJECTED')
+             WHERE note_id = ?2 AND status = ?3
                 AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?2)",
-                params![REFUSED, note_id.to_bytes()],
+                params![REFUSED, note_id.to_bytes(), DISCOVERED],
             )
             .map_err(classify_error)?;
         (updated == 1)
@@ -552,11 +508,7 @@ fn can_submit_burn(
     if previous.is_some_and(|(previous_amount, _)| previous_amount != amount) {
         bail!(CONFLICT);
     }
-    if hold.is_some()
-        || status == REFUSED
-        || (status == CAP_REJECTED
-            && inside_window(now_ms, previous.context(INVALID)?.1, window_ms))
-    {
+    if hold.is_some() || status == REFUSED {
         return Ok(false);
     }
 
@@ -567,7 +519,7 @@ fn can_submit_burn(
             "SELECT reservation.reservation_amount, reservation.admitted_at_ms
              FROM burns JOIN submission_events AS reservation
                 ON reservation.seq = ({LATEST_RESERVATION})
-             WHERE burns.note_id != ?1 AND burns.status != 'CAP_REJECTED'"
+             WHERE burns.note_id != ?1"
         ))
         .map_err(classify_error)?;
     let mut rows = statement
@@ -620,9 +572,8 @@ fn reserve_capacity(
 ) -> anyhow::Result<()> {
     let updated = connection
         .execute(
-            "UPDATE burns SET status = 'DISCOVERED', reservation_amount = ?2, admitted_at_ms = ?3
-             WHERE note_id = ?1 AND status IN ('DISCOVERED', 'CAP_REJECTED')
-                AND hold_reason IS NULL",
+            "UPDATE burns SET reservation_amount = ?2, admitted_at_ms = ?3
+             WHERE note_id = ?1 AND status = 'DISCOVERED' AND hold_reason IS NULL",
             params![note_id.to_bytes(), amount, admitted_at_ms],
         )
         .map_err(classify_error)?;

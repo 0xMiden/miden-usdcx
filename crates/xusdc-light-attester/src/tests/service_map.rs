@@ -372,7 +372,13 @@ async fn diverged_chain_stops_the_cycle() {
     assert_eq!(ledger.record(&attester, 0), before[0]);
     assert_eq!(ledger.record(&attester, 1), before[1]);
 
-    let error = attester.run(CancellationToken::new()).await.unwrap_err();
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        attester.run(CancellationToken::new()),
+    )
+    .await
+    .expect("a diverged chain ends the run")
+    .unwrap_err();
     assert!(matches!(
         error.downcast_ref::<DiscoverError>(),
         Some(DiscoverError::ChainDiverged)

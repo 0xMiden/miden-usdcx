@@ -1,6 +1,7 @@
 //! Burn holds: which failures hold a burn, and how a hold is recorded and released.
 
 use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::Serializable;
 use reqwest::StatusCode;
 use serde_json::json;
@@ -118,6 +119,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
             faucet_account_id(),
             BlockNumber::GENESIS,
             ledger.blocks[0].header().commitment(),
+            &[ledger.burns[order[0]].burn.note_id()],
         )
         .unwrap(),
         (1, 0)
@@ -146,6 +148,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
             faucet_account_id(),
             BlockNumber::GENESIS,
             ledger.blocks[0].header().commitment(),
+            &[ledger.burns[order[0]].burn.note_id()],
         )
         .unwrap(),
         (1, 0)
@@ -166,7 +169,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
     assert_eq!(requests[0], ObservedRequest::Prepare);
 }
 
-/// Releasing every hold is all or nothing: when a history row cannot be written, no hold is
+/// Releasing the named holds is all or nothing: when a history row cannot be written, no hold is
 /// cleared, no held request is deleted and no history row is kept.
 #[tokio::test]
 async fn failed_release_keeps_every_hold() {
@@ -190,9 +193,85 @@ async fn failed_release_keeps_every_hold() {
     );
     let before = std::fs::read(ledger.path()).unwrap();
     let mut store = ledger.open_store().unwrap();
-    assert!(store.release_all_holds().is_err());
+    assert!(store
+        .release_holds(&[
+            ledger.burns[0].burn.note_id(),
+            ledger.burns[1].burn.note_id()
+        ])
+        .is_err());
     drop(store);
     assert_eq!(std::fs::read(ledger.path()).unwrap(), before);
+}
+
+/// Only the named burns are released: other holds stay, a held withdrawal keeps its saved request
+/// until it is named, and naming a burn without a hold releases nothing.
+#[tokio::test]
+async fn only_named_holds_are_released() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let [withdrawal, first, second] = [0, 1, 2].map(|index| ledger.burns[index].burn.note_id());
+    for burn in [first, second] {
+        attester
+            .store
+            .hold_burn(burn, BurnHoldReason::PrepareRejected, None)
+            .unwrap();
+    }
+    drop(attester);
+    let mut store = ledger.open_store().unwrap();
+    assert_eq!(store.release_holds(&[first]).unwrap(), (1, 0));
+    let ready: Vec<_> = store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .map(|burn| burn.note_id())
+        .collect();
+    assert_eq!(ready, [first], "only the named burn is released");
+    let unknown = NoteId::try_from_hex(&format!("0x{}", "11".repeat(32))).unwrap();
+    for named in [[withdrawal, first], [withdrawal, unknown]] {
+        assert!(
+            store.release_holds(&named).is_err(),
+            "a named burn that is not held, or unknown, fails the whole release"
+        );
+    }
+    assert!(
+        store.submission(withdrawal).unwrap().is_some(),
+        "a held withdrawal keeps its saved request until it is released"
+    );
+    assert_eq!(store.release_holds(&[withdrawal]).unwrap(), (0, 1));
+    assert!(store.submission(withdrawal).unwrap().is_none());
+}
+
+/// Each hold is listed on one line with the note ID first: a held burn with its reason, and a held
+/// withdrawal with Circle's message on that line too.
+#[tokio::test]
+async fn holds_are_listed() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "limit\n  reached"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let [withdrawal, burn] = [0, 1].map(|index| ledger.burns[index].burn.note_id());
+    attester
+        .store
+        .hold_burn(burn, BurnHoldReason::PrepareRejected, None)
+        .unwrap();
+    let lines: Vec<_> = attester
+        .store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            format!("{burn}\tburn\tPrepareRejected\t-"),
+            format!("{withdrawal}\twithdrawal\tHttpRejected\tlimit reached"),
+        ]
+    );
 }
 
 #[tokio::test]

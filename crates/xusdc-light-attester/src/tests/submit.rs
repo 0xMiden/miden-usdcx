@@ -1199,6 +1199,7 @@ async fn held_submissions_do_not_block_others() {
             faucet_account_id(),
             BlockNumber::GENESIS,
             ledger.blocks[0].header().commitment(),
+            &[held.note_id],
         )
         .unwrap(),
         (0, 1)

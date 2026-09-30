@@ -1,5 +1,7 @@
 //! Durable discovery state and the single-writer store boundary.
 
+use std::collections::BTreeSet;
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -15,15 +17,17 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
 use rusqlite::{params, OpenFlags, Params, Transaction};
+use strum::IntoEnumIterator;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::circle::circle_message;
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected = 1,
 }
@@ -31,6 +35,36 @@ pub(crate) enum BurnHoldReason {
 impl BurnHoldReason {
     pub(crate) fn code(self) -> i64 {
         self as i64
+    }
+
+    /// The reason a stored number stands for.
+    fn from_code(code: i64) -> Option<Self> {
+        Self::iter().find(|reason| reason.code() == code)
+    }
+}
+
+/// A held burn or held withdrawal as `release-holds` lists it: one line, the note ID first, so an
+/// edited copy of the list can be passed back with `--note-ids-file`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub note_id: NoteId,
+    /// "burn" for a held burn, "withdrawal" for a held withdrawal.
+    pub kind: &'static str,
+    pub reason: String,
+    /// Circle's message, which the store keeps only for a held withdrawal.
+    pub circle_message: Option<String>,
+}
+
+impl fmt::Display for Hold {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}",
+            self.note_id,
+            self.kind,
+            self.reason,
+            self.circle_message.as_deref().unwrap_or("-")
+        )
     }
 }
 
@@ -227,54 +261,96 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    /// Releases every burn hold and every withdrawal hold in one transaction, and returns how many
-    /// burns and withdrawals it released. Each release is recorded in the burn's history first, so
-    /// the history keeps the hold's reason and the released request.
-    pub(crate) fn release_all_holds(&mut self) -> anyhow::Result<(usize, usize)> {
+    /// Releases the holds of the named burns in one transaction, and returns how many burns and
+    /// withdrawals it released. Each release is recorded in the burn's history first, so the
+    /// history keeps the hold's reason. A named burn without a hold fails the whole call, and
+    /// nothing is released.
+    pub(crate) fn release_holds(&mut self, note_ids: &[NoteId]) -> anyhow::Result<(usize, usize)> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        for note_id in note_ids(
-            &transaction,
-            "SELECT note_id FROM burns WHERE hold_reason IS NOT NULL",
-            [],
-        )? {
-            record_event(&transaction, note_id, EventKind::BurnReleased)?;
-        }
-        let burns = transaction
-            .execute(
-                "UPDATE burns SET hold_reason = NULL WHERE hold_reason IS NOT NULL",
-                [],
-            )
-            .map_err(classify_error)?;
-        // A held withdrawal is started over instead of resent. Circle refuses a signed request
-        // that has expired, and asks for the burn to be signed again with the same burn id.
-        // Signing again cannot pay twice: Circle matches withdrawals by burn id, answers a repeat
-        // of an accepted request with 409 and its existing withdrawal, and refuses a new request
-        // whose transfer spec differs, for example after a fee change. The new request passes the
-        // same checks against the burn, so the recipient, chain and burned amount cannot change;
-        // only Circle's fee can, within the ceiling.
-        for note_id in note_ids(
-            &transaction,
-            "SELECT note_id FROM submissions WHERE status = ?1
-                AND hold_reason = ?2 AND withdrawal_id IS NULL",
-            params![
+        let (mut burns, mut withdrawals) = (0, 0);
+        // A burn named twice is released once.
+        for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
+            let note = note_id.to_bytes();
+            let held = params![
+                note,
                 SubmissionStatus::Held.as_ref(),
                 HoldReason::HttpRejected.as_str()
-            ],
-        )? {
-            record_event(&transaction, note_id, EventKind::OperatorRelease)?;
+            ];
+            if exists(
+                &transaction,
+                "SELECT EXISTS (SELECT 1 FROM burns
+                 WHERE note_id = ?1 AND hold_reason IS NOT NULL)",
+                [&note],
+            )? {
+                record_event(&transaction, note_id, EventKind::BurnReleased)?;
+                burns += transaction
+                    .execute(
+                        "UPDATE burns SET hold_reason = NULL WHERE note_id = ?1",
+                        [&note],
+                    )
+                    .map_err(classify_error)?;
+            } else if exists(
+                &transaction,
+                "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
+                    AND hold_reason = ?3 AND withdrawal_id IS NULL)",
+                held,
+            )? {
+                // Release only after checking this withdrawal with Circle. Remove the saved
+                // request so the next cycle can prepare and sign again. An expired signed request
+                // cannot be reused.
+                record_event(&transaction, note_id, EventKind::OperatorRelease)?;
+                withdrawals += transaction
+                    .execute(
+                        "DELETE FROM submissions WHERE note_id = ?1 AND status = ?2
+                            AND hold_reason = ?3 AND withdrawal_id IS NULL",
+                        held,
+                    )
+                    .map_err(classify_error)?;
+            } else {
+                bail!("burn {note_id} has no hold to release");
+            }
         }
-        let withdrawals = transaction
-            .execute(
-                "DELETE FROM submissions WHERE status = ?1 AND hold_reason = ?2
-                    AND withdrawal_id IS NULL",
-                params![
-                    SubmissionStatus::Held.as_ref(),
-                    HoldReason::HttpRejected.as_str()
-                ],
-            )
-            .map_err(classify_error)?;
         transaction.commit().map_err(classify_error)?;
         Ok((burns, withdrawals))
+    }
+
+    /// Every held burn and held withdrawal: burns first, each group in note order.
+    pub(crate) fn holds(&self) -> anyhow::Result<Vec<Hold>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT note_id, hold_reason FROM burns WHERE hold_reason IS NOT NULL
+                 ORDER BY note_id",
+            )
+            .map_err(classify_error)?;
+        let mut rows = statement.query([]).map_err(classify_error)?;
+        let mut holds = Vec::new();
+        while let Some(row) = rows.next().map_err(classify_error)? {
+            let reason =
+                BurnHoldReason::from_code(row.get(1).map_err(classify_error)?).context(INVALID)?;
+            holds.push(Hold {
+                note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
+                kind: "burn",
+                reason: format!("{reason:?}"),
+                circle_message: None,
+            });
+        }
+        for held in select_submissions(&self.connection, None, Some(SubmissionStatus::Held))? {
+            holds.push(Hold {
+                note_id: held.note_id,
+                kind: "withdrawal",
+                reason: held
+                    .hold_reason
+                    .map_or_else(|| "-".into(), |reason| format!("{reason:?}")),
+                // One line per hold, whatever spacing Circle's message has.
+                circle_message: held
+                    .last_response
+                    .as_deref()
+                    .and_then(circle_message)
+                    .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" ")),
+            });
+        }
+        Ok(holds)
     }
 
     pub(crate) fn hold_burn(
@@ -1066,20 +1142,6 @@ where
         bail!(INVALID);
     }
     Ok(value)
-}
-
-/// The note IDs a query selects, in its first column.
-fn note_ids<P: Params>(
-    connection: &rusqlite::Connection,
-    sql: &str,
-    params: P,
-) -> anyhow::Result<Vec<NoteId>> {
-    let mut statement = connection.prepare(sql).map_err(classify_error)?;
-    let rows = statement
-        .query_map(params, |row| row.get::<_, Vec<u8>>(0))
-        .map_err(classify_error)?;
-    rows.map(|note_id| decode_canonical(&note_id.map_err(classify_error)?))
-        .collect()
 }
 
 fn exists<P: Params>(

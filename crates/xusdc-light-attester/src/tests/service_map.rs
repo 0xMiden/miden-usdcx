@@ -175,9 +175,10 @@ async fn invalid_burns_are_not_signed() {
 
 #[tokio::test]
 async fn circle_response_is_checked_before_signing() {
-    // A failed check leaves the burn ready for the next cycle, except a forwarded burn too small
-    // to pay the configured CCTP fee: that fails the same way every cycle, so it is held. The fee
-    // ceiling is checked first, so a small forwarded burn during a fee spike is retried instead.
+    // A failed check leaves the burn ready for the next cycle, except a forwarded burn no larger
+    // than the configured CCTP fee: no Circle fee could leave enough payout, so it is held. A
+    // payout that Circle's fee pushes below the CCTP fee is retried, and so is a fee above the
+    // ceiling.
     for (expected, held) in [
         (VerifyError::DigestMismatch, false),
         (VerifyError::TooSmallToForward, true),

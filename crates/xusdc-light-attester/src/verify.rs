@@ -344,7 +344,10 @@ fn verify_forwarded_leg(
     if spec.destinationCaller != forwarder {
         return Err(ForwardedField("destinationCaller"));
     }
-    if spec.sourceDomain != ARC_DOMAIN || spec.destinationDomain != ARC_DOMAIN {
+    if spec.sourceDomain != ARC_DOMAIN {
+        return Err(ForwardedField("sourceDomain"));
+    }
+    if spec.destinationDomain != ARC_DOMAIN {
         return Err(ForwardedField("destinationDomain"));
     }
     let call = cctp::depositForBurnWithHookCall::abi_decode(&hook.forwarding_calldata)

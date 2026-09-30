@@ -607,6 +607,27 @@ async fn transient_prepare_failures_retry_next_cycle() {
     }
 }
 
+/// A burn's hold and its release both record the hold's reason in the burn's history, also for a
+/// burn that has no saved request.
+#[tokio::test]
+async fn burn_hold_and_release_record_the_reason() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger.start(vec![]).await;
+    let note_id = ledger.burns[0].burn.note_id();
+    attester
+        .store
+        .hold_burn(note_id, BurnHoldReason::PrepareRejected)
+        .unwrap();
+    attester.release_burn_hold(note_id).unwrap();
+    for kind in ["BURN_HELD", "BURN_RELEASED"] {
+        assert_eq!(
+            recorded::<String>(&ledger, 0, kind, "burn_hold_reason"),
+            ["prepare_rejected"],
+            "{kind}"
+        );
+    }
+}
+
 /// Without a usable clock the withdrawal limit cannot be applied, so the cycle stops before any
 /// Circle request, as it does after a store failure.
 #[tokio::test]

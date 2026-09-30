@@ -536,8 +536,35 @@ fn forwarded_route_is_bound_to_the_burn() {
     let batch = with_calldata(batch, call.abi_encode());
     assert_eq!(
         verify(&burn, batch, &forwarding_config(2_000_000, 981_751)),
-        Some(TooSmallToForward),
+        Some(PayoutTooSmallToForward),
         "fee at the amount"
+    );
+    let mut batch = captured(FORWARDED_FIXTURE, &burn);
+    batch.burn_intents[0].spec.value = "981752".into();
+    batch.burn_intents[0].max_fee = "18248".into();
+    let mut call = decode_call(&batch);
+    call.amount = U256::from(981_752);
+    call.maxFee = U256::from(981_751);
+    assert_eq!(
+        verify(
+            &burn,
+            with_calldata(batch, call.abi_encode()),
+            &forwarding_config(2_000_000, 981_751)
+        ),
+        None,
+        "a payout one unit above the CCTP fee"
+    );
+    let batch = captured(FORWARDED_FIXTURE, &burn);
+    let mut call = decode_call(&batch);
+    call.maxFee = U256::from(1_000_000);
+    assert_eq!(
+        verify(
+            &burn,
+            with_calldata(batch, call.abi_encode()),
+            &forwarding_config(3_000_000, 1_000_000)
+        ),
+        Some(TooSmallToForward),
+        "a CCTP fee equal to the burn"
     );
     let batch = captured(FORWARDED_FIXTURE, &burn);
     let padded = [decode_call(&batch).abi_encode(), vec![0]].concat();

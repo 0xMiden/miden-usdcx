@@ -126,10 +126,6 @@ fn invalid_config_is_rejected() {
             "withdrawal window must be positive and fit in milliseconds",
         );
     }
-    assert_config_error(
-        &format!("{valid}withdrawal_cap_error_message = \"   \"\n"),
-        "withdrawal cap error message must not be empty",
-    );
 
     for missing_key in [
         "circle_request_timeout_ms",
@@ -212,18 +208,17 @@ fn invalid_config_is_rejected() {
     assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
     assert_eq!(config.withdrawal_limit(), 10_000_000_000_000);
     assert_eq!(config.withdrawal_window_ms(), 86_400_000);
-    assert_eq!(config.withdrawal_cap_error_message(), None);
 
     let paused = replace_setting(&valid, "withdrawal_limit", "withdrawal_limit = 0");
-    std::fs::write(&path, format!("{paused}max_withdrawal_fee = 3500\nwithdrawal_window_hours = 2\nwithdrawal_cap_error_message = \" exact message \"\n")).unwrap();
+    std::fs::write(
+        &path,
+        format!("{paused}max_withdrawal_fee = 3500\nwithdrawal_window_hours = 2\n"),
+    )
+    .unwrap();
     let config = Config::load(&path).unwrap();
     assert_eq!(config.max_withdrawal_fee().as_u64(), 3500);
     assert_eq!(config.withdrawal_limit(), 0);
     assert_eq!(config.withdrawal_window_ms(), 7_200_000);
-    assert_eq!(
-        config.withdrawal_cap_error_message(),
-        Some(" exact message ")
-    );
     assert_config_error(
         &format!(
             "{valid}max_withdrawal_fee = {}\n",

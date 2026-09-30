@@ -21,7 +21,7 @@ use reqwest::Url;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Signing provider; development reads the two private-key environment variables.
+    /// Signing provider; only aws-kms is supported.
     #[arg(long, value_enum)]
     signer_provider: SignerProvider,
 
@@ -176,14 +176,12 @@ pub enum Command {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SignerProvider {
-    Development,
     AwsKms,
 }
 
 /// Validated provider settings. No credentials or private keys are configuration fields.
 #[derive(Debug)]
 pub enum SignerConfig {
-    Development,
     AwsKms {
         region: String,
         key_arns: [String; 2],
@@ -193,37 +191,24 @@ pub enum SignerConfig {
 
 impl SignerConfig {
     fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
-        match cli.signer_provider {
-            SignerProvider::Development => {
-                // Clap requires these options for aws-kms but cannot refuse them for development.
-                ensure!(
-                    cli.aws_kms_region.is_none()
-                        && cli.aws_kms_key_arn.is_empty()
-                        && cli.aws_kms_operation_timeout.is_none(),
-                    "KMS options require the aws-kms signer provider"
-                );
-                Ok(Self::Development)
-            }
-            SignerProvider::AwsKms => {
-                let (Some(region), [first, second], Some(operation_timeout)) = (
-                    &cli.aws_kms_region,
-                    cli.aws_kms_key_arn.as_slice(),
-                    cli.aws_kms_operation_timeout,
-                ) else {
-                    bail!("the AWS KMS options are incomplete");
-                };
-                ensure!(first != second, "the two KMS key ARNs must differ");
-                ensure!(
-                    !operation_timeout.is_zero(),
-                    "AWS KMS operation timeout must be greater than zero"
-                );
-                Ok(Self::AwsKms {
-                    region: region.clone(),
-                    key_arns: [first.clone(), second.clone()],
-                    operation_timeout,
-                })
-            }
-        }
+        let SignerProvider::AwsKms = cli.signer_provider;
+        let (Some(region), [first, second], Some(operation_timeout)) = (
+            &cli.aws_kms_region,
+            cli.aws_kms_key_arn.as_slice(),
+            cli.aws_kms_operation_timeout,
+        ) else {
+            bail!("the AWS KMS options are incomplete");
+        };
+        ensure!(first != second, "the two KMS key ARNs must differ");
+        ensure!(
+            !operation_timeout.is_zero(),
+            "AWS KMS operation timeout must be greater than zero"
+        );
+        Ok(Self::AwsKms {
+            region: region.clone(),
+            key_arns: [first.clone(), second.clone()],
+            operation_timeout,
+        })
     }
 }
 

@@ -149,6 +149,18 @@ impl Attester {
     pub(crate) async fn discover_burns(&mut self) -> Result<(), DiscoverError> {
         let saved_scan = self.store.scan_state()?;
         let Some(last_block_to_scan) = self.find_last_block_to_scan(&saved_scan).await? else {
+            if let Some(parent) = &saved_scan.authenticated_parent {
+                let block = self
+                    .chain
+                    .block_by_number(parent.block_num())
+                    .await
+                    .map_err(DiscoverError::Chain)?;
+                if block.header().block_num() != parent.block_num()
+                    || block.header().commitment() != parent.commitment()
+                {
+                    return Err(DiscoverError::ChainDiverged);
+                }
+            }
             return Ok(());
         };
         let mut last_verified_header = self.load_previous_verified_header(&saved_scan).await?;

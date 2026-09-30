@@ -171,6 +171,7 @@ impl Attester {
     }
 
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
+    #[cfg(test)]
     pub async fn run_one_cycle(&mut self) -> anyhow::Result<CycleReport> {
         self.cycle(&mut false).await
     }

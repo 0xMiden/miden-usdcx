@@ -298,7 +298,7 @@ async fn burn_hold_and_release_record_the_reason() {
     }
 }
 
-/// Only a 400 from prepare, or a forwarded burn too small to pay the CCTP fee, holds a burn; any
+/// Only a 400 from prepare, or a forwarded burn no larger than the CCTP fee, holds a burn; any
 /// other failure before submission is tried again.
 #[test]
 fn failures_that_hold_a_burn() {
@@ -338,6 +338,11 @@ fn failures_that_hold_a_burn() {
             "too small to forward",
             SubmitError::Verification(VerifyError::TooSmallToForward),
             (Some(BurnHoldReason::TooSmallToForward), None),
+        ),
+        (
+            "payout too small to forward",
+            SubmitError::Verification(VerifyError::PayoutTooSmallToForward),
+            (None, None),
         ),
     ] {
         let (reason, message) = burn_hold(&error);

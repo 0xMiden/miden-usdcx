@@ -99,6 +99,8 @@ pub enum VerifyError {
     ForwardedField(&'static str),
     #[error("the burn is too small to pay the configured CCTP fee")]
     TooSmallToForward,
+    #[error("Circle's fee leaves too little payout to pay the configured CCTP fee")]
+    PayoutTooSmallToForward,
     #[error("Circle's signing hash differs from the checked fields")]
     DigestMismatch,
     #[error("Circle's encoded intent differs from the checked fields")]
@@ -303,12 +305,14 @@ impl UnverifiedPrepareResponse {
         if digest != parse::<B256>(&batch.message_hash_to_sign, "messageHashToSign")? {
             return Err(VerifyError::DigestMismatch);
         }
-        // TokenMessengerV2 reverts a fee at or above the amount, and with it the whole withdrawal.
-        // This check runs last: a fee above the ceiling or a broken reply fails an earlier check
-        // and is retried, so this failure means only that the burn is too small to pay the
-        // configured CCTP fee.
+        // The CCTP transfer fails if its fee is at least the payout.
         if forwarded && cctp_fee >= spec.value {
-            return Err(VerifyError::TooSmallToForward);
+            // Even with no Circle fee the payout would be the whole burn, which is still too little.
+            if cctp_fee >= burned_amount {
+                return Err(VerifyError::TooSmallToForward);
+            }
+            // Retry this burn because a later Circle fee may leave enough payout.
+            return Err(VerifyError::PayoutTooSmallToForward);
         }
         Ok(VerifiedWithdrawal {
             batch: VerifiedBatch {

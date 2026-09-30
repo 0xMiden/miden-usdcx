@@ -17,7 +17,7 @@ use reqwest::Url;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
-use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus};
+use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
@@ -382,6 +382,17 @@ fn validate_store(
 ) -> anyhow::Result<ScanCursor> {
     validate_store_format(connection)?;
 
+    // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
+    let mut statement = connection
+        .prepare("SELECT withdrawal_id FROM submissions WHERE withdrawal_id IS NOT NULL")
+        .map_err(classify_error)?;
+    for id in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(classify_error)?
+    {
+        ensure!(is_well_formed_id(&id.map_err(classify_error)?), INVALID);
+    }
+
     // Stored chain state becomes the next run's trust base, so reject any malformed or
     // internally inconsistent row before using it.
     let row_count = connection
@@ -560,7 +571,7 @@ fn validate_submission_outcome(outcome: &SavedSubmission) -> anyhow::Result<()> 
         || outcome
             .withdrawal_id
             .as_deref()
-            .is_some_and(|id| id.trim().is_empty())
+            .is_some_and(|id| !is_well_formed_id(id))
         || (matches!(
             outcome.status,
             SubmissionStatus::Submitted

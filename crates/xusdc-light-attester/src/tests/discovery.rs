@@ -786,13 +786,15 @@ async fn bad_blocks_are_rejected() {
 async fn idle_discovery_checks_the_saved_block() {
     let mut factory = BlockFactory::new();
     let anchor = factory.push(Vec::new(), Vec::new());
-    let mut fork = factory.clone();
     let saved_note = note(BurnNote::script(), NoteType::Public, 1, 51);
     let saved_block = factory.push(vec![saved_note.output], Vec::new());
-    let other_note = note(BurnNote::script(), NoteType::Public, 1, 52);
-    let replacement = fork.push(vec![other_note.output], Vec::new());
     factory.push(Vec::new(), Vec::new());
-    fork.push(Vec::new(), Vec::new());
+    let saved_chain = factory.blocks();
+
+    factory.truncate(1);
+    let other_note = note(BurnNote::script(), NoteType::Public, 1, 52);
+    let replacement = factory.push(vec![other_note.output], Vec::new());
+    factory.push(Vec::new(), Vec::new());
     assert!(saved_block.validate(Some(anchor.header())).is_ok());
     assert!(replacement.validate(Some(anchor.header())).is_ok());
     assert_ne!(
@@ -801,7 +803,7 @@ async fn idle_discovery_checks_the_saved_block() {
     );
 
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
+    let (mut attester, _) = start(&tempdir, 1, saved_chain, scan_limits(2, 1)).await;
     attester.discover_burns().await.unwrap();
     let saved_state = attester.store.scan_state().unwrap();
     assert_eq!(
@@ -810,7 +812,7 @@ async fn idle_discovery_checks_the_saved_block() {
     );
     drop(attester);
 
-    let (mut attester, controls) = start(&tempdir, 1, fork.blocks(), scan_limits(2, 1)).await;
+    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(2, 1)).await;
     controls.requests.lock().unwrap().clear();
     assert!(matches!(
         attester.discover_burns().await,
@@ -823,8 +825,8 @@ async fn idle_discovery_checks_the_saved_block() {
     assert_eq!(attester.store.scan_state().unwrap(), saved_state);
     drop(attester);
 
-    let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(2, 1));
     let config = write_config(&tempdir, 1, &anchor, 1);
+    let (chain, controls) = TestChain::new(vec![anchor, saved_block], scan_limits(2, 1));
     let mut attester = Attester::start(config, Box::new(chain.missing_at(1)), ready_circle())
         .await
         .unwrap();

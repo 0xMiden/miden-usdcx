@@ -218,7 +218,6 @@ pub(super) struct TestNote {
     pub(super) output: OutputNote,
 }
 
-#[derive(Clone)]
 pub(super) struct BlockFactory {
     signers: Vec<SigningKey>,
     validator_config: ValidatorConfig,
@@ -283,6 +282,10 @@ impl BlockFactory {
 
     pub(super) fn blocks(&self) -> Vec<SignedBlock> {
         self.blocks.clone()
+    }
+
+    pub(super) fn truncate(&mut self, len: usize) {
+        self.blocks.truncate(len);
     }
 }
 

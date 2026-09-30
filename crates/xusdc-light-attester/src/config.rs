@@ -5,12 +5,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail, ensure, Context};
 use clap::{ArgAction, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteId;
 use miden_protocol::Word;
 use reqwest::Url;
 
@@ -96,9 +97,10 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Releases every held burn and held withdrawal once, then exits; stop the service first.
-    /// Each released burn is prepared, checked and signed again; a held withdrawal's old signed
-    /// request is thrown away first.
+    /// Lists the held burns and withdrawals, or releases the named ones, once, then exits; stop the
+    /// service first. Without --note-id or --note-ids-file it only lists, one hold per line with the
+    /// note ID first. A released burn is prepared, checked and signed again; a held withdrawal's old
+    /// signed request is thrown away first.
     ReleaseHolds {
         /// Existing durable SQLite ledger; only this command may open it while holds are released.
         #[arg(long)]
@@ -112,6 +114,14 @@ pub enum Command {
         /// Canonical commitment of the out-of-band verified anchor block saved in the ledger.
         #[arg(long)]
         trusted_anchor_commitment: String,
+        /// Note ID of a held burn to release; repeat it for each burn. Name a held withdrawal only
+        /// after checking that Circle did not accept its saved request.
+        #[arg(long, action = ArgAction::Append)]
+        note_id: Vec<String>,
+        /// File naming held burns to release: the first word of each non-empty line is a note ID,
+        /// so an edited copy of the list this command prints can be passed back.
+        #[arg(long)]
+        note_ids_file: Option<PathBuf>,
     },
 }
 
@@ -269,6 +279,27 @@ pub fn parse_faucet_account_id(value: &str) -> anyhow::Result<AccountId> {
         bail!("faucet account id must use canonical 0x-prefixed lowercase hex");
     }
     Ok(account_id)
+}
+
+/// The note IDs given to `release-holds`: each --note-id, then the first word of each non-empty
+/// line of --note-ids-file.
+pub fn parse_note_ids(note_ids: &[String], file: Option<&Path>) -> anyhow::Result<Vec<NoteId>> {
+    let mut words = note_ids.to_vec();
+    if let Some(file) = file {
+        let listed = fs::read_to_string(file)
+            .with_context(|| format!("failed to read note IDs from {}", file.display()))?;
+        words.extend(
+            listed
+                .lines()
+                .filter_map(|line| line.split_whitespace().next())
+                .map(String::from),
+        );
+    }
+    ensure!(!words.is_empty(), "no note IDs given");
+    words
+        .iter()
+        .map(|id| NoteId::try_from_hex(id).with_context(|| format!("note id {id} is invalid")))
+        .collect()
 }
 
 pub fn parse_trusted_anchor_commitment(value: &str) -> anyhow::Result<Word> {

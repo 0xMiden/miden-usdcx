@@ -6,7 +6,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{Command, Invocation};
+use crate::config::{parse_note_ids, Command, Invocation};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -117,7 +117,8 @@ fn cli_surface_is_explicit() {
         ErrorKind::DisplayHelp
     );
 
-    let release = Invocation::try_parse_from([
+    let commitment = startup_anchor().header().commitment().to_hex();
+    let mut release = vec![
         "xusdc-attester",
         "release-holds",
         "--store-path",
@@ -127,12 +128,22 @@ fn cli_surface_is_explicit() {
         "--trusted-anchor-block",
         "0",
         "--trusted-anchor-commitment",
-        &startup_anchor().header().commitment().to_hex(),
-    ])
-    .unwrap();
+        &commitment,
+    ];
+    assert!(
+        matches!(
+            Invocation::try_parse_from(&release).unwrap().command,
+            Some(Command::ReleaseHolds { ref note_id, note_ids_file: None, .. })
+                if note_id.is_empty()
+        ),
+        "without names the command only lists"
+    );
+    release.extend(["--note-id", &commitment, "--note-ids-file", "holds.txt"]);
+    let release = Invocation::try_parse_from(release).unwrap();
     assert!(matches!(
         release.command,
-        Some(Command::ReleaseHolds { .. })
+        Some(Command::ReleaseHolds { ref note_id, note_ids_file: Some(_), .. })
+            if note_id.len() == 1
     ));
 
     let mut old_switch = valid.clone();
@@ -289,4 +300,36 @@ fn invalid_config_is_rejected() {
         (AssetAmount::MAX.as_u64() + 1).to_string(),
     );
     assert_config_error(&excessive_fee, "maximum withdrawal fee is invalid");
+}
+
+/// A note IDs file takes the first word of each non-empty line, so an edited copy of the
+/// `release-holds` list can be passed back; --note-id may name more burns.
+#[test]
+fn note_ids_file_takes_the_first_word_of_each_line() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let [listed, typed, flagged] = ["11", "22", "33"].map(|byte| format!("0x{}", byte.repeat(32)));
+    let file = tempdir.path().join("holds.txt");
+    std::fs::write(
+        &file,
+        format!("{listed}\twithdrawal\tHttpRejected\tlimit reached\n\n  {typed}  \n"),
+    )
+    .unwrap();
+    let ids = parse_note_ids(std::slice::from_ref(&flagged), Some(&file)).unwrap();
+    assert_eq!(
+        ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>(),
+        [flagged.clone(), listed, typed]
+    );
+
+    std::fs::write(&file, "note\tburn\n").unwrap();
+    assert_eq!(
+        parse_note_ids(&[], Some(&file)).unwrap_err().to_string(),
+        "note id note is invalid"
+    );
+    // An empty file fails only when no --note-id names a burn either.
+    std::fs::write(&file, "\n").unwrap();
+    assert_eq!(
+        parse_note_ids(&[], Some(&file)).unwrap_err().to_string(),
+        "no note IDs given"
+    );
+    assert_eq!(parse_note_ids(&[flagged], Some(&file)).unwrap().len(), 1);
 }

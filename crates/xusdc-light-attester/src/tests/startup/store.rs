@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use miden_protocol::account::AccountId;
-use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
@@ -12,7 +12,7 @@ use rusqlite::params;
 
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
-use crate::tests::support::store_version;
+use crate::tests::support::{scan_limits, store_version, BlockFactory};
 
 use super::{
     config_toml, create_store_parent, faucet_account_id, load_config, ready_circle,
@@ -98,6 +98,13 @@ async fn bad_anchor_does_not_create_store() {
 async fn existing_store_resumes_from_saved_block() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
+    let mut factory = BlockFactory::new();
+    let anchor = factory.push(Vec::new(), Vec::new());
+    let checkpoint = factory.push(Vec::new(), Vec::new());
+    let trusted_anchor = TrustedAnchor {
+        block_num: BlockNumber::GENESIS,
+        commitment: anchor.header().commitment(),
+    };
     let saved_block = BlockNumber::from(2u32);
     let mut store = Store::open_or_create(
         &store_path,
@@ -105,7 +112,7 @@ async fn existing_store_resumes_from_saved_block() {
         ScanCursor {
             next_block: BlockNumber::from(1u32),
         },
-        trusted_anchor(),
+        trusted_anchor,
     )
     .unwrap();
     store
@@ -116,19 +123,26 @@ async fn existing_store_resumes_from_saved_block() {
                 cursor: ScanCursor {
                     next_block: saved_block,
                 },
-                authenticated_parent: Some(BlockHeader::mock(1u32, None, None, &[])),
+                authenticated_parent: Some(checkpoint.header().clone()),
             },
         )
         .unwrap();
     drop(store);
 
-    let attester = start(
-        load_config(&tempdir, 700),
-        TestChain::anchor_only(),
-        ready_circle(),
-    )
-    .await
-    .unwrap();
+    let config_path = write_config(&tempdir, 700);
+    let config = replace_setting(
+        &config_toml(700),
+        "trusted_anchor_commitment_hex",
+        &format!(
+            "trusted_anchor_commitment_hex = \"{}\"",
+            anchor.header().commitment().to_hex()
+        ),
+    );
+    std::fs::write(&config_path, config).unwrap();
+    let chain = TestChain::new(factory.blocks(), scan_limits(1, 1)).0;
+    let attester = start(Config::load(&config_path).unwrap(), chain, ready_circle())
+        .await
+        .unwrap();
 
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,

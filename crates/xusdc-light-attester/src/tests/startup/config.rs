@@ -235,6 +235,12 @@ fn invalid_config_is_rejected() {
 
     const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
     const TOKEN_MESSENGER: &str = "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa";
+    let mut zero_forwarding_fee = valid.clone();
+    zero_forwarding_fee.replace("--cctp-forwarding-max-fee", "0");
+    assert_config_error(
+        &zero_forwarding_fee,
+        "cctp forwarding max fee must be above zero",
+    );
     let mut forwarding = valid.clone();
     forwarding.replace("--max-withdrawal-fee", "1000");
     forwarding.replace("--cctp-forwarding-max-fee", "1000");
@@ -329,6 +335,7 @@ fn invalid_config_is_rejected() {
 
     let mut fee = valid.clone();
     fee.replace("--max-withdrawal-fee", "3500");
+    fee.replace("--cctp-forwarding-max-fee", "1000");
     let config = fee.load();
     assert_eq!(config.max_withdrawal_fee().as_u64(), 3500);
 

@@ -77,7 +77,7 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
-        ("--signer-provider", "development"),
+        ("--signer-provider", "aws-kms"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -395,14 +395,18 @@ fn signer_mode_validates_only_its_own_settings() {
         "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let development = TestArgs::new(&directory, 1);
+    let kms = TestArgs::new(&directory, 1);
     assert!(matches!(
-        development.load().signer(),
-        SignerConfig::Development
+        kms.load().signer(),
+        SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
+            && *operation_timeout == std::time::Duration::from_secs(10)
     ));
-    let mut unknown = development.clone();
-    unknown.replace("--signer-provider", "fallback");
-    assert_cli_error(&unknown, ErrorKind::InvalidValue);
+    for provider in ["development", "fallback"] {
+        let mut unsupported = kms.clone();
+        unsupported.replace("--signer-provider", provider);
+        assert_cli_error(&unsupported, ErrorKind::InvalidValue);
+    }
 
     let options: [(&str, &[&str]); 3] = [
         ("--aws-kms-region", &["eu-north-1"]),
@@ -410,22 +414,6 @@ fn signer_mode_validates_only_its_own_settings() {
         ("--aws-kms-operation-timeout", &["10s"]),
     ];
     let values = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
-    for (flag, value) in options {
-        let mut invalid = development.clone();
-        invalid.append_values(flag, &values(value));
-        assert_config_error(&invalid, "KMS options require the aws-kms signer provider");
-    }
-    let mut kms = development;
-    kms.replace("--signer-provider", "aws-kms");
-    for (flag, value) in options {
-        kms.append_values(flag, &values(value));
-    }
-    let config = kms.load();
-    assert!(
-        matches!(config.signer(), SignerConfig::AwsKms { region, key_arns, operation_timeout }
-        if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
-            && *operation_timeout == std::time::Duration::from_secs(10))
-    );
     for (flag, _) in options {
         let mut missing = kms.clone();
         missing.remove(flag);

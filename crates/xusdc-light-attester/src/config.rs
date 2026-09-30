@@ -48,12 +48,10 @@ pub struct Cli {
     #[arg(long)]
     max_withdrawal_fee_bps: u64,
 
-    /// Fee for the CCTP leg of a forwarded withdrawal, in the smallest USDC unit. Circle reaches
-    /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
-    /// plus CCTP. Must stay below --max-withdrawal-fee, which on those routes also covers the
-    /// Gateway leg (about 0.02 USDC at 1 USDC on the sandbox). This is a cap: CCTP deducts only
-    /// the fee it actually charges. Set it to Circle's current forwarding fee for the most
-    /// expensive forwarded destination plus 10 to 20 percent.
+    /// Maximum CCTP fee for a forwarded withdrawal, in the smallest USDC unit.
+    /// The total withdrawal fee limit must cover this fee and Circle's fee.
+    /// CCTP deducts only the fee it charges, which may be lower than this limit.
+    /// Allow 10 to 20 percent above Circle's current fee for the most expensive destination you support.
     #[arg(long)]
     cctp_forwarding_max_fee: u64,
 

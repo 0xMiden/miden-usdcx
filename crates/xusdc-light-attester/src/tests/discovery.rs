@@ -740,7 +740,12 @@ async fn bad_blocks_are_rejected() {
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
+    let mut fork_factory = factory.clone();
     factory.push(Vec::new(), Vec::new());
+    factory.push(Vec::new(), Vec::new());
+    let fork_note = note(BurnNote::script(), NoteType::Public, 1, 32);
+    fork_factory.push(vec![fork_note.output], Vec::new());
+    fork_factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
     let request_count = controls.requests.lock().unwrap().len();
@@ -757,26 +762,43 @@ async fn bad_blocks_are_rejected() {
     );
 
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(3, 3)).await;
+    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(4, 4)).await;
     attester.discover_burns().await.unwrap();
     controls.requests.lock().unwrap().clear();
-    *controls.scan_limits.lock().unwrap() = scan_limits(3, 2);
+    *controls.scan_limits.lock().unwrap() = scan_limits(4, 3);
     attester.discover_burns().await.unwrap();
-    assert!(controls.requests.lock().unwrap().is_empty());
+    assert_eq!(
+        *controls.requests.lock().unwrap(),
+        [BlockNumber::from(3u32)]
+    );
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(3u32)
+        BlockNumber::from(4u32)
     );
 
-    *controls.scan_limits.lock().unwrap() = scan_limits(2, 1);
+    let saved_state = attester.store.scan_state().unwrap();
+    drop(attester);
+    let (mut attester, _) = start(&tempdir, 1, fork_factory.blocks(), scan_limits(4, 3)).await;
     assert!(matches!(
         attester.discover_burns().await,
         Err(DiscoverError::ChainDiverged)
     ));
-    assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(3u32)
-    );
+    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
+    assert!(attester.store.candidates().unwrap().is_empty());
+    drop(attester);
+
+    let blocks = factory.blocks();
+    let config = write_config(&tempdir, 1, &blocks[0], 1);
+    let (chain, _) = TestChain::new(blocks, scan_limits(4, 3));
+    let mut attester = Attester::start(config, Box::new(chain.missing_at(3)), ready_circle())
+        .await
+        .unwrap();
+    assert!(matches!(
+        attester.discover_burns().await,
+        Err(DiscoverError::Chain(_))
+    ));
+    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
+    assert!(attester.store.candidates().unwrap().is_empty());
 }
 
 /// A note published again with the same id, before or after the faucet consumed it, is the same

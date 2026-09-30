@@ -218,6 +218,7 @@ pub(super) struct TestNote {
     pub(super) output: OutputNote,
 }
 
+#[derive(Clone)]
 pub(super) struct BlockFactory {
     signers: Vec<SigningKey>,
     validator_config: ValidatorConfig,

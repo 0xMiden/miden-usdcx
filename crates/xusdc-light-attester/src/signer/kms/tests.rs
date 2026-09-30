@@ -1,4 +1,88 @@
+use std::collections::VecDeque;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+
+use aws_sdk_kms::config::http::{HttpRequest, HttpResponse};
+use aws_sdk_kms::config::{Credentials, IntoShared};
+use aws_smithy_runtime_api::client::http::{http_client_fn, HttpConnector, HttpConnectorFuture};
+use aws_smithy_types::base64;
+use serde_json::{json, Value};
+
 use super::*;
+
+const ISOLATED_KMS_TEST: &str = "XUSDC_ATTESTER_ISOLATED_KMS_TEST";
+
+/// Runs this test again with empty AWS files, disabled instance metadata and test credentials.
+/// The child returns true; the parent waits for it and returns false.
+fn in_isolated_process(test_name: &str) -> bool {
+    if std::env::var(ISOLATED_KMS_TEST).as_deref() == Ok(test_name) {
+        return true;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    let credentials = directory.path().join("credentials");
+    std::fs::write(&config, []).unwrap();
+    std::fs::write(&credentials, []).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg(test_name)
+        .env_clear()
+        .env(ISOLATED_KMS_TEST, test_name)
+        .env("AWS_CONFIG_FILE", config)
+        .env("AWS_SHARED_CREDENTIALS_FILE", credentials)
+        .env("AWS_EC2_METADATA_DISABLED", "true")
+        .env("AWS_ACCESS_KEY_ID", "test")
+        .env("AWS_SECRET_ACCESS_KEY", "test")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    false
+}
+
+/// Answers each KMS request with the next prepared reply, and keeps each request's JSON body.
+#[derive(Clone, Debug, Default)]
+struct PreparedKms {
+    replies: Arc<Mutex<VecDeque<Value>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
+}
+
+impl PreparedKms {
+    fn answering(replies: impl IntoIterator<Item = Value>) -> Self {
+        Self {
+            replies: Arc::new(Mutex::new(replies.into_iter().collect())),
+            ..Self::default()
+        }
+    }
+
+    /// A client whose requests this answers instead of AWS.
+    fn client(&self) -> Client {
+        let kms = self.clone();
+        let config = aws_sdk_kms::Config::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new("eu-north-1"))
+            .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+            .http_client(http_client_fn(move |_, _| kms.clone().into_shared()))
+            .build();
+        Client::from_conf(config)
+    }
+}
+
+impl HttpConnector for PreparedKms {
+    fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
+        let body = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
+        self.requests.lock().unwrap().push(body);
+        let reply = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("KMS got a request the test did not expect");
+        HttpConnectorFuture::ready(Ok(HttpResponse::new(
+            200_u16.try_into().unwrap(),
+            reply.to_string().into(),
+        )))
+    }
+}
 
 // A public key and a signature over `DIGEST` from each of the two KMS keys, captured in a one-off
 // test of the keys on 2026-09-17. Neither signature is for a withdrawal.
@@ -235,4 +319,62 @@ fn malformed_kms_output_keeps_its_cause() {
     response.signature = Some(Blob::new([0]));
     let error = signature_from_response(&response, FIXTURES[0].0, DIGEST, &key(0)).unwrap_err();
     assert!(std::error::Error::source(&error).is_some(), "{error}");
+}
+
+/// DescribeKey's answer for the first fixture key.
+fn described_key() -> Value {
+    let arn = FIXTURES[0].0;
+    json!({ "KeyMetadata": {
+        "KeyId": arn,
+        "Arn": arn,
+        "Enabled": true,
+        "KeyState": "Enabled",
+        "KeySpec": "ECC_SECG_P256K1",
+        "KeyUsage": "SIGN_VERIFY",
+    } })
+}
+
+/// A connected signer pins the key KMS returns for its ARN, and has KMS sign the digest itself.
+#[tokio::test]
+async fn kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies() {
+    const NAME: &str =
+        "signer::kms::tests::kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies";
+    if !in_isolated_process(NAME) {
+        return;
+    }
+    let (arn, _, spki, der) = FIXTURES[0];
+    let blob = |value: &str| base64::encode(hex::decode(value).unwrap());
+    let kms = PreparedKms::answering([
+        described_key(),
+        json!({
+            "KeyId": arn,
+            "KeySpec": "ECC_SECG_P256K1",
+            "KeyUsage": "SIGN_VERIFY",
+            "SigningAlgorithms": ["ECDSA_SHA_256"],
+            "PublicKey": blob(spki),
+        }),
+        json!({
+            "KeyId": arn,
+            "SigningAlgorithm": "ECDSA_SHA_256",
+            "Signature": blob(der),
+        }),
+    ]);
+    let signer = KmsSigner::connect(kms.client(), arn).await.unwrap();
+    assert!(signer.public_key().await.unwrap() == pin(0));
+    let signature = signer.sign_digest(DIGEST).await.unwrap();
+    assert!(signature.normalize_s().is_none());
+    assert_eq!(signature.recover_from_prehash(&DIGEST).unwrap(), key(0));
+    assert_eq!(
+        *kms.requests.lock().unwrap(),
+        [
+            json!({ "KeyId": arn }),
+            json!({ "KeyId": arn }),
+            json!({
+                "KeyId": arn,
+                "Message": base64::encode(DIGEST),
+                "MessageType": "DIGEST",
+                "SigningAlgorithm": "ECDSA_SHA_256",
+            }),
+        ]
+    );
 }

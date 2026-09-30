@@ -7157,6 +7157,8 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-kms",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "clap",
  "hex",
  "http 1.4.2",

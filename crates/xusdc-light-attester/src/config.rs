@@ -185,6 +185,9 @@ impl TryFrom<Cli> for Config {
         if token_messenger == Address::ZERO {
             bail!("cctp token messenger address must not be zero");
         }
+        if cli.cctp_forwarding_max_fee == 0 {
+            bail!("cctp forwarding max fee must be above zero");
+        }
         if cli.cctp_forwarding_max_fee >= cli.max_withdrawal_fee {
             bail!("cctp forwarding max fee must be below the maximum withdrawal fee");
         }

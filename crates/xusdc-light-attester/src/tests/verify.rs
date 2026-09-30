@@ -44,6 +44,7 @@ fn config(fee_ceiling: Option<u64>) -> Config {
     let mut args = TestArgs::new(&directory, 1);
     if let Some(ceiling) = fee_ceiling {
         args.replace("--max-withdrawal-fee", ceiling.to_string());
+        args.replace("--cctp-forwarding-max-fee", "1");
     }
     args.load()
 }
@@ -345,6 +346,7 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     let mut args = TestArgs::new(&directory, 1);
     args.replace("--max-withdrawal-fee", "11000");
     args.replace("--max-withdrawal-fee-bps", "1");
+    args.replace("--cctp-forwarding-max-fee", "1");
     let response = UnverifiedPrepareResponse {
         batches: vec![base_fee],
     };

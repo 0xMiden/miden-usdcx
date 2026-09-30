@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
@@ -78,13 +78,41 @@ pub struct Cli {
     /// Durable SQLite ledger path; only one attester instance may open it. Relative paths resolve from the process working directory.
     #[arg(long)]
     store_path: OsString,
+}
 
-    /// Releases every held burn and every held withdrawal once, after the store opens. Each
-    /// released burn is prepared, checked and signed again from scratch; for a held withdrawal the
-    /// old signed request is thrown away first. Meant for a single restart: while it is set, every
-    /// start releases the holds again.
-    #[arg(long)]
-    release_holds: bool,
+/// The command line: run the attester, or release its holds once.
+#[derive(Debug, Parser)]
+#[command(
+    version,
+    about = "Run the xUSDC withdrawal attester",
+    args_conflicts_with_subcommands = true
+)]
+pub struct Invocation {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+    #[command(flatten)]
+    pub run: Option<Cli>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Releases every held burn and held withdrawal once, then exits; stop the service first.
+    /// Each released burn is prepared, checked and signed again; a held withdrawal's old signed
+    /// request is thrown away first.
+    ReleaseHolds {
+        /// Existing durable SQLite ledger; only this command may open it while holds are released.
+        #[arg(long)]
+        store_path: OsString,
+        /// Canonical 0x-prefixed lowercase Miden faucet account ID saved in the ledger.
+        #[arg(long)]
+        faucet_account_id: String,
+        /// Out-of-band verified anchor block saved in the ledger.
+        #[arg(long)]
+        trusted_anchor_block: u32,
+        /// Canonical commitment of the out-of-band verified anchor block saved in the ledger.
+        #[arg(long)]
+        trusted_anchor_commitment: String,
+    },
 }
 
 #[derive(Debug)]
@@ -104,7 +132,6 @@ pub struct Config {
     expected_signing_public_keys_hex: Vec<String>,
     /// Durable ledger state; deploy it on persistent storage for exactly one attester instance.
     store_path: PathBuf,
-    release_holds: bool,
 }
 
 impl TryFrom<Cli> for Config {
@@ -128,17 +155,9 @@ impl TryFrom<Cli> for Config {
             bail!("exactly two expected signing public keys are required");
         }
 
-        let faucet_account_id =
-            AccountId::from_hex(&cli.faucet_account_id).context("faucet account id is invalid")?;
-        if faucet_account_id.to_hex() != cli.faucet_account_id {
-            bail!("faucet account id must use canonical 0x-prefixed lowercase hex");
-        }
-
-        let trusted_anchor_commitment = Word::parse(&cli.trusted_anchor_commitment)
-            .map_err(|_| anyhow!("trusted anchor commitment is invalid"))?;
-        if trusted_anchor_commitment.to_hex() != cli.trusted_anchor_commitment {
-            bail!("trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex");
-        }
+        let faucet_account_id = parse_faucet_account_id(&cli.faucet_account_id)?;
+        let trusted_anchor_commitment =
+            parse_trusted_anchor_commitment(&cli.trusted_anchor_commitment)?;
 
         // `Endpoint::try_from` reads a bare word such as "mainnet" as an HTTPS host, so the scheme
         // must be written out.
@@ -182,7 +201,6 @@ impl TryFrom<Cli> for Config {
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
             expected_signing_public_keys_hex: cli.expected_signing_public_key,
             store_path,
-            release_holds: cli.release_holds,
         })
     }
 }
@@ -243,8 +261,21 @@ impl Config {
     pub(crate) fn store_path(&self) -> &Path {
         &self.store_path
     }
+}
 
-    pub(crate) fn release_holds(&self) -> bool {
-        self.release_holds
+pub fn parse_faucet_account_id(value: &str) -> anyhow::Result<AccountId> {
+    let account_id = AccountId::from_hex(value).context("faucet account id is invalid")?;
+    if account_id.to_hex() != value {
+        bail!("faucet account id must use canonical 0x-prefixed lowercase hex");
     }
+    Ok(account_id)
+}
+
+pub fn parse_trusted_anchor_commitment(value: &str) -> anyhow::Result<Word> {
+    let commitment =
+        Word::parse(value).map_err(|_| anyhow!("trusted anchor commitment is invalid"))?;
+    if commitment.to_hex() != value {
+        bail!("trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex");
+    }
+    Ok(commitment)
 }

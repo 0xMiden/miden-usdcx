@@ -10,6 +10,7 @@ use miden_standards::note::BurnNote;
 use miden_usdcx::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 use rusqlite::params;
 
+use crate::attester::release_holds;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
 use crate::tests::support::{scan_limits, store_version, BlockFactory};
 
@@ -37,6 +38,17 @@ fn trusted_anchor() -> TrustedAnchor {
 async fn new_store_starts_at_deployment_block() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
+    assert!(release_holds(
+        &store_path,
+        faucet_account_id(),
+        BlockNumber::GENESIS,
+        startup_anchor().header().commitment(),
+    )
+    .is_err());
+    assert!(
+        !store_path.exists(),
+        "the release command must not create a store"
+    );
     let attester = start(
         load_config(&tempdir, 1_234_567),
         TestChain::anchor_only(),
@@ -384,6 +396,17 @@ async fn store_cannot_be_opened_twice() {
     );
     let store =
         Store::open_or_create(&store_path, faucet_account_id(), cursor, trusted_anchor()).unwrap();
+    let error = release_holds(
+        &store_path,
+        faucet_account_id(),
+        trusted_anchor().block_num,
+        trusted_anchor().commitment,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("attester store is locked by another process"),
+        "{error:#}"
+    );
 
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")

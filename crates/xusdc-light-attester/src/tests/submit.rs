@@ -311,6 +311,12 @@ impl Ledger {
             prepared.burn_intents[0].max_block_height = height.into();
             rebuild_for_test(&mut prepared).unwrap();
         }
+        let signers = SignerPair::new([
+            Box::new(TestSigner(1)) as Box<dyn Signer>,
+            Box::new(TestSigner(2)) as Box<dyn Signer>,
+        ])
+        .await
+        .unwrap();
         UnverifiedPrepareResponse {
             batches: vec![prepared],
         }
@@ -319,7 +325,7 @@ impl Ledger {
             &Config::load(&self.directory.path().join("attester.toml")).unwrap(),
         )
         .unwrap()
-        .sign([&TestSigner(1), &TestSigner(2)])
+        .sign(&signers)
         .await
         .unwrap()
     }

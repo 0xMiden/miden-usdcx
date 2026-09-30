@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Context;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
+use miden_protocol::note::NoteId;
 use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
@@ -34,6 +35,7 @@ pub enum DiscoverError {
     Store(#[from] anyhow::Error),
 }
 
+pub use crate::store::Hold;
 pub use crate::submission::SubmitError;
 pub use crate::verify::VerifyError;
 
@@ -437,14 +439,37 @@ impl Attester {
     }
 }
 
-/// Releases every held burn and held withdrawal in an existing store, and returns how many of
-/// each. Only the store is opened: no Miden node, Circle service or signer is contacted.
+/// Lists every held burn and held withdrawal in an existing store. Only the store is opened: no
+/// Miden node, Circle service or signer is contacted.
+pub fn list_holds(
+    path: &Path,
+    faucet_account_id: AccountId,
+    anchor_block: BlockNumber,
+    anchor_commitment: Word,
+) -> anyhow::Result<Vec<Hold>> {
+    open_existing(path, faucet_account_id, anchor_block, anchor_commitment)?.holds()
+}
+
+/// Releases the holds of the named burns in an existing store, and returns how many burns and
+/// withdrawals it released. Only the store is opened: no Miden node, Circle service or signer is
+/// contacted.
 pub fn release_holds(
     path: &Path,
     faucet_account_id: AccountId,
     anchor_block: BlockNumber,
     anchor_commitment: Word,
+    note_ids: &[NoteId],
 ) -> anyhow::Result<(usize, usize)> {
+    open_existing(path, faucet_account_id, anchor_block, anchor_commitment)?.release_holds(note_ids)
+}
+
+/// The existing store at `path`, checked against its faucet and trusted anchor; never created here.
+fn open_existing(
+    path: &Path,
+    faucet_account_id: AccountId,
+    anchor_block: BlockNumber,
+    anchor_commitment: Word,
+) -> anyhow::Result<Store> {
     Store::open_existing(
         path,
         faucet_account_id,
@@ -452,8 +477,7 @@ pub fn release_holds(
             block_num: anchor_block,
             commitment: anchor_commitment,
         },
-    )?
-    .release_all_holds()
+    )
 }
 
 /// Successful discovery returns the proof-lag height. A chain read failure lets recovery and

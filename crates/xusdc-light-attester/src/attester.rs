@@ -149,6 +149,11 @@ impl Attester {
     pub(crate) async fn discover_burns(&mut self) -> Result<(), DiscoverError> {
         let saved_scan = self.store.scan_state()?;
         let Some(last_block_to_scan) = self.find_last_block_to_scan(&saved_scan).await? else {
+            // No new block to authenticate, so compare the saved checkpoint with the node's block
+            // at that height: a same-height fork shows up only there.
+            if let Some(checkpoint) = &saved_scan.authenticated_parent {
+                check_checkpoint(self.chain.as_ref(), checkpoint).await?;
+            }
             return Ok(());
         };
         let mut last_verified_header = self.load_previous_verified_header(&saved_scan).await?;
@@ -301,6 +306,21 @@ fn behind_verified_chain(saved_scan: &ScanState) -> Result<Option<BlockNumber>, 
     } else {
         Ok(None)
     }
+}
+
+/// Fails with a divergence when the node's block at the checkpoint's height is another block.
+async fn check_checkpoint(
+    chain: &dyn ChainReader,
+    checkpoint: &BlockHeader,
+) -> Result<(), DiscoverError> {
+    let block = chain
+        .block_by_number(checkpoint.block_num())
+        .await
+        .map_err(DiscoverError::Chain)?;
+    if block.header().commitment() != checkpoint.commitment() {
+        return Err(DiscoverError::ChainDiverged);
+    }
+    Ok(())
 }
 
 /// Collects the block's structurally valid burn notes and the candidates its faucet transactions

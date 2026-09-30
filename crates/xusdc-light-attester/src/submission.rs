@@ -124,8 +124,9 @@ impl Attester {
             if !saved.read_conflict() {
                 return self.save_outcome(&saved);
             }
-            // The conflict ID is a lookup handle, not proof of success. Save it before GET so
-            // a lost GET response or restart does not send another POST.
+            // Save the conflict ID before checking it with GET. If that reply is lost or the process
+            // restarts, recovery uses the saved ID instead of sending another POST. The ID alone does not
+            // prove success.
             self.save_outcome(&saved)?;
             response = self.send_saved_request(&mut saved, rate_limited).await;
         }

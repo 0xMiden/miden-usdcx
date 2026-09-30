@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     eprintln!(
         "attester started with development keys; local rolling-limit enforcement is not implemented yet"
     );
-    attester.run(shutdown).await;
+    let result = attester.run(shutdown).await;
     signal_task.abort();
     // Dropping the attester closes the request queue; the worker then finishes any request in
     // flight and stops.
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     circle_worker
         .await
         .context("Circle request worker failed")?;
-    Ok(())
+    result
 }
 
 fn development_signers() -> Result<[Box<dyn Signer>; 2]> {

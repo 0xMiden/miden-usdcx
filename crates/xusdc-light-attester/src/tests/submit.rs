@@ -184,8 +184,9 @@ impl CircleApi for ScriptedCircle {
 }
 
 pub(super) struct Ledger {
-    directory: tempfile::TempDir,
-    blocks: Vec<SignedBlock>,
+    pub(super) directory: tempfile::TempDir,
+    pub(super) blocks: Vec<SignedBlock>,
+    pub(super) fork_blocks: Vec<SignedBlock>,
     pub(super) burns: Vec<ValidatedBurn>,
     pub(super) fresh_indices: Vec<usize>,
 }
@@ -223,7 +224,12 @@ impl Ledger {
             transaction(faucet_account_id(), &[burns[2].burn.nullifier()]),
         ];
         factory.push(vec![], transactions);
+        let mut fork_factory = factory.clone();
         factory.push(vec![], vec![]);
+        fork_factory.push(
+            vec![OutputNote::Public(burns[0].burn.note().clone())],
+            vec![],
+        );
         let directory = tempfile::tempdir().unwrap();
         let blocks = factory.blocks();
         let (mut attester, _) =
@@ -244,6 +250,7 @@ impl Ledger {
         Self {
             directory,
             blocks,
+            fork_blocks: fork_factory.blocks(),
             burns,
             fresh_indices,
         }

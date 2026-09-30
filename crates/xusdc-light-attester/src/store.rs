@@ -23,16 +23,15 @@ use crate::verify::validate_saved_request;
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
 
+/// Why a burn waits for an operator. The store keeps each reason as its fixed number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BurnHoldReason {
-    PrepareRejected,
+    PrepareRejected = 1,
 }
 
 impl BurnHoldReason {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::PrepareRejected => "prepare_rejected",
-        }
+    pub(crate) fn code(self) -> i64 {
+        self as i64
     }
 }
 
@@ -231,7 +230,7 @@ impl Store {
                         AND status != ?3)",
                 params![
                     note_id.to_bytes(),
-                    reason.as_str(),
+                    reason.code(),
                     SubmissionStatus::Expired.as_ref()
                 ],
             )

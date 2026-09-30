@@ -142,8 +142,8 @@ async fn burn_hold_and_release_record_the_reason() {
     attester.release_burn_hold(note_id).unwrap();
     for kind in ["BURN_HELD", "BURN_RELEASED"] {
         assert_eq!(
-            recorded::<String>(&ledger, 0, kind, "burn_hold_reason"),
-            ["prepare_rejected"],
+            recorded::<i64>(&ledger, 0, kind, "burn_hold_reason"),
+            [BurnHoldReason::PrepareRejected.code()],
             "{kind}"
         );
     }

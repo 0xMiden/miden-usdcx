@@ -296,9 +296,11 @@ impl SavedSubmission {
 }
 
 /// Circle's withdrawal IDs are UUIDs; the ID becomes a URL path segment, so nothing else passes.
-fn is_well_formed_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+pub(crate) fn is_well_formed_id(id: &str) -> bool {
+    // The hyphenated form Circle returns: 8-4-4-4-12 hex digits.
+    id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }

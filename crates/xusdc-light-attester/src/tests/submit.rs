@@ -21,7 +21,7 @@ use crate::circle::{
 };
 use crate::config::Config;
 use crate::signer::{Signer, SignerError, SigningPublicKey};
-use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT};
+use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
@@ -731,8 +731,8 @@ async fn malformed_saved_endpoint_keeps_its_cause() {
     );
 }
 
-/// A withdrawal ID outside Circle's UUID charset is never accepted from a creation or a conflict,
-/// because it would be sent back as a URL path segment. The request stays queued instead.
+/// A malformed withdrawal ID is never accepted from a creation or a conflict because it would be
+/// sent back as a URL path segment. The request stays queued instead.
 #[tokio::test]
 async fn malformed_withdrawal_ids_are_retried() {
     let ledger = Ledger::new().await;
@@ -760,6 +760,25 @@ async fn malformed_withdrawal_ids_are_retried() {
         (SubmissionStatus::Submitting, None, None)
     );
     assert_eq!(requests.lock().unwrap().len(), 1, "no lookup with a bad ID");
+
+    let ledger = Ledger::new().await;
+    let response = ledger.response(0, "finalized");
+    let (mut attester, _) = ledger.start(vec![reply(201, json!([response]))]).await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    assert_eq!(
+        ledger.record(&attester, 0).status,
+        SubmissionStatus::Finalized
+    );
+    drop(attester);
+    ledger.sql("UPDATE submissions SET withdrawal_id = 'abc' WHERE status = 'FINALIZED'");
+    assert_eq!(ledger.open_store().err().unwrap().to_string(), INVALID);
+    let connection = Connection::open(ledger.path()).unwrap();
+    let row = connection
+        .query_row("SELECT status, withdrawal_id FROM submissions", [], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap();
+    assert_eq!(row, ("FINALIZED".into(), "abc".into()));
 }
 
 /// A conflict ID is only a lookup handle: GET must prove the saved withdrawal's identity.
@@ -1027,6 +1046,10 @@ async fn circle_answers_are_read_into_the_saved_row() {
     failed["failureReason"] = json!("Circle's reported failure");
     let mut wrong_hash = ledger.response(0, "created");
     wrong_hash["transferSpecHashes"] = json!([reference_hash(&ledger.burns[1])]);
+    let mut short_id = ledger.response(0, "created");
+    short_id["withdrawalId"] = json!("abc");
+    let mut braced_id = ledger.response(0, "created");
+    braced_id["withdrawalId"] = json!("{6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70}");
     let mut other_id = ledger.response(0, "finalized");
     other_id["withdrawalId"] = json!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71");
     let not_named = Some("response does not identify the saved withdrawal");
@@ -1134,6 +1157,20 @@ async fn circle_answers_are_read_into_the_saved_row() {
             (Submitting, None, None, not_named),
         ),
         (
+            "short withdrawal ID",
+            false,
+            201,
+            body(json!([short_id])),
+            (Submitting, None, None, not_named),
+        ),
+        (
+            "braced withdrawal ID",
+            false,
+            201,
+            body(json!([braced_id])),
+            (Submitting, None, None, not_named),
+        ),
+        (
             "lookup finalized",
             true,
             200,
@@ -1197,6 +1234,18 @@ async fn circle_answers_are_read_into_the_saved_row() {
         (
             "a malformed ID",
             json!({"withdrawalId": "6149dc3d/../withdraw"}),
+            None,
+            Some("conflict names a malformed withdrawal ID"),
+        ),
+        (
+            "a short ID",
+            json!({"withdrawalId": "abc"}),
+            None,
+            Some("conflict names a malformed withdrawal ID"),
+        ),
+        (
+            "a braced ID",
+            json!({"withdrawalId": "{6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70}"}),
             None,
             Some("conflict names a malformed withdrawal ID"),
         ),

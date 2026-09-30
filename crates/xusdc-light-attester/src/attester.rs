@@ -414,7 +414,7 @@ impl Attester {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });
             })?;
         let verified = prepared.verify(burn, &self.config)?;
-        let signed = verified.sign(self.signers.signers()).await?;
+        let signed = verified.sign(&self.signers).await?;
         self.submit_signed_withdrawal(&signed, rate_limited).await
     }
 }

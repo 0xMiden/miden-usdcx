@@ -14,7 +14,7 @@ use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
-use rusqlite::{params, Params, Transaction};
+use rusqlite::{params, OpenFlags, Params, Transaction};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
@@ -121,17 +121,7 @@ impl Store {
         }
 
         let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
-        // Keep the exclusive connection lock for the store's lifetime so a second attester cannot
-        // create a competing cursor or submission queue.
-        connection
-            .busy_timeout(Duration::ZERO)
-            .map_err(classify_error)?;
-        connection
-            .pragma_update(None, "locking_mode", "EXCLUSIVE")
-            .map_err(classify_error)?;
-        connection
-            .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
-            .map_err(classify_error)?;
+        lock_exclusively(&connection)?;
 
         let initial_cursor = if exists {
             open_existing(&mut connection, faucet_account_id, trusted_anchor)?
@@ -144,6 +134,27 @@ impl Store {
             )?;
             initial_cursor
         };
+
+        Ok(Self {
+            connection,
+            initial_cursor,
+            faucet_account_id,
+        })
+    }
+
+    /// Opens an existing store without creating or initializing one.
+    pub(crate) fn open_existing(
+        path: &Path,
+        faucet_account_id: AccountId,
+        trusted_anchor: TrustedAnchor,
+    ) -> anyhow::Result<Self> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut connection =
+            rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
+        lock_exclusively(&connection)?;
+        let initial_cursor = open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
 
         Ok(Self {
             connection,
@@ -453,6 +464,20 @@ impl Store {
 
         transaction.commit().map_err(classify_error)
     }
+}
+
+/// Keeps the exclusive connection lock for the store's lifetime so a second process cannot create
+/// a competing cursor or submission queue.
+fn lock_exclusively(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection
+        .busy_timeout(Duration::ZERO)
+        .map_err(classify_error)?;
+    connection
+        .pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .map_err(classify_error)?;
+    connection
+        .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
+        .map_err(classify_error)
 }
 
 fn initialize_store(

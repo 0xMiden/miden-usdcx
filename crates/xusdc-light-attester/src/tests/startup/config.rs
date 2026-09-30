@@ -6,7 +6,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::Cli;
+use crate::config::{Command, Invocation};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -111,11 +111,44 @@ fn cli_surface_is_explicit() {
     );
 
     assert_eq!(
-        Cli::try_parse_from(["xusdc-attester", "--help"])
+        Invocation::try_parse_from(["xusdc-attester", "--help"])
             .expect_err("help exits without constructing configuration")
             .kind(),
         ErrorKind::DisplayHelp
     );
+
+    let release = Invocation::try_parse_from([
+        "xusdc-attester",
+        "release-holds",
+        "--store-path",
+        "state.sqlite3",
+        "--faucet-account-id",
+        super::FAUCET_ACCOUNT_ID,
+        "--trusted-anchor-block",
+        "0",
+        "--trusted-anchor-commitment",
+        &startup_anchor().header().commitment().to_hex(),
+    ])
+    .unwrap();
+    assert!(matches!(
+        release.command,
+        Some(Command::ReleaseHolds { .. })
+    ));
+
+    let mut old_switch = valid.clone();
+    old_switch.switch("--release-holds");
+    assert!(old_switch.invocation().is_err());
+
+    let mut mixed = valid.clone();
+    mixed.switch("release-holds");
+    mixed.append("--store-path", "state.sqlite3");
+    mixed.append("--faucet-account-id", super::FAUCET_ACCOUNT_ID);
+    mixed.append("--trusted-anchor-block", "0");
+    mixed.append(
+        "--trusted-anchor-commitment",
+        startup_anchor().header().commitment().to_hex(),
+    );
+    assert!(mixed.invocation().is_err());
 }
 
 #[test]

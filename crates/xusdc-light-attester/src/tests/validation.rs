@@ -507,8 +507,8 @@ async fn ready_burns_are_processed(fail_refusal_write: bool) {
     );
     assert_eq!(
         *controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS],
-        "only startup fetches a block"
+        [BlockNumber::GENESIS, BlockNumber::from(3u32)],
+        "startup fetches the anchor and the checkpoint"
     );
     drop(attester);
 

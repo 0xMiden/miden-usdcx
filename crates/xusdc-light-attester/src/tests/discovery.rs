@@ -212,12 +212,16 @@ async fn burns_are_discovered_safely() {
         start(&tempdir, 2, factory.blocks(), scan_limits(6, 5)).await;
     assert_eq!(
         *restart_controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS]
+        [BlockNumber::GENESIS, BlockNumber::from(6u32)]
     );
     attester.discover_burns().await.unwrap();
     assert_eq!(
         *restart_controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS, BlockNumber::from(6u32)]
+        [
+            BlockNumber::GENESIS,
+            BlockNumber::from(6u32),
+            BlockNumber::from(6u32)
+        ]
     );
     assert_eq!(
         attester.store.scan_state().unwrap().cursor.next_block,
@@ -811,25 +815,49 @@ async fn bad_blocks_are_rejected() {
 
     let saved_state = attester.store.scan_state().unwrap();
     drop(attester);
-    let (mut attester, _) = start(&tempdir, 1, fork_factory.blocks(), scan_limits(3, 0)).await;
-    assert!(matches!(
-        attester.discover_burns().await,
-        Err(DiscoverError::ChainDiverged)
-    ));
-    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
-    assert!(attester.store.candidates().unwrap().is_empty());
-    drop(attester);
-
     let blocks = factory.blocks();
     let config = write_config(&tempdir, 1, &blocks[0], 1);
-    let (chain, _) = TestChain::new(blocks, scan_limits(3, 0));
-    let mut attester = start_attester(config, chain.missing_at(3), ready_circle())
-        .await
-        .unwrap();
+    let (chain, _) = TestChain::new(fork_factory.blocks(), scan_limits(3, 0));
+    let error = Attester::start(
+        config,
+        Box::new(chain),
+        ready_circle(),
+        development_pair().await,
+    )
+    .await
+    .err()
+    .unwrap();
     assert!(matches!(
-        attester.discover_burns().await,
-        Err(DiscoverError::Chain(_))
+        error.downcast_ref::<DiscoverError>(),
+        Some(DiscoverError::ChainDiverged)
     ));
+
+    let config = write_config(&tempdir, 1, &blocks[0], 1);
+    let (chain, _) = TestChain::new(blocks.clone(), scan_limits(3, 0));
+    let error = Attester::start(
+        config,
+        Box::new(chain.missing_at(3)),
+        ready_circle(),
+        development_pair().await,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(
+        error.downcast_ref::<DiscoverError>(),
+        Some(DiscoverError::Chain(_))
+    ));
+
+    let config = write_config(&tempdir, 1, &blocks[0], 1);
+    let (chain, _) = TestChain::new(blocks, scan_limits(3, 0));
+    let attester = Attester::start(
+        config,
+        Box::new(chain),
+        ready_circle(),
+        development_pair().await,
+    )
+    .await
+    .unwrap();
     assert_eq!(attester.store.scan_state().unwrap(), saved_state);
     assert!(attester.store.candidates().unwrap().is_empty());
 }
@@ -976,7 +1004,7 @@ async fn run_stops_when_shutdown_is_set() {
 
     let shutdown = CancellationToken::new();
     shutdown.cancel();
-    attester.run(shutdown).await;
+    attester.run(shutdown).await.unwrap();
 
     assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 0);
     assert_eq!(*controls.requests.lock().unwrap(), [BlockNumber::GENESIS]);

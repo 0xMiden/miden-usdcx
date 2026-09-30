@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::chain::ChainError;
 use crate::circle::CircleError;
+use crate::config::Config;
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted, Submitting};
 use crate::verify::VerifyError;
@@ -109,14 +110,17 @@ async fn cycle_runs_in_order() {
     let mut replies = vec![accepted(&ledger, 0, "created")];
     replies.extend(fresh_replies(&ledger, &[2]));
     replies.push(reply(200, ledger.response(1, "finalized")));
-    let (signers, calls) = signers(None).await;
-    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+    let (pair, calls) = signers(None).await;
+    let (mut attester, requests, chain) = ledger.runtime(replies, pair).await;
     let saved = ledger.record(&attester, 0);
     let report = attester.run_one_cycle().await.unwrap();
     assert!(report.discover.is_ok() && report.submit.is_ok());
     assert_eq!(counts(&calls), [1, 1]);
     assert_eq!(*chain.scan_limit_requests.lock().unwrap(), 1);
-    assert_eq!(*chain.requests.lock().unwrap(), [BlockNumber::GENESIS]);
+    assert_eq!(
+        *chain.requests.lock().unwrap(),
+        [BlockNumber::GENESIS, 3u32.into(), 3u32.into()]
+    );
     let requests = requests.lock().unwrap();
     assert!(
         matches!(
@@ -350,20 +354,85 @@ async fn diverged_chain_stops_the_cycle() {
         accepted(&ledger, 0, "created"),
         reply(200, ledger.response(1, "finalized")),
     ];
-    let (signers, calls) = signers(None).await;
-    let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
+    let (pair, calls) = signers(None).await;
+    let (mut attester, requests, chain) = ledger.runtime(replies, pair).await;
     *chain.scan_limits.lock().unwrap() = scan_limits(2, 2);
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
 
     let error = attester.run_one_cycle().await.unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<DiscoverError>(),
+            Some(DiscoverError::ChainDiverged)
+        ),
+        "{error:#}"
+    );
+    assert_eq!(counts(&calls), [0, 0]);
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(ledger.record(&attester, 0), before[0]);
+    assert_eq!(ledger.record(&attester, 1), before[1]);
+
+    let error = attester.run(CancellationToken::new()).await.unwrap_err();
     assert!(matches!(
         error.downcast_ref::<DiscoverError>(),
         Some(DiscoverError::ChainDiverged)
     ));
     assert_eq!(counts(&calls), [0, 0]);
     assert!(requests.lock().unwrap().is_empty());
-    assert_eq!(ledger.record(&attester, 0), before[0]);
-    assert_eq!(ledger.record(&attester, 1), before[1]);
+    drop(attester);
+
+    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let (circle, fork_requests) = ScriptedCircle::new(ledger.path(), vec![]);
+    let (chain, _) = TestChain::new(ledger.fork_blocks.clone(), scan_limits(3, 3));
+    let (pair, _) = signers(None).await;
+    let error = Attester::start(config, Box::new(chain), Box::new(circle), pair)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            error.downcast_ref::<DiscoverError>(),
+            Some(DiscoverError::ChainDiverged)
+        ),
+        "{error:#}"
+    );
+    assert!(fork_requests.lock().unwrap().is_empty());
+
+    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let (circle, missing_requests) = ScriptedCircle::new(ledger.path(), vec![]);
+    let (chain, _) = TestChain::new(ledger.blocks.clone(), scan_limits(3, 3));
+    let (pair, _) = signers(None).await;
+    let error = Attester::start(
+        config,
+        Box::new(chain.missing_at(3)),
+        Box::new(circle),
+        pair,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        matches!(
+            error.downcast_ref::<DiscoverError>(),
+            Some(DiscoverError::Chain(_))
+        ),
+        "{error:#}"
+    );
+    assert!(missing_requests.lock().unwrap().is_empty());
+
+    let replies = vec![
+        accepted(&ledger, 0, "created"),
+        reply(200, ledger.response(1, "finalized")),
+    ];
+    let (pair, calls) = signers(None).await;
+    let (mut attester, requests, chain) = ledger.runtime(replies, pair).await;
+    *chain.scan_limits.lock().unwrap() = scan_limits(3, 1);
+    let report = attester.run_one_cycle().await.unwrap();
+    assert!(report.discover.is_ok() && report.submit.is_ok());
+    assert_eq!(counts(&calls), [0, 0]);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(ledger.record(&attester, 0).status, Submitted);
+    assert_eq!(ledger.record(&attester, 1).status, Finalized);
 }
 
 #[tokio::test(start_paused = true)]
@@ -389,7 +458,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
     assert!(requests.lock().unwrap().is_empty());
     assert_eq!(
         *chain.requests.lock().unwrap(),
-        [BlockNumber::GENESIS, 3u32.into()]
+        [BlockNumber::GENESIS, 2u32.into(), 3u32.into()]
     );
     assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
     assert_eq!(ledger.record(&attester, 0), before[0]);
@@ -404,7 +473,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
     assert_eq!(*chain.scan_limit_requests.lock().unwrap(), 3);
     assert!(requests.lock().unwrap().is_empty());
     shutdown.cancel();
-    run.await;
+    run.await.unwrap();
 }
 
 /// After a 429 the rest of the cycle leaves Circle alone and the pause before the next cycle
@@ -445,7 +514,7 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
         assert_eq!(requests.lock().unwrap().len(), requests_sent);
     }
     shutdown.cancel();
-    run.await;
+    run.await.unwrap();
 }
 
 /// A 429 anywhere in a cycle ends its Circle traffic: nothing more is prepared, signed, sent or
@@ -526,7 +595,7 @@ async fn rate_limit_ends_the_cycle_where_it_comes() {
 /// Advances paused time around each expected cycle start and checks that the cycle started then,
 /// and not before.
 async fn assert_cycle_starts(
-    run: &mut Pin<Box<impl Future<Output = ()>>>,
+    run: &mut Pin<Box<impl Future<Output = anyhow::Result<()>>>>,
     chain: &ChainControls,
     starts_ms: &[u64],
 ) {
@@ -573,7 +642,7 @@ async fn only_a_rate_limit_lengthens_the_pause() {
         assert_cycle_starts(&mut run, &chain, &starts_ms).await;
         assert_eq!(requests.lock().unwrap().len(), 3);
         shutdown.cancel();
-        run.await;
+        run.await.unwrap();
     }
 }
 
@@ -597,7 +666,7 @@ async fn long_poll_interval_is_kept_after_a_rate_limit() {
     assert_cycle_starts(&mut run, &chain, &[0, 90_000, 180_000]).await;
     assert_eq!(requests.lock().unwrap().len(), 3);
     shutdown.cancel();
-    run.await;
+    run.await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -616,7 +685,7 @@ async fn restart_and_shutdown_do_not_lose_work() {
     let (signers, calls) = signers(Some(shutdown.clone())).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let started = tokio::time::Instant::now();
-    attester.run(shutdown.clone()).await;
+    attester.run(shutdown.clone()).await.unwrap();
     assert!(
         started.elapsed() < Duration::from_millis(100),
         "a cancellation cuts the sleep short"

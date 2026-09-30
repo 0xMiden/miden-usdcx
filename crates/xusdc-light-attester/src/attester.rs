@@ -109,6 +109,13 @@ impl Attester {
             .scan_state()
             .context("failed to load attester scan state")?;
         let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
+        // After a divergence, a restart must not send saved withdrawals while the node still
+        // disagrees with the saved checkpoint.
+        if let Some(checkpoint) = &scan_state.authenticated_parent {
+            check_checkpoint(chain.as_ref(), checkpoint)
+                .await
+                .context("failed to check the saved checkpoint against the Miden node")?;
+        }
 
         Ok(Self {
             config,
@@ -124,8 +131,8 @@ impl Attester {
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
     /// A store failure aborts only this cycle; the next one runs after the usual pause. After
     /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
-    /// without one.
-    pub async fn run(&mut self, shutdown: CancellationToken) {
+    /// without one. A diverged chain ends the run with its error.
+    pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
             let mut rate_limited = false;
@@ -134,6 +141,14 @@ impl Attester {
                     if let Err(error) = report.discover {
                         eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
                     }
+                }
+                Err(error)
+                    if matches!(
+                        error.downcast_ref::<DiscoverError>(),
+                        Some(DiscoverError::ChainDiverged)
+                    ) =>
+                {
+                    return Err(error);
                 }
                 Err(error) => {
                     eprintln!("cycle stopped; retrying after the pause between cycles: {error:?}")
@@ -152,6 +167,7 @@ impl Attester {
                 () = tokio::time::sleep(pause) => {}
             }
         }
+        Ok(())
     }
 
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
@@ -402,11 +418,9 @@ impl Attester {
     }
 }
 
-/// Decides what discovery's result means for the rest of the cycle: the proof-lag height when
-/// new burns may be prepared, and the result for the report. A failed chain read still lets the
-/// saved submissions be recovered and polled, but prepares nothing new. A store failure or a
-/// diverged chain ends the cycle; the next one starts after the usual pause, and a diverged chain
-/// keeps stopping every cycle until an operator has looked.
+/// Successful discovery returns the proof-lag height. A chain read failure lets recovery and
+/// polling continue without new burns. A store error stops the cycle, and a chain divergence stops
+/// the service.
 fn discovery_outcome(
     discover: Result<BlockNumber, DiscoverError>,
 ) -> anyhow::Result<(Option<BlockNumber>, Result<(), DiscoverError>)> {

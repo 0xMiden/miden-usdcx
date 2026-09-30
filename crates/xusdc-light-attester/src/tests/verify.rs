@@ -137,6 +137,33 @@ fn circle_response_matches_burns() {
         rebuild_for_test(&mut changed).unwrap();
         refuse(name, vec![changed], expected);
     }
+    let decimal_cases: [Case; 4] = [
+        (
+            "empty maximum fee",
+            |b| b.burn_intents[0].max_fee.clear(),
+            MalformedField("maxFee"),
+        ),
+        (
+            "underscored value",
+            |b| b.burn_intents[0].spec.value = "1_000".into(),
+            MalformedField("value"),
+        ),
+        (
+            "signed value",
+            |b| b.burn_intents[0].spec.value = "+1000".into(),
+            MalformedField("value"),
+        ),
+        (
+            "space before maximum block height",
+            |b| b.burn_intents[0].max_block_height = " 1".into(),
+            MalformedField("maxBlockHeight"),
+        ),
+    ];
+    for (name, edit, expected) in decimal_cases {
+        let mut changed = batch(&salt, 1_000, 9);
+        edit(&mut changed);
+        refuse(name, vec![changed], expected);
+    }
     refuse("missing batch", vec![], WrongCount);
     refuse(
         "extra batch",

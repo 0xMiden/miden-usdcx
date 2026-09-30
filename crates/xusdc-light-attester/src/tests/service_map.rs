@@ -393,7 +393,7 @@ async fn diverged_chain_stops_the_attester() {
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
 
-    let config = test_config(&ledger.directory, 1, &ledger.blocks[0], 1);
+    let config = ledger.config.lock().unwrap().load();
     let (circle, fork_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.fork_blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;
@@ -410,7 +410,7 @@ async fn diverged_chain_stops_the_attester() {
     );
     assert!(fork_requests.lock().unwrap().is_empty());
 
-    let config = test_config(&ledger.directory, 1, &ledger.blocks[0], 1);
+    let config = ledger.config.lock().unwrap().load();
     let (circle, missing_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;

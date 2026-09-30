@@ -100,11 +100,9 @@ impl Attester {
         self.advance_submission(saved, rate_limited).await
     }
 
-    /// Sends each given saved request once: the saved POST while Circle's withdrawal ID is
-    /// unknown, a status lookup once it is known. Circle's answer is written back onto the row; a
-    /// final status closes it, and any other answer or a lost reply leaves it for the next cycle,
-    /// which supplies the delay between attempts. A store write failure stops the pass so no
-    /// answer is lost unrecorded. After a 429 the rest wait for the next cycle.
+    /// Try each saved request once. POST if Circle's ID is unknown. Otherwise, check its status
+    /// with GET. Save each answer before moving on. Leave unfinished requests for the next cycle.
+    /// Stop after a store error or 429.
     pub(crate) async fn advance_submissions(
         &mut self,
         submissions: Vec<SavedSubmission>,

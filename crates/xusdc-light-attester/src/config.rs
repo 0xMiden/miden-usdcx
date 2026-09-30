@@ -24,7 +24,6 @@ struct RawConfig {
     withdrawal_limit: u64,
     #[serde(default = "default_withdrawal_window_hours")]
     withdrawal_window_hours: u64,
-    withdrawal_cap_error_message: Option<String>,
     poll_interval_ms: u64,
     faucet_deployment_block: u32,
     trusted_anchor_block: u32,
@@ -43,7 +42,6 @@ pub struct Config {
     max_withdrawal_fee: AssetAmount,
     withdrawal_limit: u64,
     withdrawal_window_ms: i64,
-    withdrawal_cap_error_message: Option<String>,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -69,13 +67,6 @@ impl Config {
             .filter(|milliseconds| *milliseconds > 0)
             .and_then(|milliseconds| i64::try_from(milliseconds).ok())
             .context("withdrawal window must be positive and fit in milliseconds")?;
-        if raw
-            .withdrawal_cap_error_message
-            .as_deref()
-            .is_some_and(|message| message.trim().is_empty())
-        {
-            bail!("withdrawal cap error message must not be empty");
-        }
 
         if raw.circle_request_timeout_ms == 0 {
             bail!("circle request timeout must be greater than zero");
@@ -140,7 +131,6 @@ impl Config {
             max_withdrawal_fee,
             withdrawal_limit: raw.withdrawal_limit,
             withdrawal_window_ms,
-            withdrawal_cap_error_message: raw.withdrawal_cap_error_message,
             poll_interval: Duration::from_millis(raw.poll_interval_ms),
             faucet_deployment_block: BlockNumber::from(raw.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(raw.trusted_anchor_block),
@@ -177,10 +167,6 @@ impl Config {
 
     pub(crate) fn withdrawal_window_ms(&self) -> i64 {
         self.withdrawal_window_ms
-    }
-
-    pub(crate) fn withdrawal_cap_error_message(&self) -> Option<&str> {
-        self.withdrawal_cap_error_message.as_deref()
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

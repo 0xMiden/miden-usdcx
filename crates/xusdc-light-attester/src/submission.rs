@@ -109,8 +109,7 @@ impl Attester {
         )? {
             return Ok(());
         }
-        self.send_admitted_submission(saved, true, rate_limited)
-            .await
+        self.send_admitted_submission(saved, rate_limited).await
     }
 
     /// Try each saved request once. POST if Circle's ID is unknown. Otherwise, check its status
@@ -177,39 +176,16 @@ impl Attester {
         {
             return Ok(());
         }
-        self.send_admitted_submission(saved, false, rate_limited)
-            .await
+        self.send_admitted_submission(saved, rate_limited).await
     }
 
-    /// Sends the saved request once. `first_send` is true only when these signed bytes have never
-    /// been sent before, so no earlier attempt can have been accepted.
+    /// Sends the saved request once.
     async fn send_admitted_submission(
         &mut self,
         mut saved: SavedSubmission,
-        first_send: bool,
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
         let mut response = self.send_saved_request(&mut saved, rate_limited).await;
-        if saved.withdrawal_id.is_none()
-            && response.as_ref().is_some_and(|reply| {
-                is_limit_rejection(reply, self.config.withdrawal_cap_error_message())
-            })
-        {
-            if !first_send {
-                // An earlier send of these bytes may have been accepted, so the burn is never
-                // signed again: the same request stays queued and goes out in a later cycle.
-                saved.last_error = Some("Circle's withdrawal limit is reached".into());
-                return self.save_outcome(&saved);
-            }
-            // Only a confirmed cap rejection releases capacity. Discard its signed bytes;
-            // after the cooldown it must be prepared and signed again, not replayed stale.
-            self.store.record_cap_rejection(&saved)?;
-            eprintln!(
-                "withdrawal note={} waiting after Circle's capacity rejection",
-                saved.note_id
-            );
-            return Ok(());
-        }
         if saved.withdrawal_id.is_none()
             && response
                 .as_ref()
@@ -332,10 +308,9 @@ impl SavedSubmission {
             StatusCode::CREATED
         };
         if response.status != expected_status {
-            // Only a 400 to the POST, unless it is Circle's configured capacity message, is a
-            // definite no from Circle: a blocked burner or recipient, or data Circle refuses. Any
-            // other answer says nothing final, so the row stays queued and the next pass sends the
-            // same request again.
+            // A POST 400 needs operator review. Keep the signed request: Circle may have accepted
+            // an earlier attempt whose reply was lost. Any other answer says nothing final, so the
+            // row stays queued and the next pass sends the same request again.
             if !lookup && response.status == StatusCode::BAD_REQUEST {
                 self.hold(
                     HoldReason::HttpRejected,
@@ -400,20 +375,6 @@ impl SavedSubmission {
     fn matches_note(&self, id: &str) -> bool {
         id.eq_ignore_ascii_case(&self.note_id.to_hex())
     }
-}
-
-/// Whether Circle refused a withdraw POST because its withdrawal limit is reached: a 400 whose
-/// `message` starts with the configured text. Circle's limit message goes on with the current
-/// total and the limit, so only its fixed start is configured.
-pub(crate) fn is_limit_rejection(response: &RawResponse, message_start: Option<&str>) -> bool {
-    response.status == StatusCode::BAD_REQUEST
-        && message_start.is_some_and(|start| {
-            serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|body| {
-                body["message"]
-                    .as_str()
-                    .is_some_and(|message| message.starts_with(start))
-            })
-        })
 }
 
 /// Circle's withdrawal IDs are UUIDs; the ID becomes a URL path segment, so nothing else passes.

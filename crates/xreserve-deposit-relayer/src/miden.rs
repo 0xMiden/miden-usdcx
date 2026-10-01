@@ -44,8 +44,8 @@ use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
 
-use xusdc_encoding::account::XReserveFaucetExtension;
-use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
+use miden_usdcx::account::XReserveFaucetExtension;
+use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 
 use crate::circle::PageSize;
 use crate::config::Config;

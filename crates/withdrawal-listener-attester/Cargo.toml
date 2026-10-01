@@ -6,7 +6,7 @@ publish = false
 description = "Phase-4 P4-WITHDRAWAL (CMP-C2/C3): off-chain burn-listener / attester — this slice ships the crate scaffold, the Circle withdrawal wire types, the schema-frozen mock fixtures, and the auth posture"
 
 # The burn-note payload layout and the AccountId↔bytes32 codec are OWNED by the shared encoding crate
-# (`xusdc-encoding`, `xreserve::encoding`) and consumed here BY REFERENCE (single-owner rule). In
+# (`miden-usdcx`, `xreserve::encoding`) and consumed here BY REFERENCE (single-owner rule). In
 # particular `types::BurnPayload` IS the shared encoding crate's `XReserveBurnItems` — an alias, not a second copy —
 # so the two cannot drift. This crate re-derives no offset and re-implements no codec.
 #
@@ -16,7 +16,7 @@ description = "Phase-4 P4-WITHDRAWAL (CMP-C2/C3): off-chain burn-listener / atte
 # (tests/fixtures/README.md).
 
 [dependencies]
-xusdc-encoding = { path = "../xusdc-encoding" }
+miden-usdcx = { workspace = true }
 # Shared versions live in the root [workspace.dependencies]; crate-specific feature sets are added on
 # top (workspace-shared-dependencies).
 #   serde/serde_json — the Circle wire codecs  and the operator's config file.
@@ -33,7 +33,12 @@ xusdc-encoding = { path = "../xusdc-encoding" }
 #                      (use-bon-builder).
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 reqwest = { workspace = true }
 hex = { workspace = true }
 bon = { workspace = true }
@@ -104,7 +109,12 @@ assert_matches = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 rand = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 # Every idempotency-ledger test opens a REAL ledger on a REAL file, in a directory tempfile removes
 # with the test. "Durable across a restart" is only provable against a file a second, independent
 # handle can reopen — so no test here reaches for an in-memory database, which is precisely the thing

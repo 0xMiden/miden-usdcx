@@ -14,7 +14,7 @@ alloy-sol-types = { workspace = true }
 xusdc-encoding = { path = "../xusdc-encoding" }
 clap = { workspace = true }
 hex = { workspace = true }
-humantime = "2"
+humantime = { workspace = true }
 k256 = { workspace = true, features = ["pkcs8"] }
 miden-client = { version = "=0.17.0-rc.2", features = ["tonic"] }
 miden-protocol = { version = "=0.17.0-rc.7" }
@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
-tokio-util = "0.7"
+tokio-util = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"

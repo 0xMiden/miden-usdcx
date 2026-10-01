@@ -7184,6 +7184,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "xusdc-bridge"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "humantime",
+ "rstest",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "xreserve-deposit-relayer",
+ "xusdc-attester",
+]
+
+[[package]]
 name = "xusdc-encoding"
 version = "0.0.0"
 dependencies = [

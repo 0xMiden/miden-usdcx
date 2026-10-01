@@ -22,7 +22,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-forest = { workspace = true }
 url = "2"
-humantime = "2"
+humantime = { workspace = true }
 parse_link_header = { version = "0.4", default-features = false, features = ["url"] }
 reqwest = { workspace = true }
 serde = { workspace = true }

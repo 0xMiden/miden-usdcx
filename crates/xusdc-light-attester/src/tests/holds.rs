@@ -1,4 +1,4 @@
-//! Local queue rules.
+//! Burn holds: which failures hold a burn, and how a hold is recorded and released.
 
 use miden_protocol::utils::serde::Serializable;
 use reqwest::StatusCode;

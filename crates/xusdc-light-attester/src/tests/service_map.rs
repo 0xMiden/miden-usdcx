@@ -345,9 +345,10 @@ async fn submission_store_failure_stops_remaining_work() {
     }
 }
 
-/// A chain that moved behind the verified checkpoint stops the cycle before any Circle traffic.
+/// A diverged chain stops withdrawal work. Restart fails until the node matches the saved
+/// checkpoint.
 #[tokio::test]
-async fn diverged_chain_stops_the_cycle() {
+async fn diverged_chain_stops_the_attester() {
     let ledger = Ledger::new().await;
     seed(&ledger, &[(0, None), (1, Some("created"))]).await;
     let replies = vec![

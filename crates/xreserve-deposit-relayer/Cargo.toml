@@ -8,8 +8,8 @@ description = "Relays Circle xReserve deposit attestations to the xUSDC faucet."
 [dependencies]
 miden-usdcx = { workspace = true }
 miden-protocol = { workspace = true }
-miden-client = { version = "=0.17.0-rc.4", default-features = false, features = ["std", "tonic"] }
-miden-client-sqlite-store = { version = "=0.17.0-rc.4" }
+miden-client = { workspace = true, features = ["std", "tonic"] }
+miden-client-sqlite-store = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

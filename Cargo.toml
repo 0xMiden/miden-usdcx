@@ -22,6 +22,8 @@ exclude = [
 # Miden dependencies
 miden-protocol              = "=0.17.0-rc.9"
 miden-usdcx                 = "=0.17.0-rc.9"
+miden-client                = { version = "=0.17.0-rc.4", default-features = false }
+miden-client-sqlite-store   = "=0.17.0-rc.4"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -93,9 +95,3 @@ tempfile = "3"
 # the sandbox either.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
 tower = { version = "0.5", features = ["util"] }
-
-# No [patch.crates-io] block is needed: the members resolve the whole protocol family from
-# the published crates.io `=0.17.0-rc.9` release their manifests pin, and the only other consumer
-# of that family — the `miden-client` stack of the parked `crates/xusdc-validation`
-# (`workspace.exclude`) — is outside the graph, so nothing pulls a second protocol copy that a
-# patch block would have to unify. Exactly one copy of each protocol crate is in the graph.

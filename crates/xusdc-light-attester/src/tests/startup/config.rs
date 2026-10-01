@@ -81,6 +81,15 @@ fn cli_surface_is_explicit() {
         ("--faucet-account-id", super::FAUCET_ACCOUNT_ID),
         ("--max-withdrawal-fee", "0"),
         ("--max-withdrawal-fee-bps", "0"),
+        ("--cctp-forwarding-max-fee", "1"),
+        (
+            "--cctp-forwarder-address",
+            "0x008888878f94c0d87defdf0b07f46b93c1934442",
+        ),
+        (
+            "--cctp-token-messenger-address",
+            "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+        ),
         ("--poll-interval", "2s"),
         ("--faucet-deployment-block", "1"),
         ("--trusted-anchor-block", "0"),

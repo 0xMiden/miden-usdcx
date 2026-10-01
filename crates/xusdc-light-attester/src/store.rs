@@ -44,7 +44,7 @@ pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
 /// Why a store this attester cannot bring to [`STORE_VERSION`] is refused. It is left as it was.
 pub(crate) const CANNOT_UPGRADE: &str = "attester store cannot be upgraded; start a new store";
 
-/// What one row of a burn's submission history records. Each kind is stored under its name.
+/// What one row of a burn's history records. Each kind is stored under its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr)]
 enum EventKind {
     /// A newly signed request, saved before it is sent.

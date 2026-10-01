@@ -1162,7 +1162,7 @@ async fn conflicts_are_checked() {
     assert_eq!(ledger.record(&attester, 0).withdrawal_id, None);
 }
 
-/// A held burn cannot poison unrelated work; only reviewed HTTP rejections can be requeued.
+/// A held withdrawal cannot poison unrelated work; only reviewed HTTP rejections can be requeued.
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;

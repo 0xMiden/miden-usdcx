@@ -93,7 +93,8 @@ enum EventKind {
     /// An operator queued a held request to be sent again.
     #[strum(serialize = "OPERATOR_RETRY")]
     OperatorRetry,
-    /// Circle refused to prepare the burn, which now waits for an operator.
+    /// The burn was put on hold, for example because Circle refused to prepare it, and now waits
+    /// for an operator.
     #[strum(serialize = "BURN_HELD")]
     BurnHeld,
     /// An operator released the burn's hold; the row keeps the hold's reason.

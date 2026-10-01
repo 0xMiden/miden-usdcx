@@ -44,9 +44,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    eprintln!(
-        "attester started with development keys; local rolling-limit enforcement is not implemented yet"
-    );
+    eprintln!("attester started with development keys");
     let result = attester.run(shutdown).await;
     signal_task.abort();
     // Dropping the attester closes the request queue; the worker then finishes any request in

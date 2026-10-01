@@ -205,7 +205,6 @@ pub(crate) fn validate_saved_request(saved: &SavedSubmission) -> bool {
         batches: [Batch; 1],
     }
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
     struct Batch {
         #[serde(rename = "burnTxId")]
         burn_note_id: String,

@@ -39,7 +39,7 @@ pub struct Cli {
     /// Fixed part of the allowed fee per withdrawal, in the smallest USDC unit;
     /// --max-withdrawal-fee-bps adds a share of the burned amount on top. Every Circle route
     /// charges a fee (the smallest seen is 4350); Ethereum needs at least 1003500, Circle's flat
-    /// fee there with forwarding on.
+    /// fee there.
     #[arg(long)]
     max_withdrawal_fee: u64,
 

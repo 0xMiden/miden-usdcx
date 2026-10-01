@@ -27,5 +27,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
+miden-protocol = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }

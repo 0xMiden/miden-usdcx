@@ -381,7 +381,7 @@ async fn holds_are_listed() {
 
 #[tokio::test]
 async fn transient_prepare_failures_retry_next_cycle() {
-    // Only a 400 from prepare holds a burn; every other failure is tried again next cycle.
+    // None of these failures holds the burn: each is tried again next cycle.
     let failures: [fn(&Ledger) -> CircleState; 7] = [
         |_| CircleState::TransportError,
         |_| reply(503, json!({})),

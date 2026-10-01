@@ -166,7 +166,14 @@ fn failures_that_hold_a_burn() {
             Some(BurnHoldReason::PrepareRejected),
         ),
         ("prepare 503", prepare(503), None),
-        ("prepare 429", prepare(429), None),
+        (
+            "prepare 429",
+            SubmitError::Prepare(CircleError::RateLimited {
+                body: None,
+                read_error: None,
+            }),
+            None,
+        ),
         ("prepare 408", prepare(408), None),
         ("prepare 403", prepare(403), None),
         (

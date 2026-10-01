@@ -373,7 +373,6 @@ impl Attester {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                // Retry scheduling/holds for prepare and verify failures are the next slice.
                 // A failure here must not prevent another burn from getting its withdrawal.
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
                 first_error.get_or_insert(error);

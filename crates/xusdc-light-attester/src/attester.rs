@@ -209,7 +209,7 @@ impl Attester {
         ))
     }
 
-    /// Scans the blocks that became final since the saved checkpoint. Each block's burn
+    /// Scans the blocks committed since the saved checkpoint. Each block's burn
     /// candidates and faucet consumptions are saved together with the advanced cursor and the
     /// block's header, one block per store transaction, so a crash never skips or half-records
     /// a block. Returns the node's proof-lag height, the bound for withdrawal readiness.

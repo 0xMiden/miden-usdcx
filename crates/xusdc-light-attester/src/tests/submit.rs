@@ -355,7 +355,6 @@ impl Ledger {
         history(&self.path(), self.burns[index].burn.note_id())
     }
 
-    /// Opens the ledger's store directly, as a starting attester would.
     pub(super) fn stored(&self, sql: &str) -> i64 {
         let disk = Connection::open_with_flags(
             format!("file:{}?immutable=1", self.path().display()),
@@ -365,6 +364,7 @@ impl Ledger {
         disk.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
+    /// Opens the ledger's store directly, as a starting attester would.
     pub(super) fn open_store(&self) -> anyhow::Result<Store> {
         Store::open_or_create(
             &self.path(),

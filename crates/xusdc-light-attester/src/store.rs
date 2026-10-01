@@ -281,7 +281,7 @@ impl Store {
         load_burns(&self.connection, self.faucet_account_id, true)
     }
 
-    /// Filters discovered burns by verified waiting depth; used by the later submit stage.
+    /// Filters discovered burns by verified waiting depth.
     pub(crate) fn burns_ready_for_withdrawal(
         &self,
         proof_lag_block: BlockNumber,

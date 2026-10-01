@@ -43,8 +43,8 @@ CREATE TABLE submissions (
     last_error TEXT
 ) STRICT;
 
--- Every burn's submission history. The submissions table keeps each burn's current request; this
--- table only grows, and keeps what happened to every request the burn had.
+-- Every burn's history: what happened to each request it had, and each hold and release of the burn
+-- itself. The submissions table keeps each burn's current request; this table only grows.
 CREATE TABLE submission_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     note_id BLOB NOT NULL REFERENCES burns (note_id),

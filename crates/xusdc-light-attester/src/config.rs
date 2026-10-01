@@ -325,6 +325,11 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    /// Circle's domain for Miden withdrawals.
+    pub fn source_domain() -> u32 {
+        xusdc_encoding::xreserve::MIDEN_DOMAIN
+    }
+
     pub fn signer(&self) -> &SignerConfig {
         &self.signer
     }

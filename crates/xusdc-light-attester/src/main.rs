@@ -6,14 +6,11 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use xusdc_attester::attester::{list_holds, release_holds};
-use xusdc_attester::chain::MidenChainReader;
-use xusdc_attester::circle::CircleClient;
 use xusdc_attester::config::{
     parse_faucet_account_id, parse_note_ids, parse_trusted_anchor_commitment, Command, Config,
-    Invocation, SignerConfig,
+    Invocation,
 };
-use xusdc_attester::signer::{KmsSigner, Signer, SignerPair};
-use xusdc_attester::Attester;
+use xusdc_attester::service::AttesterService;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -60,40 +57,11 @@ async fn main() -> Result<()> {
     }
     let config = Config::try_from(invocation.run.context("missing run arguments")?)
         .context("invalid configuration")?;
-    let (circle, circle_worker) =
-        CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
-    let SignerConfig::AwsKms {
-        region,
-        key_arns,
-        operation_timeout,
-    } = config.signer();
-    let client = KmsSigner::client(region, *operation_timeout).await;
-    let first = KmsSigner::connect(client.clone(), &key_arns[0])
-        .await
-        .context("failed to initialize first AWS KMS signer")?;
-    let second = KmsSigner::connect(client, &key_arns[1])
-        .await
-        .context("failed to initialize second AWS KMS signer")?;
-    let signers: [Box<dyn Signer>; 2] = [Box::new(first), Box::new(second)];
-    let signers = SignerPair::new(signers)
-        .await
-        .context("failed to initialize the signer pair")?;
     let miden_rpc_url = config.miden_rpc_url().clone();
-
-    let mut attester = Attester::start(
-        config,
-        Box::new(MidenChainReader::new(&miden_rpc_url)),
-        Box::new(circle),
-        signers,
-    )
-    .await
-    .context("startup failed")?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("failed to install SIGTERM handler")?;
     let shutdown = CancellationToken::new();
     let signal_token = shutdown.clone();
-    // Besides the Circle request worker, the only spawned task: notify the sequential loop, without
-    // interrupting its current cycle.
     let signal_task = tokio::spawn(async move {
         tokio::select! {
             Some(()) = sigterm.recv() => {}
@@ -102,15 +70,13 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(%miden_rpc_url, "attester started");
-    let result = attester.run(shutdown).await;
+    let result = async {
+        let service = AttesterService::start(config).await?;
+        warn!(%miden_rpc_url, "attester started");
+        service.run(shutdown).await
+    }
+    .await;
     signal_task.abort();
-    // Dropping the attester closes the request queue; the worker then finishes any request in
-    // flight and stops.
-    drop(attester);
-    circle_worker
-        .await
-        .context("Circle request worker failed")?;
     result
 }
 

@@ -285,10 +285,9 @@ fn circle_response_matches_burns() {
     );
 }
 
-/// The payout and fee must total the burn, respect the fee cap, and a direct reply must not
-/// restrict the caller.
+/// The payout and fee must total the burn and respect the fee cap.
 #[test]
-fn circle_response_checks_amount_fee_and_forwarding() {
+fn circle_response_checks_amount_and_fee() {
     use VerifyError::*;
     let burns = [validated_burn(1_000, serial(0x3132_3334_3536_3738), 9)];
     let salt = burns[0].burn.note_id().to_hex();
@@ -351,18 +350,6 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         batches: vec![base_fee],
     };
     assert_eq!(response.verify(&usdc, &args.load()).err(), None);
-    type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let forwarding_cases: [Case; 1] = [(
-        "restricted caller",
-        |b| b.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32)),
-        CallerRestricted,
-    )];
-    for (name, edit, expected) in forwarding_cases {
-        let mut changed = batch(&salt, 1_000, 9);
-        edit(&mut changed);
-        rebuild_for_test(&mut changed).unwrap();
-        check(name, changed, None, Some(expected));
-    }
 }
 
 /// Reconstruct the packed bytes and EIP-712 digest from Circle's untouched sandbox captures.

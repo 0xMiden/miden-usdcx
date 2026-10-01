@@ -60,8 +60,8 @@ fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
 }
 
 /// A captured reply, rebound to the test faucet: the probes ran against Circle's registered remote
-/// domain and token, so those two hook fields are replaced and the digest rebuilt, keeping every
-/// other field exactly as Circle laid it out.
+/// domain and token, so those two hook fields and the salt are replaced and the digest rebuilt,
+/// keeping every other field exactly as Circle laid it out.
 pub(super) fn captured(fixture: &str, burn: &ValidatedBurn) -> UnverifiedPrepareBatch {
     let mut response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
     let mut batch = response.batches.remove(0);

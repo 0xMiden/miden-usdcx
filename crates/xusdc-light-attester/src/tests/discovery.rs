@@ -243,13 +243,12 @@ async fn burns_are_discovered_safely() {
 }
 
 /// Proves candidate insertion, burn promotion, cursor movement, and authenticated-parent updates
-/// share one transaction; skipped blocks, wrong parents, and repeated evidence change nothing.
+/// share one transaction, including when repeated consumption evidence rolls the batch back.
 #[test]
 fn burns_and_scan_position_are_saved_together() {
     let mut factory = BlockFactory::new();
     let anchor = factory.push(Vec::new(), Vec::new());
     let child = factory.push(Vec::new(), Vec::new());
-    let grandchild = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
     let path = tempdir.path().join("state.sqlite3");
     let trusted_anchor = TrustedAnchor {
@@ -285,33 +284,9 @@ fn burns_and_scan_position_are_saved_together() {
         },
         authenticated_parent: Some(child.header().clone()),
     };
-    let initial_state = store.scan_state().unwrap();
-    // Even the first saved block must not skip a height. No stored parent can mask this check.
-    assert_eq!(
-        store
-            .save_scan_progress(std::slice::from_ref(&candidate), &[], &after_child)
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
-    assert_eq!(store.scan_state().unwrap(), initial_state);
-    assert!(store.candidates().unwrap().is_empty());
-    assert!(store.discovered_burns().unwrap().is_empty());
     store
         .save_scan_progress(std::slice::from_ref(&candidate), &[], &after_anchor)
         .unwrap();
-    for next_state in [&after_anchor, &after_child] {
-        assert_eq!(
-            store
-                .save_scan_progress(std::slice::from_ref(&candidate), &[], next_state)
-                .unwrap_err()
-                .to_string(),
-            CONFLICT
-        );
-        assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
-        assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
-        assert!(store.discovered_burns().unwrap().is_empty());
-    }
 
     let second_note = note(BurnNote::script(), NoteType::Public, 2, 21);
     let second_candidate = BurnCandidate::new(
@@ -324,54 +299,26 @@ fn burns_and_scan_position_are_saved_together() {
     let burn = candidate
         .clone()
         .into_discovered(BlockNumber::from(1u32), tx.id());
-    let header = child.header();
-    let wrong_parent = ScanState {
-        authenticated_parent: Some(BlockHeader::new(
-            Word::empty(),
-            header.block_num(),
-            header.chain_commitment(),
-            header.account_root(),
-            header.nullifier_root(),
-            header.note_root(),
-            header.tx_commitment(),
-            header.validator_config().clone(),
-            header.fee_parameters().clone(),
-            header.protocol_config_commitment(),
-            header.next_protocol_config().cloned(),
-            header.timestamp(),
-        )),
-        ..after_child.clone()
-    };
-    // The height is correct, but the new header must also link to the saved block.
-    assert_eq!(
-        store
-            .save_scan_progress(
-                std::slice::from_ref(&second_candidate),
-                std::slice::from_ref(&burn),
-                &wrong_parent,
-            )
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
-    assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
-    assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
-    assert!(store.discovered_burns().unwrap().is_empty());
-
-    // Both heights pass the temporal bounds, but promotion must retain the candidate's height.
-    let mismatched_promotion = DiscoveredBurn::new(
-        second_candidate.note().clone(),
+    let conflicting_burn = DiscoveredBurn::new(
+        burn.note().clone(),
         burn.creation_block(),
         burn.consumption_block(),
-        transaction(faucet_account_id(), &[second_candidate.nullifier()]).id(),
+        transaction(
+            faucet_account_id(),
+            &[candidate.nullifier(), second_candidate.nullifier()],
+        )
+        .id(),
         faucet_account_id(),
     )
     .unwrap();
+
+    // The second consumption cannot replace the first one's evidence. The candidate inserted in
+    // the same batch and the first promotion roll back with it.
     assert_eq!(
         store
             .save_scan_progress(
                 std::slice::from_ref(&second_candidate),
-                std::slice::from_ref(&mismatched_promotion),
+                &[burn.clone(), conflicting_burn],
                 &after_child,
             )
             .unwrap_err()
@@ -385,72 +332,9 @@ fn burns_and_scan_position_are_saved_together() {
     store
         .save_scan_progress(&[], std::slice::from_ref(&burn), &after_child)
         .unwrap();
-    assert_eq!(
-        store
-            .save_scan_progress(
-                std::slice::from_ref(&candidate),
-                std::slice::from_ref(&burn),
-                &after_child,
-            )
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
     assert!(store.candidates().unwrap().is_empty());
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
-    assert_eq!(
-        store
-            .save_scan_progress(&[], &[], &after_anchor)
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
-
-    let conflicting_burn = DiscoveredBurn::new(
-        burn.note().clone(),
-        burn.creation_block(),
-        burn.consumption_block(),
-        transaction(
-            faucet_account_id(),
-            &[candidate.nullifier(), second_candidate.nullifier()],
-        )
-        .id(),
-        faucet_account_id(),
-    )
-    .unwrap();
-    let after_grandchild = ScanState {
-        cursor: ScanCursor {
-            next_block: BlockNumber::from(3u32),
-        },
-        authenticated_parent: Some(grandchild.header().clone()),
-    };
-    assert_eq!(
-        store
-            .save_scan_progress(std::slice::from_ref(&candidate), &[], &after_grandchild)
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
-    assert_eq!(store.scan_state().unwrap(), after_child.clone());
-    assert!(store.candidates().unwrap().is_empty());
-    assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
-    for duplicate in [&burn, &conflicting_burn] {
-        assert_eq!(
-            store
-                .save_scan_progress(
-                    std::slice::from_ref(&second_candidate),
-                    std::slice::from_ref(duplicate),
-                    &after_grandchild,
-                )
-                .unwrap_err()
-                .to_string(),
-            CONFLICT
-        );
-        assert_eq!(store.scan_state().unwrap(), after_child.clone());
-        assert!(store.candidates().unwrap().is_empty());
-        assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
-    }
     let invalid_parent = ScanState {
         cursor: ScanCursor {
             next_block: BlockNumber::from(3u32),

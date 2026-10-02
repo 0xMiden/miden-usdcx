@@ -435,11 +435,7 @@ fn discovery_outcome(
 /// message for the log.
 pub(crate) fn burn_hold(
     error: &SubmitError,
-) -> (
-    Option<BurnHoldReason>,
-    Option<(u16, &[u8])>,
-    Option<String>,
-) {
+) -> (Option<BurnHoldReason>, Option<(u16, &[u8])>, Option<String>) {
     match error {
         // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
         // that fails our checks, is tried again next cycle.

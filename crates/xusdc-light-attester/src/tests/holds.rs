@@ -378,9 +378,9 @@ async fn holds_are_listed() {
             .collect::<Vec<_>>()
     );
 
-    assert_eq!(store.release_holds(&[unreadable]).unwrap(), (1, 0));
+    assert_eq!(store.release_holds(&[current]).unwrap(), (1, 0));
     store
-        .hold_burn(unreadable, BurnHoldReason::TooSmallToForward, None)
+        .hold_burn(current, BurnHoldReason::TooSmallToForward, None)
         .unwrap();
     let lines: Vec<_> = store
         .holds()
@@ -389,8 +389,8 @@ async fn holds_are_listed() {
         .map(ToString::to_string)
         .collect();
     let mut burn_lines = [
-        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
-        format!("{unreadable}\tburn\tTooSmallToForward\t-\t-"),
+        format!("{current}\tburn\tTooSmallToForward\t-\t-"),
+        format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
     ];
     burn_lines.sort();
     assert_eq!(

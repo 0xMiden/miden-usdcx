@@ -217,24 +217,36 @@ impl Store {
         &mut self,
         note_id: NoteId,
         reason: BurnHoldReason,
+        response: Option<(u16, &[u8])>,
     ) -> anyhow::Result<()> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let updated = transaction
             .execute(
                 "UPDATE burns SET hold_reason = ?2
-                 WHERE note_id = ?1 AND status = 'DISCOVERED'
-                    AND (hold_reason IS NULL OR hold_reason = ?2)
-                    AND NOT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1
-                        AND status != ?3)",
-                params![
-                    note_id.to_bytes(),
-                    reason.code(),
-                    SubmissionStatus::Expired.as_ref()
-                ],
+                 WHERE note_id = ?1",
+                params![note_id.to_bytes(), reason.code()],
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        record_event(&transaction, note_id, EventKind::BurnHeld)?;
+        let (http_status, response) = match response {
+            Some((status, body)) => (Some(status), Some(body)),
+            None => (None, None),
+        };
+        let recorded = transaction
+            .execute(
+                "INSERT INTO submission_events (
+                    note_id, recorded_at, kind, http_status, response, burn_hold_reason
+                 ) VALUES (?1, unixepoch(), ?2, ?3, ?4, ?5)",
+                params![
+                    note_id.to_bytes(),
+                    EventKind::BurnHeld.as_ref(),
+                    http_status,
+                    response,
+                    reason.code()
+                ],
+            )
+            .map_err(classify_error)?;
+        ensure!(recorded == 1, CONFLICT);
         transaction.commit().map_err(classify_error)
     }
 

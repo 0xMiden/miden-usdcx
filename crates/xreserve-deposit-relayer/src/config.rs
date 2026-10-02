@@ -5,7 +5,7 @@ use clap::Parser;
 use miden_protocol::account::AccountId;
 use url::Url;
 
-use xusdc_encoding::xreserve::encoding::CircleDomain;
+use miden_usdcx::xreserve::encoding::CircleDomain;
 
 use crate::circle::PageSize;
 use crate::miden::ExpirationDelta;

@@ -14,8 +14,8 @@ use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
 use tracing::{error, instrument};
 
-use xusdc_encoding::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
-use xusdc_encoding::xreserve::encoding::{CircleDomain, DepositIntent};
+use miden_usdcx::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
+use miden_usdcx::xreserve::encoding::{CircleDomain, DepositIntent};
 
 use crate::circle::Attestation;
 use crate::config::Config;
@@ -160,9 +160,9 @@ mod tests {
     use miden_protocol::note::{Note, NoteId};
     use rstest::rstest;
 
-    use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
-    use xusdc_encoding::vectors::load;
-    use xusdc_encoding::xreserve::encoding::{
+    use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
+    use miden_usdcx::vectors::load;
+    use miden_usdcx::xreserve::encoding::{
         CircleDomain, DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 

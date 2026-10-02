@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
 
-use xusdc_encoding::xreserve::encoding::{CircleDomain, Signature};
+use miden_usdcx::xreserve::encoding::{CircleDomain, Signature};
 
 /// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
 ///

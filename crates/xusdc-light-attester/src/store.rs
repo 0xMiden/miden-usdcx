@@ -196,8 +196,7 @@ impl Store {
             .execute(
                 "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
                 last_http_status = ?4, last_response = ?5, last_error = ?6
-             WHERE note_id = ?7 AND status = ?8
-                AND (withdrawal_id IS NULL OR withdrawal_id = ?2)",
+             WHERE note_id = ?7",
                 params![
                     outcome.status.as_ref(),
                     outcome.withdrawal_id,
@@ -206,7 +205,6 @@ impl Store {
                     outcome.last_response,
                     outcome.last_error,
                     outcome.note_id.to_bytes(),
-                    SubmissionStatus::Submitting.as_ref(),
                 ],
             )
             .map_err(classify_error)?;

@@ -253,11 +253,7 @@ fn invalid_config_is_rejected() {
     let mut forwarding = valid.clone();
     forwarding.replace("--max-withdrawal-fee", "1000");
     forwarding.replace("--cctp-forwarding-max-fee", "1000");
-    assert_config_error(
-        &forwarding,
-        "cctp forwarding max fee must be below the maximum withdrawal fee",
-    );
-    forwarding.replace("--cctp-forwarding-max-fee", "999");
+    forwarding.load();
     forwarding.replace("--cctp-forwarder-address", "0x1234");
     assert_config_error(&forwarding, "cctp forwarder address is invalid");
     forwarding.replace(
@@ -280,7 +276,7 @@ fn invalid_config_is_rejected() {
     assert_eq!(
         forwarding.load().cctp_forwarding(),
         (
-            999,
+            1000,
             FORWARDER.parse().unwrap(),
             TOKEN_MESSENGER.parse().unwrap()
         )

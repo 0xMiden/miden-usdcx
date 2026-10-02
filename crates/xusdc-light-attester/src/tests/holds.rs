@@ -38,24 +38,60 @@ fn recorded<T: rusqlite::types::FromSql>(
 async fn prepare_400_holds_survive_restart_until_released() {
     let ledger = Ledger::new().await;
     let order = &ledger.fresh_indices;
+    let refusal = json!({"message": "rejected"});
+    let refusal_body = serde_json::to_vec(&refusal).unwrap();
     let mut bad = ledger.prepared_response(order[2]);
     bad["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "00".repeat(32)));
     let (mut attester, _) = ledger
         .start(vec![
             reply(201, json!([ledger.response(order[0], "expired")])),
-            reply(400, json!({"message": "rejected"})),
+            reply(400, refusal),
             reply(200, json!({})),
             reply(200, bad),
         ])
         .await;
     // Circle can refuse the fresh prepare for a burn whose earlier withdrawal expired.
     ledger.submit(&mut attester, order[0]).await.unwrap();
+    let expired = ledger.record(&attester, order[0]);
+    let earlier_history = ledger.history(order[0]);
     assert!(matches!(
         attester.run_one_cycle().await.unwrap().submit,
         Err(SubmitError::Prepare(
             CircleError::UnexpectedPrepareStatus { .. }
         ))
     ));
+    assert_eq!(ledger.record(&attester, order[0]), expired);
+    let history = ledger.history(order[0]);
+    assert_eq!(&history[..earlier_history.len()], earlier_history);
+    assert_eq!(history.last(), Some(&("BURN_HELD".into(), None)));
+    assert_eq!(
+        recorded::<Option<i64>>(&ledger, order[0], "BURN_HELD", "http_status"),
+        [Some(400)]
+    );
+    assert_eq!(
+        recorded::<Option<Vec<u8>>>(&ledger, order[0], "BURN_HELD", "response"),
+        [Some(refusal_body)]
+    );
+    for column in [
+        "status",
+        "withdrawal_id",
+        "error",
+        "endpoint",
+        "hold_reason",
+    ] {
+        assert_eq!(
+            recorded::<Option<String>>(&ledger, order[0], "BURN_HELD", column),
+            [None],
+            "{column}"
+        );
+    }
+    for column in ["body", "transfer_spec_hash"] {
+        assert_eq!(
+            recorded::<Option<Vec<u8>>>(&ledger, order[0], "BURN_HELD", column),
+            [None],
+            "{column}"
+        );
+    }
     drop(attester);
     // Neither the malformed reply nor the failed check held its burn: both are prepared again.
     let replies = order[1..]
@@ -119,6 +155,7 @@ async fn transient_prepare_failures_retry_next_cycle() {
                 .hold_burn(
                     ledger.burns[i].note_id(),
                     BurnHoldReason::PrepareRejected,
+                    None,
                 )
                 .unwrap();
         }
@@ -133,20 +170,71 @@ async fn transient_prepare_failures_retry_next_cycle() {
 #[tokio::test]
 async fn burn_hold_and_release_record_the_reason() {
     let ledger = Ledger::new().await;
+    let order = &ledger.fresh_indices;
+    let note_id = ledger.burns[order[0]].note_id();
+    let refusal = json!({"message": "first refusal"});
+    let refusal_body = serde_json::to_vec(&refusal).unwrap();
+    let (mut attester, _) = ledger.start(vec![reply(400, refusal)]).await;
+    for &index in &order[1..] {
+        attester
+            .store
+            .hold_burn(
+                ledger.burns[index].note_id(),
+                BurnHoldReason::PrepareRejected,
+                None,
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        attester.run_one_cycle().await.unwrap().submit,
+        Err(SubmitError::Prepare(
+            CircleError::UnexpectedPrepareStatus { .. }
+        ))
+    ));
+    assert_eq!(
+        recorded::<Option<i64>>(&ledger, order[0], "BURN_HELD", "http_status"),
+        [Some(400)]
+    );
+    assert_eq!(
+        recorded::<Option<Vec<u8>>>(&ledger, order[0], "BURN_HELD", "response"),
+        [Some(refusal_body)]
+    );
+    drop(attester);
+
     let (mut attester, _) = ledger.start(vec![]).await;
-    let note_id = ledger.burns[0].note_id();
-    attester
-        .store
-        .hold_burn(note_id, BurnHoldReason::PrepareRejected)
-        .unwrap();
+    assert_eq!(
+        recorded::<Option<i64>>(&ledger, order[0], "BURN_HELD", "http_status"),
+        [Some(400)]
+    );
     attester.release_burn_hold(note_id).unwrap();
     for kind in ["BURN_HELD", "BURN_RELEASED"] {
         assert_eq!(
-            recorded::<i64>(&ledger, 0, kind, "burn_hold_reason"),
+            recorded::<i64>(&ledger, order[0], kind, "burn_hold_reason"),
             [BurnHoldReason::PrepareRejected.code()],
             "{kind}"
         );
     }
+    drop(attester);
+
+    ledger.sql(
+        "CREATE TRIGGER fail_burn_hold BEFORE INSERT ON submission_events
+         WHEN NEW.kind = 'BURN_HELD'
+         BEGIN SELECT RAISE(FAIL, 'disk full'); END;",
+    );
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected again"}))])
+        .await;
+    assert!(attester.run_one_cycle().await.is_err());
+    drop(attester);
+    let connection = read_store(&ledger.path());
+    let hold: Option<i64> = connection
+        .query_row(
+            "SELECT hold_reason FROM burns WHERE note_id = ?1",
+            [note_id.to_bytes()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hold, None);
 }
 
 /// Only a 400 from prepare holds a burn; any other failure before submission is tried again.
@@ -163,7 +251,10 @@ fn failures_that_hold_a_burn() {
         (
             "prepare 400",
             prepare(400),
-            Some(BurnHoldReason::PrepareRejected),
+            Some((
+                BurnHoldReason::PrepareRejected,
+                Some((400, br#"{"message":"rejected"}"#.to_vec())),
+            )),
         ),
         ("prepare 503", prepare(503), None),
         (
@@ -192,6 +283,12 @@ fn failures_that_hold_a_burn() {
             None,
         ),
     ] {
-        assert_eq!(burn_hold(&error), hold, "{name}");
+        let actual = burn_hold(&error).map(|(reason, response)| {
+            (
+                reason,
+                response.map(|(status, body)| (status, body.to_vec())),
+            )
+        });
+        assert_eq!(actual, hold, "{name}");
     }
 }

@@ -122,8 +122,7 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    /// After Circle's prepare refused this burn and the cause is fixed, let the burn be checked
-    /// again.
+    /// Remove this burn's hold so the next cycle can prepare it again.
     pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
         self.store.release_burn_hold(note_id).map_err(Into::into)
     }
@@ -260,9 +259,9 @@ impl SavedSubmission {
             StatusCode::CREATED
         };
         if response.status != expected_status {
-            // A POST 400 needs operator review. Keep the signed request: Circle may have accepted
-            // an earlier attempt whose reply was lost. Any other answer says nothing final, so the
-            // row stays queued and the next pass sends the same request again.
+            // A POST 400 leaves the signed request on hold for an operator. Circle may have accepted
+            // an earlier attempt whose reply was lost. Other unexpected replies leave the request
+            // queued for the next cycle.
             if !lookup && response.status == StatusCode::BAD_REQUEST {
                 self.hold(
                     HoldReason::HttpRejected,

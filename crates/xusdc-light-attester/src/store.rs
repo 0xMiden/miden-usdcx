@@ -324,7 +324,7 @@ impl Store {
                 ensure!(deleted == 1, CONFLICT);
                 withdrawals += 1;
             } else {
-                bail!("burn {note_id} has no hold to release");
+                bail!("note {note_id} has no releasable hold");
             }
         }
         transaction.commit().map_err(classify_error)?;

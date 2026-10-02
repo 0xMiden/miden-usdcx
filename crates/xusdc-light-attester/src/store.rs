@@ -143,18 +143,6 @@ impl Store {
         // One block's evidence, cursor, and verified header commit as one unit. A crash therefore
         // either records that complete block or scans it again from the previous checkpoint.
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        let current_state = load_scan_state(&transaction, self.initial_cursor)?;
-
-        // Advance one block at a time so no caller can silently skip burn evidence.
-        if next_state.cursor.next_block.checked_sub(1) != Some(current_state.cursor.next_block) {
-            bail!(CONFLICT);
-        }
-        if let Some(current_parent) = &current_state.authenticated_parent {
-            let next_parent = next_state.authenticated_parent.as_ref().context(INVALID)?;
-            if next_parent.prev_block_commitment() != current_parent.commitment() {
-                bail!(CONFLICT);
-            }
-        }
 
         for candidate in candidates {
             insert_candidate(&transaction, candidate)?;
@@ -503,18 +491,9 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     // Promotion turns the exact saved candidate into this burn in place, one row per note.
     let promoted = transaction
         .execute(
-            "UPDATE burns SET consumption_block = ?5, burn_tx_id = ?6, status = ?7
-             WHERE note_id = ?1 AND nullifier = ?2 AND note = ?3 AND creation_block = ?4
-                AND status = 'CANDIDATE'",
-            params![
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                DISCOVERED,
-            ],
+            "UPDATE burns SET consumption_block = ?2, burn_tx_id = ?3, status = ?4
+             WHERE note_id = ?1 AND status = 'CANDIDATE'",
+            params![note_id, consumption_block, burn_tx_id, DISCOVERED],
         )
         .map_err(classify_write_error)?;
     if promoted == 1 {

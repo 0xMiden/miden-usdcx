@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use alloy_primitives::B256;
@@ -140,6 +140,17 @@ pub(crate) struct Store {
     faucet_account_id: AccountId,
 }
 
+// SQLite is built into this binary with URI file names always on, so a path starting with "file:"
+// would be read as a URI, and a URI can turn off locking. Starting a relative path with "./" makes
+// SQLite read it as a plain file name.
+fn plain_file_name(path: &Path) -> PathBuf {
+    if path.is_relative() {
+        Path::new(".").join(path)
+    } else {
+        path.to_owned()
+    }
+}
+
 impl Store {
     /// Opens the store at `path`, or creates it there starting at `initial_cursor`. An existing
     /// store keeps the scan start it was created with, so changing the configured deployment block
@@ -150,6 +161,7 @@ impl Store {
         initial_cursor: ScanCursor,
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
+        let path = plain_file_name(path);
         let exists = path.try_exists().context(INVALID)?;
         // A new store keeps its anchor and scan start for good, so a bad pair is refused before
         // anything is created and the corrected config can use the same path.
@@ -157,7 +169,11 @@ impl Store {
             bail!("trusted anchor must not be after the scan start");
         }
 
-        let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut connection =
+            rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;
 
         let initial_cursor = if exists {
@@ -185,9 +201,8 @@ impl Store {
         faucet_account_id: AccountId,
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let path = plain_file_name(path);
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection =
             rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;

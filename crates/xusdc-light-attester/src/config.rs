@@ -97,10 +97,9 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Lists the held burns and withdrawals, or releases the named ones, once, then exits; stop the
-    /// service first. Without --note-id or --note-ids-file it only lists, one hold per line with the
-    /// note ID first. A released burn is prepared, checked and signed again; a held withdrawal's old
-    /// signed request is thrown away first.
+    /// Stop the attester first. Without note IDs, list the holds. With note IDs, release them and
+    /// exit. A released burn can be prepared again. Releasing a withdrawal deletes its saved signed
+    /// request.
     ReleaseHolds {
         /// Existing durable SQLite ledger; only this command may open it while holds are released.
         #[arg(long)]
@@ -118,8 +117,8 @@ pub enum Command {
         /// after checking that Circle did not accept its saved request.
         #[arg(long, action = ArgAction::Append)]
         note_id: Vec<String>,
-        /// File naming held burns to release: the first word of each non-empty line is a note ID,
-        /// so an edited copy of the list this command prints can be passed back.
+        /// Use the first word of each line as a note ID. Before adding a held withdrawal, check that
+        /// Circle did not accept its saved request. Releasing it deletes that request.
         #[arg(long)]
         note_ids_file: Option<PathBuf>,
     },

@@ -477,7 +477,7 @@ fn reference_hash(burn: &ValidatedBurn) -> String {
         ),
         "11".repeat(32),
         "22".repeat(32),
-        "33".repeat(32),
+        "0000000000000000000000003600000000000000000000000000000000000000",
         "44".repeat(32),
         "55".repeat(32),
         "00".repeat(32),

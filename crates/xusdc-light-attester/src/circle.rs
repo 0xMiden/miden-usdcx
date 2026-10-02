@@ -6,14 +6,14 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use miden_standards::interop::eth::EthEmbeddedAccountId;
+use miden_usdcx::account::xreserve::USDCX_DECIMALS;
+use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use miden_usdcx::account::xreserve::USDCX_DECIMALS;
-use miden_usdcx::xreserve::encoding::CircleDomain;
 
 use crate::burn::DiscoveredBurn;
 use crate::config::Config;

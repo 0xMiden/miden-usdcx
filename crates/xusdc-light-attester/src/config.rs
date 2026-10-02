@@ -185,9 +185,6 @@ impl TryFrom<Cli> for Config {
         if cli.cctp_forwarding_max_fee == 0 {
             bail!("cctp forwarding max fee must be above zero");
         }
-        if cli.cctp_forwarding_max_fee >= cli.max_withdrawal_fee {
-            bail!("cctp forwarding max fee must be below the maximum withdrawal fee");
-        }
         let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder, token_messenger);
 
         if cli.request_timeout.is_zero() {

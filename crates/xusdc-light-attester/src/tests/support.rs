@@ -22,8 +22,8 @@ use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use reqwest::StatusCode;
-use xusdc_encoding::note::xreserve_burn::XUsdcBurnAttachment;
-use xusdc_encoding::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
+use miden_usdcx::note::xreserve_burn::XUsdcBurnAttachment;
+use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
 use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{read_info, CircleApi, CircleError, RawResponse};

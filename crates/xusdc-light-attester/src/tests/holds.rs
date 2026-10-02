@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
-use crate::store::BurnHoldReason;
+use crate::store::{BurnHoldReason, ScanCursor, Store, TrustedAnchor};
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
@@ -242,6 +242,57 @@ async fn only_named_holds_are_released() {
     );
     assert_eq!(store.release_holds(&[withdrawal]).unwrap(), (0, 1));
     assert!(store.submission(withdrawal).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_file_uri_store_path_cannot_bypass_the_lock() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger.start(Vec::new()).await;
+    let held = ledger.burns[0].burn.note_id();
+    attester
+        .store
+        .hold_burn(held, BurnHoldReason::PrepareRejected, None)
+        .unwrap();
+    let file_uri = std::path::PathBuf::from(format!("file:{}?nolock=1", ledger.path().display()));
+    assert!(release_holds(
+        &file_uri,
+        faucet_account_id(),
+        BlockNumber::GENESIS,
+        ledger.blocks[0].header().commitment(),
+        &[held],
+    )
+    .is_err());
+    assert!(attester
+        .store
+        .holds()
+        .unwrap()
+        .iter()
+        .any(|hold| hold.note_id == held));
+    drop(attester);
+    assert!(ledger
+        .open_store()
+        .unwrap()
+        .holds()
+        .unwrap()
+        .iter()
+        .any(|hold| hold.note_id == held));
+
+    let directory = tempfile::tempdir().unwrap();
+    let other_store = directory.path().join("other.sqlite");
+    let file_uri = std::path::PathBuf::from(format!("file:{}", other_store.display()));
+    let result = Store::open_or_create(
+        &file_uri,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: BlockNumber::GENESIS,
+        },
+        TrustedAnchor {
+            block_num: BlockNumber::GENESIS,
+            commitment: ledger.blocks[0].header().commitment(),
+        },
+    );
+    assert!(result.is_err());
+    assert!(!other_store.exists());
 }
 
 /// Each hold is listed on one line with the note ID first and only its current response evidence.

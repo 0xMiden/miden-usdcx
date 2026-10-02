@@ -52,7 +52,8 @@ pub struct Hold {
     /// "burn" for a held burn, "withdrawal" for a held withdrawal.
     pub kind: &'static str,
     pub reason: String,
-    /// Circle's message, which the store keeps only for a held withdrawal.
+    pub http_status: Option<u16>,
+    /// Circle's bounded, single-line message when the current hold has one.
     pub circle_message: Option<String>,
 }
 
@@ -60,10 +61,12 @@ impl fmt::Display for Hold {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             self.note_id,
             self.kind,
             self.reason,
+            self.http_status
+                .map_or_else(|| "-".into(), |status| status.to_string()),
             self.circle_message.as_deref().unwrap_or("-")
         )
     }
@@ -300,13 +303,11 @@ impl Store {
                 // request so the next cycle can prepare and sign again. An expired signed request
                 // cannot be reused.
                 record_event(&transaction, note_id, EventKind::OperatorRelease)?;
-                withdrawals += transaction
-                    .execute(
-                        "DELETE FROM submissions WHERE note_id = ?1 AND status = ?2
-                            AND hold_reason = ?3 AND withdrawal_id IS NULL",
-                        held,
-                    )
+                let deleted = transaction
+                    .execute("DELETE FROM submissions WHERE note_id = ?1", [&note])
                     .map_err(classify_error)?;
+                ensure!(deleted == 1, CONFLICT);
+                withdrawals += 1;
             } else {
                 bail!("burn {note_id} has no hold to release");
             }
@@ -320,8 +321,15 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT note_id, hold_reason FROM burns WHERE hold_reason IS NOT NULL
-                 ORDER BY note_id",
+                "SELECT burns.note_id, burns.hold_reason, held.status,
+                    held.http_status, held.response
+                 FROM burns
+                 LEFT JOIN submission_events AS held ON held.seq = (
+                    SELECT MAX(seq) FROM submission_events
+                    WHERE note_id = burns.note_id AND kind = 'BURN_HELD'
+                 )
+                 WHERE burns.hold_reason IS NOT NULL
+                 ORDER BY burns.note_id",
             )
             .map_err(classify_error)?;
         let mut rows = statement.query([]).map_err(classify_error)?;
@@ -329,11 +337,25 @@ impl Store {
         while let Some(row) = rows.next().map_err(classify_error)? {
             let reason =
                 BurnHoldReason::from_code(row.get(1).map_err(classify_error)?).context(INVALID)?;
+            let old_submission_snapshot = row
+                .get::<_, Option<String>>(2)
+                .map_err(classify_error)?
+                .is_some();
+            let (http_status, circle_message) = if old_submission_snapshot {
+                (None, None)
+            } else {
+                let response: Option<Vec<u8>> = row.get(4).map_err(classify_error)?;
+                (
+                    row.get(3).map_err(classify_error)?,
+                    response.as_deref().and_then(one_line_circle_message),
+                )
+            };
             holds.push(Hold {
                 note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
                 kind: "burn",
                 reason: format!("{reason:?}"),
-                circle_message: None,
+                http_status,
+                circle_message,
             });
         }
         for held in select_submissions(&self.connection, None, Some(SubmissionStatus::Held))? {
@@ -343,12 +365,11 @@ impl Store {
                 reason: held
                     .hold_reason
                     .map_or_else(|| "-".into(), |reason| format!("{reason:?}")),
-                // One line per hold, whatever spacing Circle's message has.
+                http_status: held.last_http_status,
                 circle_message: held
                     .last_response
                     .as_deref()
-                    .and_then(circle_message)
-                    .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" ")),
+                    .and_then(one_line_circle_message),
             });
         }
         Ok(holds)
@@ -558,6 +579,10 @@ impl Store {
 
         transaction.commit().map_err(classify_error)
     }
+}
+
+fn one_line_circle_message(response: &[u8]) -> Option<String> {
+    circle_message(response).map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Keeps the exclusive connection lock for the store's lifetime so a second process cannot create

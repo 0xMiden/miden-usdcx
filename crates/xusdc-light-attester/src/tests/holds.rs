@@ -244,8 +244,7 @@ async fn only_named_holds_are_released() {
     assert!(store.submission(withdrawal).unwrap().is_none());
 }
 
-/// Each hold is listed on one line with the note ID first: a held burn with its reason, and a held
-/// withdrawal with Circle's message on that line too.
+/// Each hold is listed on one line with the note ID first and only its current response evidence.
 #[tokio::test]
 async fn holds_are_listed() {
     let ledger = Ledger::new().await;
@@ -253,10 +252,24 @@ async fn holds_are_listed() {
         .start(vec![reply(400, json!({"message": "limit\n  reached"}))])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    let [withdrawal, burn] = [0, 1].map(|index| ledger.burns[index].burn.note_id());
+    let [withdrawal, current, unreadable] =
+        [0, 1, 2].map(|index| ledger.burns[index].burn.note_id());
+    let current_response = serde_json::to_vec(&json!({"message": "prepare\n  rejected"})).unwrap();
     attester
         .store
-        .hold_burn(burn, BurnHoldReason::PrepareRejected, None)
+        .hold_burn(
+            current,
+            BurnHoldReason::PrepareRejected,
+            Some((400, &current_response)),
+        )
+        .unwrap();
+    attester
+        .store
+        .hold_burn(
+            unreadable,
+            BurnHoldReason::PrepareRejected,
+            Some((400, b"not JSON")),
+        )
         .unwrap();
     let lines: Vec<_> = attester
         .store
@@ -265,12 +278,57 @@ async fn holds_are_listed() {
         .iter()
         .map(ToString::to_string)
         .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
+        format!("{unreadable}\tburn\tPrepareRejected\t400\t-"),
+    ];
+    burn_lines.sort();
     assert_eq!(
         lines,
-        [
-            format!("{burn}\tburn\tPrepareRejected\t-"),
-            format!("{withdrawal}\twithdrawal\tHttpRejected\tlimit reached"),
-        ]
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
+    );
+    drop(attester);
+
+    {
+        let connection = rusqlite::Connection::open(ledger.path()).unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE submission_events
+                 SET status = 'EXPIRED', http_status = 200, response = ?2
+                 WHERE note_id = ?1 AND kind = 'BURN_HELD'",
+                rusqlite::params![
+                    unreadable.to_bytes(),
+                    serde_json::to_vec(&json!({"message": "old withdrawal"})).unwrap()
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+    let store = ledger.open_store().unwrap();
+    let lines: Vec<_> = store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
+        format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
+    ];
+    burn_lines.sort();
+    assert_eq!(
+        lines,
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
     );
 }
 

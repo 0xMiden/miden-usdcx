@@ -280,10 +280,10 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    /// Releases the holds of the named burns in one transaction, and returns how many burns and
-    /// withdrawals it released. Each release is recorded in the burn's history first, so the
-    /// history keeps the hold's reason. A named burn without a hold fails the whole call, and
-    /// nothing is released.
+    /// Releases the named holds in one transaction, and returns how many burns and withdrawals it
+    /// released. Each release is recorded in the burn's history first, so the history keeps the
+    /// hold's reason. A note ID without a releasable hold fails the whole call, and nothing is
+    /// released.
     pub(crate) fn release_holds(&mut self, note_ids: &[NoteId]) -> anyhow::Result<(usize, usize)> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let (mut burns, mut withdrawals) = (0, 0);

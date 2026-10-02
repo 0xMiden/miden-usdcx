@@ -450,9 +450,8 @@ pub fn list_holds(
     open_existing(path, faucet_account_id, anchor_block, anchor_commitment)?.holds()
 }
 
-/// Releases the holds of the named burns in an existing store, and returns how many burns and
-/// withdrawals it released. Only the store is opened: no Miden node, Circle service or signer is
-/// contacted.
+/// Releases the named holds in an existing store, and returns how many burns and withdrawals it
+/// released. Only the store is opened: no Miden node, Circle service or signer is contacted.
 pub fn release_holds(
     path: &Path,
     faucet_account_id: AccountId,

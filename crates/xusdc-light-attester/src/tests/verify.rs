@@ -101,7 +101,7 @@ pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> Unverif
                 "destinationDomain": destination_domain,
                 "sourceContract": format!("0x{}", "11".repeat(32)),
                 "destinationContract": format!("0x{}", "22".repeat(32)),
-                "sourceToken": format!("0x{}", "33".repeat(32)),
+                "sourceToken": "0x0000000000000000000000003600000000000000000000000000000000000000",
                 "destinationToken": format!("0x{}", "44".repeat(32)),
                 "sourceDepositor": format!("0x{}", "55".repeat(32)),
                 "destinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -146,7 +146,7 @@ fn circle_response_matches_burns() {
     let salt = burn.note_id().to_hex();
     let config = config(None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let field_cases: [Case; 8] = [
+    let field_cases: [Case; 9] = [
         (
             "unknown salt",
             |b| b.burn_intents[0].spec.salt = ZERO_WORD.into(),
@@ -186,6 +186,11 @@ fn circle_response_matches_burns() {
             "signer differs from depositor",
             |b| b.burn_intents[0].spec.source_signer = ZERO_WORD.into(),
             WrongSigner,
+        ),
+        (
+            "source token is not USDC on Arc",
+            |b| b.burn_intents[0].spec.source_token = ZERO_WORD.into(),
+            WrongSourceToken,
         ),
     ];
     let refuse = |name: &str, batches, expected| {
@@ -395,7 +400,12 @@ fn forwarded_route_is_bound_to_the_burn() {
     }
 
     type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
-    let cases: [(&str, Edit, VerifyError); 19] = [
+    let cases: [(&str, Edit, VerifyError); 20] = [
+        (
+            "source token is not USDC on Arc",
+            |b, _| b.burn_intents[0].spec.source_token = ZERO_WORD.into(),
+            WrongSourceToken,
+        ),
         (
             "zero forwarding contract",
             |b, _| {

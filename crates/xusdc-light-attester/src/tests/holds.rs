@@ -356,7 +356,7 @@ async fn holds_are_listed() {
             .unwrap();
         assert_eq!(changed, 1);
     }
-    let store = ledger.open_store().unwrap();
+    let mut store = ledger.open_store().unwrap();
     let lines: Vec<_> = store
         .holds()
         .unwrap()
@@ -366,6 +366,31 @@ async fn holds_are_listed() {
     let mut burn_lines = [
         format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
         format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
+    ];
+    burn_lines.sort();
+    assert_eq!(
+        lines,
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(store.release_holds(&[unreadable]).unwrap(), (1, 0));
+    store
+        .hold_burn(unreadable, BurnHoldReason::TooSmallToForward, None)
+        .unwrap();
+    let lines: Vec<_> = store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
+        format!("{unreadable}\tburn\tTooSmallToForward\t-\t-"),
     ];
     burn_lines.sort();
     assert_eq!(

@@ -6,7 +6,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_standards::note::NetworkAccountTarget;
-use xusdc_encoding::note::xreserve_burn::{
+use miden_usdcx::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
 };
 

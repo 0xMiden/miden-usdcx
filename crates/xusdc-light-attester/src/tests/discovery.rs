@@ -87,7 +87,7 @@ async fn burns_are_discovered_safely() {
     let spoofed_tag = note(
         P2idNote::script(),
         NoteType::Public,
-        xusdc_encoding::note::xreserve_burn::FIXED_XUSDC_BURN_TAG,
+        miden_usdcx::note::xreserve_burn::FIXED_XUSDC_BURN_TAG,
         5,
     );
     let wrong_target = {

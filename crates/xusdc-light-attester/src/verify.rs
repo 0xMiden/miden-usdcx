@@ -4,10 +4,10 @@ use alloy_primitives::{address, keccak256, Address, Bytes, Signature, B256, U256
 use alloy_sol_types::{eip712_domain, SolCall, SolStruct};
 use miden_protocol::note::NoteId;
 use miden_standards::interop::eth::EthEmbeddedAccountId;
+use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
-use miden_usdcx::xreserve::encoding::CircleDomain;
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};

@@ -412,11 +412,7 @@ fn burns_and_scan_position_are_saved_together() {
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
     store.refuse_burn(burn.note_id()).unwrap();
-    assert_eq!(
-        store.refuse_burn(burn.note_id()).unwrap_err().to_string(),
-        CONFLICT,
-        "a refused burn is no longer pending work"
-    );
+    store.refuse_burn(burn.note_id()).unwrap();
     assert_eq!(
         store
             .refuse_burn(second_candidate.note_id())

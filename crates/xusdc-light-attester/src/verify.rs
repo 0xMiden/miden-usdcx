@@ -93,6 +93,8 @@ pub enum VerifyError {
     FeeTooHigh,
     #[error("Circle's source signer and depositor differ")]
     WrongSigner,
+    #[error("Circle's source token is not USDC on Arc")]
+    WrongSourceToken,
     #[error("Circle restricted the destination caller")]
     CallerRestricted,
     #[error("Circle's forwarded route has a wrong {0}")]
@@ -292,6 +294,11 @@ impl UnverifiedPrepareResponse {
         }
         if spec.sourceSigner != spec.sourceDepositor {
             return Err(VerifyError::WrongSigner);
+        }
+        // Every withdrawal takes USDC out of Circle's wallet on Arc, and the wallet takes out
+        // whichever token this field names, so it must be USDC on Arc.
+        if spec.sourceToken != ARC_USDC.into_word() {
+            return Err(VerifyError::WrongSourceToken);
         }
 
         // Circle sends the encoded bytes and the hash to sign; we rebuild both from the checked

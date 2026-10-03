@@ -24,7 +24,7 @@ async fn pending_pair() -> (Ledger, [usize; 2]) {
     let ledger = Ledger::new().await;
     let mut indices = [0, 1];
     // SQLite orders the serialized note-ID BLOB, not the fixture's insertion order.
-    indices.sort_by_key(|&i| ledger.burns[i].burn.note_id().to_bytes());
+    indices.sort_by_key(|&i| ledger.burns[i].note_id().to_bytes());
     submitted(&ledger, &indices).await;
     (ledger, indices)
 }

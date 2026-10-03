@@ -14,15 +14,14 @@ use miden_usdcx::xreserve::encoding::XReserveBurnItems;
 #[error("note is not a consumable xUSDC burn: {0}")]
 pub(crate) struct InvalidBurnCandidate(&'static str);
 
-/// A public note whose structure allows the configured faucet to consume it as an xUSDC burn.
-///
-/// The Circle payload is deliberately not checked here. It does not participate in on-chain
-/// consumption, so a note with an invalid payload may still destroy xUSDC and must remain
-/// discoverable for the later durable-refusal gate.
+/// A public note whose structure and withdrawal payload allow the configured faucet to consume it
+/// as an xUSDC burn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BurnCandidate {
     note: PublicOutputNote,
     creation_block: BlockNumber,
+    items: XReserveBurnItems,
+    amount: u64,
 }
 
 impl BurnCandidate {
@@ -52,13 +51,12 @@ impl BurnCandidate {
             .ok_or(InvalidBurnCandidate("withdrawal attachment is missing"))?;
         let target = NetworkAccountTarget::try_from(routing)
             .map_err(|_| InvalidBurnCandidate("routing attachment is malformed"))?;
-        if target.target_id() != faucet_account_id
-            || usize::from(withdrawal.num_words()) != XUsdcBurnAttachment::NUM_WORDS
-        {
-            return Err(InvalidBurnCandidate(
-                "routing target is not the faucet or the withdrawal attachment has the wrong size",
-            ));
+        if target.target_id() != faucet_account_id {
+            return Err(InvalidBurnCandidate("routing target is not the faucet"));
         }
+        let items = XUsdcBurnAttachment::try_from(withdrawal)
+            .map_err(|_| InvalidBurnCandidate("withdrawal attachment is malformed"))?
+            .into_items();
 
         let [asset] = burn.assets().as_slice() else {
             return Err(InvalidBurnCandidate("expected exactly one asset"));
@@ -71,10 +69,13 @@ impl BurnCandidate {
                 "asset or storage is not one fungible amount of the faucet's token",
             ));
         }
+        let amount = u64::from(asset.unwrap_fungible().amount());
 
         Ok(Self {
             note,
             creation_block,
+            items,
+            amount,
         })
     }
 
@@ -104,6 +105,8 @@ impl BurnCandidate {
             creation_block: self.creation_block,
             consumption_block,
             burn_tx_id,
+            items: self.items,
+            amount: self.amount,
         }
     }
 }
@@ -115,6 +118,8 @@ pub(crate) struct DiscoveredBurn {
     creation_block: BlockNumber,
     consumption_block: BlockNumber,
     burn_tx_id: TransactionId,
+    items: XReserveBurnItems,
+    amount: u64,
 }
 
 impl DiscoveredBurn {
@@ -152,34 +157,14 @@ impl DiscoveredBurn {
     pub(crate) fn nullifier(&self) -> Nullifier {
         self.note.as_note().nullifier()
     }
-}
 
-/// A consumed burn whose Circle withdrawal fields decoded successfully.
-///
-/// This local validation is not permission to sign.
-#[allow(dead_code)]
-#[derive(Debug)]
-pub(crate) struct ValidatedBurn {
-    pub(crate) burn: DiscoveredBurn,
-    pub(crate) items: XReserveBurnItems,
-    pub(crate) amount: u64,
-}
+    #[cfg(test)]
+    pub(crate) fn items(&self) -> &XReserveBurnItems {
+        &self.items
+    }
 
-/// Decodes the burn's Circle withdrawal fields. `None` means the payload does not decode, so the
-/// burn can never become a withdrawal.
-pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Option<ValidatedBurn> {
-    let note = burn.note().as_note();
-    let withdrawal = note.attachments().iter().find(|attachment| {
-        attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
-    })?;
-    let items = XUsdcBurnAttachment::try_from(withdrawal).ok()?.into_items();
-    // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
-    // of the faucet.
-    let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());
-
-    Some(ValidatedBurn {
-        burn,
-        items,
-        amount,
-    })
+    #[cfg(test)]
+    pub(crate) fn amount(&self) -> u64 {
+        self.amount
+    }
 }

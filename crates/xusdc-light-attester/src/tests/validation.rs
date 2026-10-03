@@ -12,19 +12,16 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1, ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
 };
 use miden_protocol::transaction::{OutputNote, RawOutputNote};
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 use miden_usdcx::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, FIXED_XUSDC_BURN_TAG,
-    XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
 use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 
-use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn};
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 
-use super::discovery::start;
-use super::support::{faucet_account_id, scan_limits, transaction, word, BlockFactory};
+use super::support::{faucet_account_id, transaction, word};
 
 fn sender() -> AccountId {
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1.try_into().unwrap()
@@ -116,25 +113,25 @@ fn discovered(note: Note) -> DiscoveredBurn {
         .into_discovered(BlockNumber::from(2u32), burn_tx_id)
 }
 
-/// Accepts valid request formats, refuses a burn whose withdrawal payload does not decode, and
-/// processes only ready rows. Refusal writes must preserve pending work when the database cannot
-/// save them.
+/// Accepts valid request formats and rejects malformed withdrawal payloads before persistence.
 #[tokio::test]
 async fn burn_notes_are_validated() {
     check_note_content_cases();
-    ready_burns_are_processed(false).await;
-    ready_burns_are_processed(true).await;
 }
 
 fn check_note_content_cases() {
     #[derive(Clone, Copy)]
     enum Expected {
         CandidateRejected,
-        Refused,
         Accepted,
     }
 
-    use Expected::{Accepted, CandidateRejected, Refused};
+    use Expected::{Accepted, CandidateRejected};
+    let unknown_hint = NoteExecutionHint::Unknown(Felt::new(123).unwrap());
+    let unknown_attachment = routing(faucet_account_id(), unknown_hint);
+    let decoded = NetworkAccountTarget::try_from(&unknown_attachment).unwrap();
+    assert_eq!(NoteAttachment::from(decoded), unknown_attachment);
+
     type Case = (&'static str, fn(&mut NoteFixture), Expected);
     let cases: &[Case] = &[
         ("hand-built valid note", |_| {}, Accepted),
@@ -145,7 +142,12 @@ fn check_note_content_cases() {
         ),
         (
             "unknown execution time",
-            |n| n.attachments[0] = routing(faucet_account_id(), NoteExecutionHint::None),
+            |n| {
+                n.attachments[0] = routing(
+                    faucet_account_id(),
+                    NoteExecutionHint::Unknown(Felt::new(123).unwrap()),
+                )
+            },
             Accepted,
         ),
         (
@@ -174,15 +176,19 @@ fn check_note_content_cases() {
             Accepted,
         ),
         (
-            "withdrawal padding is ignored",
-            |n| {
-                n.edit_attachment(1, |w| {
-                    w[2][1] = Felt::ONE;
-                    w[2][2] = Felt::ONE;
-                    w[2][3] = Felt::ONE;
-                })
-            },
-            Accepted,
+            "first domain padding value is nonzero",
+            |n| n.edit_attachment(1, |w| w[0][1] = Felt::ONE),
+            CandidateRejected,
+        ),
+        (
+            "second domain padding value is nonzero",
+            |n| n.edit_attachment(1, |w| w[0][2] = Felt::ONE),
+            CandidateRejected,
+        ),
+        (
+            "third domain padding value is nonzero",
+            |n| n.edit_attachment(1, |w| w[0][3] = Felt::ONE),
+            CandidateRejected,
         ),
         (
             "other destination",
@@ -318,15 +324,20 @@ fn check_note_content_cases() {
             "long withdrawal",
             |n| {
                 n.edit_attachment(1, |w| {
-                    w.resize(XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS + 1, Word::empty())
+                    w.resize(XUsdcBurnAttachment::NUM_WORDS + 1, Word::empty())
                 })
             },
             CandidateRejected,
         ),
         (
-            "withdrawal cannot decode",
+            "destination domain is not u32",
             |n| n.edit_attachment(1, |w| w[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
-            Refused,
+            CandidateRejected,
+        ),
+        (
+            "destination recipient limb is not u32",
+            |n| n.edit_attachment(1, |w| w[1][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()),
+            CandidateRejected,
         ),
     ];
 
@@ -368,148 +379,26 @@ fn check_note_content_cases() {
         &mut RandomCoin::new(word(8)),
     )
     .unwrap();
-    let validated = validate_burn(discovered(factory_note)).unwrap();
+    let discovered = discovered(factory_note);
     assert_eq!(
-        (validated.items, validated.amount),
-        (items(), 100),
+        (discovered.items(), discovered.amount()),
+        (&items(), 100),
         "real xUSDC note factory"
     );
     for (name, candidate, burn_tx_id, expected, accepted) in cases {
         match expected {
             CandidateRejected => assert!(candidate.is_err(), "{name}"),
-            Refused => {
-                let burn = candidate
-                    .expect(name)
-                    .into_discovered(BlockNumber::from(2u32), burn_tx_id);
-                assert!(validate_burn(burn).is_none(), "{name}");
-            }
             Accepted => {
                 let burn = candidate
                     .expect(name)
                     .into_discovered(BlockNumber::from(2u32), burn_tx_id);
-                let burn = validate_burn(burn).expect(name);
-                assert_eq!((burn.items, burn.amount), accepted.unwrap(), "{name}");
+                let (expected_items, expected_amount) = accepted.unwrap();
+                assert_eq!(
+                    (burn.items(), burn.amount()),
+                    (&expected_items, expected_amount),
+                    "{name}"
+                );
             }
         }
-    }
-}
-
-async fn ready_burns_are_processed(fail_refusal_write: bool) {
-    let good = discovered(NoteFixture::new().note(20));
-    let mut invalid = NoteFixture::new();
-    invalid.edit_attachment(1, |words| {
-        words[0][0] = Felt::new(u64::from(u32::MAX) + 1).unwrap()
-    });
-    let invalid = discovered(invalid.note(21));
-    let young = discovered(NoteFixture::new().note(22));
-    let mut factory = BlockFactory::new();
-    factory.push(Vec::new(), Vec::new());
-    factory.push(
-        vec![
-            OutputNote::Public(invalid.note().clone()),
-            OutputNote::Public(good.note().clone()),
-            OutputNote::Public(young.note().clone()),
-        ],
-        Vec::new(),
-    );
-    let consuming_tx = transaction(
-        faucet_account_id(),
-        &[invalid.nullifier(), good.nullifier()],
-    );
-    let expected_good = DiscoveredBurn::new(
-        good.note().clone(),
-        good.creation_block(),
-        good.consumption_block(),
-        consuming_tx.id(),
-        faucet_account_id(),
-    )
-    .unwrap();
-    factory.push(Vec::new(), vec![consuming_tx]);
-    factory.push(
-        Vec::new(),
-        vec![transaction(faucet_account_id(), &[young.nullifier()])],
-    );
-
-    let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(3, 3)).await;
-    attester.discover_burns().await.unwrap();
-    let checkpoint = attester.store.scan_state().unwrap();
-    drop(attester);
-    let store_path = tempdir.path().join("state.sqlite3");
-    if fail_refusal_write {
-        rusqlite::Connection::open(&store_path)
-            .unwrap()
-            .execute_batch(
-                "CREATE TRIGGER fail_refusal BEFORE UPDATE OF status ON burns
-             WHEN NEW.status = 'REFUSED'
-             BEGIN SELECT RAISE(FAIL, 'injected refusal write failure'); END;",
-            )
-            .unwrap();
-    }
-    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(3, 3)).await;
-    assert!(attester
-        .validate_ready_burns(BlockNumber::from(1u32))
-        .unwrap()
-        .is_empty());
-    let still_pending = attester
-        .store
-        .burns_ready_for_withdrawal(BlockNumber::from(3u32), 1)
-        .unwrap();
-    assert_eq!(still_pending.len(), 2);
-    for burn in [&good, &invalid] {
-        assert!(
-            still_pending
-                .iter()
-                .any(|saved| saved.note_id() == burn.note_id()),
-            "low proof-lag height must leave both burns pending"
-        );
-    }
-    let result = attester.validate_ready_burns(BlockNumber::from(3u32));
-    if fail_refusal_write {
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "attester store query failed"
-        );
-    } else {
-        let validated = result.unwrap();
-        assert_eq!(validated.len(), 1);
-        assert_eq!(validated[0].burn, expected_good);
-        assert_eq!(validated[0].items, items());
-        assert_eq!(validated[0].amount, 100);
-    }
-    assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
-    assert_eq!(
-        *controls.scan_limit_requests.lock().unwrap(),
-        0,
-        "local validation does not call the RPC"
-    );
-    assert_eq!(
-        *controls.requests.lock().unwrap(),
-        [BlockNumber::GENESIS],
-        "only startup fetches a block"
-    );
-    drop(attester);
-
-    let connection = rusqlite::Connection::open(&store_path).unwrap();
-    for (burn, expected_status) in [
-        (&good, "DISCOVERED"),
-        (&young, "DISCOVERED"),
-        (
-            &invalid,
-            if fail_refusal_write {
-                "DISCOVERED"
-            } else {
-                "REFUSED"
-            },
-        ),
-    ] {
-        let status: String = connection
-            .query_row(
-                "SELECT status FROM burns WHERE note_id = ?1",
-                [burn.note_id().to_bytes()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, expected_status);
     }
 }

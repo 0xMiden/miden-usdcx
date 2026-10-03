@@ -17,7 +17,6 @@ use rusqlite::{params, Params, Transaction};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 
 const DISCOVERED: &str = "DISCOVERED";
-const REFUSED: &str = "REFUSED";
 
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
@@ -136,26 +135,9 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    /// Records a burn whose withdrawal payload does not decode, without changing its evidence or
-    /// scan progress.
-    #[allow(dead_code)]
-    pub(crate) fn refuse_burn(&mut self, note_id: NoteId) -> anyhow::Result<()> {
-        let updated = self
-            .connection
-            .execute(
-                "UPDATE burns SET status = ?1
-             WHERE note_id = ?2",
-                params![REFUSED, note_id.to_bytes()],
-            )
-            .map_err(classify_error)?;
-        (updated == 1)
-            .then_some(())
-            .ok_or_else(|| anyhow!(CONFLICT))
-    }
-
     #[cfg(test)]
     pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
-        load_burns(&self.connection, self.faucet_account_id, true)
+        load_burns(&self.connection, self.faucet_account_id)
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
@@ -174,7 +156,7 @@ impl Store {
         };
         // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
         let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
-        Ok(load_burns(&self.connection, self.faucet_account_id, false)?
+        Ok(load_burns(&self.connection, self.faucet_account_id)?
             .into_iter()
             .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
@@ -346,6 +328,8 @@ fn validate_store(
         bail!(INVALID);
     }
     let state = load_scan_state(connection, initial_cursor)?;
+    load_candidates(connection, faucet_account_id, "", [])?;
+    load_burns(connection, faucet_account_id)?;
     if state
         .authenticated_parent
         .as_ref()
@@ -475,17 +459,16 @@ fn load_candidates<P: Params>(
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
-    include_refused: bool,
 ) -> anyhow::Result<Vec<DiscoveredBurn>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
-             WHERE status != 'CANDIDATE' AND (?1 OR status != 'REFUSED')",
+             WHERE status = 'DISCOVERED'",
         )
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([include_refused], |row| {
+        .query_map([], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

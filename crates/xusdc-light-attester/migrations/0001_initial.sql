@@ -18,7 +18,7 @@ CREATE TABLE burns (
     consumption_block INTEGER
         CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
     burn_tx_id BLOB,
-    status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
+    status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED')),
     CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
     CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
 ) STRICT;

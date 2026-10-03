@@ -7,7 +7,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use tokio_util::sync::CancellationToken;
 
-use crate::burn::{validate_burn, BurnCandidate, DiscoveredBurn, ValidatedBurn};
+use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
 use crate::circle::CircleApi;
 use crate::config::Config;
@@ -273,33 +273,15 @@ impl Attester {
         Ok(block)
     }
 
-    /// Validates the burns that reached the configured waiting depth. A burn whose withdrawal
-    /// payload does not decode is marked refused in the store, for good, so it is never loaded
-    /// again; the rest are returned for submission.
-    pub(crate) fn validate_ready_burns(
-        &mut self,
+    /// Loads the discovered burns that reached the configured waiting depth.
+    pub(crate) fn ready_burns(
+        &self,
         proof_lag_block: BlockNumber,
-    ) -> anyhow::Result<Vec<ValidatedBurn>> {
-        let burns = self.store.burns_ready_for_withdrawal(
+    ) -> anyhow::Result<Vec<DiscoveredBurn>> {
+        self.store.burns_ready_for_withdrawal(
             proof_lag_block,
             self.config.minimum_finality_depth_blocks(),
-        )?;
-        let mut validated = Vec::new();
-        for burn in burns {
-            let note_id = burn.note_id();
-            let burn_tx_id = burn.burn_tx_id();
-            match validate_burn(burn) {
-                Some(burn) => validated.push(burn),
-                None => {
-                    self.store.refuse_burn(note_id)?;
-                    eprintln!(
-                        "refused burn: withdrawal payload does not decode: note={} transaction={}",
-                        note_id, burn_tx_id
-                    );
-                }
-            }
-        }
-        Ok(validated)
+        )
     }
 
     async fn submit_withdrawals(&mut self) -> Result<(), SubmitError> {

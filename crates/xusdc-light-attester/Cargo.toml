@@ -17,9 +17,11 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-util = "0.7"
 toml = "1"
 
 [dev-dependencies]
 hex = { workspace = true }
+miden-protocol = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

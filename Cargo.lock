@@ -2592,9 +2592,9 @@ dependencies = [
 
 [[package]]
 name = "miden-agglayer"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cb620dcba6371a17c32a1bc89c1fec1f00a6a48b247cbbc8fae36f66313b31c"
+checksum = "cdf39a50610f629fabb46dc86d168b3fc79994d8626f1bf70559b875f6ce9cfb"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2680,9 +2680,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.17.0-rc.5"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d4f4eb0b90aa9805d8b0f0e38b123c4b05707ea9fc88f996ea7a800de11393"
+checksum = "0eb60ffa02829dd9372181c825e9624ffbe7970fcb9d7d50e9c5c7e307322471"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2703,6 +2703,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand 0.10.3",
+ "rand_chacha 0.10.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -2717,10 +2718,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "miden-client-sqlite-store"
-version = "0.17.0-rc.5"
+name = "miden-client-proto"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d6b47da9a7479a1124c154d982b42482e2090aacb9c8edae5c52995d7154ddb"
+checksum = "f87b6c9908e43268cdd004c27776f1b21f41737611764db8ff406c56e069c2cc"
+dependencies = [
+ "miden-client",
+ "miden-objects",
+ "miden-protocol",
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-client-sqlite-store"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b8726158af8223c3bfe277bc1f55da91731ad10ea0b9b2f0cfd17570fff86"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2728,11 +2744,8 @@ dependencies = [
  "deadpool",
  "deadpool-sync",
  "miden-client",
- "miden-objects",
+ "miden-client-proto",
  "miden-protocol",
- "prost",
- "prost-build",
- "protox",
  "rusqlite",
  "rusqlite_migration",
  "thiserror",
@@ -2995,9 +3008,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.17.0-rc.4"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624b78d416a8c9a4769a2354d48e6cd44c6cae2c5fce12518fcfb7439e7c2b66"
+checksum = "dff2108180c527d2257bbf75601c8753d9b35ee06238e8ff7048d9d8dc2fc06e"
 dependencies = [
  "build-rs",
  "codegen",
@@ -3010,9 +3023,9 @@ dependencies = [
 
 [[package]]
 name = "miden-objects"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08681051b8b99dc1bc1bcfd858b3ec4711977c1b77a2a9ce3abbb8e3e760882e"
+checksum = "2a6c7e22f10c86e499b8ead031da5b89a2e61bd8fbc7886e8d4bf604d9b1fb00"
 dependencies = [
  "miden-protobuf",
  "miden-protocol",
@@ -3172,9 +3185,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525a43808effad4b97de2db6d11efc1898a5762a0181a2a21baa4e7c02370c0f"
+checksum = "8d9e8eb8b0ff7edebbbd5ef959c0cf624f0e8f5033c45151856e728debe04d83"
 dependencies = [
  "bech32",
  "fs-err",
@@ -3258,9 +3271,9 @@ dependencies = [
 
 [[package]]
 name = "miden-standards"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aed63e23f66c9d8b0566fb2184d7406b70a76ed12290dc9602257a0f4a17bbd"
+checksum = "4a19f9779d0e098792030e854a6d59a204138212a09533d7403f520399a77061"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -3296,9 +3309,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b145fea6d29393409415f35d180160eadfa383a12662f46032d3f23d6d7f230b"
+checksum = "005ab35f7e2a1feba8688fc3aff4f7c1d92b38b857792a348cb03d91f143b82a"
 dependencies = [
  "bon",
  "miden-agglayer",
@@ -3311,9 +3324,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx-batch"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cba49856a5e0a346c0f8b9496c965e6e6362f1e96f66060c5f588ca69795b4f"
+checksum = "42ea80d20c8871ab685fdbde61aac3454b029457604a0758a358a350ad519e7b"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -3324,9 +3337,9 @@ dependencies = [
 
 [[package]]
 name = "miden-usdcx"
-version = "0.17.0-rc.9"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e9099c3a07f7cf2710380fada611717883f8917b254122f86f79d19a6b8374"
+checksum = "4364373e35ffb29832743ef5cc34ff6323a3aa6a620359ed04bfa65a2b001059"
 dependencies = [
  "bon",
  "miden-assembly",

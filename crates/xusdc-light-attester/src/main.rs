@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use miden_protocol::block::BlockNumber;
 use tokio_util::sync::CancellationToken;
@@ -10,9 +10,9 @@ use xusdc_attester::chain::MidenChainReader;
 use xusdc_attester::circle::CircleClient;
 use xusdc_attester::config::{
     parse_faucet_account_id, parse_note_ids, parse_trusted_anchor_commitment, Command, Config,
-    Invocation,
+    Invocation, SignerConfig,
 };
-use xusdc_attester::signer::{DevelopmentSigner, Signer, SignerPair};
+use xusdc_attester::signer::{KmsSigner, Signer, SignerPair};
 use xusdc_attester::Attester;
 
 #[tokio::main(flavor = "current_thread")]
@@ -62,7 +62,19 @@ async fn main() -> Result<()> {
         .context("invalid configuration")?;
     let (circle, circle_worker) =
         CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
-    let signers = development_signers().context("failed to initialize development signers")?;
+    let SignerConfig::AwsKms {
+        region,
+        key_arns,
+        operation_timeout,
+    } = config.signer();
+    let client = KmsSigner::client(region, *operation_timeout).await;
+    let first = KmsSigner::connect(client.clone(), &key_arns[0])
+        .await
+        .context("failed to initialize first AWS KMS signer")?;
+    let second = KmsSigner::connect(client, &key_arns[1])
+        .await
+        .context("failed to initialize second AWS KMS signer")?;
+    let signers: [Box<dyn Signer>; 2] = [Box::new(first), Box::new(second)];
     let signers = SignerPair::new(signers)
         .await
         .context("failed to initialize the signer pair")?;
@@ -90,7 +102,7 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    warn!(%miden_rpc_url, "attester started with development signers");
+    warn!(%miden_rpc_url, "attester started");
     let result = attester.run(shutdown).await;
     signal_task.abort();
     // Dropping the attester closes the request queue; the worker then finishes any request in
@@ -108,18 +120,4 @@ fn init_tracing() {
         .with_env_filter(filter)
         .with_writer(std::io::stdout)
         .init();
-}
-
-fn development_signers() -> Result<[Box<dyn Signer>; 2]> {
-    // Replace only this construction with the two independent KMS providers for deployment.
-    // Never include environment values or private-key bytes in an error.
-    let load = |name: &str| {
-        let value = std::env::var(name).map_err(|_| anyhow!("missing signing key: {name}"))?;
-        DevelopmentSigner::from_hex(&value)
-            .with_context(|| format!("{name} is not a valid signing key"))
-    };
-    Ok([
-        Box::new(load("XUSDC_ATTESTER_SIGNING_KEY_1_HEX")?),
-        Box::new(load("XUSDC_ATTESTER_SIGNING_KEY_2_HEX")?),
-    ])
 }

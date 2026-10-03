@@ -24,6 +24,10 @@ const SIGNING_KEY_ONE: &str =
     "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const SIGNING_KEY_TWO: &str =
     "0x02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+const KMS_KEY_ONE: &str =
+    "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
+const KMS_KEY_TWO: &str =
+    "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
 const STORE_FILE: &str = "state/checkpoints/withdrawal-cursor.sqlite3";
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(275);
 
@@ -38,6 +42,15 @@ impl TestArgs {
         Self {
             args: [
                 "xusdc-attester".into(),
+                "--signer-provider".into(),
+                "aws-kms".into(),
+                "--aws-kms-region".into(),
+                "eu-north-1".into(),
+                "--aws-kms-key-arn".into(),
+                KMS_KEY_ONE.into(),
+                KMS_KEY_TWO.into(),
+                "--aws-kms-operation-timeout".into(),
+                "10s".into(),
                 "--miden-rpc-url".into(),
                 "https://rpc.devnet.miden.io".into(),
                 "--circle-url".into(),
@@ -86,15 +99,24 @@ impl TestArgs {
         self.args[position + 1] = value.into();
     }
 
+    /// Removes every occurrence of `flag` with all of its values.
     pub(super) fn remove(&mut self, flag: &str) {
         while let Some(position) = self.args.iter().position(|argument| argument == flag) {
-            self.args.drain(position..=position + 1);
+            let values = self.args[position + 1..]
+                .iter()
+                .take_while(|argument| !argument.to_string_lossy().starts_with("--"))
+                .count();
+            self.args.drain(position..=position + values);
         }
     }
 
     pub(super) fn append(&mut self, flag: &str, value: impl Into<OsString>) {
+        self.append_values(flag, &[value.into()]);
+    }
+
+    pub(super) fn append_values(&mut self, flag: &str, values: &[OsString]) {
         self.args.push(flag.into());
-        self.args.push(value.into());
+        self.args.extend_from_slice(values);
     }
 
     pub(super) fn switch(&mut self, flag: &str) {

@@ -23,6 +23,18 @@ use crate::verify::validate_saved_request;
 const DISCOVERED: &str = "DISCOVERED";
 const REFUSED: &str = "REFUSED";
 
+/// Why a burn waits for an operator. The store keeps each reason as its fixed number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BurnHoldReason {
+    PrepareRejected = 1,
+}
+
+impl BurnHoldReason {
+    pub(crate) fn code(self) -> i64 {
+        self as i64
+    }
+}
+
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
 const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
@@ -32,7 +44,7 @@ pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
 /// Why a store this attester cannot bring to [`STORE_VERSION`] is refused. It is left as it was.
 pub(crate) const CANNOT_UPGRADE: &str = "attester store cannot be upgraded; start a new store";
 
-/// What one row of a burn's submission history records. Each kind is stored under its name.
+/// What one row of a burn's history records. Each kind is stored under its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr)]
 enum EventKind {
     /// A newly signed request, saved before it is sent.
@@ -44,6 +56,19 @@ enum EventKind {
     /// An operator queued a held request to be sent again.
     #[strum(serialize = "OPERATOR_RETRY")]
     OperatorRetry,
+    /// Circle refused to prepare the burn, which now waits for an operator.
+    #[strum(serialize = "BURN_HELD")]
+    BurnHeld,
+    /// An operator released the burn's hold; the row keeps the hold's reason.
+    #[strum(serialize = "BURN_RELEASED")]
+    BurnReleased,
+}
+
+impl EventKind {
+    /// Whether the row keeps the signed request itself: only a new authorization does.
+    fn keeps_request(self) -> bool {
+        matches!(self, Self::Authorized)
+    }
 }
 
 pub(crate) const INVALID: &str = "attester store is invalid";
@@ -184,7 +209,59 @@ impl Store {
             )
             .map_err(classify_write_error)?;
         ensure!(written == 1, CONFLICT);
-        record_submission(&transaction, record.note_id, EventKind::Authorized)?;
+        record_event(&transaction, record.note_id, EventKind::Authorized)?;
+        transaction.commit().map_err(classify_error)
+    }
+
+    pub(crate) fn hold_burn(
+        &mut self,
+        note_id: NoteId,
+        reason: BurnHoldReason,
+        response: Option<(u16, &[u8])>,
+    ) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let updated = transaction
+            .execute(
+                "UPDATE burns SET hold_reason = ?2
+                 WHERE note_id = ?1",
+                params![note_id.to_bytes(), reason.code()],
+            )
+            .map_err(classify_error)?;
+        ensure!(updated == 1, CONFLICT);
+        let (http_status, response) = match response {
+            Some((status, body)) => (Some(status), Some(body)),
+            None => (None, None),
+        };
+        let recorded = transaction
+            .execute(
+                "INSERT INTO submission_events (
+                    note_id, recorded_at, kind, http_status, response, burn_hold_reason
+                 ) VALUES (?1, unixepoch(), ?2, ?3, ?4, ?5)",
+                params![
+                    note_id.to_bytes(),
+                    EventKind::BurnHeld.as_ref(),
+                    http_status,
+                    response,
+                    reason.code()
+                ],
+            )
+            .map_err(classify_error)?;
+        ensure!(recorded == 1, CONFLICT);
+        transaction.commit().map_err(classify_error)
+    }
+
+    pub(crate) fn release_burn_hold(&mut self, note_id: NoteId) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        // Recorded before the hold is cleared, so the history keeps its reason.
+        record_event(&transaction, note_id, EventKind::BurnReleased)?;
+        let updated = transaction
+            .execute(
+                "UPDATE burns SET hold_reason = NULL
+                 WHERE note_id = ?1 AND hold_reason IS NOT NULL",
+                [note_id.to_bytes()],
+            )
+            .map_err(classify_error)?;
+        ensure!(updated == 1, CONFLICT);
         transaction.commit().map_err(classify_error)
     }
 
@@ -230,7 +307,7 @@ impl Store {
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
         if !repeats_latest_outcome(&transaction, outcome)? {
-            record_submission(&transaction, outcome.note_id, EventKind::Outcome)?;
+            record_event(&transaction, outcome.note_id, EventKind::Outcome)?;
         }
         transaction.commit().map_err(classify_error)
     }
@@ -253,7 +330,7 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        record_submission(&transaction, note_id, EventKind::OperatorRetry)?;
+        record_event(&transaction, note_id, EventKind::OperatorRetry)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -407,10 +484,10 @@ fn upgrade(connection: &rusqlite::Connection, version: u32) -> anyhow::Result<()
     set_version(connection)
 }
 
-/// Appends one burn's submission, as it now stands, to the burn's history. Only a new
-/// authorization keeps the request itself. History belongs to the burn, which is never deleted; the
-/// history table's foreign key refuses a row for a burn the store does not know.
-fn record_submission(
+/// Appends one row to a burn's history, recording the burn as it now stands: its hold and, when it
+/// has one, its submission; only some kinds keep the request.
+/// History belongs to the burn, which is never deleted, so the burn must be one the store knows.
+fn record_event(
     connection: &rusqlite::Connection,
     note_id: NoteId,
     kind: EventKind,
@@ -419,18 +496,16 @@ fn record_submission(
         .execute(
             "INSERT INTO submission_events (
                 note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
-                http_status, response, error, endpoint, hold_reason
+                http_status, response, error, endpoint, hold_reason, burn_hold_reason
              )
-             SELECT note_id, unixepoch(), ?2, status, withdrawal_id, iif(?3, body, NULL),
-                transfer_spec_hash, last_http_status, last_response, last_error,
-                iif(?3, endpoint, NULL), hold_reason
-             FROM submissions
-             WHERE note_id = ?1",
-            params![
-                note_id.to_bytes(),
-                kind.as_ref(),
-                kind == EventKind::Authorized
-            ],
+             SELECT burns.note_id, unixepoch(), ?2, submissions.status,
+                submissions.withdrawal_id, iif(?3, submissions.body, NULL),
+                submissions.transfer_spec_hash, submissions.last_http_status,
+                submissions.last_response, submissions.last_error,
+                iif(?3, submissions.endpoint, NULL), submissions.hold_reason, burns.hold_reason
+             FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
+             WHERE burns.note_id = ?1",
+            params![note_id.to_bytes(), kind.as_ref(), kind.keeps_request()],
         )
         .map_err(classify_error)?;
     ensure!(recorded == 1, CONFLICT);
@@ -556,8 +631,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
-            FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
+            hold_reason FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status,
             withdrawal_id, hold_reason, last_http_status, last_response, last_error
             FROM submissions LIMIT 0",
@@ -784,10 +859,13 @@ fn load_burns(
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
-             WHERE status != 'CANDIDATE' AND (?1 OR (status != 'REFUSED' AND NOT EXISTS (
-                  SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
-                     AND submissions.status != ?2
-             )))",
+             WHERE status != 'CANDIDATE' AND (?1 OR (
+                 status != 'REFUSED' AND hold_reason IS NULL AND NOT EXISTS (
+                     SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+                        AND submissions.status != ?2
+                 )
+             ))
+             ORDER BY creation_block, note_id",
         )
         .map_err(classify_error)?;
     let expired = SubmissionStatus::Expired.as_ref();

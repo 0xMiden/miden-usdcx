@@ -760,9 +760,9 @@ async fn retried_request_records_the_same_answer_again() {
     );
 }
 
-/// A history row belongs to a burn the store knows: the history table's foreign key refuses a row
-/// for a burn that is gone, so a change to its request is refused and the request is left as it
-/// was.
+/// A history row belongs to a burn the store knows. It is written from the burn's row, so a change
+/// to a request whose burn is gone writes no history row and is refused, and the request is left
+/// as it was.
 #[tokio::test]
 async fn history_needs_a_known_burn() {
     let ledger = Ledger::new().await;
@@ -791,11 +791,7 @@ async fn history_needs_a_known_burn() {
         .store
         .retry_held_submission(ledger.burns[0].burn.note_id())
         .unwrap_err();
-    assert_eq!(error.to_string(), "attester store query failed");
-    assert_eq!(
-        error.chain().nth(1).unwrap().to_string(),
-        "FOREIGN KEY constraint failed"
-    );
+    assert_eq!(error.to_string(), CONFLICT);
     assert_eq!(request(), held);
 }
 
@@ -1169,7 +1165,7 @@ async fn conflicts_are_checked() {
     assert_eq!(ledger.record(&attester, 0).withdrawal_id, None);
 }
 
-/// A held burn cannot poison unrelated work; only reviewed HTTP rejections can be requeued.
+/// A held withdrawal cannot poison unrelated work; only reviewed HTTP rejections can be requeued.
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;

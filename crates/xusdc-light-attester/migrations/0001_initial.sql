@@ -11,7 +11,7 @@ CREATE TABLE attester_state (
     authenticated_parent BLOB
 ) STRICT;
 
--- Every burn found so far.
+-- Every burn found so far, with its hold.
 CREATE TABLE burns (
     note_id BLOB PRIMARY KEY,
     nullifier BLOB NOT NULL UNIQUE,
@@ -21,6 +21,7 @@ CREATE TABLE burns (
         CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
     burn_tx_id BLOB,
     status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED', 'REFUSED')),
+    hold_reason INTEGER CHECK (hold_reason IN (1)),
     CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
     CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
 ) STRICT;
@@ -42,8 +43,8 @@ CREATE TABLE submissions (
     last_error TEXT
 ) STRICT;
 
--- Every burn's submission history. The submissions table keeps each burn's current request; this
--- table only grows, and keeps what happened to every request the burn had.
+-- Every burn's history: what happened to each request it had, and each hold and release of the burn
+-- itself. The submissions table keeps each burn's current request; this table only grows.
 CREATE TABLE submission_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     note_id BLOB NOT NULL REFERENCES burns (note_id),
@@ -57,7 +58,9 @@ CREATE TABLE submission_events (
     response BLOB,
     error TEXT,
     endpoint TEXT,
-    hold_reason TEXT
+    hold_reason TEXT,
+    -- The burn's hold reason when the row was written; hold_reason is the withdrawal's.
+    burn_hold_reason INTEGER
 ) STRICT;
 
 CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);

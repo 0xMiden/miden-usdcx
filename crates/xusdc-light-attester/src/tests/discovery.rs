@@ -6,8 +6,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::note::{Note, NoteAttachment, NoteAttachments, NoteType};
 use miden_protocol::transaction::OrderedTransactionHeaders;
-use miden_protocol::utils::serde::Serializable;
-use miden_protocol::Word;
+use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint, P2idNote};
 use tokio_util::sync::CancellationToken;
 
@@ -122,6 +121,24 @@ async fn burns_are_discovered_safely() {
             NoteAttachments::new(vec![attachments.get(0).unwrap().clone()]).unwrap(),
         ))
     };
+    let malformed_payload = {
+        let burn = note(BurnNote::script(), NoteType::Public, 9, 52);
+        let (assets, metadata, recipient, attachments) =
+            burn.public_note.unwrap().into_note().into_parts();
+        let withdrawal = attachments.get(1).unwrap();
+        let mut words = withdrawal.content().as_words().to_vec();
+        words[0][1] = Felt::ONE;
+        test_note(Note::with_attachments(
+            assets,
+            metadata.into_partial_metadata(),
+            recipient,
+            NoteAttachments::new(vec![
+                attachments.get(0).unwrap().clone(),
+                NoteAttachment::with_words(withdrawal.attachment_scheme(), words).unwrap(),
+            ])
+            .unwrap(),
+        ))
+    };
     factory.push(
         vec![
             burn_one.output.clone(),
@@ -130,6 +147,7 @@ async fn burns_are_discovered_safely() {
             spoofed_tag.output,
             wrong_target.output,
             missing_withdrawal.output,
+            malformed_payload.output.clone(),
         ],
         Vec::new(),
     );
@@ -146,7 +164,12 @@ async fn burns_are_discovered_safely() {
     let erased = note(BurnNote::script(), NoteType::Public, 11, 7);
     let consuming_tx = transaction(
         faucet_account_id(),
-        &[burn_one.nullifier, burn_two.nullifier, erased.nullifier],
+        &[
+            burn_one.nullifier,
+            burn_two.nullifier,
+            erased.nullifier,
+            malformed_payload.nullifier,
+        ],
     );
     let consuming_tx_id = consuming_tx.id();
     factory.push(vec![later_burn.output], vec![consuming_tx]);
@@ -179,6 +202,12 @@ async fn burns_are_discovered_safely() {
     assert_eq!(candidates[0].note(), &pending.public_note.unwrap());
 
     assert_eq!(attester.store.discovered_burns().unwrap().len(), 3);
+    assert!(!attester
+        .store
+        .discovered_burns()
+        .unwrap()
+        .iter()
+        .any(|burn| burn.note_id() == malformed_payload.id));
     let mut burns = attester
         .store
         .burns_ready_for_withdrawal(BlockNumber::from(4u32), 1)
@@ -411,15 +440,6 @@ fn burns_and_scan_position_are_saved_together() {
     );
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
-    store.refuse_burn(burn.note_id()).unwrap();
-    store.refuse_burn(burn.note_id()).unwrap();
-    assert_eq!(
-        store
-            .refuse_burn(second_candidate.note_id())
-            .unwrap_err()
-            .to_string(),
-        CONFLICT
-    );
     assert_eq!(
         store
             .save_scan_progress(
@@ -434,10 +454,12 @@ fn burns_and_scan_position_are_saved_together() {
     assert_eq!(store.scan_state().unwrap(), after_child.clone());
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     assert!(store.candidates().unwrap().is_empty());
-    assert!(store
-        .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        store
+            .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
+            .unwrap(),
+        [burn.clone()]
+    );
 
     drop(store);
     let store = Store::open_or_create(
@@ -450,22 +472,19 @@ fn burns_and_scan_position_are_saved_together() {
     )
     .unwrap();
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
+    let reopened = &store.discovered_burns().unwrap()[0];
+    assert_eq!(reopened.note_id(), burn.note_id());
+    assert_eq!(reopened.note(), burn.note());
+    assert_eq!(reopened.items(), burn.items());
+    assert_eq!(reopened.amount(), burn.amount());
     assert_eq!(store.scan_state().unwrap(), after_child);
-    assert!(store
-        .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        store
+            .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
+            .unwrap(),
+        [burn.clone()]
+    );
     drop(store);
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    let status = connection
-        .query_row(
-            "SELECT status FROM burns WHERE note_id = ?1",
-            [burn.note_id().to_bytes()],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap();
-    assert_eq!(status, "REFUSED");
-    drop(connection);
 
     let changed_anchor = TrustedAnchor {
         commitment: Word::empty(),
@@ -491,17 +510,20 @@ fn burns_and_scan_position_are_saved_together() {
         .execute("UPDATE burns SET note = x'00'", [])
         .unwrap();
     drop(connection);
-    let store = Store::open_or_create(
-        &path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
-        trusted_anchor,
-    )
-    .unwrap();
-    assert_eq!(store.discovered_burns().unwrap_err().to_string(), INVALID);
-    drop(store);
+    assert_eq!(
+        Store::open_or_create(
+            &path,
+            faucet_account_id(),
+            ScanCursor {
+                next_block: BlockNumber::GENESIS,
+            },
+            trusted_anchor,
+        )
+        .err()
+        .unwrap()
+        .to_string(),
+        INVALID
+    );
 
     // The saved header is the next run's trust base, so one that does not decode blocks startup.
     let connection = rusqlite::Connection::open(&path).unwrap();
@@ -545,16 +567,20 @@ fn burns_and_scan_position_are_saved_together() {
         )
         .unwrap();
     drop(connection);
-    let store = Store::open_or_create(
-        &malformed_candidate_path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
-        trusted_anchor,
-    )
-    .unwrap();
-    assert_eq!(store.candidates().unwrap_err().to_string(), INVALID);
+    assert_eq!(
+        Store::open_or_create(
+            &malformed_candidate_path,
+            faucet_account_id(),
+            ScanCursor {
+                next_block: BlockNumber::GENESIS,
+            },
+            trusted_anchor,
+        )
+        .err()
+        .unwrap()
+        .to_string(),
+        INVALID
+    );
 
     let predeployment_path = tempdir.path().join("predeployment.sqlite3");
     let mut store = Store::open_or_create(

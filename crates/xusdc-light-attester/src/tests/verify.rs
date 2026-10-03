@@ -7,7 +7,7 @@ use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
 use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifiedWithdrawal, VerifyError};
 
-use super::startup::{config_toml, create_store_parent};
+use super::startup::{create_store_parent, TestArgs};
 use super::validation::validated_burn;
 
 /// The note serial of the test burns, which prepare sent as the salt before it sent the note ID.
@@ -26,13 +26,11 @@ pub(super) fn serial(last: u64) -> Word {
 fn config(fee_ceiling: Option<u64>) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let path = directory.path().join("attester.toml");
-    let mut text = config_toml(1);
+    let mut args = TestArgs::new(&directory, 1);
     if let Some(ceiling) = fee_ceiling {
-        text.push_str(&format!("max_withdrawal_fee = {ceiling}\n"));
+        args.replace("--max-withdrawal-fee", ceiling.to_string());
     }
-    std::fs::write(&path, text).unwrap();
-    Config::load(&path).unwrap()
+    args.load()
 }
 
 pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {
@@ -248,7 +246,13 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         );
     };
     let amount_cases = [
-        ("default refuses a fee", "999", "1", None, Some(FeeTooHigh)),
+        (
+            "zero ceiling refuses a fee",
+            "999",
+            "1",
+            None,
+            Some(FeeTooHigh),
+        ),
         (
             "configured ceiling is inclusive",
             "990",
@@ -280,6 +284,22 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         rebuild_for_test(&mut changed).unwrap();
         check(name, changed, ceiling, expected);
     }
+    // Circle charged 11099 on a 1 USDC burn to Base: more than a fixed 11000, but within the
+    // ceiling once one basis point of the burn (100) is added.
+    let usdc = validated_burn(1_000_000, serial(0x3132_3334_3536_3738), 9);
+    let mut base_fee = batch(&usdc.burn.note_id().to_hex(), 1_000_000, 9);
+    base_fee.burn_intents[0].spec.value = "988901".into();
+    base_fee.burn_intents[0].max_fee = "11099".into();
+    rebuild_for_test(&mut base_fee).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory, 1);
+    args.replace("--max-withdrawal-fee", "11000");
+    args.replace("--max-withdrawal-fee-bps", "1");
+    let response = UnverifiedPrepareResponse {
+        batches: vec![base_fee],
+    };
+    assert_eq!(response.verify(&usdc, &args.load()).err(), None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
     let forwarding_cases: [Case; 3] = [
         (

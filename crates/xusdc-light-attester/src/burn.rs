@@ -6,9 +6,10 @@ use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_standards::note::NetworkAccountTarget;
 use miden_usdcx::note::xreserve_burn::{
-    XReserveBurnNote, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
+    XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
     XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_WORDS,
 };
+use miden_usdcx::xreserve::encoding::XReserveBurnItems;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("note is not a consumable xUSDC burn: {0}")]
@@ -152,4 +153,34 @@ impl DiscoveredBurn {
     pub(crate) fn nullifier(&self) -> Nullifier {
         self.note.as_note().nullifier()
     }
+}
+
+/// A consumed burn whose Circle withdrawal fields decoded successfully.
+///
+/// This local validation is not permission to sign.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ValidatedBurn {
+    pub(crate) burn: DiscoveredBurn,
+    pub(crate) items: XReserveBurnItems,
+    pub(crate) amount: u64,
+}
+
+/// Decodes the burn's Circle withdrawal fields. `None` means the payload does not decode, so the
+/// burn can never become a withdrawal.
+pub(crate) fn validate_burn(burn: DiscoveredBurn) -> Option<ValidatedBurn> {
+    let note = burn.note().as_note();
+    let withdrawal = note.attachments().iter().find(|attachment| {
+        attachment.attachment_scheme().as_u16() == XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME
+    })?;
+    let items = XUsdcBurnAttachment::try_from(withdrawal).ok()?.into_items();
+    // Every discovered burn passed `BurnCandidate::new`, which admits exactly one fungible asset
+    // of the faucet.
+    let amount = u64::from(note.assets().as_slice()[0].unwrap_fungible().amount());
+
+    Some(ValidatedBurn {
+        burn,
+        items,
+        amount,
+    })
 }

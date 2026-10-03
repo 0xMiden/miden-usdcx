@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
+use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
@@ -15,6 +16,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    miden_rpc_url: String,
     circle_request_timeout_ms: u64,
     faucet_account_id_hex: String,
     circle_api_base_url: String,
@@ -32,6 +34,7 @@ struct RawConfig {
 
 #[derive(Debug)]
 pub struct Config {
+    miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
@@ -43,6 +46,7 @@ pub struct Config {
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
     expected_signing_public_keys_hex: Vec<String>,
+    /// Durable ledger state; deploy it on persistent storage for exactly one attester instance.
     store_path: PathBuf,
 }
 
@@ -80,6 +84,14 @@ impl Config {
         let trusted_anchor_commitment = Word::parse(&raw.trusted_anchor_commitment_hex)
             .map_err(|_| anyhow!("trusted anchor commitment is invalid"))?;
 
+        // `Endpoint::try_from` reads a bare word such as "mainnet" as an HTTPS host, so the scheme
+        // must be written out.
+        if !raw.miden_rpc_url.starts_with("https://") && !raw.miden_rpc_url.starts_with("http://") {
+            bail!("Miden RPC URL must start with https:// or http://");
+        }
+        let miden_rpc_url = Endpoint::try_from(raw.miden_rpc_url.as_str())
+            .map_err(|_| anyhow!("Miden RPC URL is invalid"))?;
+
         let circle_api_base_url =
             Url::parse(&raw.circle_api_base_url).context("Circle API base URL is invalid")?;
         if circle_api_base_url.scheme() != "https" || circle_api_base_url.host_str().is_none() {
@@ -109,6 +121,7 @@ impl Config {
         }
 
         Ok(Self {
+            miden_rpc_url,
             circle_request_timeout: Duration::from_millis(raw.circle_request_timeout_ms),
             faucet_account_id,
             circle_api_base_url,
@@ -122,6 +135,10 @@ impl Config {
             expected_signing_public_keys_hex: raw.expected_signing_public_keys_hex,
             store_path,
         })
+    }
+
+    pub fn miden_rpc_url(&self) -> &Endpoint {
+        &self.miden_rpc_url
     }
 
     pub(crate) fn circle_request_timeout(&self) -> Duration {

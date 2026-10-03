@@ -360,7 +360,7 @@ async fn holds_are_listed() {
             .unwrap();
         assert_eq!(changed, 1);
     }
-    let store = ledger.open_store().unwrap();
+    let mut store = ledger.open_store().unwrap();
     let lines: Vec<_> = store
         .holds()
         .unwrap()
@@ -381,11 +381,36 @@ async fn holds_are_listed() {
             )])
             .collect::<Vec<_>>()
     );
+
+    assert_eq!(store.release_holds(&[current]).unwrap(), (1, 0));
+    store
+        .hold_burn(current, BurnHoldReason::TooSmallToForward, None)
+        .unwrap();
+    let lines: Vec<_> = store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tTooSmallToForward\t-\t-"),
+        format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
+    ];
+    burn_lines.sort();
+    assert_eq!(
+        lines,
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
 async fn transient_prepare_failures_retry_next_cycle() {
-    // Only a 400 from prepare holds a burn; every other failure is tried again next cycle.
+    // None of these failures holds the burn: each is tried again next cycle.
     let failures: [fn(&Ledger) -> CircleState; 7] = [
         |_| CircleState::TransportError,
         |_| reply(503, json!({})),
@@ -497,7 +522,8 @@ async fn burn_hold_and_release_record_the_reason() {
     assert_eq!(hold, None);
 }
 
-/// Only a 400 from prepare holds a burn; any other failure before submission is tried again.
+/// Only a 400 from prepare, or a forwarded burn no larger than the CCTP fee, holds a burn; any
+/// other failure before submission is tried again.
 #[test]
 fn failures_that_hold_a_burn() {
     let prepare = |status: u16| {
@@ -541,6 +567,16 @@ fn failures_that_hold_a_burn() {
         (
             "failed verification",
             SubmitError::Verification(VerifyError::DigestMismatch),
+            (None, None, None),
+        ),
+        (
+            "too small to forward",
+            SubmitError::Verification(VerifyError::TooSmallToForward),
+            (Some(BurnHoldReason::TooSmallToForward), None, None),
+        ),
+        (
+            "payout too small to forward",
+            SubmitError::Verification(VerifyError::PayoutTooSmallToForward),
             (None, None, None),
         ),
     ] {

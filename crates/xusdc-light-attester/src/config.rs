@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use alloy_primitives::Address;
 use anyhow::{anyhow, bail, ensure, Context};
 use clap::{ArgAction, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
@@ -35,14 +36,10 @@ pub struct Cli {
     #[arg(long)]
     faucet_account_id: String,
 
-    /// Whether Circle should forward the withdrawal on the destination chain.
-    #[arg(long, action = ArgAction::Set, value_parser = clap::value_parser!(bool))]
-    use_circle_forwarding: bool,
-
     /// Fixed part of the allowed fee per withdrawal, in the smallest USDC unit;
     /// --max-withdrawal-fee-bps adds a share of the burned amount on top. Every Circle route
     /// charges a fee (the smallest seen is 4350); Ethereum needs at least 1003500, Circle's flat
-    /// fee there with forwarding on.
+    /// fee there.
     #[arg(long)]
     max_withdrawal_fee: u64,
 
@@ -50,6 +47,26 @@ pub struct Cli {
     /// Circle charges up to 1.5 basis points on most routes, so leave headroom, for example 3.
     #[arg(long)]
     max_withdrawal_fee_bps: u64,
+
+    /// Maximum CCTP fee for a forwarded withdrawal, in the smallest USDC unit.
+    /// The total withdrawal fee limit must cover this fee and Circle's fee.
+    /// CCTP deducts only the fee it charges, which may be lower than this limit.
+    /// Allow 10 to 20 percent above Circle's current fee for the most expensive destination you support.
+    #[arg(long)]
+    cctp_forwarding_max_fee: u64,
+
+    /// 0x-prefixed address of Circle's xReserve contract on Arc for the environment --circle-url
+    /// points at; a forwarded response must name it as recipient and caller. Circle reaches
+    /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
+    /// plus CCTP.
+    #[arg(long)]
+    cctp_forwarder_address: String,
+
+    /// 0x-prefixed address of CCTP's TokenMessengerV2 contract on Arc for the environment
+    /// --circle-url points at. A forwarded response must name it as the forwarding contract: the
+    /// contract xReserve calls with the CCTP transfer.
+    #[arg(long)]
+    cctp_token_messenger_address: String,
 
     /// Delay between attester cycles (for example, "1s" or "500ms").
     #[arg(long, value_parser = humantime::parse_duration)]
@@ -130,9 +147,10 @@ pub struct Config {
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
-    use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
+    /// The CCTP leg's fee, the xReserve contract on Arc and CCTP's TokenMessengerV2 there.
+    cctp_forwarding: (u64, Address, Address),
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -150,6 +168,24 @@ impl TryFrom<Cli> for Config {
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
+        let forwarder = cli
+            .cctp_forwarder_address
+            .parse::<Address>()
+            .context("cctp forwarder address is invalid")?;
+        if forwarder == Address::ZERO {
+            bail!("cctp forwarder address must not be zero");
+        }
+        let token_messenger = cli
+            .cctp_token_messenger_address
+            .parse::<Address>()
+            .context("cctp token messenger address is invalid")?;
+        if token_messenger == Address::ZERO {
+            bail!("cctp token messenger address must not be zero");
+        }
+        if cli.cctp_forwarding_max_fee == 0 {
+            bail!("cctp forwarding max fee must be above zero");
+        }
+        let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder, token_messenger);
 
         if cli.request_timeout.is_zero() {
             bail!("circle request timeout must be greater than zero");
@@ -200,9 +236,9 @@ impl TryFrom<Cli> for Config {
             circle_request_timeout: cli.request_timeout,
             faucet_account_id,
             circle_api_base_url,
-            use_circle_forwarding: cli.use_circle_forwarding,
             max_withdrawal_fee,
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
+            cctp_forwarding,
             poll_interval: cli.poll_interval,
             faucet_deployment_block: BlockNumber::from(cli.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
@@ -231,16 +267,16 @@ impl Config {
         &self.circle_api_base_url
     }
 
-    pub(crate) fn use_circle_forwarding(&self) -> bool {
-        self.use_circle_forwarding
-    }
-
     pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
     }
 
     pub(crate) fn max_withdrawal_fee_bps(&self) -> u64 {
         self.max_withdrawal_fee_bps
+    }
+
+    pub(crate) fn cctp_forwarding(&self) -> (u64, Address, Address) {
+        self.cctp_forwarding
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

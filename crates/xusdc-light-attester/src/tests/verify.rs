@@ -1,18 +1,33 @@
 //! Check Circle's returned terms locally, before anything can be signed.
 
+use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_sol_types::SolCall;
 use miden_protocol::{Felt, Word};
 use serde_json::json;
 
+use crate::burn::ValidatedBurn;
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::verify::{canonical_values_for_test, rebuild_for_test, VerifiedWithdrawal, VerifyError};
+use crate::verify::{
+    canonical_values_for_test, cctp, rebuild_for_test, VerifiedWithdrawal, VerifyError,
+};
 
 use super::startup::{create_store_parent, TestArgs};
-use super::validation::validated_burn;
+use super::validation::{validated_burn, validated_burn_to};
 
 /// The note serial of the test burns, which prepare sent as the salt before it sent the note ID.
 const SERIAL_SALT: &str = "0x0807060504030201181716151413121128272625242322213837363534333231";
 const ZERO_WORD: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
+// Circle's sandbox replies of 2026-09-21 for a 1 USDC burn to Linea (through xReserve on Arc plus
+// CCTP) and to Base (direct), both prepared with forwarding on and a 0.5 USDC CCTP fee.
+pub(super) const FORWARDED_FIXTURE: &str =
+    include_str!("fixtures/circle-sandbox-2026-09-21-forwarded-linea.response.json");
+// The same forwarded request to Solana, whose recipient fills all 32 bytes of the mint recipient.
+const FORWARDED_SOLANA_FIXTURE: &str =
+    include_str!("fixtures/circle-sandbox-2026-09-23-forwarded-solana.response.json");
+const DIRECT_WITH_OPTIONS_FIXTURE: &str =
+    include_str!("fixtures/circle-sandbox-2026-09-21-direct-base-with-options.response.json");
 
 pub(super) fn serial(last: u64) -> Word {
     Word::new([
@@ -29,8 +44,49 @@ fn config(fee_ceiling: Option<u64>) -> Config {
     let mut args = TestArgs::new(&directory, 1);
     if let Some(ceiling) = fee_ceiling {
         args.replace("--max-withdrawal-fee", ceiling.to_string());
+        args.replace("--cctp-forwarding-max-fee", "1");
     }
     args.load()
+}
+
+fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory, 1);
+    args.replace("--max-withdrawal-fee", fee_ceiling.to_string());
+    args.replace("--cctp-forwarding-max-fee", cctp_fee.to_string());
+    args.replace("--cctp-forwarder-address", FORWARDER);
+    args.load()
+}
+
+/// A captured Circle reply, adjusted to fit this burn and the test faucet: it changes the salt and
+/// the two hook fields that name Circle's registered remote domain and token, then rebuilds the
+/// encoded intent and digest. Every other field stays exactly as Circle laid it out.
+pub(super) fn captured(fixture: &str, burn: &ValidatedBurn) -> UnverifiedPrepareBatch {
+    let mut response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
+    let mut batch = response.batches.remove(0);
+    // The capture was prepared with the note serial as the salt; bind it to this burn instead.
+    batch.burn_intents[0].spec.salt = burn.burn.note_id().to_hex();
+    let hook = &mut batch.burn_intents[0].spec.hook_data;
+    hook.remote_domain = 10007;
+    hook.remote_token = "0x00000000000000000000000000000000bb405fd9fe431bd1135a292de098cb00".into();
+    rebuild_for_test(&mut batch).unwrap();
+    batch
+}
+
+pub(super) fn decode_call(batch: &UnverifiedPrepareBatch) -> cctp::depositForBurnWithHookCall {
+    let calldata = &batch.burn_intents[0].spec.hook_data.forwarding_calldata;
+    cctp::depositForBurnWithHookCall::abi_decode(&hex::decode(&calldata[2..]).unwrap()).unwrap()
+}
+
+pub(super) fn with_calldata(
+    mut batch: UnverifiedPrepareBatch,
+    calldata: Vec<u8>,
+) -> UnverifiedPrepareBatch {
+    batch.burn_intents[0].spec.hook_data.forwarding_calldata =
+        format!("0x{}", hex::encode(calldata));
+    rebuild_for_test(&mut batch).unwrap();
+    batch
 }
 
 pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> UnverifiedPrepareBatch {
@@ -45,7 +101,7 @@ pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> Unverif
                 "destinationDomain": destination_domain,
                 "sourceContract": format!("0x{}", "11".repeat(32)),
                 "destinationContract": format!("0x{}", "22".repeat(32)),
-                "sourceToken": format!("0x{}", "33".repeat(32)),
+                "sourceToken": "0x0000000000000000000000003600000000000000000000000000000000000000",
                 "destinationToken": format!("0x{}", "44".repeat(32)),
                 "sourceDepositor": format!("0x{}", "55".repeat(32)),
                 "destinationRecipient": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -90,7 +146,7 @@ fn circle_response_matches_burns() {
     let salt = burn.burn.note_id().to_hex();
     let config = config(None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let field_cases: [Case; 8] = [
+    let field_cases: [Case; 9] = [
         (
             "unknown salt",
             |b| b.burn_intents[0].spec.salt = ZERO_WORD.into(),
@@ -130,6 +186,11 @@ fn circle_response_matches_burns() {
             "signer differs from depositor",
             |b| b.burn_intents[0].spec.source_signer = ZERO_WORD.into(),
             WrongSigner,
+        ),
+        (
+            "source token is not USDC on Arc",
+            |b| b.burn_intents[0].spec.source_token = ZERO_WORD.into(),
+            WrongSourceToken,
         ),
     ];
     let refuse = |name: &str, batches, expected| {
@@ -229,9 +290,9 @@ fn circle_response_matches_burns() {
     );
 }
 
-/// The payout and fee must total the burn, respect the fee cap, and request no forwarding.
+/// The payout and fee must total the burn and respect the fee cap.
 #[test]
-fn circle_response_checks_amount_fee_and_forwarding() {
+fn circle_response_checks_amount_and_fee() {
     use VerifyError::*;
     let burns = [validated_burn(1_000, serial(0x3132_3334_3536_3738), 9)];
     let salt = burns[0].burn.note_id().to_hex();
@@ -246,13 +307,6 @@ fn circle_response_checks_amount_fee_and_forwarding() {
         );
     };
     let amount_cases = [
-        (
-            "zero ceiling refuses a fee",
-            "999",
-            "1",
-            None,
-            Some(FeeTooHigh),
-        ),
         (
             "configured ceiling is inclusive",
             "990",
@@ -296,50 +350,263 @@ fn circle_response_checks_amount_fee_and_forwarding() {
     let mut args = TestArgs::new(&directory, 1);
     args.replace("--max-withdrawal-fee", "11000");
     args.replace("--max-withdrawal-fee-bps", "1");
+    args.replace("--cctp-forwarding-max-fee", "1");
     let response = UnverifiedPrepareResponse {
         batches: vec![base_fee],
     };
     assert_eq!(response.verify(&usdc, &args.load()).err(), None);
-    type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let forwarding_cases: [Case; 3] = [
-        (
-            "restricted caller",
-            |b| b.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32)),
-            CallerRestricted,
-        ),
-        (
-            "forwarding contract",
-            |b| {
-                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
-                    format!("0x{}", "11".repeat(20))
-            },
-            Forwarding,
-        ),
-        (
-            "forwarding calldata",
-            |b| b.burn_intents[0].spec.hook_data.forwarding_calldata = "0x1234".into(),
-            Forwarding,
-        ),
-    ];
-    for (name, edit, expected) in forwarding_cases {
-        let mut changed = batch(&salt, 1_000, 9);
-        edit(&mut changed);
-        rebuild_for_test(&mut changed).unwrap();
-        check(name, changed, None, Some(expected));
+}
+
+/// Reconstruct the packed bytes and EIP-712 digest from Circle's untouched sandbox captures.
+#[test]
+fn circle_hash_matches_reference() {
+    for fixture in [
+        include_str!("fixtures/circle-sandbox-2026-09-10-live-control-single.response.json"),
+        FORWARDED_FIXTURE,
+        DIRECT_WITH_OPTIONS_FIXTURE,
+        FORWARDED_SOLANA_FIXTURE,
+    ] {
+        let response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
+        let [batch] = response.batches.as_slice() else {
+            panic!("the captured response must contain one batch");
+        };
+        let (encoded, digest) = canonical_values_for_test(batch).unwrap();
+        assert_eq!(format!("0x{}", hex::encode(encoded)), batch.encoded);
+        assert_eq!(format!("{digest:#x}"), batch.message_hash_to_sign);
     }
 }
 
-/// Reconstruct the packed bytes and EIP-712 digest from Circle's untouched sandbox capture.
+/// On the forwarded route the burn's destination sits in the CCTP calldata: every field of that
+/// call and the forwarder this leg pays are checked, the fee ceiling covers both legs, and a
+/// direct reply prepared with forwarding on still takes the direct checks.
 #[test]
-fn circle_hash_matches_reference() {
-    let response: UnverifiedPrepareResponse = serde_json::from_str(include_str!(
-        "fixtures/circle-sandbox-2026-09-10-live-control-single.response.json"
-    ))
-    .unwrap();
-    let [batch] = response.batches.as_slice() else {
-        panic!("the captured response must contain one batch");
+fn forwarded_route_is_bound_to_the_burn() {
+    use VerifyError::*;
+    let recipient: [u8; 32] = core::array::from_fn(|i| if i < 12 { 0 } else { 0x11 });
+    let burn = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 11, recipient);
+    let forwarding = forwarding_config(600_000, 500_000);
+    let verify = |burn: &_, batch, config: &Config| {
+        let response = UnverifiedPrepareResponse {
+            batches: vec![batch],
+        };
+        response.verify(burn, config).err()
     };
-    let (encoded, digest) = canonical_values_for_test(batch).unwrap();
-    assert_eq!(format!("0x{}", hex::encode(encoded)), batch.encoded);
-    assert_eq!(format!("{digest:#x}"), batch.message_hash_to_sign);
+    let solana = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 5, [0x11; 32]);
+    for (burn, fixture) in [
+        (&burn, FORWARDED_FIXTURE),
+        (&solana, FORWARDED_SOLANA_FIXTURE),
+    ] {
+        assert_eq!(verify(burn, captured(fixture, burn), &forwarding), None);
+    }
+
+    type Edit = fn(&mut UnverifiedPrepareBatch, &mut cctp::depositForBurnWithHookCall);
+    let cases: [(&str, Edit, VerifyError); 20] = [
+        (
+            "source token is not USDC on Arc",
+            |b, _| b.burn_intents[0].spec.source_token = ZERO_WORD.into(),
+            WrongSourceToken,
+        ),
+        (
+            "zero forwarding contract",
+            |b, _| {
+                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
+                    format!("0x{}", "00".repeat(20))
+            },
+            ForwardedField("forwardingContractAddress"),
+        ),
+        (
+            "forwarding contract is not TokenMessengerV2",
+            |b, _| {
+                b.burn_intents[0].spec.hook_data.forwarding_contract_address =
+                    format!("0x{}", "ee".repeat(20))
+            },
+            ForwardedField("forwardingContractAddress"),
+        ),
+        (
+            "forwarding contract is xReserve itself",
+            |b, _| b.burn_intents[0].spec.hook_data.forwarding_contract_address = FORWARDER.into(),
+            ForwardedField("forwardingContractAddress"),
+        ),
+        (
+            "recipient is not the forwarder",
+            |b, _| b.burn_intents[0].spec.destination_recipient = ZERO_WORD.into(),
+            ForwardedField("destinationRecipient"),
+        ),
+        (
+            "caller is not the forwarder",
+            |b, _| b.burn_intents[0].spec.destination_caller = ZERO_WORD.into(),
+            ForwardedField("destinationCaller"),
+        ),
+        (
+            "leg leaves the reserve chain",
+            |b, _| b.burn_intents[0].spec.destination_domain = 6,
+            ForwardedField("destinationDomain"),
+        ),
+        (
+            "leg starts outside Arc",
+            |b, _| b.burn_intents[0].spec.source_domain = 6,
+            ForwardedField("sourceDomain"),
+        ),
+        (
+            "leg stays on a chain other than Arc",
+            |b, _| {
+                b.burn_intents[0].spec.source_domain = 6;
+                b.burn_intents[0].spec.destination_domain = 6;
+            },
+            ForwardedField("sourceDomain"),
+        ),
+        (
+            "token has nonzero upper bytes",
+            |b, _| {
+                b.burn_intents[0].spec.destination_token =
+                    "0x0100000000000000000000003600000000000000000000000000000000000000".into()
+            },
+            ForwardedField("destinationToken"),
+        ),
+        (
+            "both tokens change together",
+            |b, c| {
+                b.burn_intents[0].spec.destination_token = format!("0x{}", "ee".repeat(32));
+                c.burnToken = Address::repeat_byte(0xee);
+            },
+            ForwardedField("destinationToken"),
+        ),
+        (
+            "amount",
+            |_, c| c.amount += U256::from(1),
+            ForwardedField("calldata amount"),
+        ),
+        (
+            "destination",
+            |_, c| c.destinationDomain = 6,
+            ForwardedField("calldata destinationDomain"),
+        ),
+        (
+            "recipient",
+            |_, c| c.mintRecipient = B256::ZERO,
+            ForwardedField("calldata mintRecipient"),
+        ),
+        (
+            "token",
+            |_, c| c.burnToken = Address::ZERO,
+            ForwardedField("calldata burnToken"),
+        ),
+        (
+            "restricted caller",
+            |_, c| c.destinationCaller = B256::repeat_byte(1),
+            ForwardedField("calldata destinationCaller"),
+        ),
+        (
+            "fee differs from the configured one",
+            |_, c| c.maxFee += U256::from(1),
+            ForwardedField("calldata maxFee"),
+        ),
+        (
+            "finality",
+            |_, c| c.minFinalityThreshold = 2000,
+            ForwardedField("calldata minFinalityThreshold"),
+        ),
+        (
+            "hook marker",
+            |_, c| c.hookData = Bytes::new(),
+            ForwardedField("calldata hookData"),
+        ),
+        (
+            "payout does not match the burn",
+            |b, c| {
+                b.burn_intents[0].spec.value = "400000".into();
+                c.amount = U256::from(400_000);
+            },
+            BadAmount,
+        ),
+    ];
+    for (name, edit, expected) in cases {
+        let mut batch = captured(FORWARDED_FIXTURE, &burn);
+        let mut call = decode_call(&batch);
+        edit(&mut batch, &mut call);
+        let batch = with_calldata(batch, call.abi_encode());
+        assert_eq!(verify(&burn, batch, &forwarding), Some(expected), "{name}");
+    }
+
+    // A fee at or above the amount reverts the CCTP leg on chain, even when it is the configured one.
+    let batch = captured(FORWARDED_FIXTURE, &burn);
+    let mut call = decode_call(&batch);
+    call.maxFee = call.amount;
+    let batch = with_calldata(batch, call.abi_encode());
+    assert_eq!(
+        verify(&burn, batch, &forwarding_config(2_000_000, 981_751)),
+        Some(PayoutTooSmallToForward),
+        "fee at the amount"
+    );
+    let mut batch = captured(FORWARDED_FIXTURE, &burn);
+    batch.burn_intents[0].spec.value = "981752".into();
+    batch.burn_intents[0].max_fee = "18248".into();
+    let mut call = decode_call(&batch);
+    call.amount = U256::from(981_752);
+    call.maxFee = U256::from(981_751);
+    assert_eq!(
+        verify(
+            &burn,
+            with_calldata(batch, call.abi_encode()),
+            &forwarding_config(2_000_000, 981_751)
+        ),
+        None,
+        "a payout one unit above the CCTP fee"
+    );
+    let batch = captured(FORWARDED_FIXTURE, &burn);
+    let mut call = decode_call(&batch);
+    call.maxFee = U256::from(1_000_000);
+    assert_eq!(
+        verify(
+            &burn,
+            with_calldata(batch, call.abi_encode()),
+            &forwarding_config(3_000_000, 1_000_000)
+        ),
+        Some(TooSmallToForward),
+        "a CCTP fee equal to the burn"
+    );
+    let batch = captured(FORWARDED_FIXTURE, &burn);
+    let padded = [decode_call(&batch).abi_encode(), vec![0]].concat();
+    assert_eq!(
+        verify(&burn, with_calldata(batch, padded), &forwarding),
+        Some(ForwardedField("forwardingCalldata")),
+        "calldata with a trailing byte"
+    );
+    assert_eq!(
+        verify(
+            &burn,
+            with_calldata(captured(FORWARDED_FIXTURE, &burn), vec![]),
+            &forwarding
+        ),
+        Some(ForwardedField("forwardingCalldata")),
+        "forwarding contract without calldata"
+    );
+    assert_eq!(
+        verify(
+            &burn,
+            captured(FORWARDED_FIXTURE, &burn),
+            &forwarding_config(518_248, 500_000)
+        ),
+        Some(FeeTooHigh),
+        "the ceiling covers Circle's fee plus the CCTP fee"
+    );
+
+    let base_burn = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 6, recipient);
+    assert_eq!(
+        verify(
+            &base_burn,
+            captured(DIRECT_WITH_OPTIONS_FIXTURE, &base_burn),
+            &forwarding
+        ),
+        None,
+        "a direct reply prepared with forwarding on"
+    );
+    let mut restricted = captured(DIRECT_WITH_OPTIONS_FIXTURE, &base_burn);
+    restricted.burn_intents[0].spec.destination_caller = format!("0x{}", "11".repeat(32));
+    rebuild_for_test(&mut restricted).unwrap();
+    assert_eq!(
+        verify(&base_burn, restricted, &forwarding),
+        Some(CallerRestricted),
+        "a direct reply keeps the caller check"
+    );
 }

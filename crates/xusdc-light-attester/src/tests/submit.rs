@@ -277,7 +277,7 @@ impl Ledger {
 
     /// The burn's history, oldest first: each row's kind and the submission status it recorded.
     pub(super) fn history(&self, index: usize) -> Vec<(String, Option<String>)> {
-        history(&self.path(), self.burns[index].burn.note_id())
+        history(&self.path(), self.burns[index].note_id())
     }
 
     /// Opens the ledger's store directly, as a starting attester would.
@@ -586,7 +586,7 @@ async fn failed_history_write_changes_nothing() {
     ));
     assert!(attester
         .store
-        .submission(ledger.burns[0].burn.note_id())
+        .submission(ledger.burns[0].note_id())
         .unwrap()
         .is_none());
     assert!(requests.lock().unwrap().is_empty());
@@ -703,7 +703,7 @@ async fn history_needs_a_known_burn() {
     assert_eq!(request(), held);
     let error = attester
         .store
-        .retry_held_submission(ledger.burns[0].burn.note_id())
+        .retry_held_submission(ledger.burns[0].note_id())
         .unwrap_err();
     assert_eq!(error.to_string(), "attester store query failed");
     assert_eq!(

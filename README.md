@@ -111,8 +111,8 @@ mint/burn/admin acceptance matrix (rows `A`–`L`). The crate is currently **par
 workspace** (`exclude` in the root `Cargo.toml`): it still carries the v16-alpha
 `miden-client` pins (`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) and
 predates the current encoding API, so it does not build against this tree. It un-parks with a
-deliberate migration onto the workspace's `=0.17.0-rc.9` protocol pin plus a matching
-`miden-client` release.
+deliberate migration onto the workspace's final `=0.17.0` protocol pin plus the matching final
+`miden-client =0.17.0` release, which is now available.
 
 The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on
 `PATH` and loopback ports `57291–57294` free — stay `#[ignore]`d in the default suite and are

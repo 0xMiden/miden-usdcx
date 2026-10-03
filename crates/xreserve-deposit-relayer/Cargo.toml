@@ -28,5 +28,6 @@ tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
 miden-protocol = { workspace = true, features = ["testing"] }
+miden-usdcx = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }

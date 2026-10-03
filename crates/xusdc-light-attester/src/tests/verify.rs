@@ -5,7 +5,7 @@ use alloy_sol_types::SolCall;
 use miden_protocol::{Felt, Word};
 use serde_json::json;
 
-use crate::burn::ValidatedBurn;
+use crate::burn::DiscoveredBurn;
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
 use crate::config::Config;
 use crate::verify::{
@@ -62,11 +62,11 @@ fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
 /// A captured Circle reply, adjusted to fit this burn and the test faucet: it changes the salt and
 /// the two hook fields that name Circle's registered remote domain and token, then rebuilds the
 /// encoded intent and digest. Every other field stays exactly as Circle laid it out.
-pub(super) fn captured(fixture: &str, burn: &ValidatedBurn) -> UnverifiedPrepareBatch {
+pub(super) fn captured(fixture: &str, burn: &DiscoveredBurn) -> UnverifiedPrepareBatch {
     let mut response: UnverifiedPrepareResponse = serde_json::from_str(fixture).unwrap();
     let mut batch = response.batches.remove(0);
     // The capture was prepared with the note serial as the salt; bind it to this burn instead.
-    batch.burn_intents[0].spec.salt = burn.burn.note_id().to_hex();
+    batch.burn_intents[0].spec.salt = burn.note_id().to_hex();
     let hook = &mut batch.burn_intents[0].spec.hook_data;
     hook.remote_domain = 10007;
     hook.remote_token = "0x00000000000000000000000000000000bb405fd9fe431bd1135a292de098cb00".into();
@@ -391,7 +391,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         };
         response.verify(burn, config).err()
     };
-    let solana = validated_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 5, [0x11; 32]);
+    let solana = discovered_burn_to(1_000_000, serial(0x3132_3334_3536_3738), 5, [0x11; 32]);
     for (burn, fixture) in [
         (&burn, FORWARDED_FIXTURE),
         (&solana, FORWARDED_SOLANA_FIXTURE),

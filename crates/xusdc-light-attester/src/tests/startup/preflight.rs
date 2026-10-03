@@ -1,12 +1,142 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use alloy_primitives::{Signature, B256};
 use reqwest::{Method, StatusCode};
 
+use crate::attester::Attester;
 use crate::chain::ChainError;
 use crate::circle::{read_reply, CircleClient, CircleError, REQUEST_GAP};
+use crate::config::Config;
+use crate::signer::{DevelopmentSigner, Signer, SignerError, SignerPair, SigningPublicKey};
 
 use super::{
-    create_store_parent, load_config, ready_circle, start, CircleState, FakeCircle,
-    ObservedRequest, TestChain, REQUEST_TIMEOUT,
+    config_toml, create_store_parent, development_pair, development_signers, load_config,
+    ready_circle, replace_setting, start, CircleState, FakeCircle, ObservedRequest, TestChain,
+    CONFIG_FILE, REQUEST_TIMEOUT, SIGNING_KEY_ONE, SIGNING_KEY_TWO,
 };
+
+async fn start_with_signing_keys(expected: &[&str], signers: SignerPair) -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store_path = create_store_parent(&tempdir);
+    let config = replace_setting(
+        &config_toml(1),
+        "expected_signing_public_keys_hex",
+        &format!("expected_signing_public_keys_hex = {expected:?}"),
+    );
+    let path = tempdir.path().join(CONFIG_FILE);
+    std::fs::write(&path, config).unwrap();
+    let result = Attester::start(
+        Config::load(&path).unwrap(),
+        Box::new(TestChain::anchor_only()),
+        ready_circle(),
+        signers,
+    )
+    .await
+    .map(|_| ());
+    assert_eq!(store_path.exists(), result.is_ok());
+    result
+}
+
+/// Counts how often a provider is asked for its public key.
+struct KeyReads {
+    inner: Box<dyn Signer>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl Signer for KeyReads {
+    fn public_key(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<SigningPublicKey, SignerError>> + Send + '_>> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.public_key()
+    }
+
+    fn sign_digest(
+        &self,
+        digest: B256,
+    ) -> Pin<Box<dyn Future<Output = Result<Signature, SignerError>> + Send + '_>> {
+        self.inner.sign_digest(digest)
+    }
+}
+
+/// Startup refuses configured public keys that are not two distinct valid keys, and says which
+/// rule they broke, with the decoder's error as the cause.
+#[tokio::test]
+async fn invalid_configured_signing_keys_are_rejected() {
+    let invalid_hex = format!("0x{}", "gg".repeat(33));
+    let invalid_point = format!("0x02{}", "ff".repeat(32));
+    for (expected, cause) in [
+        (
+            &[SIGNING_KEY_ONE][..],
+            "exactly two signing public keys must be configured",
+        ),
+        (
+            &[SIGNING_KEY_ONE, &invalid_hex][..],
+            "Invalid character 'g'",
+        ),
+        (&[SIGNING_KEY_ONE, "0x00"][..], "Invalid string length"),
+        (
+            &[SIGNING_KEY_ONE, &invalid_point][..],
+            "public key is not a valid secp256k1 point",
+        ),
+        (
+            &[SIGNING_KEY_ONE, SIGNING_KEY_ONE][..],
+            "the two configured signing public keys must differ",
+        ),
+    ] {
+        let error = start_with_signing_keys(expected, development_pair().await)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains(cause), "{error:#}");
+    }
+}
+
+/// A pair needs two different provider keys, and startup needs them to be the configured ones.
+#[tokio::test]
+async fn invalid_provider_signing_keys_are_rejected() {
+    let [first, _] = development_signers();
+    let [same, _] = development_signers();
+    let Err(error) = SignerPair::new([first, same]).await else {
+        panic!("one key twice is not a pair");
+    };
+    assert_eq!(
+        error.to_string(),
+        "the two signing providers hold the same key"
+    );
+
+    let [first, _] = development_signers();
+    let other = Box::new(DevelopmentSigner::from_bytes([3; 32]).unwrap());
+    let pair = SignerPair::new([first, other]).await.unwrap();
+    let error = start_with_signing_keys(&[SIGNING_KEY_ONE, SIGNING_KEY_TWO], pair)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "loaded signing public keys do not match configuration"
+    );
+}
+
+/// The configured keys may come in either order, and startup checks the keys the pair read when
+/// it was built without asking the providers again.
+#[tokio::test]
+async fn matching_signing_keys_can_be_loaded_in_either_order() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut signers = development_signers().map(|inner| {
+        Box::new(KeyReads {
+            inner,
+            reads: reads.clone(),
+        }) as Box<dyn Signer>
+    });
+    signers.swap(0, 1);
+    let pair = SignerPair::new(signers).await.unwrap();
+    start_with_signing_keys(&[SIGNING_KEY_ONE, SIGNING_KEY_TWO], pair)
+        .await
+        .unwrap();
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+}
 
 #[tokio::test]
 async fn unreachable_miden_node_is_rejected() {

@@ -95,6 +95,8 @@ pub enum VerifyError {
     WrongSigner,
     #[error("Circle's source token is not USDC on Arc")]
     WrongSourceToken,
+    #[error("Circle's source domain is not Arc")]
+    WrongSourceDomain,
     #[error("Circle restricted the destination caller")]
     CallerRestricted,
     #[error("Circle's forwarded route has a wrong {0}")]
@@ -300,6 +302,10 @@ impl UnverifiedPrepareResponse {
         if spec.sourceToken != ARC_USDC.into_word() {
             return Err(VerifyError::WrongSourceToken);
         }
+        // Every withdrawal leaves from Circle's wallet on Arc, so the source domain must be Arc too.
+        if spec.sourceDomain != ARC_DOMAIN {
+            return Err(VerifyError::WrongSourceDomain);
+        }
 
         // Circle sends the encoded bytes and the hash to sign; we rebuild both from the checked
         // fields and sign only if both match exactly.
@@ -355,9 +361,6 @@ fn verify_forwarded_leg(
     }
     if spec.destinationCaller != forwarder {
         return Err(ForwardedField("destinationCaller"));
-    }
-    if spec.sourceDomain != ARC_DOMAIN {
-        return Err(ForwardedField("sourceDomain"));
     }
     if spec.destinationDomain != ARC_DOMAIN {
         return Err(ForwardedField("destinationDomain"));

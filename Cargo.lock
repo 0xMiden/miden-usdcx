@@ -6423,6 +6423,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "hex",
+ "http",
  "miden-client",
  "miden-objects",
  "miden-protocol",
@@ -6431,6 +6432,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

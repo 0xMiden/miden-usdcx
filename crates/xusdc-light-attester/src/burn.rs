@@ -158,12 +158,28 @@ impl DiscoveredBurn {
 /// A consumed burn whose Circle withdrawal fields decoded successfully.
 ///
 /// This local validation is not permission to sign.
-#[allow(dead_code)]
 #[derive(Debug)]
-pub(crate) struct ValidatedBurn {
+pub struct ValidatedBurn {
     pub(crate) burn: DiscoveredBurn,
     pub(crate) items: XReserveBurnItems,
     pub(crate) amount: u64,
+}
+
+impl ValidatedBurn {
+    /// The burn note.
+    pub fn note(&self) -> &PublicOutputNote {
+        self.burn.note()
+    }
+
+    /// The Circle withdrawal fields decoded from the note.
+    pub fn items(&self) -> &XReserveBurnItems {
+        &self.items
+    }
+
+    /// The burned amount, in the smallest xUSDC unit.
+    pub fn amount(&self) -> u64 {
+        self.amount
+    }
 }
 
 /// Decodes the burn's Circle withdrawal fields. `None` means the payload does not decode, so the

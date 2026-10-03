@@ -460,7 +460,7 @@ fn submission_status_names_are_fixed() {
 fn reference_hash(burn: &DiscoveredBurn) -> String {
     let packed = format!(
         concat!(
-            "ca85def7000000010000000600000009",
+            "ca85def7000000010000001a00000009",
             "{0}{1}{2}{3}{4}",
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
             "{4}{5}",

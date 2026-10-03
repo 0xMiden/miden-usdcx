@@ -97,7 +97,7 @@ pub(super) fn batch(salt: &str, amount: u64, destination_domain: u32) -> Unverif
             "maxFee": "0",
             "spec": {
                 "version": 1,
-                "sourceDomain": 6,
+                "sourceDomain": 26,
                 "destinationDomain": destination_domain,
                 "sourceContract": format!("0x{}", "11".repeat(32)),
                 "destinationContract": format!("0x{}", "22".repeat(32)),
@@ -146,7 +146,7 @@ fn circle_response_matches_burns() {
     let salt = burn.note_id().to_hex();
     let config = config(None);
     type Case = (&'static str, fn(&mut UnverifiedPrepareBatch), VerifyError);
-    let field_cases: [Case; 9] = [
+    let field_cases: [Case; 10] = [
         (
             "unknown salt",
             |b| b.burn_intents[0].spec.salt = ZERO_WORD.into(),
@@ -191,6 +191,11 @@ fn circle_response_matches_burns() {
             "source token is not USDC on Arc",
             |b| b.burn_intents[0].spec.source_token = ZERO_WORD.into(),
             WrongSourceToken,
+        ),
+        (
+            "source domain is not Arc",
+            |b| b.burn_intents[0].spec.source_domain = 6,
+            WrongSourceDomain,
         ),
     ];
     let refuse = |name: &str, batches, expected| {
@@ -445,7 +450,7 @@ fn forwarded_route_is_bound_to_the_burn() {
         (
             "leg starts outside Arc",
             |b, _| b.burn_intents[0].spec.source_domain = 6,
-            ForwardedField("sourceDomain"),
+            WrongSourceDomain,
         ),
         (
             "leg stays on a chain other than Arc",
@@ -453,7 +458,7 @@ fn forwarded_route_is_bound_to_the_burn() {
                 b.burn_intents[0].spec.source_domain = 6;
                 b.burn_intents[0].spec.destination_domain = 6;
             },
-            ForwardedField("sourceDomain"),
+            ForwardedField("destinationDomain"),
         ),
         (
             "token has nonzero upper bytes",

@@ -774,7 +774,7 @@ fn load_burns(
              WHERE status = 'DISCOVERED' AND (?1 OR NOT EXISTS (
                   SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                      AND submissions.status != ?2
-             )))",
+             ))",
         )
         .map_err(classify_error)?;
     let expired = SubmissionStatus::Expired.as_ref();

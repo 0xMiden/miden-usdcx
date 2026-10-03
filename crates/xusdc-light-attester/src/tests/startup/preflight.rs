@@ -136,7 +136,8 @@ async fn circle_requests_are_paced() {
     worker.await.unwrap();
 }
 
-/// Circle's reply is read in full up to 1 MiB and refused one byte past it.
+/// Circle's reply is read in full up to 1 MiB and refused one byte past it. A 429 comes back as an
+/// error that keeps Circle's reply, or the reason the reply could not be read.
 #[tokio::test]
 async fn circle_replies_are_read_within_limits() {
     let reply = |status: StatusCode, length: usize| {
@@ -153,5 +154,22 @@ async fn circle_replies_are_read_within_limits() {
     assert!(matches!(
         read_reply(reply(StatusCode::OK, (1 << 20) + 1)).await,
         Err(CircleError::BodyTooLarge)
+    ));
+    assert!(read_reply(reply(StatusCode::SERVICE_UNAVAILABLE, 0))
+        .await
+        .is_ok());
+    assert!(matches!(
+        read_reply(reply(StatusCode::TOO_MANY_REQUESTS, 3)).await,
+        Err(CircleError::RateLimited {
+            body: Some(body),
+            read_error: None,
+        }) if body == b"000"
+    ));
+    assert!(matches!(
+        read_reply(reply(StatusCode::TOO_MANY_REQUESTS, (1 << 20) + 1)).await,
+        Err(CircleError::RateLimited {
+            body: None,
+            read_error: Some(cause),
+        }) if matches!(*cause, CircleError::BodyTooLarge)
     ));
 }

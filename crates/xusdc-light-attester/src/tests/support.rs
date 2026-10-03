@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -23,12 +24,14 @@ use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_usdcx::note::xreserve_burn::XUsdcBurnAttachment;
 use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
 use reqwest::StatusCode;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::burn::ValidatedBurn;
 use crate::chain::{ChainError, ChainReader, ScanLimits};
 use crate::circle::{
     read_info, read_prepared, CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
+use crate::submission::SavedSubmission;
 
 pub(super) const FAUCET_ACCOUNT_ID: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
@@ -158,16 +161,34 @@ impl ChainReader for TestChain {
 #[derive(Clone)]
 pub(super) enum CircleState {
     Response(StatusCode),
+    ResponseBody(StatusCode, Vec<u8>),
     TransportError,
+    /// A 429 whose reply could not be read.
+    RateLimitedUnread,
 }
 
 impl CircleState {
-    /// What a call to Circle gets back in this state.
-    fn answer(self) -> Result<RawResponse, CircleError> {
-        match self {
-            CircleState::Response(status) => Ok(RawResponse::new(status, Vec::new())),
-            CircleState::TransportError => Err(CircleError::Unavailable),
+    /// What a call to Circle gets back in this state. Like the real client, a 429 comes back as an
+    /// error that keeps Circle's reply.
+    pub(super) fn answer(self) -> Result<RawResponse, CircleError> {
+        let (status, body) = match self {
+            CircleState::Response(status) => (status, Vec::new()),
+            CircleState::ResponseBody(status, body) => (status, body),
+            CircleState::TransportError => return Err(CircleError::Unavailable),
+            CircleState::RateLimitedUnread => {
+                return Err(CircleError::RateLimited {
+                    body: None,
+                    read_error: Some(Box::new(CircleError::BodyTooLarge)),
+                })
+            }
+        };
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(CircleError::RateLimited {
+                body: Some(body),
+                read_error: None,
+            });
         }
+        Ok(RawResponse::new(status, body))
     }
 }
 
@@ -176,6 +197,8 @@ impl CircleState {
 pub(super) enum ObservedRequest {
     Info,
     Prepare,
+    Submit { endpoint: String, body: Vec<u8> },
+    Lookup { endpoint: String, id: String },
 }
 
 pub(super) struct FakeCircle {
@@ -194,14 +217,19 @@ impl FakeCircle {
             requests,
         )
     }
+
+    /// Records the call and answers it with the fixed state.
+    fn reply(&self, request: ObservedRequest) -> Result<RawResponse, CircleError> {
+        self.requests.lock().unwrap().push(request);
+        self.state.clone().answer()
+    }
 }
 
 impl CircleApi for FakeCircle {
     fn check_connection(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), CircleError>> + Send + '_>> {
-        self.requests.lock().unwrap().push(ObservedRequest::Info);
-        let answer = self.state.clone().answer();
+        let answer = self.reply(ObservedRequest::Info);
         Box::pin(async move { read_info(&answer?) })
     }
 
@@ -211,9 +239,31 @@ impl CircleApi for FakeCircle {
         _use_circle_forwarding: bool,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
-        self.requests.lock().unwrap().push(ObservedRequest::Prepare);
-        let answer = self.state.clone().answer();
+        let answer = self.reply(ObservedRequest::Prepare);
         Box::pin(async move { read_prepared(answer?) })
+    }
+
+    fn post_submission<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        let answer = self.reply(ObservedRequest::Submit {
+            endpoint: saved.endpoint.to_string(),
+            body: saved.body.clone(),
+        });
+        Box::pin(async move { answer })
+    }
+
+    fn get_withdrawal<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        let answer = self.reply(ObservedRequest::Lookup {
+            endpoint: saved.endpoint.to_string(),
+            id: id.to_owned(),
+        });
+        Box::pin(async move { answer })
     }
 }
 
@@ -385,4 +435,19 @@ pub(super) fn startup_anchor() -> &'static SignedBlock {
         factory.push(Vec::new(), Vec::new())
     });
     &ANCHOR
+}
+
+/// A read-only view of a store file that ignores the running attester's exclusive lock.
+fn read_store(path: &Path) -> Connection {
+    Connection::open_with_flags(
+        format!("file:{}?immutable=1", path.display()),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .unwrap()
+}
+
+pub(super) fn store_version(path: &Path) -> u32 {
+    read_store(path)
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
 }

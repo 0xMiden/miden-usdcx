@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-forest = { version = "0.3", features = ["chrono"] }
 rstest = "0.26"
 assert_matches = "1.5"
+strum = { version = "=0.28.0", features = ["derive"] }
 
 # Hex + attestation crypto. `hex` decodes the Circle-facing wire strings (payload / messageHash /
 # attestation) in the deposit relayer and the withdrawal listener. The secp256k1/keccak trio is

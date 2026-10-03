@@ -1,5 +1,6 @@
-//! Client for Circle's xReserve API: the startup reachability check and the prepare-withdrawal
-//! request. Circle's replies are checked before anything is signed.
+//! Client for Circle's xReserve API: the startup reachability check, the prepare-withdrawal and
+//! withdraw requests, and the withdrawal status lookup. A prepared withdrawal is verified before it
+//! is signed, and a reply to a submission counts only if it names the saved withdrawal.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -17,6 +18,7 @@ use tokio::time::Instant;
 
 use crate::burn::ValidatedBurn;
 use crate::config::Config;
+use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -33,6 +35,16 @@ pub enum CircleError {
     InvalidResponse(#[source] serde_json::Error),
     #[error("Circle response body exceeds {MAX_RESPONSE_BODY_BYTES} bytes")]
     BodyTooLarge,
+    #[error("Circle request URL is invalid")]
+    InvalidUrl(#[source] url::ParseError),
+    /// Circle asks the attester to slow down, so the rest of the cycle leaves Circle alone.
+    #[error("Circle returned HTTP 429 Too Many Requests")]
+    RateLimited {
+        /// Circle's reply, unless it could not be read in full.
+        body: Option<Vec<u8>>,
+        #[source]
+        read_error: Option<Box<CircleError>>,
+    },
 }
 
 #[derive(Debug)]
@@ -74,6 +86,19 @@ pub trait CircleApi: Send + Sync {
         burn: &'a ValidatedBurn,
         use_circle_forwarding: bool,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>;
+
+    /// Sends the saved withdrawal request to its saved endpoint, exactly as saved.
+    fn post_submission<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
+
+    /// Looks up the withdrawal with Circle's ID on the saved endpoint's host.
+    fn get_withdrawal<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
 }
 
 /// Circle's xReserve API over HTTPS. Every request goes through one worker, which sends them one
@@ -118,7 +143,7 @@ impl CircleClient {
         let url = self
             .base_url
             .join("/v1/info")
-            .map_err(|_| CircleError::Unavailable)?;
+            .map_err(CircleError::InvalidUrl)?;
         let mut request = reqwest::Request::new(reqwest::Method::GET, url);
         *request.timeout_mut() = Some(self.request_timeout);
         Ok(request)
@@ -143,7 +168,7 @@ impl CircleClient {
         let url = self
             .base_url
             .join("/v1/prepare-withdrawal")
-            .map_err(|_| CircleError::Unavailable)?;
+            .map_err(CircleError::InvalidUrl)?;
         let mut request = reqwest::Request::new(reqwest::Method::POST, url);
         *request.timeout_mut() = Some(self.request_timeout);
         request.headers_mut().insert(
@@ -151,6 +176,39 @@ impl CircleClient {
             reqwest::header::HeaderValue::from_static("application/json"),
         );
         *request.body_mut() = Some(json!({ "batches": [batch] }).to_string().into());
+        Ok(request)
+    }
+
+    pub(crate) fn submission_request(
+        &self,
+        saved: &SavedSubmission,
+    ) -> Result<reqwest::Request, CircleError> {
+        let mut request = reqwest::Request::new(reqwest::Method::POST, saved.endpoint.clone());
+        *request.timeout_mut() = Some(self.request_timeout);
+        request.headers_mut().insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        // A retry must send the saved authorization, not rebuild it from today's config.
+        *request.body_mut() = Some(saved.body.clone().into());
+        Ok(request)
+    }
+
+    pub(crate) fn status_request(
+        &self,
+        saved: &SavedSubmission,
+        id: &str,
+    ) -> Result<reqwest::Request, CircleError> {
+        let mut url = saved
+            .endpoint
+            .join("/v1/withdrawal/")
+            .map_err(CircleError::InvalidUrl)?;
+        url.path_segments_mut()
+            .map_err(|_| CircleError::Unavailable)?
+            .pop_if_empty()
+            .push(id);
+        let mut request = reqwest::Request::new(reqwest::Method::GET, url);
+        *request.timeout_mut() = Some(self.request_timeout);
         Ok(request)
     }
 }
@@ -196,9 +254,25 @@ impl CircleApi for CircleClient {
             read_prepared(self.send(request).await?)
         })
     }
+
+    fn post_submission<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        Box::pin(async move { self.send(self.submission_request(saved)?).await })
+    }
+
+    fn get_withdrawal<'a>(
+        &'a self,
+        saved: &'a SavedSubmission,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>> {
+        Box::pin(async move { self.send(self.status_request(saved, id)?).await })
+    }
 }
 
-/// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`].
+/// Reads Circle's reply, refusing a body larger than [`MAX_RESPONSE_BODY_BYTES`]. A 429 comes back
+/// as [`CircleError::RateLimited`], with Circle's reply if it could be read in full.
 pub(crate) async fn read_reply(
     mut response: reqwest::Response,
 ) -> Result<RawResponse, CircleError> {
@@ -206,13 +280,28 @@ pub(crate) async fn read_reply(
     // Read chunk by chunk and stop once the total passes the cap, so an oversized or endless
     // reply is refused before it is buffered; the declared length is not trusted.
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
-        if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-            return Err(CircleError::BodyTooLarge);
+    let read = async {
+        while let Some(chunk) = response.chunk().await.map_err(CircleError::Transport)? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                return Err(CircleError::BodyTooLarge);
+            }
+            body.extend_from_slice(&chunk);
         }
-        body.extend_from_slice(&chunk);
+        Ok(())
     }
-    Ok(RawResponse::new(status, body))
+    .await;
+    match read {
+        Ok(()) if status == StatusCode::TOO_MANY_REQUESTS => Err(CircleError::RateLimited {
+            body: Some(body),
+            read_error: None,
+        }),
+        Err(error) if status == StatusCode::TOO_MANY_REQUESTS => Err(CircleError::RateLimited {
+            body: None,
+            read_error: Some(Box::new(error)),
+        }),
+        Ok(()) => Ok(RawResponse::new(status, body)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Circle's API counts as reachable only when its info endpoint answers 200.
@@ -236,6 +325,14 @@ pub(crate) fn read_prepared(
         });
     }
     serde_json::from_slice(&response.body).map_err(CircleError::InvalidResponse)
+}
+
+/// Where a signed withdrawal request is sent. It is saved with the request, so a retry goes to the
+/// same place even if the configured URL changes.
+pub(crate) fn submission_endpoint(base_url: &Url) -> Result<Url, CircleError> {
+    base_url
+        .join("/v1/withdraw")
+        .map_err(CircleError::InvalidUrl)
 }
 
 /// One burn's entry in the prepare-withdrawal request, with Circle's field names.
@@ -301,7 +398,7 @@ pub(crate) struct UnverifiedPrepareBatch {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BurnIntent {
     pub(crate) max_block_height: String,
@@ -310,7 +407,7 @@ pub(crate) struct BurnIntent {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TransferSpec {
     pub(crate) version: u32,
@@ -330,7 +427,7 @@ pub(crate) struct TransferSpec {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StructuredHookData {
     pub(crate) remote_domain: u32,
@@ -338,4 +435,30 @@ pub(crate) struct StructuredHookData {
     pub(crate) remote_token: String,
     pub(crate) forwarding_contract_address: String,
     pub(crate) forwarding_calldata: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WithdrawalResponse {
+    pub(crate) withdrawal_id: String,
+    // Circle's field name stays burnTxId; for Miden its value is the burn note ID.
+    #[serde(rename = "burnTxId")]
+    pub(crate) burn_note_id: String,
+    pub(crate) status: String,
+    pub(crate) use_circle_forwarding: bool,
+    pub(crate) transfer_spec_hashes: Vec<String>,
+    pub(crate) failure_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ConflictResponse {
+    pub(crate) conflict: Option<WithdrawalConflict>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WithdrawalConflict {
+    pub(crate) withdrawal_id: Option<String>,
+    #[serde(rename = "burnTxId")]
+    pub(crate) burn_note_id: Option<String>,
 }

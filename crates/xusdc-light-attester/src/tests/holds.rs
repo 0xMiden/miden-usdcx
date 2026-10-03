@@ -119,7 +119,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
             faucet_account_id(),
             BlockNumber::GENESIS,
             ledger.blocks[0].header().commitment(),
-            &[ledger.burns[order[0]].burn.note_id()],
+            &[ledger.burns[order[0]].note_id()],
         )
         .unwrap(),
         (1, 0)
@@ -127,7 +127,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
     let mut store = ledger.open_store().unwrap();
     store
         .hold_burn(
-            ledger.burns[order[0]].burn.note_id(),
+            ledger.burns[order[0]].note_id(),
             BurnHoldReason::PrepareRejected,
             None,
         )
@@ -139,7 +139,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
         .burns_ready_for_withdrawal(3u32.into(), 1)
         .unwrap()
         .iter()
-        .all(|burn| burn.note_id() != ledger.burns[order[0]].burn.note_id()));
+        .all(|burn| burn.note_id() != ledger.burns[order[0]].note_id()));
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
     assert_eq!(
@@ -148,7 +148,7 @@ async fn prepare_400_holds_survive_restart_until_released() {
             faucet_account_id(),
             BlockNumber::GENESIS,
             ledger.blocks[0].header().commitment(),
-            &[ledger.burns[order[0]].burn.note_id()],
+            &[ledger.burns[order[0]].note_id()],
         )
         .unwrap(),
         (1, 0)
@@ -181,7 +181,7 @@ async fn failed_release_keeps_every_hold() {
     attester
         .store
         .hold_burn(
-            ledger.burns[1].burn.note_id(),
+            ledger.burns[1].note_id(),
             BurnHoldReason::PrepareRejected,
             None,
         )
@@ -195,8 +195,8 @@ async fn failed_release_keeps_every_hold() {
     let mut store = ledger.open_store().unwrap();
     assert!(store
         .release_holds(&[
-            ledger.burns[0].burn.note_id(),
-            ledger.burns[1].burn.note_id()
+            ledger.burns[0].note_id(),
+            ledger.burns[1].note_id()
         ])
         .is_err());
     drop(store);
@@ -212,7 +212,7 @@ async fn only_named_holds_are_released() {
         .start(vec![reply(400, json!({"message": "rejected"}))])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    let [withdrawal, first, second] = [0, 1, 2].map(|index| ledger.burns[index].burn.note_id());
+    let [withdrawal, first, second] = [0, 1, 2].map(|index| ledger.burns[index].note_id());
     for burn in [first, second] {
         attester
             .store
@@ -248,7 +248,7 @@ async fn only_named_holds_are_released() {
 async fn a_file_uri_store_path_cannot_bypass_the_lock() {
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(Vec::new()).await;
-    let held = ledger.burns[0].burn.note_id();
+    let held = ledger.burns[0].note_id();
     attester
         .store
         .hold_burn(held, BurnHoldReason::PrepareRejected, None)
@@ -304,7 +304,7 @@ async fn holds_are_listed() {
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
     let [withdrawal, current, unreadable] =
-        [0, 1, 2].map(|index| ledger.burns[index].burn.note_id());
+        [0, 1, 2].map(|index| ledger.burns[index].note_id());
     let current_response = serde_json::to_vec(&json!({"message": "prepare\n  rejected"})).unwrap();
     attester
         .store

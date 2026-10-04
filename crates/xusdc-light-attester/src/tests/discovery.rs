@@ -458,7 +458,7 @@ fn burns_and_scan_position_are_saved_together() {
         store
             .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
             .unwrap(),
-        [burn.clone()]
+        std::slice::from_ref(&burn)
     );
 
     drop(store);
@@ -482,7 +482,7 @@ fn burns_and_scan_position_are_saved_together() {
         store
             .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
             .unwrap(),
-        [burn.clone()]
+        std::slice::from_ref(&burn)
     );
     drop(store);
 

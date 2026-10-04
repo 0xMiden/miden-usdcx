@@ -478,9 +478,13 @@ fn discovery_outcome(
 
 /// The hold that a failure before submission puts on its burn, its HTTP evidence, and Circle's
 /// message for the log.
-pub(crate) fn burn_hold(
-    error: &SubmitError,
-) -> (Option<BurnHoldReason>, Option<(u16, &[u8])>, Option<String>) {
+type BurnHold<'a> = (
+    Option<BurnHoldReason>,
+    Option<(u16, &'a [u8])>,
+    Option<String>,
+);
+
+pub(crate) fn burn_hold(error: &SubmitError) -> BurnHold<'_> {
     match error {
         // A 400 is Circle refusing to prepare this burn.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })

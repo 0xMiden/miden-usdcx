@@ -256,16 +256,16 @@ impl UnverifiedPrepareResponse {
             verify_forwarded_leg(&intent, &hook, burn, fee, forwarder, token_messenger)?;
             U256::from(fee)
         } else {
-                if spec.destinationDomain != burn.items().dest_domain.as_u32() {
-                    return Err(VerifyError::WrongBurnField("destinationDomain"));
-                }
-                if spec.destinationRecipient.as_slice() != burn.items().dest_recipient.as_bytes() {
-                    return Err(VerifyError::WrongBurnField("destinationRecipient"));
-                }
-                if spec.destinationCaller != B256::ZERO {
-                    return Err(VerifyError::CallerRestricted);
-                }
-                U256::ZERO
+            if spec.destinationDomain != burn.items().dest_domain.as_u32() {
+                return Err(VerifyError::WrongBurnField("destinationDomain"));
+            }
+            if spec.destinationRecipient.as_slice() != burn.items().dest_recipient.as_bytes() {
+                return Err(VerifyError::WrongBurnField("destinationRecipient"));
+            }
+            if spec.destinationCaller != B256::ZERO {
+                return Err(VerifyError::CallerRestricted);
+            }
+            U256::ZERO
         };
         if hook.remote_domain != CircleDomain::MIDEN.as_u32() {
             return Err(VerifyError::WrongBurnField("remoteDomain"));

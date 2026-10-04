@@ -915,10 +915,7 @@ async fn conflicts_are_checked() {
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;
-    assert_eq!(
-        ledger.burns[0].burn_tx_id(),
-        ledger.burns[1].burn_tx_id()
-    );
+    assert_eq!(ledger.burns[0].burn_tx_id(), ledger.burns[1].burn_tx_id());
     let rejected = json!({"message": "operator must investigate", "code": "unrecognized"});
     let (mut attester, requests) = ledger
         .start(vec![

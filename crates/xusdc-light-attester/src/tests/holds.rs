@@ -194,10 +194,7 @@ async fn failed_release_keeps_every_hold() {
     let before = std::fs::read(ledger.path()).unwrap();
     let mut store = ledger.open_store().unwrap();
     assert!(store
-        .release_holds(&[
-            ledger.burns[0].note_id(),
-            ledger.burns[1].note_id()
-        ])
+        .release_holds(&[ledger.burns[0].note_id(), ledger.burns[1].note_id()])
         .is_err());
     drop(store);
     assert_eq!(std::fs::read(ledger.path()).unwrap(), before);
@@ -303,8 +300,7 @@ async fn holds_are_listed() {
         .start(vec![reply(400, json!({"message": "limit\n  reached"}))])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    let [withdrawal, current, unreadable] =
-        [0, 1, 2].map(|index| ledger.burns[index].note_id());
+    let [withdrawal, current, unreadable] = [0, 1, 2].map(|index| ledger.burns[index].note_id());
     let current_response = serde_json::to_vec(&json!({"message": "prepare\n  rejected"})).unwrap();
     attester
         .store

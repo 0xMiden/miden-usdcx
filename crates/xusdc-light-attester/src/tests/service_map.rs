@@ -229,11 +229,7 @@ async fn circle_response_is_checked_before_signing() {
         assert!(report.discover.is_ok());
         assert_eq!(counts(&calls), [1, 1], "{expected}");
         assert_eq!(requests.lock().unwrap().len(), 4);
-        assert!(attester
-            .store
-            .submission(burn.note_id())
-            .unwrap()
-            .is_none());
+        assert!(attester.store.submission(burn.note_id()).unwrap().is_none());
         let pending: Vec<_> = attester
             .store
             .burns_ready_for_withdrawal(3u32.into(), 1)

@@ -1,76 +1,87 @@
-# Run both bridge services
+# xUSDC bridge service for Gateway
 
-`xusdc-bridge` runs the deposit relayer and withdrawal attester in one process. Their code and
-saved state stay separate. Use this binary for a single Gateway service deployment.
+`xusdc-bridge` runs the deposit relayer and withdrawal attester in one process. It uses the real
+service implementations and keeps their stores separate. A fatal exit from either service stops
+the process so the pair cannot look healthy when half of the bridge is down.
 
-## Signing keys
+## Linux ARM64 artifact
 
-Before mainnet setup, Gateway must create two different AWS KMS ECDSA keys in the same Region.
-Use secp256k1 (`ECC_SECG_P256K1`) and `SIGN_VERIFY`. As a key administrator, run this once for
-each key, using a different description. Do not create replacements if the keys already exist.
-Save each full ARN returned:
+Build the raw binary on a machine with Docker Buildx:
 
 ```sh
-aws kms create-key --region '<AWS_REGION>' \
-  --key-spec ECC_SECG_P256K1 --key-usage SIGN_VERIFY \
-  --description '<SIGNER_NAME>' --query KeyMetadata.Arn --output text
+./scripts/build-gateway-arm64.sh
 ```
 
-Download the public keys:
+This creates `dist/xusdc-bridge-linux-arm64` and a manifest containing its source commit, source
+tree, platform and SHA-256. The build refuses a dirty checkout and the Dockerfile refuses any
+platform except `linux/arm64`.
+
+To build the runtime image instead:
 
 ```sh
-aws kms get-public-key --region '<AWS_REGION>' --key-id '<KEY_ARN_1>' \
-  --output json > withdrawal-key-1.public.json
-aws kms get-public-key --region '<AWS_REGION>' --key-id '<KEY_ARN_2>' \
-  --output json > withdrawal-key-2.public.json
+docker buildx build --platform linux/arm64 --target runtime --load \
+  -t xusdc-bridge:local .
 ```
 
-Send both public-key files to Miden. We will pass them to Circle for mainnet registration and
-provide the compressed public-key hex values for the command below. Wait for our confirmation
-before processing live withdrawals. Never send private keys or AWS credentials.
+The image runs as UID/GID `10001`, includes CA certificates, stores state below `/data`, and
+contains no AWS credentials.
 
-Give the service's AWS role only `kms:DescribeKey`, `kms:GetPublicKey` and `kms:Sign` access on
-those keys. The role and key policies must allow it. Use renewable machine credentials, not a
-developer's SSO session. Both keys are used by the same process, not two independent operators.
+## AWS KMS access
 
-AWS references: [key creation](https://docs.aws.amazon.com/cli/latest/reference/kms/create-key.html)
-and [public-key export](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetPublicKey.html).
+The attester requires two distinct, enabled AWS KMS keys registered with Circle. Both must use
+`ECC_SECG_P256K1` and `SIGN_VERIFY`, and both full key ARNs must be in the configured Region.
+Do not create replacement keys during deployment.
 
-## Build and run
+Give the service workload role access only to the two approved key ARNs:
 
-Use the repository's pinned Rust toolchain:
-
-```sh
-cargo build --locked --release -p xusdc-bridge
-./target/release/xusdc-bridge --help
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["kms:DescribeKey", "kms:GetPublicKey", "kms:Sign"],
+    "Resource": ["<KEY_ARN_1>", "<KEY_ARN_2>"]
+  }]
+}
 ```
 
-For deployment, agree the Linux CPU architecture with Gateway and build for that host. Docker
-is optional; if Gateway uses it, mount persistent storage and pass AWS access at runtime.
-Do not put credentials in the image.
+The KMS key policies must allow the same role. If the role and keys are in different AWS
+accounts, both the role policy and each key policy are required.
 
-Get all network settings from Miden. The relayer also needs an existing funded Miden account
-and its key in `<MIDEN_DATA_DIR>/keystore/`. That key and Circle's deposit public key are
-separate from the two withdrawal keys above.
+Use renewable workload credentials: an ECS task role, EKS service-account role/web identity, or
+an EC2 instance profile. The Rust AWS SDK obtains and refreshes these credentials itself. Do not
+put access keys in the image, command line or environment, and do not use a human SSO session for
+the service.
 
-Replace every `<...>` below. Use absolute paths and create their parent directories first.
-The page size, timeout, polling and shutdown values are examples, not measured hosting requirements.
+At startup the binary calls `DescribeKey` and `GetPublicKey` for both ARNs. It refuses a disabled,
+wrong-type or unexpected key. Each withdrawal then makes one `Sign` call per key and verifies both
+returned signatures locally. The two `--expected-signing-public-key` values are the compressed
+33-byte secp256k1 public keys registered with Circle.
+
+## State and configuration
+
+Mount durable storage at `/data`. Before first start, place the funded relayer account key in the
+Miden keystore below `/data/relayer/miden/keystore/`. Restrict the volume to the service user. The
+attester private keys stay in KMS and are never written to this volume.
+
+Use deployment values supplied and reviewed by Miden. The example timing values below are safe
+starting points, not network identities or fee policy:
 
 ```sh
-./target/release/xusdc-bridge \
+/usr/local/bin/xusdc-bridge \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
-  --circle-url '<CIRCLE_HTTPS_URL>' \
-  --faucet-account-id '<FAUCET_HEX_ID>' \
+  --circle-url '<CIRCLE_XRESERVE_URL>' \
+  --faucet-account-id '<XUSDC_FAUCET_ID>' \
   --shutdown-grace 5m \
   --relayer \
     --page-size 100 \
     --request-timeout 30s \
     --poll-interval 5s \
-    --miden-data-dir '<ABSOLUTE_MIDEN_DATA_DIR>' \
+    --miden-data-dir /data/relayer/miden \
     --expiration-delta 64 \
-    --relayer-account-id '<RELAYER_ID>' \
+    --relayer-account-id '<RELAYER_ACCOUNT_ID>' \
     --attester-public-key '<CIRCLE_DEPOSIT_PUBLIC_KEY_HEX>' \
-    --state-file '<ABSOLUTE_RELAYER_PROGRESS_FILE>' \
+    --state-file /data/relayer/progress.json \
   --attester \
     --signer-provider aws-kms \
     --aws-kms-region '<AWS_REGION>' \
@@ -84,33 +95,18 @@ The page size, timeout, polling and shutdown values are examples, not measured h
     --trusted-anchor-commitment '<ANCHOR_COMMITMENT>' \
     --minimum-finality-depth-blocks '<FINALITY_DEPTH>' \
     --max-withdrawal-fee '<FIXED_FEE_LIMIT>' \
-    --max-withdrawal-fee-bps '<ADDITIONAL_FEE_BASIS_POINTS>' \
+    --max-withdrawal-fee-bps '<FEE_BASIS_POINTS>' \
     --cctp-forwarding-max-fee '<CCTP_FEE_LIMIT>' \
     --cctp-forwarder-address '<XRESERVE_ADDRESS_ON_ARC>' \
     --cctp-token-messenger-address '<TOKEN_MESSENGER_V2_ADDRESS_ON_ARC>' \
     --poll-interval 1s \
-    --store-path '<ABSOLUTE_ATTESTER_DATABASE_PATH>'
+    --store-path /data/attester/store.sqlite3
 ```
 
-Shared settings go first, then `--relayer`, then `--attester`. Do not repeat shared settings
-inside a group. The bundle uses the attester's Miden Circle domain for both services.
-The individual [relayer](../xreserve-deposit-relayer/README.md) and
-[attester](../xusdc-light-attester/README.md) guides explain their settings and limitations.
+Common options must appear before `--relayer`; relayer options go between `--relayer` and
+`--attester`; attester options follow `--attester`. Run `xusdc-bridge --help` for the exact CLI.
 
-## Running the service
-
-- Run one active bundle for the account and files. Do not run the standalone services beside it.
-- Keep the relayer data directory, progress file and attester database on persistent storage.
-  Use separate paths, restrict access to the keystore, and back up while stopped.
-- Send SIGTERM to stop. The relayer finishes its current page; the attester finishes its cycle.
-  If shutdown exceeds `--shutdown-grace`, the process exits with an error. Set Gateway's stop
-  timeout longer than this grace period. A forced stop is not a clean shutdown.
-- A fatal service exit stops the pair. Restart with the same files. Normal retryable errors
-  still use each service's retry loop. Do not delete state to clear errors.
-- Capture logs (`RUST_LOG=info` by default) and monitor actual mint and withdrawal progress.
-  A running process alone does not show that the bridge is working.
-
-For held withdrawals, stop the bundle and use the standalone attester's
-[hold command](../xusdc-light-attester/README.md#restarts-and-holds) from the same source version.
-Build it with `cargo build --locked --release -p xusdc-attester` if needed.
-Do not release holds automatically on restart.
+Run exactly one instance against these stores. Do not run either standalone service beside it.
+Wait for `deposit relayer and withdrawal attester started` before enabling deposits. Send
+`SIGTERM` to stop; configure the host termination timeout above `--shutdown-grace`, and reuse the
+same volume on restart. Never delete state to clear an operational error.

@@ -8,8 +8,8 @@ use anyhow::bail;
 use clap::Parser;
 use miden_protocol::account::AccountId;
 use miden_protocol::transaction::TransactionId;
+use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 use tempfile::TempDir;
-use xusdc_encoding::note::xreserve_mint::XUsdcMintNote;
 
 use super::*;
 

@@ -226,10 +226,7 @@ impl Ledger {
         factory.push(vec![], transactions);
         let mut fork_factory = factory.clone();
         factory.push(vec![], vec![]);
-        fork_factory.push(
-            vec![OutputNote::Public(burns[0].note().clone())],
-            vec![],
-        );
+        fork_factory.push(vec![OutputNote::Public(burns[0].note().clone())], vec![]);
         let directory = tempfile::tempdir().unwrap();
         let blocks = factory.blocks();
         let (mut attester, _) =

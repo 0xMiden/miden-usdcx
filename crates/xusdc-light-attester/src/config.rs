@@ -15,6 +15,7 @@ use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteId;
 use miden_protocol::Word;
+use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::Url;
 
 /// Command-line deployment settings for the attester.
@@ -327,7 +328,7 @@ impl TryFrom<Cli> for Config {
 impl Config {
     /// Circle's domain for Miden withdrawals.
     pub fn source_domain() -> u32 {
-        xusdc_encoding::xreserve::MIDEN_DOMAIN
+        CircleDomain::MIDEN.as_u32()
     }
 
     pub fn signer(&self) -> &SignerConfig {

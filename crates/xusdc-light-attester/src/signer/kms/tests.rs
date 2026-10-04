@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use super::*;
 
 const ISOLATED_KMS_TEST: &str = "XUSDC_ATTESTER_ISOLATED_KMS_TEST";
+type PublicKeyOutputEdit = fn(&mut GetPublicKeyOutput);
+type SignOutputEdit = fn(&mut SignOutput);
 
 /// Runs this test again with empty AWS files, disabled instance metadata and test credentials.
 /// The child returns true; the parent waits for it and returns false.
@@ -196,7 +198,7 @@ fn only_the_secp256k1_signing_key_with_this_arn_is_read() {
         );
     }
     let not_the_key = "AWS KMS public key is not the secp256k1 signing key with this ARN";
-    let cases: [(fn(&mut GetPublicKeyOutput), &str); 6] = [
+    let cases: [(PublicKeyOutputEdit, &str); 6] = [
         (|p| p.key_id = Some(FIXTURES[1].0.into()), not_the_key),
         (|p| p.key_spec = Some(KeySpec::EccNistP256), not_the_key),
         (
@@ -247,7 +249,7 @@ fn kms_signatures_become_low_s_signatures_that_recover_the_pinned_key() {
 #[test]
 fn other_keys_algorithms_and_malformed_signatures_are_refused() {
     let other = "AWS KMS signed with another key or algorithm";
-    let cases: [(fn(&mut SignOutput), &str); 5] = [
+    let cases: [(SignOutputEdit, &str); 5] = [
         (|s| s.key_id = Some(FIXTURES[1].0.into()), other),
         (
             |s| s.signing_algorithm = Some(SigningAlgorithmSpec::EcdsaSha384),

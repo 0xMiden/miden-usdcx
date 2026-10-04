@@ -1,4 +1,4 @@
-# xUSDC bridge service for Gateway
+# xUSDC bridge service
 
 `xusdc-bridge` runs the deposit relayer and withdrawal attester in one process. It uses the real
 service implementations and keeps their stores separate. A fatal exit from either service stops
@@ -9,7 +9,7 @@ the process so the pair cannot look healthy when half of the bridge is down.
 Build the raw binary on a machine with Docker Buildx:
 
 ```sh
-./scripts/build-gateway-arm64.sh
+./scripts/build-bridge-arm64.sh
 ```
 
 This creates `dist/xusdc-bridge-linux-arm64` and a manifest containing its source commit, source

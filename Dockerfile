@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.98.1
-ARG DEBIAN_RELEASE=trixie
+ARG DEBIAN_RELEASE=bookworm
 
 FROM rust:${RUST_VERSION}-slim-${DEBIAN_RELEASE} AS builder
 ARG CARGO_BUILD_JOBS=2
@@ -21,7 +21,7 @@ COPY crates/xusdc-light-attester/ crates/xusdc-light-attester/
 COPY crates/xusdc-bridge/ crates/xusdc-bridge/
 RUN --mount=type=cache,sharing=locked,id=xusdc-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
     --mount=type=cache,sharing=locked,id=xusdc-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
-    --mount=type=cache,sharing=locked,id=xusdc-target-${TARGETARCH},target=/app/target \
+    --mount=type=cache,sharing=locked,id=xusdc-target-bookworm-${TARGETARCH},target=/app/target \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \
         -p xusdc-bridge --bin xusdc-bridge && \
     install -Dm755 /app/target/release/xusdc-bridge /out/xusdc-bridge

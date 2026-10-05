@@ -22,7 +22,7 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         --aws-kms-operation-timeout 10s
         --expected-signing-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
         --expected-signing-public-key 02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5
-        --request-timeout 2s --poll-interval 1s
+        --attester-request-timeout 2s --attester-poll-interval 1s
         --faucet-deployment-block 1 --trusted-anchor-block 0
         --trusted-anchor-commitment 0x0100000000000000020000000000000003000000000000000400000000000000
         --minimum-finality-depth-blocks 1
@@ -30,7 +30,7 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         --cctp-forwarding-max-fee 500000
         --cctp-forwarder-address 0x008888878f94c0d87defdf0b07f46b93c1934442
         --cctp-token-messenger-address 0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa
-        --store-path"
+        --attester-store-path"
         .split_whitespace()
         .map(String::from)
         .collect();

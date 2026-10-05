@@ -69,7 +69,7 @@ docker run --name usdcx-bridge --stop-timeout 360 \
   --aws-kms-operation-timeout 10s \
   --expected-signing-public-key '<PUBLIC_KEY_1_HEX>' \
   --expected-signing-public-key '<PUBLIC_KEY_2_HEX>' \
-  --request-timeout 30s \
+  --attester-request-timeout 30s \
   --faucet-deployment-block '<DEPLOYMENT_BLOCK>' \
   --trusted-anchor-block '<ANCHOR_BLOCK>' \
   --trusted-anchor-commitment '<ANCHOR_COMMITMENT>' \
@@ -79,8 +79,8 @@ docker run --name usdcx-bridge --stop-timeout 360 \
   --cctp-forwarding-max-fee '<CCTP_FEE_LIMIT>' \
   --cctp-forwarder-address '<XRESERVE_ADDRESS_ON_ARC>' \
   --cctp-token-messenger-address '<TOKEN_MESSENGER_V2_ADDRESS_ON_ARC>' \
-  --poll-interval 1s \
-  --store-path /data/attester/store.sqlite3
+  --attester-poll-interval 1s \
+  --attester-store-path /data/attester/store.sqlite3
 ```
 
 | Configuration | Supply |
@@ -90,8 +90,8 @@ docker run --name usdcx-bridge --stop-timeout 360 \
 | Withdrawal attester | Two KMS ARNs, Region, expected public keys, faucet deployment block, authenticated anchor, finality depth, withdrawal/CCTP fee limits and forwarding addresses. |
 | Runtime | Workload identity, writable durable `/data`, optional `RUST_LOG`; no inbound port or health URL. |
 
-The relayer's own flags start with `--relayer-`; every other flag is the attester's, and
-`--request-timeout` and `--poll-interval` apply to the attester only. For every supported flag, run
+The relayer's own flags start with `--relayer-`. The attester's timeout, poll interval and store
+path start with `--attester-`; its other flags keep their own names. For every supported flag, run
 the image with `--help`.
 
 Run one instance against these stores, without standalone workers beside it. Wait for

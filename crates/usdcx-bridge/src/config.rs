@@ -18,6 +18,10 @@ use xusdc_attester::config::{Cli as AttesterCli, Config as AttesterConfig};
     version,
     about = "Run the USDCx deposit relayer and withdrawal attester"
 )]
+// These attester options have names that would read as the whole bridge's next to the relayer's.
+#[command(mut_arg("request_timeout", |arg| arg.long("attester-request-timeout")))]
+#[command(mut_arg("poll_interval", |arg| arg.long("attester-poll-interval")))]
+#[command(mut_arg("store_path", |arg| arg.long("attester-store-path")))]
 pub(crate) struct Cli {
     #[command(flatten)]
     attester: AttesterCli,

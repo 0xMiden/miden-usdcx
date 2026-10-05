@@ -477,7 +477,6 @@ pub(crate) struct WithdrawalResponse {
     #[serde(rename = "burnTxId")]
     pub(crate) burn_note_id: String,
     pub(crate) status: String,
-    pub(crate) use_circle_forwarding: bool,
     pub(crate) transfer_spec_hashes: Vec<String>,
     pub(crate) failure_reason: Option<String>,
 }

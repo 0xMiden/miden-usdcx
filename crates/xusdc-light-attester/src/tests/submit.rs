@@ -1076,7 +1076,6 @@ async fn conflicts_are_checked() {
         ("wrong hash", |v| {
             v["transferSpecHashes"][0] = json!(format!("0x{}", "ff".repeat(32)))
         }),
-        ("forwarding", |v| v["useCircleForwarding"] = json!(false)),
     ];
     for (name, change) in mismatches {
         let ledger = Ledger::new().await;

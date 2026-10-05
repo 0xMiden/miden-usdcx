@@ -1,8 +1,8 @@
-# xUSDC bridge service
+# USDCx bridge service
 
-`xusdc-bridge` runs the deposit relayer and withdrawal attester in one process. It uses the real
-service implementations and keeps their stores separate. A fatal exit from either service stops
-the process so the pair cannot look healthy when half of the bridge is down.
+`usdcx-bridge` runs the deposit relayer and withdrawal attester in one process. It uses the real
+service implementations and keeps their stores separate. The supervisor starts both services, handles
+SIGTERM/Ctrl-C and stops the pair if either service exits unexpectedly.
 
 ## Linux ARM64 artifact
 
@@ -12,7 +12,7 @@ Build from the repository root on a machine with Docker Buildx:
 ./scripts/build-bridge-arm64.sh
 ```
 
-This creates `dist/xusdc-bridge-linux-arm64` and a manifest containing its source commit, source
+This creates `dist/usdcx-bridge-linux-arm64` and a manifest containing its source commit, source
 tree, platform and SHA-256. The build refuses a dirty checkout and the Dockerfile refuses any
 platform except `linux/arm64`.
 
@@ -22,9 +22,9 @@ glibc, `libgcc_s.so.1` and a CA certificate bundle installed. The supplied image
 To build the runtime image instead:
 
 ```sh
-docker buildx build --file crates/xusdc-bridge/Dockerfile \
+docker buildx build --file crates/usdcx-bridge/Dockerfile \
   --platform linux/arm64 --target runtime --load \
-  -t xusdc-bridge:local .
+  -t usdcx-bridge:local .
 ```
 
 The image runs as UID/GID `10001`, includes CA certificates, stores state below `/data`, and
@@ -76,10 +76,10 @@ Use deployment values supplied and reviewed by Miden. The example timing values 
 starting points, not network identities or fee policy:
 
 ```sh
-/usr/local/bin/xusdc-bridge \
+/usr/local/bin/usdcx-bridge \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_URL>' \
-  --faucet-account-id '<XUSDC_FAUCET_ID>' \
+  --faucet-account-id '<USDCX_FAUCET_ID>' \
   --relayer \
     --page-size 100 \
     --request-timeout 30s \
@@ -111,7 +111,7 @@ starting points, not network identities or fee policy:
 ```
 
 Common options must appear before `--relayer`; relayer options go between `--relayer` and
-`--attester`; attester options follow `--attester`. Run `xusdc-bridge --help` for the exact CLI.
+`--attester`; attester options follow `--attester`. Run `usdcx-bridge --help` for the exact CLI.
 
 Run exactly one instance against these stores. Do not run either standalone service beside it.
 Wait for `deposit relayer and withdrawal attester started` before enabling deposits. Send

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
   "crates/xusdc-light-attester",
-  "crates/xusdc-bridge",
+  "crates/usdcx-bridge",
   "crates/xreserve-deposit-relayer",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The members above resolve

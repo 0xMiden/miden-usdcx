@@ -1,9 +1,9 @@
 [package]
-name = "xusdc-bridge"
+name = "usdcx-bridge"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Runs the xUSDC deposit relayer and withdrawal attester together"
+description = "Runs the USDCx deposit relayer and withdrawal attester together"
 
 [dependencies]
 anyhow = { workspace = true }

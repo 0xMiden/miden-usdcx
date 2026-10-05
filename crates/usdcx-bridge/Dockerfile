@@ -18,39 +18,39 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/xreserve-deposit-relayer/ crates/xreserve-deposit-relayer/
 COPY crates/xusdc-light-attester/ crates/xusdc-light-attester/
-COPY crates/xusdc-bridge/ crates/xusdc-bridge/
-RUN --mount=type=cache,sharing=locked,id=xusdc-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
-    --mount=type=cache,sharing=locked,id=xusdc-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
+COPY crates/usdcx-bridge/ crates/usdcx-bridge/
+RUN --mount=type=cache,sharing=locked,id=usdcx-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,sharing=locked,id=usdcx-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \
-        -p xusdc-bridge --bin xusdc-bridge && \
-    install -Dm755 /app/target/release/xusdc-bridge /out/xusdc-bridge
+        -p usdcx-bridge --bin usdcx-bridge && \
+    install -Dm755 /app/target/release/usdcx-bridge /out/usdcx-bridge
 
 # Export just the Linux ARM64 executable with:
-# docker buildx build --file crates/xusdc-bridge/Dockerfile --platform linux/arm64 --target binary --output type=local,dest=dist .
+# docker buildx build --file crates/usdcx-bridge/Dockerfile --platform linux/arm64 --target binary --output type=local,dest=dist .
 FROM scratch AS binary
-COPY --from=builder /out/xusdc-bridge /xusdc-bridge
+COPY --from=builder /out/usdcx-bridge /usdcx-bridge
 
 FROM debian:${DEBIAN_RELEASE}-slim AS runtime
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates libgcc-s1 && \
     rm -rf /var/lib/apt/lists/* && \
-    groupadd --gid 10001 xusdc && \
-    useradd --uid 10001 --gid xusdc --no-create-home --home-dir /nonexistent \
-        --shell /usr/sbin/nologin xusdc && \
-    install -d -m 0700 -o xusdc -g xusdc \
+    groupadd --gid 10001 usdcx && \
+    useradd --uid 10001 --gid usdcx --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin usdcx && \
+    install -d -m 0700 -o usdcx -g usdcx \
         /data /data/relayer /data/relayer/miden /data/attester
-COPY --from=builder /out/xusdc-bridge /usr/local/bin/xusdc-bridge
+COPY --from=builder /out/usdcx-bridge /usr/local/bin/usdcx-bridge
 ARG CREATED
 ARG VERSION
 ARG COMMIT
-LABEL org.opencontainers.image.title="xUSDC bridge service" \
-    org.opencontainers.image.description="Miden xUSDC deposit relayer and withdrawal attester" \
+LABEL org.opencontainers.image.title="USDCx bridge service" \
+    org.opencontainers.image.description="Miden USDCx deposit relayer and withdrawal attester" \
     org.opencontainers.image.source="https://github.com/0xMiden/miden-usdcx" \
     org.opencontainers.image.created="${CREATED}" \
     org.opencontainers.image.version="${VERSION}" \
     org.opencontainers.image.revision="${COMMIT}"
-USER xusdc
+USER usdcx
 WORKDIR /data
 VOLUME ["/data"]
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/local/bin/xusdc-bridge"]
+ENTRYPOINT ["/usr/local/bin/usdcx-bridge"]

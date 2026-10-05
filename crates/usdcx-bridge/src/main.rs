@@ -13,7 +13,7 @@ async fn main() -> Result<()> {
         return config::print_help();
     }
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-        println!("xusdc-bridge {}", env!("CARGO_PKG_VERSION"));
+        println!("usdcx-bridge {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let config = match config::Config::parse_from(args) {

@@ -1,3 +1,5 @@
+//! Starts both bridge services and stops them together on a signal or fatal exit.
+
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc;
@@ -12,6 +14,8 @@ use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
 use xusdc_attester::service::AttesterService;
 
 use crate::config::Config;
+
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct Signals {
     terminate: Signal,
@@ -42,63 +46,64 @@ pub(crate) async fn run(config: Config, mut signals: Signals) -> Result<()> {
     let attester = tokio::select! {
         biased;
         signal = signals.recv() => {
-            let cleanup = drain(async { startup.await?.shutdown().await }).await;
+            let cleanup = finish_shutdown(async { startup.await?.shutdown().await }).await;
             return signal.and(cleanup);
         }
         result = &mut startup => result?,
     };
-    let (stop, shutdown) = mpsc::channel();
-    let (ready, started) = tokio::sync::oneshot::channel();
+    let (relayer_stop, relayer_shutdown) = mpsc::channel();
+    let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
     // The blocking relayer owns an SDK runtime and must run outside the async runtime.
     let relayer = tokio::task::spawn_blocking(move || {
         let node = NodeClient::new(&config.relayer).context("connecting relayer to Miden")?;
         let relayer = Relayer::new(config.relayer, Box::new(node))?;
-        let _ = ready.send(());
-        relayer.run_until(shutdown)
+        let _ = ready_sender.send(());
+        relayer.run_until(relayer_shutdown)
     });
     let relayer = async { relayer.await.context("relayer task failed")? };
     tokio::pin!(relayer);
-    let ready = tokio::select! {
+    let relayer_started = tokio::select! {
         biased;
         signal = signals.recv() => signal.map(|()| false),
-        ready = started => ready.context("relayer startup failed").map(|()| true),
+        ready = ready_receiver => ready.context("relayer startup failed").map(|()| true),
     };
-    if !matches!(ready, Ok(true)) {
-        drop(stop);
+    if !matches!(relayer_started, Ok(true)) {
+        drop(relayer_stop);
         let (relayer, cleanup) =
-            drain(async { tokio::join!(&mut relayer, attester.shutdown()) }).await;
-        return relayer.and(cleanup).and(ready.map(|_| ()));
+            finish_shutdown(async { tokio::join!(&mut relayer, attester.shutdown()) }).await;
+        return relayer.and(cleanup).and(relayer_started.map(|_| ()));
     }
     info!("deposit relayer and withdrawal attester started");
     let token = CancellationToken::new();
-    monitor(
-        guarded(attester.run(token.clone())),
+    wait_for_shutdown(
+        catch_attester_panic(attester.run(token.clone())),
         relayer,
         signals.recv(),
         token,
-        stop,
+        relayer_stop,
     )
     .await
 }
 
-async fn guarded(future: impl Future<Output = Result<()>>) -> Result<()> {
+async fn catch_attester_panic(future: impl Future<Output = Result<()>>) -> Result<()> {
     AssertUnwindSafe(future)
         .catch_unwind()
         .await
         .map_err(|_| anyhow!("attester panicked"))?
 }
 
-async fn monitor(
+async fn wait_for_shutdown(
     attester: impl Future<Output = Result<()>>,
     relayer: impl Future<Output = Result<()>>,
     signal: impl Future<Output = Result<()>>,
-    shutdown: CancellationToken,
-    stop: mpsc::Sender<()>,
+    attester_shutdown: CancellationToken,
+    relayer_stop: mpsc::Sender<()>,
 ) -> Result<()> {
     tokio::pin!(attester, relayer, signal);
     let mut attester_done = false;
     let mut relayer_done = false;
-    let first = tokio::select! {
+    // A completed service future must not be polled again during shutdown.
+    let stop_reason = tokio::select! {
         biased;
         result = &mut signal => result,
         result = &mut attester => {
@@ -110,10 +115,10 @@ async fn monitor(
             service_exit("relayer", result)
         }
     };
-    shutdown.cancel();
-    drop(stop);
+    attester_shutdown.cancel();
+    drop(relayer_stop);
     info!("stopping bridge services");
-    let (attester, relayer) = drain(async {
+    let (attester, relayer) = finish_shutdown(async {
         tokio::join!(
             async {
                 if attester_done {
@@ -132,12 +137,12 @@ async fn monitor(
         )
     })
     .await;
-    first.and(attester).and(relayer)
+    stop_reason.and(attester).and(relayer)
 }
 
-async fn drain<T>(cleanup: impl Future<Output = T>) -> T {
-    // Bound shutdown even when the blocking relayer's chain stops advancing.
-    match tokio::time::timeout(Duration::from_secs(300), cleanup).await {
+async fn finish_shutdown<T>(cleanup: impl Future<Output = T>) -> T {
+    // Stop waiting after five minutes if the relayer is stuck awaiting a chain confirmation.
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, cleanup).await {
         Ok(result) => result,
         Err(_) => {
             eprintln!(

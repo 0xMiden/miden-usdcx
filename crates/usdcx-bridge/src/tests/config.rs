@@ -7,7 +7,7 @@ use xusdc_attester::config::SignerConfig;
 use super::*;
 
 fn arguments(directory: &TempDir) -> Vec<OsString> {
-    let mut args: Vec<OsString> = "xusdc-bridge
+    let mut args: Vec<OsString> = "usdcx-bridge
         --miden-rpc-url https://miden.invalid
         --circle-url https://circle.invalid
         --faucet-account-id 0x222222222222221122222222222222

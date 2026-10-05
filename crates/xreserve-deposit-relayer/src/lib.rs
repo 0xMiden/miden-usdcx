@@ -267,6 +267,7 @@ impl Relayer {
     /// A failed scan leaves the watermark where it was, and the next one resumes at the page the
     /// failure stopped it on rather than repeating the pages already on chain.
     pub fn run(self) -> Result<()> {
+        // Keep the sender alive so the standalone relayer continues running.
         let (_keep_running, shutdown) = mpsc::channel();
         self.run_until(shutdown)
     }
@@ -274,7 +275,7 @@ impl Relayer {
     /// Runs until a shutdown message arrives or its sender is dropped.
     ///
     /// The current page finishes and its progress is saved before stopping. Waiting for a mint
-    /// transaction can take indefinitely if the chain stops advancing.
+    /// transaction can continue indefinitely if the chain stops producing blocks.
     pub fn run_until(mut self, shutdown: Receiver<()>) -> Result<()> {
         loop {
             if stop_requested(&shutdown) {

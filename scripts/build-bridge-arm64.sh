@@ -11,7 +11,7 @@ fi
 
 docker info >/dev/null
 mkdir -p "$output"
-stage=$(mktemp -d "$output/.xusdc-arm64.XXXXXX")
+stage=$(mktemp -d "$output/.usdcx-arm64.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -21,13 +21,13 @@ commit=$(git -C "$root" rev-parse HEAD)
 tree=$(git -C "$root" rev-parse HEAD^{tree})
 
 docker buildx build \
-    --file "$root/crates/xusdc-bridge/Dockerfile" \
+    --file "$root/crates/usdcx-bridge/Dockerfile" \
     --platform linux/arm64 \
     --target binary \
     --output "type=local,dest=$stage" \
     "$root"
 
-staged="$stage/xusdc-bridge"
+staged="$stage/usdcx-bridge"
 description=$(file "$staged")
 case "$description" in
     *'ELF 64-bit'*'ARM aarch64'*) ;;
@@ -40,13 +40,13 @@ if ! printf '%s\n' "$hash" | grep -Eq '^[0-9a-fA-F]{64}$'; then
     exit 1
 fi
 chmod 0755 "$staged"
-cat > "$stage/xusdc-bridge-linux-arm64.manifest" <<EOF
+cat > "$stage/usdcx-bridge-linux-arm64.manifest" <<EOF
 source_commit=$commit
 source_tree=$tree
 sha256=$hash
 platform=linux/arm64
 EOF
 
-mv -f "$staged" "$output/xusdc-bridge-linux-arm64"
-mv -f "$stage/xusdc-bridge-linux-arm64.manifest" "$output/xusdc-bridge-linux-arm64.manifest"
-printf '%s  xusdc-bridge-linux-arm64\n' "$hash"
+mv -f "$staged" "$output/usdcx-bridge-linux-arm64"
+mv -f "$stage/usdcx-bridge-linux-arm64.manifest" "$output/usdcx-bridge-linux-arm64.manifest"
+printf '%s  usdcx-bridge-linux-arm64\n' "$hash"

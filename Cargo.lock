@@ -7114,7 +7114,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xusdc-bridge"
+name = "usdcx-bridge"
 version = "0.0.0"
 dependencies = [
  "anyhow",

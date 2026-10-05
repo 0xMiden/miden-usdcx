@@ -11,10 +11,10 @@ use xusdc_attester::config::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "Run the xUSDC deposit relayer and withdrawal attester"
+    about = "Run the USDCx deposit relayer and withdrawal attester"
 )]
 #[command(
-    override_usage = "xusdc-bridge [COMMON OPTIONS] --relayer [RELAYER OPTIONS] --attester [ATTESTER OPTIONS]"
+    override_usage = "usdcx-bridge [COMMON OPTIONS] --relayer [RELAYER OPTIONS] --attester [ATTESTER OPTIONS]"
 )]
 struct Common {
     /// Miden RPC endpoint used by both services.
@@ -23,7 +23,7 @@ struct Common {
     /// Circle API base URL used by both services.
     #[arg(long)]
     circle_url: String,
-    /// Canonical lowercase hex ID of the xUSDC faucet.
+    /// USDCx faucet account ID, written as lowercase hexadecimal with a 0x prefix.
     #[arg(long)]
     faucet_account_id: String,
 }
@@ -60,7 +60,7 @@ impl Config {
                     )
                 ) {
                     bail!(
-                        "common option {} cannot be overridden inside a service group",
+                        "{} applies to both services and cannot be overridden after --relayer or --attester",
                         arg.to_string_lossy()
                     );
                 }
@@ -113,9 +113,11 @@ fn marker(args: &[OsString], marker: &str) -> Result<usize> {
 
 pub(crate) fn print_help() -> Result<()> {
     Common::command().print_long_help()?;
-    println!("\n\nThe following options are supplied by the common settings: RPC URL, Circle URL, faucet ID and relayer domain.");
+    println!("\n\nSet the RPC URL, Circle URL and faucet ID before --relayer. The relayer uses Circle's Miden domain.");
     println!("\nRelayer options after --relayer:\n");
-    let mut relayer = RelayerConfig::command().override_usage("--relayer [OPTIONS]");
+    let mut relayer = RelayerConfig::command()
+        .about("Relays Circle xReserve deposit attestations to the USDCx faucet")
+        .override_usage("--relayer [OPTIONS]");
     for id in [
         "miden_node_url",
         "circle_url",
@@ -126,7 +128,9 @@ pub(crate) fn print_help() -> Result<()> {
     }
     relayer.print_long_help()?;
     println!("\n\nAttester options after --attester:\n");
-    let mut attester = AttesterCli::command().override_usage("--attester [OPTIONS]");
+    let mut attester = AttesterCli::command()
+        .about("Run the USDCx withdrawal attester")
+        .override_usage("--attester [OPTIONS]");
     for id in ["miden_rpc_url", "circle_url", "faucet_account_id"] {
         attester = attester.mut_arg(id, |arg| arg.hide(true).required(false));
     }

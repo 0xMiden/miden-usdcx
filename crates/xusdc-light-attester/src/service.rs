@@ -46,13 +46,14 @@ impl AttesterService {
         })
     }
 
-    /// Runs until the attester stops, then drains its Circle request worker.
+    /// Runs the attester, then waits for its Circle worker to finish outstanding requests.
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let Self {
             mut attester,
             circle_worker,
         } = self;
         let result = attester.run(shutdown).await;
+        // Closing the request queue lets the worker finish its current request and stop.
         drop(attester);
         circle_worker
             .await

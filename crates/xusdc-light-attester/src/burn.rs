@@ -113,7 +113,7 @@ impl BurnCandidate {
 
 /// A structurally consumable candidate and its authenticated faucet-consumption evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DiscoveredBurn {
+pub struct DiscoveredBurn {
     note: PublicOutputNote,
     creation_block: BlockNumber,
     consumption_block: BlockNumber,
@@ -134,7 +134,8 @@ impl DiscoveredBurn {
             .map(|candidate| candidate.into_discovered(consumption_block, burn_tx_id))
     }
 
-    pub(crate) fn note(&self) -> &PublicOutputNote {
+    /// The burn note.
+    pub fn note(&self) -> &PublicOutputNote {
         &self.note
     }
 
@@ -158,13 +159,13 @@ impl DiscoveredBurn {
         self.note.as_note().nullifier()
     }
 
-    #[cfg(test)]
-    pub(crate) fn items(&self) -> &XReserveBurnItems {
+    /// The Circle withdrawal fields decoded from the note.
+    pub fn items(&self) -> &XReserveBurnItems {
         &self.items
     }
 
-    #[cfg(test)]
-    pub(crate) fn amount(&self) -> u64 {
+    /// The burned amount, in the smallest xUSDC unit.
+    pub fn amount(&self) -> u64 {
         self.amount
     }
 }

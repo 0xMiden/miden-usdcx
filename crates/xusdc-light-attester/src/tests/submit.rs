@@ -27,8 +27,8 @@ use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
 use super::support::{
-    faucet_account_id, scan_limits, transaction, BlockFactory, CircleState, ObservedRequest,
-    TestChain,
+    faucet_account_id, history, read_store, scan_limits, transaction, BlockFactory, CircleState,
+    ObservedRequest, TestChain,
 };
 use super::validation::discovered_burn;
 use super::verify::{batch, serial};
@@ -151,7 +151,7 @@ impl CircleApi for ScriptedCircle {
                     endpoint: saved.endpoint.to_string(),
                     id: id.to_owned(),
                 },
-                "SELECT count(*) FROM submissions WHERE status = 'SUBMITTING' AND withdrawal_id = ?1",
+                "SELECT count(*) FROM submissions WHERE status IN ('SUBMITTING', 'SUBMITTED') AND withdrawal_id = ?1",
                 id,
             )
         })
@@ -161,7 +161,7 @@ impl CircleApi for ScriptedCircle {
 pub(super) struct Ledger {
     directory: tempfile::TempDir,
     blocks: Vec<SignedBlock>,
-    burns: Vec<DiscoveredBurn>,
+    pub(super) burns: Vec<DiscoveredBurn>,
 }
 
 impl Ledger {
@@ -233,7 +233,11 @@ impl Ledger {
         self.signed_with_max_height(index, None).await
     }
 
-    async fn signed_with_max_height(&self, index: usize, height: Option<&str>) -> SignedWithdrawal {
+    pub(super) async fn signed_with_max_height(
+        &self,
+        index: usize,
+        height: Option<&str>,
+    ) -> SignedWithdrawal {
         let burn = &self.burns[index];
         let mut prepared = batch(&burn.note_id().to_hex(), 1_000, 9);
         if let Some(height) = height {
@@ -269,6 +273,11 @@ impl Ledger {
             .submission(self.burns[index].note_id())
             .unwrap()
             .unwrap()
+    }
+
+    /// The burn's history, oldest first: each row's kind and the submission status it recorded.
+    pub(super) fn history(&self, index: usize) -> Vec<(String, Option<String>)> {
+        history(&self.path(), self.burns[index].note_id())
     }
 
     /// Opens the ledger's store directly, as a starting attester would.
@@ -380,6 +389,11 @@ fn reference_hash(burn: &DiscoveredBurn) -> String {
     keccak256(hex::decode(packed).unwrap()).to_string()
 }
 
+/// A history row's kind and the submission status it recorded.
+pub(super) fn event(kind: &str, status: SubmissionStatus) -> (String, Option<String>) {
+    (kind.into(), Some(status.as_ref().into()))
+}
+
 pub(super) fn reply(status: u16, value: Value) -> CircleState {
     CircleState::ResponseBody(
         StatusCode::from_u16(status).unwrap(),
@@ -434,6 +448,7 @@ async fn submit_sends_checked_request() {
         }
         assert!(attester.retry_held_submission(saved.note_id).is_err());
         if matches!(status, "created" | "finalized" | "failed" | "new_status") {
+            let history = ledger.history(0);
             let fresh = ledger
                 .signed_with_max_height(0, Some("184467440737095516170001"))
                 .await;
@@ -445,6 +460,7 @@ async fn submit_sends_checked_request() {
                 "{status}"
             );
             assert_eq!(ledger.record(&attester, 0), saved);
+            assert_eq!(ledger.history(0), history, "{status}");
         }
         {
             let requests = requests.lock().unwrap();
@@ -510,6 +526,17 @@ async fn submit_sends_checked_request() {
                 }
             );
             assert_eq!(ledger.record(&attester, 0).status, Submitted);
+            // The replaced request's authorization and outcome stay in the history.
+            assert_eq!(
+                ledger.history(0),
+                [
+                    event("AUTHORIZED", Submitting),
+                    event("OUTCOME", expected),
+                    event("AUTHORIZED", Submitting),
+                    event("OUTCOME", Submitted),
+                ],
+                "{status}"
+            );
         }
     }
     let ledger = Ledger::new().await;
@@ -540,6 +567,150 @@ async fn submit_sends_checked_request() {
     };
     assert_eq!(body["batches"][0]["useCircleForwarding"], true);
     assert_eq!(ledger.record(&attester, 0).status, Submitted);
+}
+
+/// A history row is written with the change it records: when the row cannot be written, the
+/// change is not made either. An operator retry is recorded without a new authorization, and an
+/// answer that changes nothing the history records adds no row.
+#[tokio::test]
+async fn failed_history_write_changes_nothing() {
+    use SubmissionStatus::*;
+    let ledger = Ledger::new().await;
+    let fail_history = "CREATE TRIGGER fail_history BEFORE INSERT ON submission_events
+        BEGIN SELECT RAISE(FAIL, 'disk full'); END;";
+    ledger.sql(fail_history);
+    let (mut attester, requests) = ledger.start(vec![]).await;
+    assert!(matches!(
+        ledger.submit(&mut attester, 0).await,
+        Err(SubmitError::Store(_))
+    ));
+    assert!(attester
+        .store
+        .submission(ledger.burns[0].note_id())
+        .unwrap()
+        .is_none());
+    assert!(requests.lock().unwrap().is_empty());
+    drop(attester);
+
+    ledger.sql("DROP TRIGGER fail_history;");
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    drop(attester);
+    ledger.sql(fail_history);
+    let (mut attester, _) = ledger.start(vec![]).await;
+    let held = ledger.record(&attester, 0);
+    assert!(attester.retry_held_submission(held.note_id).is_err());
+    assert_eq!(ledger.record(&attester, 0), held);
+    drop(attester);
+
+    ledger.sql("DROP TRIGGER fail_history;");
+    let (mut attester, _) = ledger.start(vec![]).await;
+    attester.retry_held_submission(held.note_id).unwrap();
+    let retried = ledger.record(&attester, 0);
+    drop(attester);
+    ledger.sql(
+        "CREATE TRIGGER fail_outcome BEFORE INSERT ON submission_events WHEN NEW.kind = 'OUTCOME'
+        BEGIN SELECT RAISE(FAIL, 'disk full'); END;",
+    );
+    let (mut attester, _) = ledger
+        .start(vec![reply(201, json!([ledger.response(0, "created")]))])
+        .await;
+    assert!(attester.recover_submissions(&mut false).await.is_err());
+    assert_eq!(ledger.record(&attester, 0), retried);
+    drop(attester);
+
+    ledger.sql("DROP TRIGGER fail_outcome;");
+    let (mut attester, _) = ledger
+        .start(vec![
+            reply(201, json!([ledger.response(0, "created")])),
+            reply(200, ledger.response(0, "confirmed")),
+            reply(200, ledger.response(0, "confirmed")),
+            reply(200, ledger.response(0, "finalized")),
+        ])
+        .await;
+    attester.recover_submissions(&mut false).await.unwrap();
+    assert_eq!(
+        ledger.history(0),
+        [
+            event("AUTHORIZED", Submitting),
+            event("OUTCOME", Held),
+            event("OPERATOR_RETRY", Submitting),
+            event("OUTCOME", Submitted),
+        ]
+    );
+
+    // Two polls with the same answer add one row between them (the status check answers 200, the
+    // POST answered 201); a new status adds another.
+    let recorded = ledger.history(0).len();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    assert_eq!(ledger.history(0).len(), recorded + 1);
+    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    assert_eq!(
+        ledger.history(0)[recorded..],
+        [event("OUTCOME", Submitted), event("OUTCOME", Finalized)]
+    );
+}
+
+/// An operator retry puts a held request back without recording an outcome, so when the request is
+/// sent again and Circle gives the same answer as before the retry, the history records it again.
+#[tokio::test]
+async fn retried_request_records_the_same_answer_again() {
+    let ledger = Ledger::new().await;
+    let rejected = json!({"message": "rejected"});
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, rejected.clone()), reply(400, rejected)])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let held = ledger.record(&attester, 0);
+    attester.retry_held_submission(held.note_id).unwrap();
+    attester.recover_submissions(&mut false).await.unwrap();
+    assert_eq!(ledger.record(&attester, 0), held);
+    assert_eq!(
+        ledger.history(0).last(),
+        Some(&event("OUTCOME", SubmissionStatus::Held))
+    );
+}
+
+/// A history row belongs to a burn the store knows: the history table's foreign key refuses a row
+/// for a burn that is gone, so a change to its request is refused and the request is left as it
+/// was.
+#[tokio::test]
+async fn history_needs_a_known_burn() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    drop(attester);
+    // With the history table's foreign key, a burn can only go missing while foreign keys are off.
+    ledger.sql(
+        "PRAGMA foreign_keys = OFF;
+        DELETE FROM burns WHERE note_id IN (SELECT note_id FROM submissions);",
+    );
+    let request = || -> (String, Option<String>) {
+        read_store(&ledger.path())
+            .query_row("SELECT status, hold_reason FROM submissions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+    };
+    let held = ("HELD".to_owned(), Some("http_rejected".to_owned()));
+
+    let (mut attester, _) = ledger.start(vec![]).await;
+    assert_eq!(request(), held);
+    let error = attester
+        .store
+        .retry_held_submission(ledger.burns[0].note_id())
+        .unwrap_err();
+    assert_eq!(error.to_string(), "attester store query failed");
+    assert_eq!(
+        error.chain().nth(1).unwrap().to_string(),
+        "FOREIGN KEY constraint failed"
+    );
+    assert_eq!(request(), held);
 }
 
 /// Persist before sending; an uncertain request cannot be replaced by a fresh authorization.

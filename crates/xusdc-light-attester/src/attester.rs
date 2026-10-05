@@ -33,14 +33,11 @@ pub enum DiscoverError {
 pub use crate::submission::SubmitError;
 
 #[derive(Debug)]
-pub struct PollError;
-
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct CycleReport {
     pub discover: Result<(), DiscoverError>,
     pub submit: Result<(), SubmitError>,
-    pub poll: Result<(), PollError>,
+    pub poll: Result<(), SubmitError>,
 }
 
 #[allow(dead_code)]
@@ -287,9 +284,22 @@ impl Attester {
         todo!()
     }
 
-    async fn poll_withdrawal_statuses(&mut self, now: Instant) -> Result<(), PollError> {
-        let _ = now;
-        todo!()
+    /// Asks Circle once for each submitted withdrawal that has no final status yet and records
+    /// the answer on its row: a final status closes the row, and any other answer or a lost reply
+    /// leaves it for the next pass. After a 429 the remaining checks wait for the next cycle.
+    pub(crate) async fn poll_withdrawal_statuses(
+        &mut self,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
+        // Each saved ID gets one GET; the shared handler persists its outcome before we continue.
+        for saved in self
+            .store
+            .submissions_to_poll()
+            .map_err(SubmitError::from)?
+        {
+            self.advance_submission(saved, rate_limited).await?;
+        }
+        Ok(())
     }
 }
 

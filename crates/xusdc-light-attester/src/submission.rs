@@ -106,7 +106,7 @@ impl Attester {
             .map_err(Into::into)
     }
 
-    async fn advance_submission(
+    pub(crate) async fn advance_submission(
         &mut self,
         mut saved: SavedSubmission,
         rate_limited: &mut bool,
@@ -170,12 +170,23 @@ impl Attester {
         Some(response)
     }
 
-    fn save_outcome(&self, saved: &SavedSubmission) -> Result<(), SubmitError> {
+    fn save_outcome(&mut self, saved: &SavedSubmission) -> Result<(), SubmitError> {
         self.store.update_submission_outcome(saved)?;
-        if saved.hold_reason.is_some() || saved.last_error.is_some() {
+        if saved.hold_reason.is_some()
+            || saved.last_error.is_some()
+            || saved.status == SubmissionStatus::Failed
+        {
             eprintln!(
-                "withdrawal {}: {:?}, hold={:?}",
-                saved.note_id, saved.status, saved.hold_reason
+                "withdrawal note={} id={} status={:?} HTTP={:?} hold={:?}: {}",
+                saved.note_id,
+                saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                saved.status,
+                saved.last_http_status,
+                saved.hold_reason,
+                saved
+                    .last_error
+                    .as_deref()
+                    .unwrap_or("Circle omitted the failure reason")
             );
         }
         Ok(())

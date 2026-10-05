@@ -18,7 +18,7 @@ use miden_protocol::transaction::{
     InputNoteCommitment, InputNotes, OrderedTransactionHeaders, OutputNote, PublicOutputNote,
     RawOutputNote, TransactionHeader,
 };
-use miden_protocol::utils::serde::Deserializable;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, NetworkAccountTarget, NoteExecutionHint};
 use miden_usdcx::note::xreserve_burn::XUsdcBurnAttachment;
@@ -438,7 +438,7 @@ pub(super) fn startup_anchor() -> &'static SignedBlock {
 }
 
 /// A read-only view of a store file that ignores the running attester's exclusive lock.
-fn read_store(path: &Path) -> Connection {
+pub(super) fn read_store(path: &Path) -> Connection {
     Connection::open_with_flags(
         format!("file:{}?immutable=1", path.display()),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -450,4 +450,15 @@ pub(super) fn store_version(path: &Path) -> u32 {
     read_store(path)
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap()
+}
+
+/// A burn's history, oldest first: each row's kind and the submission status it recorded.
+pub(super) fn history(path: &Path, note_id: NoteId) -> Vec<(String, Option<String>)> {
+    read_store(path)
+        .prepare("SELECT kind, status FROM submission_events WHERE note_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map([note_id.to_bytes()], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }

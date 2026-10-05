@@ -31,6 +31,20 @@ pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
 /// Why a store this attester cannot bring to [`STORE_VERSION`] is refused. It is left as it was.
 pub(crate) const CANNOT_UPGRADE: &str = "attester store cannot be upgraded; start a new store";
 
+/// What one row of a burn's submission history records. Each kind is stored under its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr)]
+enum EventKind {
+    /// A newly signed request, saved before it is sent.
+    #[strum(serialize = "AUTHORIZED")]
+    Authorized,
+    /// Circle's answer, or a lost reply, when it changes the request's recorded state.
+    #[strum(serialize = "OUTCOME")]
+    Outcome,
+    /// An operator queued a held request to be sent again.
+    #[strum(serialize = "OPERATOR_RETRY")]
+    OperatorRetry,
+}
+
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -139,12 +153,13 @@ impl Store {
         Ok(candidates.pop())
     }
 
-    /// Saves a signed request before it is sent. It can replace only an expired withdrawal; any
-    /// other saved submission, a failed one included, stays as it is.
-    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> anyhow::Result<()> {
+    /// Saves a signed request before it is sent, and records it in the burn's history. It can
+    /// replace only an expired withdrawal; any other saved submission, a failed one included, stays
+    /// as it is.
+    pub(crate) fn save_submission(&mut self, record: &SavedSubmission) -> anyhow::Result<()> {
         validate_submission(record)?;
-        let written = self
-            .connection
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let written = transaction
             .execute(
                 "INSERT INTO submissions (
                 note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
@@ -170,29 +185,35 @@ impl Store {
             )
             .map_err(classify_write_error)?;
         ensure!(written == 1, CONFLICT);
-        Ok(())
+        record_submission(&transaction, record.note_id, EventKind::Authorized)?;
+        transaction.commit().map_err(classify_error)
     }
 
     /// The saved submission for `note_id`, if there is one.
     #[cfg(test)]
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
-        Ok(select_submissions(&self.connection, Some(note_id), false)?.pop())
+        Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
     }
 
     /// The submissions still being sent, which recovery resumes.
     pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
-        select_submissions(&self.connection, None, true)
+        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
     }
 
-    /// Saves the latest outcome of a submission that is still being sent. Only the outcome
-    /// changes: the saved signed request and a known withdrawal ID stay as they are.
+    /// The submissions Circle accepted that are not final yet, which polling checks.
+    pub(crate) fn submissions_to_poll(&self) -> anyhow::Result<Vec<SavedSubmission>> {
+        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
+    }
+
+    /// Save the latest reply. Add a history event if the status, withdrawal ID, HTTP status, or
+    /// error changed. Keep the signed request and any known withdrawal ID.
     pub(crate) fn update_submission_outcome(
-        &self,
+        &mut self,
         outcome: &SavedSubmission,
     ) -> anyhow::Result<()> {
         validate_submission_outcome(outcome)?;
-        let updated = self
-            .connection
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let updated = transaction
             .execute(
                 "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
                 last_http_status = ?4, last_response = ?5, last_error = ?6
@@ -209,14 +230,18 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        Ok(())
+        if !repeats_latest_outcome(&transaction, outcome)? {
+            record_submission(&transaction, outcome.note_id, EventKind::Outcome)?;
+        }
+        transaction.commit().map_err(classify_error)
     }
 
-    /// Puts a held withdrawal back to be sent. Its saved request and any known withdrawal ID stay,
-    /// so recovery asks Circle for its status instead of posting it again once the ID is known.
-    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
-        let updated = self
-            .connection
+    /// Puts a held withdrawal back to be sent, and records that in the burn's history. Its saved
+    /// request and any known withdrawal ID stay, so recovery asks Circle for its status instead of
+    /// posting it again once the ID is known.
+    pub(crate) fn retry_held_submission(&mut self, note_id: NoteId) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let updated = transaction
             .execute(
                 "UPDATE submissions SET status = ?2, hold_reason = NULL
              WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
@@ -229,7 +254,8 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        Ok(())
+        record_submission(&transaction, note_id, EventKind::OperatorRetry)?;
+        transaction.commit().map_err(classify_error)
     }
 
     #[cfg(test)]
@@ -366,6 +392,63 @@ fn upgrade(connection: &rusqlite::Connection, version: u32) -> anyhow::Result<()
     set_version(connection)
 }
 
+/// Appends one burn's submission, as it now stands, to the burn's history. Only a new
+/// authorization keeps the request itself. History belongs to the burn, which is never deleted; the
+/// history table's foreign key refuses a row for a burn the store does not know.
+fn record_submission(
+    connection: &rusqlite::Connection,
+    note_id: NoteId,
+    kind: EventKind,
+) -> anyhow::Result<()> {
+    let recorded = connection
+        .execute(
+            "INSERT INTO submission_events (
+                note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
+                http_status, response, error, endpoint, hold_reason
+             )
+             SELECT note_id, unixepoch(), ?2, status, withdrawal_id, iif(?3, body, NULL),
+                transfer_spec_hash, last_http_status, last_response, last_error,
+                iif(?3, endpoint, NULL), hold_reason
+             FROM submissions
+             WHERE note_id = ?1",
+            params![
+                note_id.to_bytes(),
+                kind.as_ref(),
+                kind == EventKind::Authorized
+            ],
+        )
+        .map_err(classify_error)?;
+    ensure!(recorded == 1, CONFLICT);
+    Ok(())
+}
+
+/// Return true if the latest outcome since authorization or operator retry matches the status,
+/// withdrawal ID, HTTP status, and error. Record the first reply after an operator retry. Ignore
+/// response body changes when those fields stay the same.
+fn repeats_latest_outcome(
+    connection: &rusqlite::Connection,
+    outcome: &SavedSubmission,
+) -> anyhow::Result<bool> {
+    exists(
+        connection,
+        "SELECT EXISTS (SELECT 1 FROM submission_events
+         WHERE seq = (SELECT MAX(seq) FROM submission_events
+                WHERE note_id = ?1 AND kind = ?2 AND seq > (SELECT COALESCE(MAX(seq), 0)
+                    FROM submission_events WHERE note_id = ?1 AND kind IN (?3, ?4)))
+            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8)",
+        params![
+            outcome.note_id.to_bytes(),
+            EventKind::Outcome.as_ref(),
+            EventKind::Authorized.as_ref(),
+            EventKind::OperatorRetry.as_ref(),
+            outcome.status.as_ref(),
+            outcome.withdrawal_id,
+            outcome.last_http_status,
+            outcome.last_error,
+        ],
+    )
+}
+
 fn set_version(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     connection
         .pragma_update(None, "user_version", STORE_VERSION)
@@ -480,28 +563,26 @@ impl HoldReason {
     }
 }
 
-/// Reads the saved submissions in note order: only `note_id`'s when it is given, and only those
-/// still being sent when `recoverable_only` is set. A row that fails its checks makes the store
-/// invalid.
+/// Load saved submissions in note order. Apply `note_id` and `status` filters when supplied. Reject
+/// the store if a selected row fails validation.
 fn select_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
-    recoverable_only: bool,
+    status: Option<SubmissionStatus>,
 ) -> anyhow::Result<Vec<SavedSubmission>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, endpoint, body, transfer_spec_hash,
             use_circle_forwarding, status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
-         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = ?3)
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 IS NULL OR status = ?2)
          ORDER BY note_id",
         )
         .map_err(classify_error)?;
     let mut rows = statement
         .query(params![
             note_id.map(|id| id.to_bytes()),
-            recoverable_only,
-            SubmissionStatus::Submitting.as_ref()
+            status.as_ref().map(SubmissionStatus::as_ref)
         ])
         .map_err(classify_error)?;
     let mut records = Vec::new();
@@ -685,17 +766,20 @@ fn load_burns(
     faucet_account_id: AccountId,
     include_submitted: bool,
 ) -> anyhow::Result<Vec<DiscoveredBurn>> {
+    // Expired work is eligible again; its old request remains saved until a fresh one replaces it.
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
              WHERE status = 'DISCOVERED' AND (?1 OR NOT EXISTS (
                   SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+                     AND submissions.status != ?2
              ))",
         )
         .map_err(classify_error)?;
+    let expired = SubmissionStatus::Expired.as_ref();
     let rows = statement
-        .query_map([include_submitted], |row| {
+        .query_map(params![include_submitted, expired], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

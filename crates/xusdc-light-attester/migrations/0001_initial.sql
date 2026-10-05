@@ -41,3 +41,23 @@ CREATE TABLE submissions (
     last_response BLOB,
     last_error TEXT
 ) STRICT;
+
+-- Every burn's submission history. The submissions table keeps each burn's current request; this
+-- table only grows, and keeps what happened to every request the burn had.
+CREATE TABLE submission_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id BLOB NOT NULL REFERENCES burns (note_id),
+    recorded_at INTEGER NOT NULL, -- unix seconds
+    kind TEXT NOT NULL,
+    status TEXT,
+    withdrawal_id TEXT,
+    body BLOB, -- the exact signed bytes, on an authorization
+    transfer_spec_hash BLOB,
+    http_status INTEGER,
+    response BLOB,
+    error TEXT,
+    endpoint TEXT,
+    hold_reason TEXT
+) STRICT;
+
+CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);

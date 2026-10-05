@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
 use crate::config::Config;
-use crate::signer::{Signer, SignerError};
+use crate::signer::{Signer, SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
 // Circle's Gateway contracts (BurnIntents.sol) start an encoded burn intent with
@@ -55,7 +55,8 @@ mod eip712 {
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum VerifyError {
+#[non_exhaustive]
+pub enum VerifyError {
     #[error("Circle returned a different number of batches or intents")]
     WrongCount,
     #[error("Circle returned an unknown salt")]
@@ -88,6 +89,7 @@ pub(crate) struct VerifiedWithdrawal {
 }
 
 impl VerifiedWithdrawal {
+    #[cfg(test)]
     pub(crate) fn note_id(&self) -> NoteId {
         self.batch.note_id
     }
@@ -95,17 +97,14 @@ impl VerifiedWithdrawal {
     /// Keep the checked batch with both signatures; return no partial result on failure. The
     /// signatures are ordered by signer address, ascending, the only order Circle's attester
     /// contract accepts.
-    pub(crate) async fn sign(
-        self,
-        signers: [&dyn Signer; 2],
-    ) -> Result<SignedWithdrawal, SignerError> {
-        let mut signers = signers;
+    pub(crate) async fn sign(self, signers: &SignerPair) -> Result<SignedWithdrawal, SignerError> {
+        let mut signers = signers.signers();
         let addresses = [
             signer_address(signers[0]).await?,
             signer_address(signers[1]).await?,
         ];
         if addresses[0] == addresses[1] {
-            return Err(SignerError);
+            return Err(SignerError::new("both signers have the same address"));
         }
         if addresses[1] < addresses[0] {
             signers.swap(0, 1);
@@ -123,8 +122,11 @@ impl VerifiedWithdrawal {
 }
 
 async fn signer_address(signer: &dyn Signer) -> Result<Address, SignerError> {
-    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0)
-        .map_err(|_| SignerError)?;
+    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0).map_err(
+        |source| {
+            SignerError::with_source("signer public key is not a valid secp256k1 point", source)
+        },
+    )?;
     Ok(Address::from_public_key(&key))
 }
 

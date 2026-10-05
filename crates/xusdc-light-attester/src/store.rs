@@ -163,9 +163,7 @@ impl Store {
             .execute(
                 "INSERT INTO submissions (
                 note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
-             ) SELECT ?1, ?2, ?3, ?4, ?5, ?6
-             WHERE EXISTS (SELECT 1 FROM burns
-                 WHERE note_id = ?1 AND status = 'DISCOVERED')
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (note_id) DO UPDATE SET
                 endpoint = excluded.endpoint, body = excluded.body,
                 transfer_spec_hash = excluded.transfer_spec_hash,
@@ -263,8 +261,7 @@ impl Store {
         load_burns(&self.connection, self.faucet_account_id, true)
     }
 
-    /// Filters discovered burns by verified waiting depth; used by the later submit stage.
-    #[allow(dead_code)]
+    /// Filters discovered burns by verified waiting depth.
     pub(crate) fn burns_ready_for_withdrawal(
         &self,
         proof_lag_block: BlockNumber,

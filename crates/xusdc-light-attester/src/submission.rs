@@ -6,7 +6,8 @@ use reqwest::{StatusCode, Url};
 
 use crate::attester::Attester;
 use crate::circle::{self, CircleError, ConflictResponse, RawResponse, WithdrawalResponse};
-use crate::verify::SignedWithdrawal;
+use crate::signer::SignerError;
+use crate::verify::{SignedWithdrawal, VerifyError};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -17,6 +18,20 @@ pub enum SubmitError {
     Store(#[from] anyhow::Error),
     #[error("could not encode the signed withdrawal")]
     Encoding(#[source] serde_json::Error),
+    #[error("Circle prepare failed")]
+    Prepare(#[from] CircleError),
+    #[error("Circle's prepared withdrawal failed verification")]
+    Verification(#[from] VerifyError),
+    #[error("withdrawal signing failed")]
+    Signing(#[from] SignerError),
+}
+
+impl SubmitError {
+    /// A failure that stops the rest of the cycle: the store can no longer record what Circle
+    /// answers.
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(self, Self::Store(_))
+    }
 }
 
 /// A submission's status, stored under the name given here. A fresh authorization can replace an
@@ -85,14 +100,15 @@ impl Attester {
         self.advance_submission(saved, rate_limited).await
     }
 
-    /// Resends every saved request whose outcome is still unknown, one attempt each, and writes
-    /// Circle's answer back onto its row; the outer cycle supplies the delay between attempts.
-    /// A store write failure stops the pass so no answer is lost unrecorded.
-    pub(crate) async fn recover_submissions(
+    /// Try each saved request once. POST if Circle's ID is unknown. Otherwise, check its status
+    /// with GET. Save each answer before moving on. Leave unfinished requests for the next cycle.
+    /// Stop after a store error or 429.
+    pub(crate) async fn advance_submissions(
         &mut self,
+        submissions: Vec<SavedSubmission>,
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
-        for saved in self.store.submissions_to_recover()? {
+        for saved in submissions {
             self.advance_submission(saved, rate_limited).await?;
         }
         Ok(())

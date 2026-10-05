@@ -1,4 +1,4 @@
-//! Checks signing order and ownership without a real signing backend.
+//! Checks development signatures, signing order, and ownership.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -6,8 +6,61 @@ use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Signature, B256, U256};
 
-use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::signer::{DevelopmentSigner, Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::tests::verified_withdrawal;
+
+#[tokio::test]
+async fn development_signers_sign_the_exact_digest() {
+    let digest = alloy_primitives::keccak256(b"xUSDC attester development signing");
+    for (scalar, expected_public_key) in [
+        (
+            1,
+            alloy_primitives::hex!(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+        ),
+        (
+            2,
+            alloy_primitives::hex!(
+                "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+            ),
+        ),
+    ] {
+        let mut secret = [0; 32];
+        secret[31] = scalar;
+        let signer = DevelopmentSigner::from_bytes(secret).unwrap();
+        let public_key = signer.public_key().await.unwrap();
+        assert!(public_key == SigningPublicKey::from_compressed(expected_public_key).unwrap());
+
+        let signature = signer.sign_digest(digest).await.unwrap();
+        assert!(signature.normalize_s().is_none());
+        assert_eq!(
+            signature
+                .recover_from_prehash(&digest)
+                .unwrap()
+                .to_encoded_point(true)
+                .as_bytes(),
+            expected_public_key,
+        );
+    }
+}
+
+/// A malformed public key keeps the decoder's error as its cause, but a malformed private key is
+/// refused without quoting any of the key.
+#[test]
+fn key_errors_keep_their_cause_but_never_quote_a_private_key() {
+    let Err(error) = SigningPublicKey::from_hex("0x02zz") else {
+        panic!("a malformed public key must be refused");
+    };
+    assert!(std::error::Error::source(&error).is_some());
+
+    let private_key = format!("0x{}#", "5".repeat(63));
+    let Err(error) = DevelopmentSigner::from_hex(&private_key) else {
+        panic!("a malformed private key must be refused");
+    };
+    let shown = format!("{error:?}");
+    assert!(!shown.contains('#') && !shown.contains("555"), "{shown}");
+}
 
 struct RecordingSigner {
     id: u8,
@@ -39,7 +92,7 @@ impl Signer for RecordingSigner {
             let mut calls = self.calls.lock().unwrap();
             calls.push((self.id, digest));
             if self.fail_at == Some(calls.len()) {
-                return Err(SignerError);
+                return Err(SignerError::new("signer refused"));
             }
             // Distinct markers per signer and call, not cryptographic signatures.
             Ok(Signature::new(
@@ -63,8 +116,11 @@ async fn verified_withdrawal_gets_two_signatures() {
         calls: calls.clone(),
         fail_at: None,
     });
+    let signers = SignerPair::new(signers.map(|signer| Box::new(signer) as Box<dyn Signer>))
+        .await
+        .unwrap();
 
-    let signed = verified.sign([&signers[0], &signers[1]]).await.unwrap();
+    let signed = verified.sign(&signers).await.unwrap();
     assert_eq!(*calls.lock().unwrap(), [(1, digest), (2, digest)]);
     assert_eq!(signed.batch.batch.note_id, expected.batch.note_id);
     assert_eq!(signed.batch.batch.digest, digest);
@@ -92,11 +148,12 @@ async fn signing_failure_returns_no_result() {
             calls: calls.clone(),
             fail_at: Some(fail_at),
         });
+        let signers = SignerPair::new(signers.map(|signer| Box::new(signer) as Box<dyn Signer>))
+            .await
+            .unwrap();
 
-        assert!(matches!(
-            verified.sign([&signers[0], &signers[1]]).await,
-            Err(SignerError)
-        ));
+        let error = verified.sign(&signers).await.unwrap_err();
+        assert_eq!(error.to_string(), "signer refused");
         assert_eq!(calls.lock().unwrap().as_slice(), &expected[..fail_at]);
     }
 }
@@ -106,16 +163,16 @@ async fn signing_failure_returns_no_result() {
 #[tokio::test]
 async fn signatures_follow_signer_address_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let signers = [1, 2].map(|id| RecordingSigner {
-        id,
-        calls: calls.clone(),
-        fail_at: None,
+    let signers = [2, 1].map(|id| {
+        Box::new(RecordingSigner {
+            id,
+            calls: calls.clone(),
+            fail_at: None,
+        }) as Box<dyn Signer>
     });
+    let signers = SignerPair::new(signers).await.unwrap();
 
-    let signed = verified_withdrawal()
-        .sign([&signers[1], &signers[0]])
-        .await
-        .unwrap();
+    let signed = verified_withdrawal().sign(&signers).await.unwrap();
     assert_eq!(
         calls
             .lock()
@@ -130,15 +187,18 @@ async fn signatures_follow_signer_address_order() {
         Signature::new(U256::from(1), U256::from(1), false)
     );
 
-    let same = [1, 1].map(|id| RecordingSigner {
-        id,
-        calls: calls.clone(),
-        fail_at: None,
+    let same = [1, 1].map(|id| {
+        Box::new(RecordingSigner {
+            id,
+            calls: calls.clone(),
+            fail_at: None,
+        }) as Box<dyn Signer>
     });
-    assert!(matches!(
-        verified_withdrawal().sign([&same[0], &same[1]]).await,
-        Err(SignerError)
-    ));
+    let error = SignerPair::new(same).await.err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "the two signing providers hold the same key"
+    );
     assert_eq!(
         calls.lock().unwrap().len(),
         2,

@@ -8,8 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alloy_primitives::{keccak256, Signature, B256, U256};
+use miden_objects::prost::Message;
+use miden_objects::proto;
 use miden_protocol::block::{BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::utils::serde::Serializable;
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -20,15 +23,15 @@ use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::config::Config;
-use crate::signer::{Signer, SignerError, SigningPublicKey};
+use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
 use super::support::{
-    faucet_account_id, history, read_store, scan_limits, transaction, BlockFactory, CircleState,
-    ObservedRequest, TestChain,
+    development_pair, faucet_account_id, history, read_store, scan_limits, transaction,
+    BlockFactory, ChainControls, CircleState, ObservedRequest, TestChain,
 };
 use super::validation::discovered_burn;
 use super::verify::{batch, serial};
@@ -36,6 +39,16 @@ use super::verify::{batch, serial};
 const ID: &str = "6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70";
 const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
 pub(super) type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
+
+pub(super) async fn recover(attester: &mut Attester) -> Result<(), SubmitError> {
+    let queue = attester.store.submissions_to_recover()?;
+    attester.advance_submissions(queue, &mut false).await
+}
+
+pub(super) async fn poll(attester: &mut Attester) -> Result<(), SubmitError> {
+    let queue = attester.store.submissions_to_poll().unwrap();
+    attester.advance_submissions(queue, &mut false).await
+}
 
 struct TestSigner(u8);
 impl Signer for TestSigner {
@@ -67,13 +80,25 @@ impl Signer for TestSigner {
     }
 }
 
-struct ScriptedCircle {
+pub(super) struct ScriptedCircle {
     replies: Mutex<VecDeque<CircleState>>,
     requests: Requests,
     store_path: PathBuf,
 }
 
 impl ScriptedCircle {
+    pub(super) fn new(store_path: PathBuf, replies: Vec<CircleState>) -> (Self, Requests) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                replies: Mutex::new(replies.into()),
+                requests: requests.clone(),
+                store_path,
+            },
+            requests,
+        )
+    }
+
     /// Checks that the store already holds what is about to be sent, then records the call and
     /// hands out the next scripted reply.
     fn reply_after_save(
@@ -159,9 +184,11 @@ impl CircleApi for ScriptedCircle {
 }
 
 pub(super) struct Ledger {
-    directory: tempfile::TempDir,
-    blocks: Vec<SignedBlock>,
+    pub(super) directory: tempfile::TempDir,
+    pub(super) blocks: Vec<SignedBlock>,
+    pub(super) fork_blocks: Vec<SignedBlock>,
     pub(super) burns: Vec<DiscoveredBurn>,
+    pub(super) fresh_indices: Vec<usize>,
 }
 
 impl Ledger {
@@ -197,16 +224,32 @@ impl Ledger {
             transaction(faucet_account_id(), &[burns[2].nullifier()]),
         ];
         factory.push(vec![], transactions);
+        let mut fork_factory = factory.clone();
         factory.push(vec![], vec![]);
+        fork_factory.push(vec![OutputNote::Public(burns[0].note().clone())], vec![]);
         let directory = tempfile::tempdir().unwrap();
         let blocks = factory.blocks();
         let (mut attester, _) =
             discovery::start(&directory, 1, blocks.clone(), scan_limits(3, 3)).await;
         attester.discover_burns().await.unwrap();
+        let fresh_indices = attester
+            .store
+            .burns_ready_for_withdrawal(3u32.into(), 1)
+            .unwrap()
+            .iter()
+            .map(|saved| {
+                burns
+                    .iter()
+                    .position(|burn| burn.note_id() == saved.note_id())
+                    .unwrap()
+            })
+            .collect();
         Self {
             directory,
             blocks,
+            fork_blocks: fork_factory.blocks(),
             burns,
+            fresh_indices,
         }
     }
 
@@ -215,18 +258,39 @@ impl Ledger {
     }
 
     pub(super) async fn start(&self, replies: Vec<CircleState>) -> (Attester, Requests) {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let circle = ScriptedCircle {
-            replies: Mutex::new(replies.into()),
-            requests: requests.clone(),
-            store_path: self.path(),
-        };
+        let (attester, requests, _) = self.runtime(replies, development_pair().await).await;
+        (attester, requests)
+    }
+
+    pub(super) async fn runtime(
+        &self,
+        replies: Vec<CircleState>,
+        signers: SignerPair,
+    ) -> (Attester, Requests, ChainControls) {
+        let (circle, requests) = ScriptedCircle::new(self.path(), replies);
         let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
-        let chain = TestChain::new(self.blocks.clone(), scan_limits(3, 3)).0;
-        let attester = Attester::start(config, Box::new(chain), Box::new(circle))
+        let (chain, controls) = TestChain::new(self.blocks.clone(), scan_limits(3, 3));
+        let attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
             .await
             .unwrap();
-        (attester, requests)
+        (attester, requests, controls)
+    }
+
+    pub(super) fn ordered_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<_> = (0..self.burns.len()).collect();
+        indices.sort_by_key(|&i| self.burns[i].note_id().to_bytes());
+        indices
+    }
+
+    pub(super) fn prepared_response(&self, index: usize) -> Value {
+        let burn = &self.burns[index];
+        let prepared = batch(
+            &burn.note_id().to_hex(),
+            burn.amount(),
+            burn.items().dest_domain.as_u32(),
+        );
+        json!({"batches": [{"burnIntents": prepared.burn_intents,
+            "encoded": prepared.encoded, "messageHashToSign": prepared.message_hash_to_sign}]})
     }
 
     async fn signed(&self, index: usize) -> SignedWithdrawal {
@@ -244,6 +308,12 @@ impl Ledger {
             prepared.burn_intents[0].max_block_height = height.into();
             rebuild_for_test(&mut prepared).unwrap();
         }
+        let signers = SignerPair::new([
+            Box::new(TestSigner(1)) as Box<dyn Signer>,
+            Box::new(TestSigner(2)) as Box<dyn Signer>,
+        ])
+        .await
+        .unwrap();
         UnverifiedPrepareResponse {
             batches: vec![prepared],
         }
@@ -252,7 +322,7 @@ impl Ledger {
             &Config::load(&self.directory.path().join("attester.toml")).unwrap(),
         )
         .unwrap()
-        .sign([&TestSigner(1), &TestSigner(2)])
+        .sign(&signers)
         .await
         .unwrap()
     }
@@ -302,6 +372,14 @@ impl Ledger {
             .unwrap();
     }
 
+    pub(super) fn rewind_empty_block(&self) {
+        let header = proto::blockchain::BlockHeader::from(self.blocks[2].header()).encode_to_vec();
+        self.sql(&format!(
+            "UPDATE attester_state SET next_block = 3, authenticated_parent = x'{}'",
+            hex::encode(header),
+        ));
+    }
+
     pub(super) fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].note_id().to_hex(),
             "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(&self.burns[index])]})
@@ -332,12 +410,17 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
     };
     let config = Config::load(&directory.path().join("attester.toml")).unwrap();
     let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
-    let mut attester = Attester::start(config, Box::new(chain), Box::new(circle))
-        .await
-        .expect("startup checks structure, not submission contents");
+    let mut attester = Attester::start(
+        config,
+        Box::new(chain),
+        Box::new(circle),
+        development_pair().await,
+    )
+    .await
+    .expect("startup checks structure, not submission contents");
 
     assert!(matches!(
-        attester.recover_submissions(&mut false).await,
+        recover(&mut attester).await,
         Err(SubmitError::Store(_))
     ));
     assert!(requests.lock().unwrap().is_empty());
@@ -617,7 +700,7 @@ async fn failed_history_write_changes_nothing() {
     let (mut attester, _) = ledger
         .start(vec![reply(201, json!([ledger.response(0, "created")]))])
         .await;
-    assert!(attester.recover_submissions(&mut false).await.is_err());
+    assert!(recover(&mut attester).await.is_err());
     assert_eq!(ledger.record(&attester, 0), retried);
     drop(attester);
 
@@ -630,7 +713,7 @@ async fn failed_history_write_changes_nothing() {
             reply(200, ledger.response(0, "finalized")),
         ])
         .await;
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     assert_eq!(
         ledger.history(0),
         [
@@ -644,10 +727,10 @@ async fn failed_history_write_changes_nothing() {
     // Two polls with the same answer add one row between them (the status check answers 200, the
     // POST answered 201); a new status adds another.
     let recorded = ledger.history(0).len();
-    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
-    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    poll(&mut attester).await.unwrap();
+    poll(&mut attester).await.unwrap();
     assert_eq!(ledger.history(0).len(), recorded + 1);
-    attester.poll_withdrawal_statuses(&mut false).await.unwrap();
+    poll(&mut attester).await.unwrap();
     assert_eq!(
         ledger.history(0)[recorded..],
         [event("OUTCOME", Submitted), event("OUTCOME", Finalized)]
@@ -666,7 +749,7 @@ async fn retried_request_records_the_same_answer_again() {
     ledger.submit(&mut attester, 0).await.unwrap();
     let held = ledger.record(&attester, 0);
     attester.retry_held_submission(held.note_id).unwrap();
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     assert_eq!(ledger.record(&attester, 0), held);
     assert_eq!(
         ledger.history(0).last(),
@@ -823,8 +906,9 @@ async fn retries_use_saved_request() {
                 (reply.as_ref().map(|_| 429), reply),
                 "{name}"
             );
+            let queue = attester.store.submissions_to_recover().unwrap();
             attester
-                .recover_submissions(&mut rate_limited)
+                .advance_submissions(queue, &mut rate_limited)
                 .await
                 .unwrap();
             assert_eq!(
@@ -842,7 +926,7 @@ async fn retries_use_saved_request() {
         let (mut attester, retried) = ledger
             .start(vec![reply(201, json!([ledger.response(0, "created")]))])
             .await;
-        attester.recover_submissions(&mut false).await.unwrap();
+        recover(&mut attester).await.unwrap();
         assert_eq!(
             *first_requests.lock().unwrap(),
             *retried.lock().unwrap(),
@@ -874,7 +958,7 @@ async fn retries_use_saved_request() {
             reply(200, ledger.response(0, "finalized")),
         ])
         .await;
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     assert_eq!(first.lock().unwrap()[0], retry.lock().unwrap()[0]);
     assert_eq!(
         ledger.record(&attester, 0).status,
@@ -978,7 +1062,7 @@ async fn conflicts_are_checked() {
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
-        attester.recover_submissions(&mut false).await.unwrap();
+        recover(&mut attester).await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],
             ObservedRequest::Lookup {
@@ -1103,14 +1187,14 @@ async fn held_submissions_do_not_block_others() {
         rejected
     );
     ledger.submit(&mut attester, 1).await.unwrap();
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     assert_eq!(
         requests.lock().unwrap().len(),
         2,
         "holds do not retry automatically"
     );
     attester.retry_held_submission(held.note_id).unwrap();
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     {
         let observed = requests.lock().unwrap();
         assert_eq!(observed.len(), 3);
@@ -1147,7 +1231,7 @@ async fn held_submissions_do_not_block_others() {
     let (mut attester, retry) = ledger
         .start(vec![reply(200, ledger.response(0, "created"))])
         .await;
-    attester.recover_submissions(&mut false).await.unwrap();
+    recover(&mut attester).await.unwrap();
     assert_eq!(*retry.lock().unwrap(), requests.lock().unwrap()[1..]);
     assert_eq!(
         ledger.record(&attester, 0).status,

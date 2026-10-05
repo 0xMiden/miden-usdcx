@@ -218,8 +218,6 @@ impl UnverifiedPrepareResponse {
         let remote_token = B256::from(
             EthEmbeddedAccountId::from_account_id(config.faucet_account_id()).to_bytes32(),
         );
-        let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64());
-
         // Prepare asked for the burn's note ID as the salt; derive it again from the burn.
         if B256::from(burn.note_id().as_bytes()) != spec.salt {
             return Err(VerifyError::UnknownSalt);
@@ -249,6 +247,10 @@ impl UnverifiedPrepareResponse {
         if spec.value.is_zero() || spec.value.checked_add(intent.maxFee) != Some(burned_amount) {
             return Err(VerifyError::BadAmount);
         }
+        // Circle's fee grows with the amount on most routes, so the allowed fee is a fixed part
+        // plus a share of the burn.
+        let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64())
+            + burned_amount * U256::from(config.max_withdrawal_fee_bps()) / U256::from(10_000u64);
         if intent.maxFee > fee_ceiling {
             return Err(VerifyError::FeeTooHigh);
         }

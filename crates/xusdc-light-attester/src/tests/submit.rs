@@ -17,18 +17,19 @@ use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
-use crate::attester::Attester;
+use crate::attester::{release_holds, Attester};
 use crate::burn::DiscoveredBurn;
 use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
-use crate::config::Config;
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
 use super::discovery;
+use super::service_map::{counts, fresh_replies, signers};
+use super::startup::TestArgs;
 use super::support::{
     development_pair, faucet_account_id, history, read_store, scan_limits, transaction,
     BlockFactory, ChainControls, CircleState, ObservedRequest, TestChain,
@@ -187,6 +188,7 @@ pub(super) struct Ledger {
     pub(super) directory: tempfile::TempDir,
     pub(super) blocks: Vec<SignedBlock>,
     pub(super) fork_blocks: Vec<SignedBlock>,
+    pub(super) config: Mutex<TestArgs>,
     pub(super) burns: Vec<DiscoveredBurn>,
     pub(super) fresh_indices: Vec<usize>,
 }
@@ -244,10 +246,12 @@ impl Ledger {
                     .unwrap()
             })
             .collect();
+        let config = discovery::test_args(&directory, 1, &blocks[0], 1);
         Self {
             directory,
             blocks,
             fork_blocks: fork_factory.blocks(),
+            config: Mutex::new(config),
             burns,
             fresh_indices,
         }
@@ -268,7 +272,7 @@ impl Ledger {
         signers: SignerPair,
     ) -> (Attester, Requests, ChainControls) {
         let (circle, requests) = ScriptedCircle::new(self.path(), replies);
-        let config = Config::load(&self.directory.path().join("attester.toml")).unwrap();
+        let config = self.config.lock().unwrap().load();
         let (chain, controls) = TestChain::new(self.blocks.clone(), scan_limits(3, 3));
         let attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
             .await
@@ -314,13 +318,11 @@ impl Ledger {
         ])
         .await
         .unwrap();
+        let config = self.config.lock().unwrap().load();
         UnverifiedPrepareResponse {
             batches: vec![prepared],
         }
-        .verify(
-            burn,
-            &Config::load(&self.directory.path().join("attester.toml")).unwrap(),
-        )
+        .verify(burn, &config)
         .unwrap()
         .sign(&signers)
         .await
@@ -386,17 +388,18 @@ impl Ledger {
     }
 }
 
-pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<SignedBlock>) {
+pub(super) async fn submission_store() -> (tempfile::TempDir, Vec<SignedBlock>, TestArgs) {
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![CircleState::TransportError]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     drop(attester);
-    (ledger.directory, ledger.blocks)
+    let config = ledger.config.into_inner().unwrap();
+    (ledger.directory, ledger.blocks, config)
 }
 
 #[tokio::test]
 async fn malformed_saved_submission_is_rejected_when_loaded() {
-    let (directory, blocks) = submission_store().await;
+    let (directory, blocks, config) = submission_store().await;
     Connection::open(directory.path().join("state.sqlite3"))
         .unwrap()
         .execute("UPDATE submissions SET body = X'00'", [])
@@ -408,10 +411,9 @@ async fn malformed_saved_submission_is_rejected_when_loaded() {
         requests: requests.clone(),
         store_path: directory.path().join("state.sqlite3"),
     };
-    let config = Config::load(&directory.path().join("attester.toml")).unwrap();
     let chain = TestChain::new(blocks, scan_limits(3, 3)).0;
     let mut attester = Attester::start(
-        config,
+        config.load(),
         Box::new(chain),
         Box::new(circle),
         development_pair().await,
@@ -636,12 +638,11 @@ async fn submit_sends_checked_request() {
     let ledger = Ledger::new().await;
     let mut response = ledger.response(0, "created");
     response["useCircleForwarding"] = json!(true);
-    let path = ledger.directory.path().join("attester.toml");
-    let text = std::fs::read_to_string(&path).unwrap().replace(
-        "use_circle_forwarding = false",
-        "use_circle_forwarding = true",
-    );
-    std::fs::write(path, text).unwrap();
+    ledger
+        .config
+        .lock()
+        .unwrap()
+        .replace("--use-circle-forwarding", "true");
     let (mut attester, requests) = ledger.start(vec![reply(201, json!([response]))]).await;
     ledger.submit(&mut attester, 0).await.unwrap();
     let body: Value = match &requests.lock().unwrap()[0] {
@@ -914,11 +915,11 @@ async fn retries_use_saved_request() {
             );
         }
         drop(attester);
-        let config_path = ledger.directory.path().join("attester.toml");
-        let text = std::fs::read_to_string(&config_path)
+        ledger
+            .config
+            .lock()
             .unwrap()
-            .replace("circle.example.invalid", "new-circle.example.invalid");
-        std::fs::write(config_path, text).unwrap();
+            .replace("--circle-url", "https://new-circle.example.invalid");
         let (mut attester, retried) = ledger
             .start(vec![reply(201, json!([ledger.response(0, "created")]))])
             .await;
@@ -1172,7 +1173,6 @@ async fn held_submissions_do_not_block_others() {
         .start(vec![
             reply(400, rejected.clone()),
             reply(201, json!([ledger.response(1, "created")])),
-            reply(201, json!([ledger.response(0, "created")])),
         ])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
@@ -1189,27 +1189,73 @@ async fn held_submissions_do_not_block_others() {
         2,
         "holds do not retry automatically"
     );
-    attester.retry_held_submission(held.note_id).unwrap();
-    recover(&mut attester).await.unwrap();
+
+    // Releasing the hold starts the withdrawal over: the burn is prepared and signed again, and
+    // the old signed request is never sent.
+    drop(attester);
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+            &[held.note_id],
+        )
+        .unwrap(),
+        (0, 1)
+    );
+    let ready: Vec<_> = ledger
+        .fresh_indices
+        .iter()
+        .copied()
+        .filter(|&index| index != 1)
+        .collect();
+    let mut replies = fresh_replies(&ledger, &ready);
+    replies.push(reply(200, ledger.response(1, "created")));
+    let (signers, calls) = signers(None).await;
+    let (mut attester, released, _) = ledger.runtime(replies, signers).await;
+    assert!(attester.store.submission(held.note_id).unwrap().is_none());
+    assert!(attester
+        .store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .any(|burn| burn.note_id() == held.note_id));
+    attester.run_one_cycle().await.unwrap();
+    assert_eq!(counts(&calls), [2, 2], "both ready burns are signed");
     {
-        let observed = requests.lock().unwrap();
-        assert_eq!(observed.len(), 3);
-        assert_eq!(observed[0], observed[2]);
-        for (index, request) in observed[..2].iter().enumerate() {
-            assert_eq!(
-                ledger.record(&attester, index).status,
-                SubmissionStatus::Submitted
+        let released = released.lock().unwrap();
+        let position = 2 * ready.iter().position(|&index| index == 0).unwrap();
+        assert_eq!(released[position], ObservedRequest::Prepare);
+        let ObservedRequest::Submit { body, .. } = &released[position + 1] else {
+            panic!(
+                "expected the withdraw request, got {:?}",
+                released[position + 1]
             );
-            let ObservedRequest::Submit { body, .. } = request else {
-                panic!("expected the withdraw request, got {request:?}");
-            };
-            let body: Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(
-                body["batches"][0]["burnTxId"],
-                ledger.burns[index].note_id().to_hex()
-            );
-        }
+        };
+        let body: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(
+            body["batches"][0]["burnTxId"],
+            ledger.burns[0].note_id().to_hex()
+        );
     }
+    for index in 0..2 {
+        assert_eq!(
+            ledger.record(&attester, index).status,
+            SubmissionStatus::Submitted
+        );
+    }
+    // The history keeps the released request before the burn's new authorization.
+    assert_eq!(
+        ledger.history(0),
+        [
+            event("AUTHORIZED", SubmissionStatus::Submitting),
+            event("OUTCOME", SubmissionStatus::Held),
+            event("OPERATOR_RELEASE", SubmissionStatus::Held),
+            event("AUTHORIZED", SubmissionStatus::Submitting),
+            event("OUTCOME", SubmissionStatus::Submitted),
+        ]
+    );
 
     // A status lookup never holds: after a 400 to the GET the saved ID stays queued.
     let ledger = Ledger::new().await;
@@ -1219,11 +1265,11 @@ async fn held_submissions_do_not_block_others() {
     assert_eq!(queued.hold_reason, None);
     assert_eq!(queued.withdrawal_id.as_deref(), Some(ID));
     drop(attester);
-    let path = ledger.directory.path().join("attester.toml");
-    let text = std::fs::read_to_string(&path)
+    ledger
+        .config
+        .lock()
         .unwrap()
-        .replace("circle.example.invalid", "new-circle.example.invalid");
-    std::fs::write(path, text).unwrap();
+        .replace("--circle-url", "https://new-circle.example.invalid");
     let (mut attester, retry) = ledger
         .start(vec![reply(200, ledger.response(0, "created"))])
         .await;
@@ -1245,7 +1291,7 @@ async fn submission_requests_use_the_saved_request() {
         .await
         .submission("https://saved.example.invalid/v1/withdraw".parse().unwrap())
         .unwrap();
-    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let config = ledger.config.lock().unwrap().load();
     let client = CircleClient::start(&config).unwrap().0;
 
     let post = client.submission_request(&saved).unwrap();

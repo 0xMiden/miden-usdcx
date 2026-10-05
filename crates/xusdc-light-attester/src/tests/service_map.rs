@@ -14,12 +14,11 @@ use tokio_util::sync::CancellationToken;
 use crate::attester::{Attester, DiscoverError, SubmitError};
 use crate::chain::ChainError;
 use crate::circle::CircleError;
-use crate::config::Config;
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
 use crate::submission::SubmissionStatus::{Expired, Finalized, Submitted, Submitting};
 use crate::verify::VerifyError;
 
-use super::discovery::write_config;
+use super::discovery::test_config;
 use super::submit::{reply, Ledger, ScriptedCircle};
 use super::support::{
     development_signers, faucet_account_id, scan_limits, test_note, transaction, BlockFactory,
@@ -57,7 +56,7 @@ impl Signer for CountedSigner {
     }
 }
 
-async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
+pub(super) async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
     let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let mut index = 0;
     let signers = development_signers().map(|inner| {
@@ -72,7 +71,7 @@ async fn signers(shutdown: Option<CancellationToken>) -> (SignerPair, Counts) {
     (SignerPair::new(signers).await.unwrap(), calls)
 }
 
-fn counts(calls: &Counts) -> [usize; 2] {
+pub(super) fn counts(calls: &Counts) -> [usize; 2] {
     calls.each_ref().map(|count| count.load(Ordering::Relaxed))
 }
 
@@ -80,7 +79,7 @@ fn accepted(ledger: &Ledger, index: usize, status: &str) -> CircleState {
     reply(201, json!([ledger.response(index, status)]))
 }
 
-fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
+pub(super) fn fresh_replies(ledger: &Ledger, indices: &[usize]) -> Vec<CircleState> {
     indices
         .iter()
         .flat_map(|&i| {
@@ -158,7 +157,7 @@ async fn invalid_burns_are_not_signed() {
     );
     blocks.push(vec![], vec![]);
     let directory = tempfile::tempdir().unwrap();
-    let config = write_config(&directory, 0, &blocks.blocks()[0], 1);
+    let config = test_config(&directory, 0, &blocks.blocks()[0], 1);
     let (circle, requests) = ScriptedCircle::new(directory.path().join("state.sqlite3"), vec![]);
     let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 1));
     let (signers, calls) = signers(None).await;
@@ -394,7 +393,7 @@ async fn diverged_chain_stops_the_attester() {
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
 
-    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let config = ledger.config.lock().unwrap().load();
     let (circle, fork_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.fork_blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;
@@ -411,7 +410,7 @@ async fn diverged_chain_stops_the_attester() {
     );
     assert!(fork_requests.lock().unwrap().is_empty());
 
-    let config = Config::load(&ledger.directory.path().join("attester.toml")).unwrap();
+    let config = ledger.config.lock().unwrap().load();
     let (circle, missing_requests) = ScriptedCircle::new(ledger.path(), vec![]);
     let (chain, _) = TestChain::new(ledger.blocks.clone(), scan_limits(3, 3));
     let (pair, _) = signers(None).await;
@@ -664,13 +663,11 @@ async fn only_a_rate_limit_lengthens_the_pause() {
 async fn long_poll_interval_is_kept_after_a_rate_limit() {
     let ledger = Ledger::new().await;
     seed(&ledger, &[(0, None)]).await;
-    let config = ledger.path().with_file_name("attester.toml");
-    let settings = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(
-        &config,
-        settings.replace("poll_interval_ms = 100\n", "poll_interval_ms = 90000\n"),
-    )
-    .unwrap();
+    ledger
+        .config
+        .lock()
+        .unwrap()
+        .replace("--poll-interval", "90s");
     let replies = vec![reply(429, json!({"message": "slow down"})); 3];
     let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;

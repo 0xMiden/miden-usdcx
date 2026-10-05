@@ -1,17 +1,19 @@
 //! Burn holds: which failures hold a burn, and how a hold is recorded and released.
 
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::Serializable;
 use reqwest::StatusCode;
 use serde_json::json;
 
-use crate::attester::burn_hold;
+use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
-use crate::store::BurnHoldReason;
+use crate::store::{BurnHoldReason, ScanCursor, Store, TrustedAnchor};
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
 use super::submit::{reply, Ledger};
-use super::support::{read_store, CircleState, ObservedRequest};
+use super::support::{faucet_account_id, read_store, CircleState, ObservedRequest};
 
 /// One column of a burn's history rows of one kind, oldest first.
 fn recorded<T: rusqlite::types::FromSql>(
@@ -102,10 +104,6 @@ async fn prepare_400_holds_survive_restart_until_released() {
                 reply(201, json!([ledger.response(i, "finalized")])),
             ]
         })
-        .chain([
-            reply(200, ledger.prepared_response(order[0])),
-            CircleState::TransportError,
-        ])
         .collect();
     let (mut attester, requests) = ledger.start(replies).await;
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
@@ -114,13 +112,271 @@ async fn prepare_400_holds_survive_restart_until_released() {
         ledger.record(&attester, order[0]).status,
         SubmissionStatus::Expired
     );
-    attester
-        .release_burn_hold(ledger.burns[order[0]].note_id())
+    drop(attester);
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+            &[ledger.burns[order[0]].note_id()],
+        )
+        .unwrap(),
+        (1, 0)
+    );
+    let mut store = ledger.open_store().unwrap();
+    store
+        .hold_burn(
+            ledger.burns[order[0]].note_id(),
+            BurnHoldReason::PrepareRejected,
+            None,
+        )
         .unwrap();
+    drop(store);
+    let (attester, requests) = ledger.start(vec![]).await;
+    assert!(attester
+        .store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .all(|burn| burn.note_id() != ledger.burns[order[0]].note_id()));
+    assert!(requests.lock().unwrap().is_empty());
+    drop(attester);
+    assert_eq!(
+        release_holds(
+            &ledger.path(),
+            faucet_account_id(),
+            BlockNumber::GENESIS,
+            ledger.blocks[0].header().commitment(),
+            &[ledger.burns[order[0]].note_id()],
+        )
+        .unwrap(),
+        (1, 0)
+    );
+    let (mut attester, requests) = ledger
+        .start(vec![
+            reply(200, ledger.prepared_response(order[0])),
+            CircleState::TransportError,
+        ])
+        .await;
+    assert_eq!(
+        recorded::<i64>(&ledger, order[0], "BURN_RELEASED", "burn_hold_reason"),
+        [BurnHoldReason::PrepareRejected.code(); 2]
+    );
     assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 6);
-    assert_eq!(requests[4], ObservedRequest::Prepare);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], ObservedRequest::Prepare);
+}
+
+/// Releasing the named holds is all or nothing: when a history row cannot be written, no hold is
+/// cleared, no held request is deleted and no history row is kept.
+#[tokio::test]
+async fn failed_release_keeps_every_hold() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    attester
+        .store
+        .hold_burn(
+            ledger.burns[1].note_id(),
+            BurnHoldReason::PrepareRejected,
+            None,
+        )
+        .unwrap();
+    drop(attester);
+    ledger.sql(
+        "CREATE TRIGGER fail_release BEFORE INSERT ON submission_events
+         WHEN NEW.kind = 'OPERATOR_RELEASE' BEGIN SELECT RAISE(FAIL, 'disk full'); END;",
+    );
+    let before = std::fs::read(ledger.path()).unwrap();
+    let mut store = ledger.open_store().unwrap();
+    assert!(store
+        .release_holds(&[ledger.burns[0].note_id(), ledger.burns[1].note_id()])
+        .is_err());
+    drop(store);
+    assert_eq!(std::fs::read(ledger.path()).unwrap(), before);
+}
+
+/// Only the named burns are released: other holds stay, a held withdrawal keeps its saved request
+/// until it is named, and naming a burn without a hold releases nothing.
+#[tokio::test]
+async fn only_named_holds_are_released() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let [withdrawal, first, second] = [0, 1, 2].map(|index| ledger.burns[index].note_id());
+    for burn in [first, second] {
+        attester
+            .store
+            .hold_burn(burn, BurnHoldReason::PrepareRejected, None)
+            .unwrap();
+    }
+    drop(attester);
+    let mut store = ledger.open_store().unwrap();
+    assert_eq!(store.release_holds(&[first]).unwrap(), (1, 0));
+    let ready: Vec<_> = store
+        .burns_ready_for_withdrawal(3u32.into(), 1)
+        .unwrap()
+        .iter()
+        .map(|burn| burn.note_id())
+        .collect();
+    assert_eq!(ready, [first], "only the named burn is released");
+    let unknown = NoteId::try_from_hex(&format!("0x{}", "11".repeat(32))).unwrap();
+    for named in [[withdrawal, first], [withdrawal, unknown]] {
+        assert!(
+            store.release_holds(&named).is_err(),
+            "a named burn that is not held, or unknown, fails the whole release"
+        );
+    }
+    assert!(
+        store.submission(withdrawal).unwrap().is_some(),
+        "a held withdrawal keeps its saved request until it is released"
+    );
+    assert_eq!(store.release_holds(&[withdrawal]).unwrap(), (0, 1));
+    assert!(store.submission(withdrawal).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_file_uri_store_path_cannot_bypass_the_lock() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger.start(Vec::new()).await;
+    let held = ledger.burns[0].note_id();
+    attester
+        .store
+        .hold_burn(held, BurnHoldReason::PrepareRejected, None)
+        .unwrap();
+    let file_uri = std::path::PathBuf::from(format!("file:{}?nolock=1", ledger.path().display()));
+    assert!(release_holds(
+        &file_uri,
+        faucet_account_id(),
+        BlockNumber::GENESIS,
+        ledger.blocks[0].header().commitment(),
+        &[held],
+    )
+    .is_err());
+    assert!(attester
+        .store
+        .holds()
+        .unwrap()
+        .iter()
+        .any(|hold| hold.note_id == held));
+    drop(attester);
+    assert!(ledger
+        .open_store()
+        .unwrap()
+        .holds()
+        .unwrap()
+        .iter()
+        .any(|hold| hold.note_id == held));
+
+    let directory = tempfile::tempdir().unwrap();
+    let other_store = directory.path().join("other.sqlite");
+    let file_uri = std::path::PathBuf::from(format!("file:{}", other_store.display()));
+    let result = Store::open_or_create(
+        &file_uri,
+        faucet_account_id(),
+        ScanCursor {
+            next_block: BlockNumber::GENESIS,
+        },
+        TrustedAnchor {
+            block_num: BlockNumber::GENESIS,
+            commitment: ledger.blocks[0].header().commitment(),
+        },
+    );
+    assert!(result.is_err());
+    assert!(!other_store.exists());
+}
+
+/// Each hold is listed on one line with the note ID first and only its current response evidence.
+#[tokio::test]
+async fn holds_are_listed() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(400, json!({"message": "limit\n  reached"}))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let [withdrawal, current, unreadable] = [0, 1, 2].map(|index| ledger.burns[index].note_id());
+    let current_response = serde_json::to_vec(&json!({"message": "prepare\n  rejected"})).unwrap();
+    attester
+        .store
+        .hold_burn(
+            current,
+            BurnHoldReason::PrepareRejected,
+            Some((400, &current_response)),
+        )
+        .unwrap();
+    attester
+        .store
+        .hold_burn(
+            unreadable,
+            BurnHoldReason::PrepareRejected,
+            Some((400, b"not JSON")),
+        )
+        .unwrap();
+    let lines: Vec<_> = attester
+        .store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
+        format!("{unreadable}\tburn\tPrepareRejected\t400\t-"),
+    ];
+    burn_lines.sort();
+    assert_eq!(
+        lines,
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
+    );
+    drop(attester);
+
+    {
+        let connection = rusqlite::Connection::open(ledger.path()).unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE submission_events
+                 SET status = 'EXPIRED', http_status = 200, response = ?2
+                 WHERE note_id = ?1 AND kind = 'BURN_HELD'",
+                rusqlite::params![
+                    unreadable.to_bytes(),
+                    serde_json::to_vec(&json!({"message": "old withdrawal"})).unwrap()
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+    }
+    let store = ledger.open_store().unwrap();
+    let lines: Vec<_> = store
+        .holds()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut burn_lines = [
+        format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
+        format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
+    ];
+    burn_lines.sort();
+    assert_eq!(
+        lines,
+        burn_lines
+            .into_iter()
+            .chain([format!(
+                "{withdrawal}\twithdrawal\tHttpRejected\t400\tlimit reached"
+            )])
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

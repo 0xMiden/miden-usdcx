@@ -1,6 +1,8 @@
 //! Durable discovery state and the single-writer store boundary.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use alloy_primitives::B256;
@@ -14,16 +16,18 @@ use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
-use rusqlite::{params, Params, Transaction};
+use rusqlite::{params, OpenFlags, Params, Transaction};
+use strum::IntoEnumIterator;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::circle::circle_message;
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 pub(crate) enum BurnHoldReason {
     PrepareRejected = 1,
 }
@@ -31,6 +35,39 @@ pub(crate) enum BurnHoldReason {
 impl BurnHoldReason {
     pub(crate) fn code(self) -> i64 {
         self as i64
+    }
+
+    /// The reason a stored number stands for.
+    fn from_code(code: i64) -> Option<Self> {
+        Self::iter().find(|reason| reason.code() == code)
+    }
+}
+
+/// A held burn or held withdrawal as `release-holds` lists it: one line, the note ID first, so an
+/// edited copy of the list can be passed back with `--note-ids-file`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub note_id: NoteId,
+    /// "burn" for a held burn, "withdrawal" for a held withdrawal.
+    pub kind: &'static str,
+    pub reason: String,
+    pub http_status: Option<u16>,
+    /// Circle's bounded, single-line message when the current hold has one.
+    pub circle_message: Option<String>,
+}
+
+impl fmt::Display for Hold {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t{}",
+            self.note_id,
+            self.kind,
+            self.reason,
+            self.http_status
+                .map_or_else(|| "-".into(), |status| status.to_string()),
+            self.circle_message.as_deref().unwrap_or("-")
+        )
     }
 }
 
@@ -61,6 +98,10 @@ enum EventKind {
     /// An operator released the burn's hold; the row keeps the hold's reason.
     #[strum(serialize = "BURN_RELEASED")]
     BurnReleased,
+    /// An operator released a held request, which is deleted so that the burn is prepared and
+    /// signed again.
+    #[strum(serialize = "OPERATOR_RELEASE")]
+    OperatorRelease,
 }
 
 impl EventKind {
@@ -99,6 +140,17 @@ pub(crate) struct Store {
     faucet_account_id: AccountId,
 }
 
+// SQLite is built into this binary with URI file names always on, so a path starting with "file:"
+// would be read as a URI, and a URI can turn off locking. Starting a relative path with "./" makes
+// SQLite read it as a plain file name.
+fn plain_file_name(path: &Path) -> PathBuf {
+    if path.is_relative() {
+        Path::new(".").join(path)
+    } else {
+        path.to_owned()
+    }
+}
+
 impl Store {
     /// Opens the store at `path`, or creates it there starting at `initial_cursor`. An existing
     /// store keeps the scan start it was created with, so changing the configured deployment block
@@ -109,6 +161,7 @@ impl Store {
         initial_cursor: ScanCursor,
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
+        let path = plain_file_name(path);
         let exists = path.try_exists().context(INVALID)?;
         // A new store keeps its anchor and scan start for good, so a bad pair is refused before
         // anything is created and the corrected config can use the same path.
@@ -116,18 +169,12 @@ impl Store {
             bail!("trusted anchor must not be after the scan start");
         }
 
-        let mut connection = rusqlite::Connection::open(path).map_err(classify_error)?;
-        // Keep the exclusive connection lock for the store's lifetime so a second attester cannot
-        // create a competing cursor or submission queue.
-        connection
-            .busy_timeout(Duration::ZERO)
-            .map_err(classify_error)?;
-        connection
-            .pragma_update(None, "locking_mode", "EXCLUSIVE")
-            .map_err(classify_error)?;
-        connection
-            .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
-            .map_err(classify_error)?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut connection =
+            rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
+        lock_exclusively(&connection)?;
 
         let initial_cursor = if exists {
             open_existing(&mut connection, faucet_account_id, trusted_anchor)?
@@ -140,6 +187,26 @@ impl Store {
             )?;
             initial_cursor
         };
+
+        Ok(Self {
+            connection,
+            initial_cursor,
+            faucet_account_id,
+        })
+    }
+
+    /// Opens an existing store without creating or initializing one.
+    pub(crate) fn open_existing(
+        path: &Path,
+        faucet_account_id: AccountId,
+        trusted_anchor: TrustedAnchor,
+    ) -> anyhow::Result<Self> {
+        let path = plain_file_name(path);
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut connection =
+            rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
+        lock_exclusively(&connection)?;
+        let initial_cursor = open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
 
         Ok(Self {
             connection,
@@ -210,6 +277,116 @@ impl Store {
         ensure!(written == 1, CONFLICT);
         record_event(&transaction, record.note_id, EventKind::Authorized)?;
         transaction.commit().map_err(classify_error)
+    }
+
+    /// Releases the named holds in one transaction, and returns how many burns and withdrawals it
+    /// released. Each release is recorded in the burn's history first, so the history keeps the
+    /// hold's reason. A note ID without a releasable hold fails the whole call, and nothing is
+    /// released.
+    pub(crate) fn release_holds(&mut self, note_ids: &[NoteId]) -> anyhow::Result<(usize, usize)> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let (mut burns, mut withdrawals) = (0, 0);
+        // A burn named twice is released once.
+        for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
+            let note = note_id.to_bytes();
+            let held = params![
+                note,
+                SubmissionStatus::Held.as_ref(),
+                HoldReason::HttpRejected.as_str()
+            ];
+            if exists(
+                &transaction,
+                "SELECT EXISTS (SELECT 1 FROM burns
+                 WHERE note_id = ?1 AND hold_reason IS NOT NULL)",
+                [&note],
+            )? {
+                record_event(&transaction, note_id, EventKind::BurnReleased)?;
+                burns += transaction
+                    .execute(
+                        "UPDATE burns SET hold_reason = NULL WHERE note_id = ?1",
+                        [&note],
+                    )
+                    .map_err(classify_error)?;
+            } else if exists(
+                &transaction,
+                "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
+                    AND hold_reason = ?3 AND withdrawal_id IS NULL)",
+                held,
+            )? {
+                // Release only after checking this withdrawal with Circle. Remove the saved
+                // request so the next cycle can prepare and sign again. An expired signed request
+                // cannot be reused.
+                record_event(&transaction, note_id, EventKind::OperatorRelease)?;
+                let deleted = transaction
+                    .execute("DELETE FROM submissions WHERE note_id = ?1", [&note])
+                    .map_err(classify_error)?;
+                ensure!(deleted == 1, CONFLICT);
+                withdrawals += 1;
+            } else {
+                bail!("note {note_id} has no releasable hold");
+            }
+        }
+        transaction.commit().map_err(classify_error)?;
+        Ok((burns, withdrawals))
+    }
+
+    /// Every held burn and held withdrawal: burns first, each group in note order.
+    pub(crate) fn holds(&self) -> anyhow::Result<Vec<Hold>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT burns.note_id, burns.hold_reason, held.status,
+                    held.http_status, held.response
+                 FROM burns
+                 LEFT JOIN submission_events AS held ON held.seq = (
+                    SELECT MAX(seq) FROM submission_events
+                    WHERE note_id = burns.note_id AND kind = 'BURN_HELD'
+                 )
+                 WHERE burns.hold_reason IS NOT NULL
+                 ORDER BY burns.note_id",
+            )
+            .map_err(classify_error)?;
+        let mut rows = statement.query([]).map_err(classify_error)?;
+        let mut holds = Vec::new();
+        while let Some(row) = rows.next().map_err(classify_error)? {
+            let reason =
+                BurnHoldReason::from_code(row.get(1).map_err(classify_error)?).context(INVALID)?;
+            let old_submission_snapshot = row
+                .get::<_, Option<String>>(2)
+                .map_err(classify_error)?
+                .is_some();
+            let (http_status, circle_message) = if old_submission_snapshot {
+                (None, None)
+            } else {
+                let response: Option<Vec<u8>> = row.get(4).map_err(classify_error)?;
+                (
+                    row.get(3).map_err(classify_error)?,
+                    response.as_deref().and_then(one_line_circle_message),
+                )
+            };
+            holds.push(Hold {
+                note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
+                kind: "burn",
+                reason: format!("{reason:?}"),
+                http_status,
+                circle_message,
+            });
+        }
+        for held in select_submissions(&self.connection, None, Some(SubmissionStatus::Held))? {
+            holds.push(Hold {
+                note_id: held.note_id,
+                kind: "withdrawal",
+                reason: held
+                    .hold_reason
+                    .map_or_else(|| "-".into(), |reason| format!("{reason:?}")),
+                http_status: held.last_http_status,
+                circle_message: held
+                    .last_response
+                    .as_deref()
+                    .and_then(one_line_circle_message),
+            });
+        }
+        Ok(holds)
     }
 
     pub(crate) fn hold_burn(
@@ -399,6 +576,24 @@ impl Store {
 
         transaction.commit().map_err(classify_error)
     }
+}
+
+fn one_line_circle_message(response: &[u8]) -> Option<String> {
+    circle_message(response).map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Keeps the exclusive connection lock for the store's lifetime so a second process cannot create
+/// a competing cursor or submission queue.
+fn lock_exclusively(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection
+        .busy_timeout(Duration::ZERO)
+        .map_err(classify_error)?;
+    connection
+        .pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .map_err(classify_error)?;
+    connection
+        .execute_batch("BEGIN EXCLUSIVE; COMMIT;")
+        .map_err(classify_error)
 }
 
 fn initialize_store(

@@ -54,8 +54,8 @@ pub struct MidenChainReader {
 }
 
 impl MidenChainReader {
-    pub fn devnet() -> Self {
-        let grpc = GrpcClient::new(&Endpoint::devnet(), DEFAULT_GRPC_TIMEOUT_MS);
+    pub fn new(endpoint: &Endpoint) -> Self {
+        let grpc = GrpcClient::new(endpoint, DEFAULT_GRPC_TIMEOUT_MS);
         Self {
             rpc: VerifyingRpcClient::new(grpc),
         }

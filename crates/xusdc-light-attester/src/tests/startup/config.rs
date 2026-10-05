@@ -1,6 +1,8 @@
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
+use miden_client::rpc::Endpoint;
+
 use crate::config::Config;
 
 use super::{config_toml, create_store_parent, startup_anchor, CONFIG_FILE};
@@ -31,6 +33,52 @@ fn assert_config_error(config: &str, expected_error: &str) {
     std::fs::write(&path, config).unwrap();
     let error = Config::load(&path).expect_err("invalid config must be rejected");
     assert_eq!(error.to_string(), expected_error);
+}
+
+#[test]
+fn miden_rpc_url_is_required() {
+    let tempdir = tempfile::tempdir().unwrap();
+    create_store_parent(&tempdir);
+    let path = tempdir.path().join(CONFIG_FILE);
+    let devnet = config_toml(1);
+
+    std::fs::write(&path, &devnet).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().miden_rpc_url(),
+        &Endpoint::devnet()
+    );
+
+    let local = replace_setting(
+        &devnet,
+        "miden_rpc_url",
+        "miden_rpc_url = \"http://localhost:57291\"",
+    );
+    std::fs::write(&path, local).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().miden_rpc_url(),
+        &Endpoint::localhost()
+    );
+
+    assert_config_error(
+        &remove_setting(&devnet, "miden_rpc_url"),
+        "failed to parse config",
+    );
+    assert_config_error(
+        &replace_setting(
+            &devnet,
+            "miden_rpc_url",
+            "miden_rpc_url = \"https://rpc.devnet.miden.io:99999\"",
+        ),
+        "Miden RPC URL is invalid",
+    );
+    assert_config_error(
+        &replace_setting(
+            &devnet,
+            "miden_rpc_url",
+            "miden_rpc_url = \"rpc.devnet.miden.io\"",
+        ),
+        "Miden RPC URL must start with https:// or http://",
+    );
 }
 
 #[test]

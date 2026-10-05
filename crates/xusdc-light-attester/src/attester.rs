@@ -7,10 +7,11 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, warn};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{CircleApi, CircleError};
+use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
@@ -140,7 +141,10 @@ impl Attester {
             match self.cycle(&mut rate_limited).await {
                 Ok(report) => {
                     if let Err(error) = report.discover {
-                        eprintln!("discovery failed; new signing paused for this cycle: {error:?}");
+                        warn!(
+                            error = &error as &dyn std::error::Error,
+                            "discovery failed; new signing paused for this cycle"
+                        );
                     }
                 }
                 Err(error)
@@ -152,7 +156,10 @@ impl Attester {
                     return Err(error);
                 }
                 Err(error) => {
-                    eprintln!("cycle stopped; retrying after the pause between cycles: {error:?}")
+                    error!(
+                        error = %format_args!("{error:#}"),
+                        "cycle stopped; retrying after the pause between cycles"
+                    );
                 }
             }
             pause = if rate_limited {
@@ -373,10 +380,17 @@ impl Attester {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                if let Some((reason, response)) = burn_hold(&error) {
+                let (hold, response, message) = burn_hold(&error);
+                if let Some(reason) = hold {
                     self.store.hold_burn(note_id, reason, response)?;
                 }
-                eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
+                warn!(
+                    note_id = %note_id,
+                    error = &error as &dyn std::error::Error,
+                    hold_reason = ?hold,
+                    circle_message = message.as_deref(),
+                    "withdrawal failed before submission"
+                );
                 first_error.get_or_insert(error);
             }
         }
@@ -417,20 +431,24 @@ fn discovery_outcome(
     }
 }
 
-/// The hold that a failure before submission puts on its burn, if any.
-pub(crate) fn burn_hold(error: &SubmitError) -> Option<(BurnHoldReason, Option<(u16, &[u8])>)> {
+/// The hold that a failure before submission puts on its burn, its HTTP evidence, and Circle's
+/// message for the log.
+pub(crate) fn burn_hold(
+    error: &SubmitError,
+) -> (Option<BurnHoldReason>, Option<(u16, &[u8])>, Option<String>) {
     match error {
         // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
         // that fails our checks, is tried again next cycle.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
             if *status == StatusCode::BAD_REQUEST =>
         {
-            Some((
-                BurnHoldReason::PrepareRejected,
+            (
+                Some(BurnHoldReason::PrepareRejected),
                 Some((status.as_u16(), body)),
-            ))
+                circle_message(body),
+            )
         }
-        _ => None,
+        _ => (None, None, None),
     }
 }
 

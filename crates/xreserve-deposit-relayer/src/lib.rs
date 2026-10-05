@@ -11,6 +11,8 @@
 //! [`Relayer::run`] begins a scan every polling interval; a relayer that is caught up meets the
 //! watermark at the top of the head page and ends the scan after that one request.
 
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+
 use anyhow::Result;
 use miden_protocol::note::Note;
 use tracing::field::Empty;
@@ -57,6 +59,12 @@ struct PageOutcome {
     next: Option<CircleCursor>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ScanOutcome {
+    Complete,
+    Stopped,
+}
+
 impl Relayer {
     /// Assembles a relayer from the operator configuration and the client that submits to Miden.
     ///
@@ -98,10 +106,13 @@ impl Relayer {
     /// - Reading or persisting the state fails.
     /// - Fetching a Circle page fails.
     /// - Submitting the mint notes fails.
-    fn scan(&mut self) -> Result<()> {
+    fn scan(&mut self, shutdown: &Receiver<()>) -> Result<ScanOutcome> {
         let mut state = self.store.state()?;
 
         loop {
+            if stop_requested(shutdown) {
+                return Ok(ScanOutcome::Stopped);
+            }
             let outcome = self.process_page(
                 state.scan.as_ref().map(|scan| &scan.resume),
                 state.watermark.as_ref(),
@@ -112,7 +123,7 @@ impl Relayer {
             // has written progress of its own and the stored head wins.
             let Some(head) = state.scan.as_ref().map(|scan| scan.head).or(outcome.newest) else {
                 // The feed is empty, so there is nothing for the next scan to stop at.
-                return Ok(());
+                return Ok(ScanOutcome::Complete);
             };
 
             // The watermark moves only when the walk reaches its end, and the progress it replaces
@@ -130,8 +141,11 @@ impl Relayer {
             if next != state {
                 self.store.set_state(&next)?;
             }
+            if stop_requested(shutdown) {
+                return Ok(ScanOutcome::Stopped);
+            }
             if next.scan.is_none() {
-                return Ok(());
+                return Ok(ScanOutcome::Complete);
             }
             state = next;
         }
@@ -252,15 +266,44 @@ impl Relayer {
     ///
     /// A failed scan leaves the watermark where it was, and the next one resumes at the page the
     /// failure stopped it on rather than repeating the pages already on chain.
-    pub fn run(mut self) -> ! {
+    pub fn run(self) -> Result<()> {
+        // Keep the sender alive so the standalone relayer continues running.
+        let (_keep_running, shutdown) = mpsc::channel();
+        self.run_until(shutdown)
+    }
+
+    /// Runs until a shutdown message arrives or its sender is dropped.
+    ///
+    /// The current page finishes and its progress is saved before stopping. Waiting for a mint
+    /// transaction can continue indefinitely if the chain stops producing blocks.
+    pub fn run_until(mut self, shutdown: Receiver<()>) -> Result<()> {
         loop {
-            if let Err(error) = self.scan() {
-                warn!(
+            if stop_requested(&shutdown) {
+                return Ok(());
+            }
+            match self.scan(&shutdown) {
+                Ok(ScanOutcome::Stopped) => return Ok(()),
+                Ok(ScanOutcome::Complete) => {}
+                Err(error) => warn!(
                     error = format!("{error:#}"),
                     "the scan failed; the next one resumes where it stopped"
-                );
+                ),
             }
-            std::thread::sleep(self.config.poll_interval);
+            match shutdown.recv_timeout(self.config.poll_interval) {
+                Err(RecvTimeoutError::Timeout) => {}
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
         }
     }
 }
+
+fn stop_requested(shutdown: &Receiver<()>) -> bool {
+    matches!(
+        shutdown.try_recv(),
+        Ok(()) | Err(TryRecvError::Disconnected)
+    )
+}
+
+#[cfg(test)]
+#[path = "tests/shutdown.rs"]
+mod shutdown_tests;

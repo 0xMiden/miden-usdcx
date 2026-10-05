@@ -7114,6 +7114,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "usdcx-bridge"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "miden-usdcx",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "xreserve-deposit-relayer",
+ "xusdc-attester",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -838,6 +838,9 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
             hold_reason FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",
+        "SELECT seq, note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
+            http_status, response, error, endpoint, hold_reason, burn_hold_reason, circle_status
+            FROM submission_events LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }

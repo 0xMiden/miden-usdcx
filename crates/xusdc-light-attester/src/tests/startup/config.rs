@@ -123,7 +123,6 @@ fn invalid_config_is_rejected() {
         "faucet_account_id_hex",
         "circle_api_base_url",
         "use_circle_forwarding",
-        "withdrawal_limit_24h",
         "poll_interval_ms",
         "faucet_deployment_block",
         "trusted_anchor_block",
@@ -197,7 +196,6 @@ fn invalid_config_is_rejected() {
     assert_eq!(config.minimum_finality_depth_blocks(), 1);
     assert_eq!(config.expected_signing_public_keys_hex(), ["unchecked"]);
     assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
-    assert_eq!(config.withdrawal_limit_24h(), 10_000_000_000_000);
 
     std::fs::write(&path, format!("{valid}max_withdrawal_fee = 3500\n")).unwrap();
     assert_eq!(

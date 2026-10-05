@@ -192,12 +192,18 @@ async fn circle_response_is_checked_before_signing() {
         .submission(ledger.burns[order[0]].note_id())
         .unwrap()
         .is_none());
-    let pending = attester
+    let pending: Vec<_> = attester
         .store
         .burns_ready_for_withdrawal(3u32.into(), 1)
-        .unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].note_id(), ledger.burns[order[0]].note_id());
+        .unwrap()
+        .iter()
+        .map(|burn| burn.note_id())
+        .collect();
+    assert_eq!(
+        pending,
+        [ledger.burns[order[0]].note_id()],
+        "a failed check leaves the burn unsigned and ready for the next cycle"
+    );
     assert_eq!(ledger.record(&attester, order[1]).status, Submitted);
     assert_eq!(ledger.record(&attester, order[2]).status, Finalized);
     let error = report.submit.unwrap_err();

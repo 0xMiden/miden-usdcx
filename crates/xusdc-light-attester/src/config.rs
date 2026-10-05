@@ -21,7 +21,6 @@ struct RawConfig {
     use_circle_forwarding: bool,
     #[serde(default)]
     max_withdrawal_fee: u64,
-    withdrawal_limit_24h: u64,
     poll_interval_ms: u64,
     faucet_deployment_block: u32,
     trusted_anchor_block: u32,
@@ -32,14 +31,12 @@ struct RawConfig {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct Config {
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
     circle_api_base_url: Url,
     use_circle_forwarding: bool,
     max_withdrawal_fee: AssetAmount,
-    withdrawal_limit_24h: u64,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -49,7 +46,6 @@ pub struct Config {
     store_path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let encoded = fs::read_to_string(path).context("failed to read config")?;
@@ -118,7 +114,6 @@ impl Config {
             circle_api_base_url,
             use_circle_forwarding: raw.use_circle_forwarding,
             max_withdrawal_fee,
-            withdrawal_limit_24h: raw.withdrawal_limit_24h,
             poll_interval: Duration::from_millis(raw.poll_interval_ms),
             faucet_deployment_block: BlockNumber::from(raw.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(raw.trusted_anchor_block),
@@ -147,10 +142,6 @@ impl Config {
 
     pub(crate) fn max_withdrawal_fee(&self) -> AssetAmount {
         self.max_withdrawal_fee
-    }
-
-    pub(crate) fn withdrawal_limit_24h(&self) -> u64 {
-        self.withdrawal_limit_24h
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

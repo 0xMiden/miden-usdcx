@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::Context;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::transaction::OutputNote;
+use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -12,7 +13,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
@@ -354,10 +355,9 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit. A store failure or a
-    /// conflict stops the pass and is the outer error; any other failure is logged, that burn
-    /// stays eligible for the next cycle, the remaining burns are still tried, and the first such
-    /// failure is the inner result. After a 429 the remaining burns wait for the next cycle.
+    /// Takes each eligible burn through prepare, verify, sign and submit. A store error
+    /// stops the cycle. A prepare 400 holds the burn. Other errors are retried next cycle while
+    /// later burns continue. A 429 stops Circle requests for this cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -373,7 +373,9 @@ impl Attester {
                 if error.is_fatal() {
                     return Err(error);
                 }
-                // A failure here must not prevent another burn from getting its withdrawal.
+                if let Some((reason, response)) = burn_hold(&error) {
+                    self.store.hold_burn(note_id, reason, response)?;
+                }
                 eprintln!("withdrawal note={note_id} failed before submission: {error:?}");
                 first_error.get_or_insert(error);
             }
@@ -412,6 +414,23 @@ fn discovery_outcome(
         Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) => {
             Err(error).context("discovery stopped")
         }
+    }
+}
+
+/// The hold that a failure before submission puts on its burn, if any.
+pub(crate) fn burn_hold(error: &SubmitError) -> Option<(BurnHoldReason, Option<(u16, &[u8])>)> {
+    match error {
+        // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
+        // that fails our checks, is tried again next cycle.
+        SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
+            if *status == StatusCode::BAD_REQUEST =>
+        {
+            Some((
+                BurnHoldReason::PrepareRejected,
+                Some((status.as_u16(), body)),
+            ))
+        }
+        _ => None,
     }
 }
 

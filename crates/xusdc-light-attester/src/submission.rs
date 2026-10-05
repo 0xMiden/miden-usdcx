@@ -122,6 +122,11 @@ impl Attester {
             .map_err(Into::into)
     }
 
+    /// Remove this burn's hold so the next cycle can prepare it again.
+    pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
+        self.store.release_burn_hold(note_id).map_err(Into::into)
+    }
+
     pub(crate) async fn advance_submission(
         &mut self,
         mut saved: SavedSubmission,
@@ -254,9 +259,9 @@ impl SavedSubmission {
             StatusCode::CREATED
         };
         if response.status != expected_status {
-            // Only a 400 to the POST is a definite no from Circle: a blocked burner or recipient,
-            // or data Circle refuses. Any other answer says nothing final, so the row stays queued
-            // and the next pass sends the same request again.
+            // A POST 400 leaves the signed request on hold for an operator. Circle may have accepted
+            // an earlier attempt whose reply was lost. Other unexpected replies leave the request
+            // queued for the next cycle.
             if !lookup && response.status == StatusCode::BAD_REQUEST {
                 self.hold(
                     HoldReason::HttpRejected,

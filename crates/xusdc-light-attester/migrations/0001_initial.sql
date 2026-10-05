@@ -64,3 +64,14 @@ CREATE TABLE submission_events (
 ) STRICT;
 
 CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);
+
+-- History is never rewritten: a row, once written, is neither changed nor removed.
+CREATE TRIGGER submission_events_keep_rows BEFORE UPDATE ON submission_events
+BEGIN
+    SELECT RAISE(ABORT, 'submission history cannot be changed');
+END;
+
+CREATE TRIGGER submission_events_keep_history BEFORE DELETE ON submission_events
+BEGIN
+    SELECT RAISE(ABORT, 'submission history cannot be removed');
+END;

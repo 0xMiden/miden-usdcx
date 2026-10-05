@@ -273,6 +273,17 @@ impl Attester {
         Ok(block)
     }
 
+    /// Loads the discovered burns that reached the configured waiting depth.
+    pub(crate) fn ready_burns(
+        &self,
+        proof_lag_block: BlockNumber,
+    ) -> anyhow::Result<Vec<DiscoveredBurn>> {
+        self.store.burns_ready_for_withdrawal(
+            proof_lag_block,
+            self.config.minimum_finality_depth_blocks(),
+        )
+    }
+
     async fn submit_withdrawals(&mut self) -> Result<(), SubmitError> {
         todo!()
     }

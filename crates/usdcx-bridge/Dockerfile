@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.98.1
-ARG DEBIAN_RELEASE=bookworm
+ARG DEBIAN_RELEASE=trixie
 
 FROM rust:${RUST_VERSION}-slim-${DEBIAN_RELEASE} AS builder
 ARG CARGO_BUILD_JOBS=2
 ARG TARGETARCH
-RUN test "${TARGETARCH}" = arm64
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -25,11 +24,6 @@ RUN --mount=type=cache,sharing=locked,id=usdcx-cargo-registry-${TARGETARCH},targ
         -p usdcx-bridge --bin usdcx-bridge && \
     install -Dm755 /app/target/release/usdcx-bridge /out/usdcx-bridge
 
-# Export just the Linux ARM64 executable with:
-# docker buildx build --file crates/usdcx-bridge/Dockerfile --platform linux/arm64 --target binary --output type=local,dest=dist .
-FROM scratch AS binary
-COPY --from=builder /out/usdcx-bridge /usdcx-bridge
-
 FROM debian:${DEBIAN_RELEASE}-slim AS runtime
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates libgcc-s1 && \
@@ -46,6 +40,7 @@ ARG COMMIT
 LABEL org.opencontainers.image.title="USDCx bridge service" \
     org.opencontainers.image.description="Miden USDCx deposit relayer and withdrawal attester" \
     org.opencontainers.image.source="https://github.com/0xMiden/miden-usdcx" \
+    org.opencontainers.image.vendor="Miden" \
     org.opencontainers.image.created="${CREATED}" \
     org.opencontainers.image.version="${VERSION}" \
     org.opencontainers.image.revision="${COMMIT}"

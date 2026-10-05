@@ -163,9 +163,10 @@ be a public account, since the mint notes are routed to it as a network account.
 public key must use compressed SEC1 format.
 
 The relayer account must already exist on chain, and its signing key must already be in the
-keystore directory. Neither is created here. Everything that can be refused — an unreachable node,
-an unreadable keystore, a relayer account or faucet the node does not know — is refused at startup,
-before the first Circle request, so the service never reads the feed unless it can also mint.
+keystore directory. Neither is created here. Startup checks node access, account availability and
+local progress persistence before the first Circle request. A malformed or unwritable progress
+file fails startup. Key possession is not checked until transaction authentication, so successful
+startup does not replace the operator's key setup or guarantee a transaction will succeed.
 
 Logs are a tree per page — the page, its Circle request, the notes it built and the transaction
 that carried them — filtered by `RUST_LOG` (default `info`).

@@ -167,9 +167,9 @@ impl NodeClient {
     /// relayer's account and starts watching the faucet.
     ///
     /// The relayer account must already exist on chain and its signing key must already be in the
-    /// keystore directory; this only teaches the local client about the account. Everything that
-    /// can be refused is refused here, so the service never starts polling Circle unless it can
-    /// also mint.
+    /// keystore directory; this only teaches the local client about the account. It checks node
+    /// access and account availability, not possession of the signing key or future transaction
+    /// success.
     ///
     /// Watching the faucet on a fresh store downloads its whole used-nonce map, which holds one
     /// entry per deposit ever minted, so the first start against a long-lived faucet is slow. A

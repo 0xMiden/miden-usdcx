@@ -13,7 +13,7 @@
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use miden_protocol::note::Note;
 use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
@@ -66,19 +66,26 @@ enum ScanOutcome {
 }
 
 impl Relayer {
-    /// Assembles a relayer from the operator configuration and the client that submits to Miden.
+    /// Assembles a relayer and checks its local progress can be read and saved before polling.
     ///
     /// # Errors
     ///
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
+    /// - The progress file is malformed or cannot be read or replaced.
     pub fn new(config: Config, miden_client: Box<dyn MidenClient>) -> Result<Self> {
+        let store = Store::new(config.state_file.clone());
+        let state = store.state().context("reading relayer startup progress")?;
+        // Save the same progress to exercise the normal write/sync/rename path without advancing it.
+        store
+            .set_state(&state)
+            .context("checking relayer progress persistence")?;
         Ok(Self {
             circle: CircleClient::new(
                 config.circle_url.clone(),
                 config.page_size,
                 config.request_timeout,
             )?,
-            store: Store::new(config.state_file.clone()),
+            store,
             minter: Minter::from_config(&config),
             miden_client,
             config,

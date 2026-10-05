@@ -7,7 +7,7 @@ use super::*;
 #[test]
 fn the_relayer_shares_the_attester_endpoints_and_faucet() {
     let directory = TempDir::new().unwrap();
-    let mut args: Vec<String> = "usdcx-bridge
+    let mut args: Vec<String> = "usdcx-bridge run
         --miden-rpc-url https://miden.invalid
         --circle-url https://circle.invalid
         --faucet-account-id 0x222222222222221122222222222222
@@ -43,7 +43,10 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
             .to_owned(),
     );
 
-    let config = Config::try_from(Cli::try_parse_from(args).unwrap()).unwrap();
+    let Command::Run(run) = Cli::try_parse_from(args).unwrap().command else {
+        panic!("expected the run command");
+    };
+    let config = Config::try_from(*run).unwrap();
 
     assert_eq!(
         config.relayer.miden_node_url.as_str(),

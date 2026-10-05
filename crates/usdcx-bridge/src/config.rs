@@ -2,27 +2,40 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser};
+use clap::{Args, Parser, Subcommand};
 use miden_protocol::account::AccountId;
 use miden_usdcx::xreserve::encoding::CircleDomain;
 use xreserve_deposit_relayer::circle::PageSize;
 use xreserve_deposit_relayer::config::{parse_account_id, Config as RelayerConfig};
 use xreserve_deposit_relayer::miden::ExpirationDelta;
 use xreserve_deposit_relayer::mint::AttesterPublicKey;
-use xusdc_attester::config::{Cli as AttesterCli, Config as AttesterConfig};
+use xusdc_attester::config::{
+    Cli as AttesterCli, Command as AttesterCommand, Config as AttesterConfig,
+};
 
 // The attester's options keep their own names, and its Miden RPC URL, Circle URL and faucet
 // account ID are also the relayer's. The relayer's remaining options carry a `--relayer-` prefix.
 #[derive(Parser)]
-#[command(
-    version,
-    about = "Run the USDCx deposit relayer and withdrawal attester"
-)]
+#[command(version, about = "The USDCx deposit relayer and withdrawal attester")]
+pub(crate) struct Cli {
+    #[command(subcommand)]
+    pub(crate) command: Command,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum Command {
+    /// Run the deposit relayer and the withdrawal attester until a signal stops them.
+    Run(Box<RunArgs>),
+    #[command(flatten)]
+    Attester(AttesterCommand),
+}
+
+#[derive(Args)]
 // These attester options have names that would read as the whole bridge's next to the relayer's.
 #[command(mut_arg("request_timeout", |arg| arg.long("attester-request-timeout")))]
 #[command(mut_arg("poll_interval", |arg| arg.long("attester-poll-interval")))]
 #[command(mut_arg("store_path", |arg| arg.long("attester-store-path")))]
-pub(crate) struct Cli {
+pub(crate) struct RunArgs {
     #[command(flatten)]
     attester: AttesterCli,
     #[command(flatten, next_help_heading = "Deposit relayer options")]
@@ -73,10 +86,10 @@ pub(crate) struct Config {
     pub(crate) attester: AttesterConfig,
 }
 
-impl TryFrom<Cli> for Config {
+impl TryFrom<RunArgs> for Config {
     type Error = anyhow::Error;
 
-    fn try_from(cli: Cli) -> Result<Self> {
+    fn try_from(cli: RunArgs) -> Result<Self> {
         let attester =
             AttesterConfig::try_from(cli.attester).context("invalid attester configuration")?;
         let relayer = RelayerConfig {

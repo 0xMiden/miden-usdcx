@@ -59,7 +59,8 @@ CREATE TABLE submission_events (
     endpoint TEXT,
     hold_reason TEXT,
     -- The burn's hold reason when the row was written; hold_reason is the withdrawal's.
-    burn_hold_reason INTEGER
+    burn_hold_reason INTEGER,
+    circle_status TEXT -- the status Circle's reply reported, on an outcome
 ) STRICT;
 
 CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);

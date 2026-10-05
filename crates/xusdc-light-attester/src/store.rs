@@ -275,7 +275,7 @@ impl Store {
             )
             .map_err(classify_write_error)?;
         ensure!(written == 1, CONFLICT);
-        record_event(&transaction, record.note_id, EventKind::Authorized)?;
+        record_event(&transaction, record.note_id, EventKind::Authorized, None)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -300,7 +300,7 @@ impl Store {
                  WHERE note_id = ?1 AND hold_reason IS NOT NULL)",
                 [&note],
             )? {
-                record_event(&transaction, note_id, EventKind::BurnReleased)?;
+                record_event(&transaction, note_id, EventKind::BurnReleased, None)?;
                 burns += transaction
                     .execute(
                         "UPDATE burns SET hold_reason = NULL WHERE note_id = ?1",
@@ -316,7 +316,7 @@ impl Store {
                 // Release only after checking this withdrawal with Circle. Remove the saved
                 // request so the next cycle can prepare and sign again. An expired signed request
                 // cannot be reused.
-                record_event(&transaction, note_id, EventKind::OperatorRelease)?;
+                record_event(&transaction, note_id, EventKind::OperatorRelease, None)?;
                 let deleted = transaction
                     .execute("DELETE FROM submissions WHERE note_id = ?1", [&note])
                     .map_err(classify_error)?;
@@ -429,7 +429,7 @@ impl Store {
     pub(crate) fn release_burn_hold(&mut self, note_id: NoteId) -> anyhow::Result<()> {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         // Recorded before the hold is cleared, so the history keeps its reason.
-        record_event(&transaction, note_id, EventKind::BurnReleased)?;
+        record_event(&transaction, note_id, EventKind::BurnReleased, None)?;
         let updated = transaction
             .execute(
                 "UPDATE burns SET hold_reason = NULL
@@ -456,8 +456,8 @@ impl Store {
         select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
     }
 
-    /// Save the latest reply. Add a history event if the status, withdrawal ID, HTTP status, or
-    /// error changed. Keep the signed request and any known withdrawal ID.
+    /// Save the latest reply. Add a history event if the status, withdrawal ID, HTTP status,
+    /// error, or the status Circle reports changed. Keep the signed request and any known withdrawal ID.
     pub(crate) fn update_submission_outcome(
         &mut self,
         outcome: &SavedSubmission,
@@ -481,8 +481,14 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        if !repeats_latest_outcome(&transaction, outcome)? {
-            record_event(&transaction, outcome.note_id, EventKind::Outcome)?;
+        let circle_status = circle_status(outcome.last_response.as_deref());
+        if !repeats_latest_outcome(&transaction, outcome, circle_status.as_deref())? {
+            record_event(
+                &transaction,
+                outcome.note_id,
+                EventKind::Outcome,
+                circle_status.as_deref(),
+            )?;
         }
         transaction.commit().map_err(classify_error)
     }
@@ -505,7 +511,7 @@ impl Store {
             )
             .map_err(classify_error)?;
         ensure!(updated == 1, CONFLICT);
-        record_event(&transaction, note_id, EventKind::OperatorRetry)?;
+        record_event(&transaction, note_id, EventKind::OperatorRetry, None)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -660,28 +666,44 @@ fn upgrade(connection: &rusqlite::Connection, version: u32) -> anyhow::Result<()
     set_version(connection)
 }
 
+/// The status Circle reports in a withdrawal reply, when the reply has one. Several of Circle's
+/// statuses are saved as one submission status, so the history keeps Circle's own word too. A
+/// request is answered with a list of one withdrawal, and a status check with the withdrawal.
+fn circle_status(response: Option<&[u8]>) -> Option<String> {
+    let reply: serde_json::Value = serde_json::from_slice(response?).ok()?;
+    let withdrawal = reply.get(0).unwrap_or(&reply);
+    withdrawal.get("status")?.as_str().map(str::to_owned)
+}
+
 /// Appends one row to a burn's history, recording the burn as it now stands: its hold and, when it
-/// has one, its submission; only some kinds keep the request.
+/// has one, its submission; only some kinds keep the request, and only an outcome has a status
+/// reported by Circle.
 /// History belongs to the burn, which is never deleted, so the burn must be one the store knows.
 fn record_event(
     connection: &rusqlite::Connection,
     note_id: NoteId,
     kind: EventKind,
+    circle_status: Option<&str>,
 ) -> anyhow::Result<()> {
     let recorded = connection
         .execute(
             "INSERT INTO submission_events (
                 note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
-                http_status, response, error, endpoint, hold_reason, burn_hold_reason
+                http_status, response, error, endpoint, hold_reason, burn_hold_reason, circle_status
              )
              SELECT burns.note_id, unixepoch(), ?2, submissions.status,
                 submissions.withdrawal_id, iif(?3, submissions.body, NULL),
                 submissions.transfer_spec_hash, submissions.last_http_status,
                 submissions.last_response, submissions.last_error,
-                iif(?3, submissions.endpoint, NULL), submissions.hold_reason, burns.hold_reason
+                iif(?3, submissions.endpoint, NULL), submissions.hold_reason, burns.hold_reason, ?4
              FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
              WHERE burns.note_id = ?1",
-            params![note_id.to_bytes(), kind.as_ref(), kind.keeps_request()],
+            params![
+                note_id.to_bytes(),
+                kind.as_ref(),
+                kind.keeps_request(),
+                circle_status
+            ],
         )
         .map_err(classify_error)?;
     ensure!(recorded == 1, CONFLICT);
@@ -689,11 +711,12 @@ fn record_event(
 }
 
 /// Return true if the latest outcome since authorization or operator retry matches the status,
-/// withdrawal ID, HTTP status, and error. Record the first reply after an operator retry. Ignore
-/// response body changes when those fields stay the same.
+/// withdrawal ID, HTTP status, error, and the status Circle reports. Record the first reply after
+/// an operator retry. Ignore other response body changes when those fields stay the same.
 fn repeats_latest_outcome(
     connection: &rusqlite::Connection,
     outcome: &SavedSubmission,
+    circle_status: Option<&str>,
 ) -> anyhow::Result<bool> {
     exists(
         connection,
@@ -701,7 +724,8 @@ fn repeats_latest_outcome(
          WHERE seq = (SELECT MAX(seq) FROM submission_events
                 WHERE note_id = ?1 AND kind = ?2 AND seq > (SELECT COALESCE(MAX(seq), 0)
                     FROM submission_events WHERE note_id = ?1 AND kind IN (?3, ?4)))
-            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8)",
+            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8
+            AND circle_status IS ?9)",
         params![
             outcome.note_id.to_bytes(),
             EventKind::Outcome.as_ref(),
@@ -711,6 +735,7 @@ fn repeats_latest_outcome(
             outcome.withdrawal_id,
             outcome.last_http_status,
             outcome.last_error,
+            circle_status,
         ],
     )
 }

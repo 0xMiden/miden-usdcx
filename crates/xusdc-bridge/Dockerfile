@@ -21,13 +21,12 @@ COPY crates/xusdc-light-attester/ crates/xusdc-light-attester/
 COPY crates/xusdc-bridge/ crates/xusdc-bridge/
 RUN --mount=type=cache,sharing=locked,id=xusdc-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
     --mount=type=cache,sharing=locked,id=xusdc-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
-    --mount=type=cache,sharing=locked,id=xusdc-target-bookworm-${TARGETARCH},target=/app/target \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \
         -p xusdc-bridge --bin xusdc-bridge && \
     install -Dm755 /app/target/release/xusdc-bridge /out/xusdc-bridge
 
 # Export just the Linux ARM64 executable with:
-# docker buildx build --platform linux/arm64 --target binary --output type=local,dest=dist .
+# docker buildx build --file crates/xusdc-bridge/Dockerfile --platform linux/arm64 --target binary --output type=local,dest=dist .
 FROM scratch AS binary
 COPY --from=builder /out/xusdc-bridge /xusdc-bridge
 

@@ -12,31 +12,41 @@ fi
 docker info >/dev/null
 mkdir -p "$output"
 stage=$(mktemp -d "$output/.xusdc-arm64.XXXXXX")
-trap 'rm -rf "$stage"' EXIT HUP INT TERM
+trap 'rm -rf "$stage"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 commit=$(git -C "$root" rev-parse HEAD)
 tree=$(git -C "$root" rev-parse HEAD^{tree})
-version=$(git -C "$root" describe --always --dirty)
-created=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 docker buildx build \
+    --file "$root/crates/xusdc-bridge/Dockerfile" \
     --platform linux/arm64 \
     --target binary \
     --output "type=local,dest=$stage" \
-    --build-arg "COMMIT=$commit" \
-    --build-arg "CREATED=$created" \
-    --build-arg "VERSION=$version" \
     "$root"
 
-artifact="$output/xusdc-bridge-linux-arm64"
-install -m 0755 "$stage/xusdc-bridge" "$artifact"
-file "$artifact" | grep -q 'ARM aarch64'
-hash=$(shasum -a 256 "$artifact" | awk '{print $1}')
-cat > "$output/xusdc-bridge-linux-arm64.manifest" <<EOF
+staged="$stage/xusdc-bridge"
+description=$(file "$staged")
+case "$description" in
+    *'ELF 64-bit'*'ARM aarch64'*) ;;
+    *) echo "expected a Linux ARM64 executable: $description" >&2; exit 1 ;;
+esac
+checksum=$(shasum -a 256 "$staged")
+hash=${checksum%% *}
+if ! printf '%s\n' "$hash" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    echo "invalid SHA-256 checksum" >&2
+    exit 1
+fi
+chmod 0755 "$staged"
+cat > "$stage/xusdc-bridge-linux-arm64.manifest" <<EOF
 source_commit=$commit
 source_tree=$tree
 sha256=$hash
 platform=linux/arm64
 EOF
 
-printf '%s  %s\n' "$hash" "$(basename "$artifact")"
+mv -f "$staged" "$output/xusdc-bridge-linux-arm64"
+mv -f "$stage/xusdc-bridge-linux-arm64.manifest" "$output/xusdc-bridge-linux-arm64.manifest"
+printf '%s  xusdc-bridge-linux-arm64\n' "$hash"

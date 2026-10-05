@@ -6,7 +6,7 @@ the process so the pair cannot look healthy when half of the bridge is down.
 
 ## Linux ARM64 artifact
 
-Build the raw binary on a machine with Docker Buildx:
+Build from the repository root on a machine with Docker Buildx:
 
 ```sh
 ./scripts/build-bridge-arm64.sh
@@ -16,10 +16,14 @@ This creates `dist/xusdc-bridge-linux-arm64` and a manifest containing its sourc
 tree, platform and SHA-256. The build refuses a dirty checkout and the Dockerfile refuses any
 platform except `linux/arm64`.
 
+The raw binary requires ARM64 glibc Linux, such as Debian 12, with the dynamic loader,
+glibc, `libgcc_s.so.1` and a CA certificate bundle installed. The supplied image includes these.
+
 To build the runtime image instead:
 
 ```sh
-docker buildx build --platform linux/arm64 --target runtime --load \
+docker buildx build --file crates/xusdc-bridge/Dockerfile \
+  --platform linux/arm64 --target runtime --load \
   -t xusdc-bridge:local .
 ```
 
@@ -63,6 +67,10 @@ returned signatures locally. The two `--expected-signing-public-key` values are 
 Mount durable storage at `/data`. Before first start, place the funded relayer account key in the
 Miden keystore below `/data/relayer/miden/keystore/`. Restrict the volume to the service user. The
 attester private keys stay in KMS and are never written to this volume.
+
+For the raw binary or a host bind mount, create `/data/relayer/miden/keystore` and
+`/data/attester` before starting. Keep the directories durable, writable only by the service user,
+and mode `0700`; the container uses UID/GID `10001`.
 
 Use deployment values supplied and reviewed by Miden. The example timing values below are safe
 starting points, not network identities or fee policy:

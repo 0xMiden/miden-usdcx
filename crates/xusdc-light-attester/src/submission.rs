@@ -55,8 +55,10 @@ pub(crate) enum SubmissionStatus {
     Held,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a withdrawal waits for an operator, stored under the name given here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::EnumString)]
 pub(crate) enum HoldReason {
+    #[strum(serialize = "http_rejected")]
     HttpRejected,
 }
 

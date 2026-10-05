@@ -292,7 +292,7 @@ impl Store {
             let held = params![
                 note,
                 SubmissionStatus::Held.as_ref(),
-                HoldReason::HttpRejected.as_str()
+                HoldReason::HttpRejected.as_ref()
             ];
             if exists(
                 &transaction,
@@ -472,7 +472,7 @@ impl Store {
                 params![
                     outcome.status.as_ref(),
                     outcome.withdrawal_id,
-                    outcome.hold_reason.map(HoldReason::as_str),
+                    outcome.hold_reason.as_ref().map(HoldReason::as_ref),
                     outcome.last_http_status,
                     outcome.last_response,
                     outcome.last_error,
@@ -500,7 +500,7 @@ impl Store {
                     note_id.to_bytes(),
                     SubmissionStatus::Submitting.as_ref(),
                     SubmissionStatus::Held.as_ref(),
-                    HoldReason::HttpRejected.as_str()
+                    HoldReason::HttpRejected.as_ref()
                 ],
             )
             .map_err(classify_error)?;
@@ -820,14 +820,6 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     Ok(())
 }
 
-impl HoldReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::HttpRejected => "http_rejected",
-        }
-    }
-}
-
 /// Load saved submissions in note order. Apply `note_id` and `status` filters when supplied. Reject
 /// the store if a selected row fails validation.
 fn select_submissions(
@@ -857,15 +849,12 @@ fn select_submissions(
             .map_err(classify_error)?
             .parse()
             .context(INVALID)?;
-        let hold_reason = match row
+        let hold_reason: Option<HoldReason> = row
             .get::<_, Option<String>>(6)
             .map_err(classify_error)?
-            .as_deref()
-        {
-            None => None,
-            Some("http_rejected") => Some(HoldReason::HttpRejected),
-            _ => bail!(INVALID),
-        };
+            .map(|reason| reason.parse())
+            .transpose()
+            .context(INVALID)?;
         let record = SavedSubmission {
             note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
             endpoint: Url::parse(&row.get::<_, String>(1).map_err(classify_error)?)

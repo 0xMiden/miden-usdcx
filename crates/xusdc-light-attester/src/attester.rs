@@ -21,15 +21,13 @@ pub struct RunError;
 pub enum DiscoverError {
     #[error("Miden chain read failed")]
     Chain(#[source] ChainError),
-    /// The authenticated chain or its reported finality moved behind durable state. Recovery is a
+    /// The authenticated chain changed or its reported tip moved behind durable state. Recovery is a
     /// deliberate operator action: stop, preserve the database, independently establish the
     /// canonical chain, and assess already-submitted Circle withdrawals before re-pinning.
     #[error("Miden chain diverged from the persisted authenticated chain")]
     ChainDiverged,
     #[error("attester store failed")]
     Store(#[from] anyhow::Error),
-    #[error("the finality bound cannot be represented by the next-block cursor")]
-    CursorOverflow,
 }
 
 #[derive(Debug)]
@@ -188,26 +186,17 @@ impl Attester {
             .map_or(self.config.trusted_anchor_block(), BlockHeader::block_num);
         let scan_limits = self
             .chain
-            .scan_limits(last_verified_block_number)
+            .scan_limits()
             .await
             .map_err(DiscoverError::Chain)?;
 
-        // Node-reported heights limit our scan; only block validation can authenticate its data.
-        let Some(last_depth_safe_block) = scan_limits
-            .latest_committed_block
-            .checked_sub(self.config.minimum_finality_depth_blocks())
-        else {
-            return behind_verified_chain(saved_scan);
-        };
-        let last_block_to_scan = std::cmp::min(scan_limits.proof_lag_block, last_depth_safe_block);
+        // Scan every available block. Withdrawal readiness separately requires verified depth.
+        let last_block_to_scan = scan_limits.latest_committed_block;
         if last_block_to_scan < last_verified_block_number {
             return behind_verified_chain(saved_scan);
         }
         if last_block_to_scan < saved_scan.cursor.next_block {
             return Ok(None);
-        }
-        if last_block_to_scan == BlockNumber::MAX {
-            return Err(DiscoverError::CursorOverflow);
         }
 
         Ok(Some(last_block_to_scan))

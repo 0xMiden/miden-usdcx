@@ -1,23 +1,21 @@
-use std::ffi::OsString;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use xusdc_attester::config::SignerConfig;
 
 use super::*;
 
-fn arguments(directory: &TempDir) -> Vec<OsString> {
-    let mut args: Vec<OsString> = "usdcx-bridge
+#[test]
+fn the_relayer_shares_the_attester_endpoints_and_faucet() {
+    let directory = TempDir::new().unwrap();
+    let mut args: Vec<String> = "usdcx-bridge
         --miden-rpc-url https://miden.invalid
         --circle-url https://circle.invalid
         --faucet-account-id 0x222222222222221122222222222222
-        --relayer
-        --page-size 100 --request-timeout 30s
-        --miden-data-dir /unused/relayer
+        --relayer-page-size 100 --relayer-request-timeout 30s
+        --relayer-miden-data-dir /unused/relayer
         --relayer-account-id 0x111111101111111111111111111111
-        --attester-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
-        --state-file /unused/relayer-progress
-        --attester
+        --relayer-attester-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+        --relayer-state-file /unused/relayer-progress
         --signer-provider aws-kms --aws-kms-region eu-west-1
         --aws-kms-key-arn arn:aws:kms:eu-west-1:123456789012:key/first
                          arn:aws:kms:eu-west-1:123456789012:key/second
@@ -34,23 +32,22 @@ fn arguments(directory: &TempDir) -> Vec<OsString> {
         --cctp-token-messenger-address 0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa
         --store-path"
         .split_whitespace()
-        .map(OsString::from)
+        .map(String::from)
         .collect();
-    args.push(directory.path().join("attester.sqlite3").into_os_string());
-    args
-}
+    args.push(
+        directory
+            .path()
+            .join("attester.sqlite3")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
 
-#[test]
-fn forwards_common_values_and_keeps_service_defaults() {
-    let directory = TempDir::new().unwrap();
-    let config = Config::parse_from(arguments(&directory)).unwrap();
+    let config = Config::try_from(Cli::try_parse_from(args).unwrap()).unwrap();
+
     assert_eq!(
         config.relayer.miden_node_url.as_str(),
         "https://miden.invalid/"
-    );
-    assert_eq!(
-        config.attester.miden_rpc_url().to_string(),
-        "https://miden.invalid"
     );
     assert_eq!(
         config.relayer.circle_url.as_str(),
@@ -61,43 +58,7 @@ fn forwards_common_values_and_keeps_service_defaults() {
         "0x222222222222221122222222222222"
     );
     assert_eq!(config.relayer.remote_domain, CircleDomain::MIDEN);
-    assert_eq!(config.relayer.poll_interval, Duration::from_secs(5));
+    // The two services keep their own timings.
     assert_eq!(config.relayer.request_timeout, Duration::from_secs(30));
-    let SignerConfig::AwsKms {
-        key_arns,
-        operation_timeout,
-        ..
-    } = config.attester.signer();
-    assert!(key_arns[0].ends_with("/first") && key_arns[1].ends_with("/second"));
-    assert_eq!(*operation_timeout, Duration::from_secs(10));
-}
-
-#[test]
-fn missing_repeated_and_reversed_groups_fail() {
-    let directory = TempDir::new().unwrap();
-    for marker in ["--relayer", "--attester"] {
-        let mut args = arguments(&directory);
-        args.retain(|arg| arg != marker);
-        assert!(Config::parse_from(args).is_err());
-        let mut args = arguments(&directory);
-        args.push(marker.into());
-        assert!(Config::parse_from(args).is_err());
-    }
-    let mut args = arguments(&directory);
-    let relayer = args.iter().position(|arg| arg == "--relayer").unwrap();
-    let attester = args.iter().position(|arg| arg == "--attester").unwrap();
-    args.swap(relayer, attester);
-    assert!(Config::parse_from(args).is_err());
-}
-
-#[test]
-fn common_values_cannot_be_overridden() {
-    let directory = TempDir::new().unwrap();
-    for group in ["--relayer", "--attester"] {
-        let mut args = arguments(&directory);
-        let at = args.iter().position(|arg| arg == group).unwrap() + 1;
-        args.insert(at, "--circle-url=https://other.invalid".into());
-        let error = Config::parse_from(args).err().unwrap();
-        assert!(error.to_string().contains("cannot be overridden"));
-    }
+    assert_eq!(config.relayer.poll_interval, Duration::from_secs(5));
 }

@@ -55,45 +55,44 @@ docker run --name usdcx-bridge --stop-timeout 360 \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_URL>' \
   --faucet-account-id '<USDCX_FAUCET_ID>' \
-  --relayer \
-    --page-size 100 \
-    --request-timeout 30s \
-    --poll-interval 5s \
-    --miden-data-dir /data/relayer/miden \
-    --expiration-delta 64 \
-    --relayer-account-id '<RELAYER_ACCOUNT_ID>' \
-    --attester-public-key '<CIRCLE_DEPOSIT_PUBLIC_KEY_HEX>' \
-    --state-file /data/relayer/progress.json \
-  --attester \
-    --signer-provider aws-kms \
-    --aws-kms-region '<AWS_REGION>' \
-    --aws-kms-key-arn '<KEY_ARN_1>' '<KEY_ARN_2>' \
-    --aws-kms-operation-timeout 10s \
-    --expected-signing-public-key '<PUBLIC_KEY_1_HEX>' \
-    --expected-signing-public-key '<PUBLIC_KEY_2_HEX>' \
-    --request-timeout 30s \
-    --faucet-deployment-block '<DEPLOYMENT_BLOCK>' \
-    --trusted-anchor-block '<ANCHOR_BLOCK>' \
-    --trusted-anchor-commitment '<ANCHOR_COMMITMENT>' \
-    --minimum-finality-depth-blocks '<FINALITY_DEPTH>' \
-    --max-withdrawal-fee '<FIXED_FEE_LIMIT>' \
-    --max-withdrawal-fee-bps '<FEE_BASIS_POINTS>' \
-    --cctp-forwarding-max-fee '<CCTP_FEE_LIMIT>' \
-    --cctp-forwarder-address '<XRESERVE_ADDRESS_ON_ARC>' \
-    --cctp-token-messenger-address '<TOKEN_MESSENGER_V2_ADDRESS_ON_ARC>' \
-    --poll-interval 1s \
-    --store-path /data/attester/store.sqlite3
+  --relayer-page-size 100 \
+  --relayer-request-timeout 30s \
+  --relayer-poll-interval 5s \
+  --relayer-miden-data-dir /data/relayer/miden \
+  --relayer-expiration-delta 64 \
+  --relayer-account-id '<RELAYER_ACCOUNT_ID>' \
+  --relayer-attester-public-key '<CIRCLE_DEPOSIT_PUBLIC_KEY_HEX>' \
+  --relayer-state-file /data/relayer/progress.json \
+  --signer-provider aws-kms \
+  --aws-kms-region '<AWS_REGION>' \
+  --aws-kms-key-arn '<KEY_ARN_1>' '<KEY_ARN_2>' \
+  --aws-kms-operation-timeout 10s \
+  --expected-signing-public-key '<PUBLIC_KEY_1_HEX>' \
+  --expected-signing-public-key '<PUBLIC_KEY_2_HEX>' \
+  --request-timeout 30s \
+  --faucet-deployment-block '<DEPLOYMENT_BLOCK>' \
+  --trusted-anchor-block '<ANCHOR_BLOCK>' \
+  --trusted-anchor-commitment '<ANCHOR_COMMITMENT>' \
+  --minimum-finality-depth-blocks '<FINALITY_DEPTH>' \
+  --max-withdrawal-fee '<FIXED_FEE_LIMIT>' \
+  --max-withdrawal-fee-bps '<FEE_BASIS_POINTS>' \
+  --cctp-forwarding-max-fee '<CCTP_FEE_LIMIT>' \
+  --cctp-forwarder-address '<XRESERVE_ADDRESS_ON_ARC>' \
+  --cctp-token-messenger-address '<TOKEN_MESSENGER_V2_ADDRESS_ON_ARC>' \
+  --poll-interval 1s \
+  --store-path /data/attester/store.sqlite3
 ```
 
 | Configuration | Supply |
 | --- | --- |
-| Network and Circle | Shared RPC URL, HTTPS Circle URL and faucet ID before `--relayer`; outbound access to RPC, Circle, KMS and the workload credential provider. |
+| Network and Circle | RPC URL, HTTPS Circle URL and faucet ID, each given once and used by both workers; outbound access to RPC, Circle, KMS and the workload credential provider. |
 | Deposit relayer | Funded account ID and installed Miden key, registered Circle deposit public key, page size and durable progress/SDK paths. |
 | Withdrawal attester | Two KMS ARNs, Region, expected public keys, faucet deployment block, authenticated anchor, finality depth, withdrawal/CCTP fee limits and forwarding addresses. |
 | Runtime | Workload identity, writable durable `/data`, optional `RUST_LOG`; no inbound port or health URL. |
 
-Common flags go before `--relayer`; worker flags follow their respective marker. For every supported
-flag, run the image with `--help`.
+The relayer's own flags start with `--relayer-`; every other flag is the attester's, and
+`--request-timeout` and `--poll-interval` apply to the attester only. For every supported flag, run
+the image with `--help`.
 
 Run one instance against these stores, without standalone workers beside it. Wait for
 `deposit relayer and withdrawal attester started` before enabling deposits. The relayer progress

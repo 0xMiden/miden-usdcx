@@ -337,11 +337,11 @@ impl Config {
         self.circle_request_timeout
     }
 
-    pub(crate) fn faucet_account_id(&self) -> AccountId {
+    pub fn faucet_account_id(&self) -> AccountId {
         self.faucet_account_id
     }
 
-    pub(crate) fn circle_api_base_url(&self) -> &Url {
+    pub fn circle_api_base_url(&self) -> &Url {
         &self.circle_api_base_url
     }
 

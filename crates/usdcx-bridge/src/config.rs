@@ -1,31 +1,67 @@
-use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
+use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser};
+use anyhow::{Context, Result};
+use clap::{Args, Parser};
+use miden_protocol::account::AccountId;
 use miden_usdcx::xreserve::encoding::CircleDomain;
-use xreserve_deposit_relayer::config::Config as RelayerConfig;
-use xusdc_attester::config::{
-    parse_faucet_account_id, Cli as AttesterCli, Config as AttesterConfig,
-};
+use xreserve_deposit_relayer::circle::PageSize;
+use xreserve_deposit_relayer::config::{parse_account_id, Config as RelayerConfig};
+use xreserve_deposit_relayer::miden::ExpirationDelta;
+use xreserve_deposit_relayer::mint::AttesterPublicKey;
+use xusdc_attester::config::{Cli as AttesterCli, Config as AttesterConfig};
 
+// The attester's options keep their own names, and its Miden RPC URL, Circle URL and faucet
+// account ID are also the relayer's. The relayer's remaining options carry a `--relayer-` prefix.
 #[derive(Parser)]
 #[command(
     version,
     about = "Run the USDCx deposit relayer and withdrawal attester"
 )]
-#[command(
-    override_usage = "usdcx-bridge [COMMON OPTIONS] --relayer [RELAYER OPTIONS] --attester [ATTESTER OPTIONS]"
-)]
-struct Common {
-    /// Miden RPC endpoint used by both services.
+pub(crate) struct Cli {
+    #[command(flatten)]
+    attester: AttesterCli,
+    #[command(flatten, next_help_heading = "Deposit relayer options")]
+    relayer: RelayerArgs,
+}
+
+#[derive(Args)]
+struct RelayerArgs {
+    /// The number of deposit attestations in one Circle response, between 1 and 1000. A page is
+    /// minted as a single transaction.
     #[arg(long)]
-    miden_rpc_url: String,
-    /// Circle API base URL used by both services.
+    relayer_page_size: PageSize,
+
+    /// The maximum duration of one Circle request made by the relayer (for example, "30s").
+    #[arg(long, value_parser = humantime::parse_duration)]
+    relayer_request_timeout: Duration,
+
+    /// How long the relayer waits once it has caught up with Circle's deposit feed.
+    #[arg(long, value_parser = humantime::parse_duration, default_value = "5s")]
+    relayer_poll_interval: Duration,
+
+    /// The directory holding the relayer's Miden client state: its store, and the keystore the
+    /// relayer account's signing key is read from.
     #[arg(long)]
-    circle_url: String,
-    /// USDCx faucet account ID, written as lowercase hexadecimal with a 0x prefix.
+    relayer_miden_data_dir: PathBuf,
+
+    /// How many blocks a submitted mint transaction may still be included in before the relayer
+    /// stops waiting and retries the page.
+    #[arg(long, default_value = "64")]
+    relayer_expiration_delta: ExpirationDelta,
+
+    /// The account that creates the mint notes, as `0x`-prefixed hex or bech32.
+    #[arg(long, value_parser = parse_account_id)]
+    relayer_account_id: AccountId,
+
+    /// The compressed SEC1 public key Circle signs deposit attestations with, as hex with an
+    /// optional `0x` prefix.
     #[arg(long)]
-    faucet_account_id: String,
+    relayer_attester_public_key: AttesterPublicKey,
+
+    /// The file that stores the relayer's progress.
+    #[arg(long)]
+    relayer_state_file: PathBuf,
 }
 
 pub(crate) struct Config {
@@ -33,110 +69,32 @@ pub(crate) struct Config {
     pub(crate) attester: AttesterConfig,
 }
 
-impl Config {
-    pub(crate) fn parse_from(args: impl IntoIterator<Item = OsString>) -> Result<Self> {
-        let args: Vec<_> = args.into_iter().collect();
-        let relayer_at = marker(&args, "--relayer")?;
-        let attester_at = marker(&args, "--attester")?;
-        if relayer_at >= attester_at {
-            bail!("--relayer must come before --attester");
-        }
-        let common = Common::try_parse_from(&args[..relayer_at])?;
-        parse_faucet_account_id(&common.faucet_account_id)?;
+impl TryFrom<Cli> for Config {
+    type Error = anyhow::Error;
 
-        let relayer_args = &args[relayer_at + 1..attester_at];
-        let attester_args = &args[attester_at + 1..];
-        for group in [relayer_args, attester_args] {
-            for arg in group {
-                let name = arg.as_encoded_bytes().split(|byte| *byte == b'=').next();
-                if matches!(
-                    name,
-                    Some(
-                        b"--miden-rpc-url"
-                            | b"--miden-node-url"
-                            | b"--circle-url"
-                            | b"--faucet-account-id"
-                            | b"--remote-domain"
-                    )
-                ) {
-                    bail!(
-                        "{} applies to both services and cannot be overridden after --relayer or --attester",
-                        arg.to_string_lossy()
-                    );
-                }
-            }
-        }
-
-        let shared = |program: &str, rpc_flag: &str| {
-            [
-                program,
-                rpc_flag,
-                &common.miden_rpc_url,
-                "--circle-url",
-                &common.circle_url,
-                "--faucet-account-id",
-                &common.faucet_account_id,
-            ]
-            .map(OsString::from)
-            .to_vec()
+    fn try_from(cli: Cli) -> Result<Self> {
+        let attester =
+            AttesterConfig::try_from(cli.attester).context("invalid attester configuration")?;
+        let relayer = RelayerConfig {
+            circle_url: attester.circle_api_base_url().clone(),
+            page_size: cli.relayer.relayer_page_size,
+            request_timeout: cli.relayer.relayer_request_timeout,
+            poll_interval: cli.relayer.relayer_poll_interval,
+            remote_domain: CircleDomain::MIDEN,
+            miden_node_url: attester
+                .miden_rpc_url()
+                .to_string()
+                .parse()
+                .context("Miden RPC URL is invalid")?,
+            miden_data_dir: cli.relayer.relayer_miden_data_dir,
+            expiration_delta: cli.relayer.relayer_expiration_delta,
+            faucet_account_id: attester.faucet_account_id(),
+            relayer_account_id: cli.relayer.relayer_account_id,
+            attester_public_key: cli.relayer.relayer_attester_public_key,
+            state_file: cli.relayer.relayer_state_file,
         };
-        let mut relayer = shared("xreserve-deposit-relayer", "--miden-node-url");
-        relayer.extend([
-            OsString::from("--remote-domain"),
-            OsString::from(CircleDomain::MIDEN.as_u32().to_string()),
-        ]);
-        relayer.extend_from_slice(relayer_args);
-        let relayer =
-            RelayerConfig::try_parse_from(relayer).context("invalid relayer arguments")?;
-        let mut attester = shared("xusdc-attester", "--miden-rpc-url");
-        attester.extend_from_slice(attester_args);
-        let attester = AttesterConfig::try_from(AttesterCli::try_parse_from(attester)?)
-            .context("invalid attester arguments")?;
         Ok(Self { relayer, attester })
     }
-}
-
-fn marker(args: &[OsString], marker: &str) -> Result<usize> {
-    let mut positions = args
-        .iter()
-        .enumerate()
-        .filter(|(_, arg)| arg == &OsStr::new(marker));
-    let position = positions
-        .next()
-        .map(|(index, _)| index)
-        .with_context(|| format!("missing {marker} argument group"))?;
-    if positions.next().is_some() {
-        bail!("{marker} argument group must occur exactly once");
-    }
-    Ok(position)
-}
-
-pub(crate) fn print_help() -> Result<()> {
-    Common::command().print_long_help()?;
-    println!("\n\nSet the RPC URL, Circle URL and faucet ID before --relayer. The relayer uses Circle's Miden domain.");
-    println!("\nRelayer options after --relayer:\n");
-    let mut relayer = RelayerConfig::command()
-        .about("Relays Circle xReserve deposit attestations to the USDCx faucet")
-        .override_usage("--relayer [OPTIONS]");
-    for id in [
-        "miden_node_url",
-        "circle_url",
-        "faucet_account_id",
-        "remote_domain",
-    ] {
-        relayer = relayer.mut_arg(id, |arg| arg.hide(true).required(false));
-    }
-    relayer.print_long_help()?;
-    println!("\n\nAttester options after --attester:\n");
-    let mut attester = AttesterCli::command()
-        .about("Run the USDCx withdrawal attester")
-        .override_usage("--attester [OPTIONS]");
-    for id in ["miden_rpc_url", "circle_url", "faucet_account_id"] {
-        attester = attester.mut_arg(id, |arg| arg.hide(true).required(false));
-    }
-    attester.print_long_help()?;
-    println!();
-    Ok(())
 }
 
 #[cfg(test)]

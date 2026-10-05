@@ -144,7 +144,7 @@ impl CircleApi for ScriptedCircle {
     fn prepare_withdrawal<'a>(
         &'a self,
         _burn: &'a DiscoveredBurn,
-        _use_circle_forwarding: bool,
+        _cctp_forwarding_max_fee: u64,
     ) -> Pin<Box<dyn Future<Output = Result<UnverifiedPrepareResponse, CircleError>> + Send + 'a>>
     {
         Box::pin(async move { read_prepared(self.next_reply(ObservedRequest::Prepare)?) })
@@ -352,6 +352,15 @@ impl Ledger {
         history(&self.path(), self.burns[index].note_id())
     }
 
+    pub(super) fn stored(&self, sql: &str) -> i64 {
+        let disk = Connection::open_with_flags(
+            format!("file:{}?immutable=1", self.path().display()),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .unwrap();
+        disk.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
     /// Opens the ledger's store directly, as a starting attester would.
     pub(super) fn open_store(&self) -> anyhow::Result<Store> {
         Store::open_or_create(
@@ -384,7 +393,7 @@ impl Ledger {
 
     pub(super) fn response(&self, index: usize, status: &str) -> Value {
         json!({"withdrawalId": format!("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e{:02}", 70 + index), "burnTxId": self.burns[index].note_id().to_hex(),
-            "status": status, "useCircleForwarding": false, "transferSpecHashes": [reference_hash(&self.burns[index])]})
+            "status": status, "useCircleForwarding": true, "transferSpecHashes": [reference_hash(&self.burns[index])]})
     }
 }
 
@@ -451,7 +460,7 @@ fn submission_status_names_are_fixed() {
 fn reference_hash(burn: &DiscoveredBurn) -> String {
     let packed = format!(
         concat!(
-            "ca85def7000000010000000600000009",
+            "ca85def7000000010000001a00000009",
             "{0}{1}{2}{3}{4}",
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
             "{4}{5}",
@@ -465,7 +474,7 @@ fn reference_hash(burn: &DiscoveredBurn) -> String {
         ),
         "11".repeat(32),
         "22".repeat(32),
-        "33".repeat(32),
+        "0000000000000000000000003600000000000000000000000000000000000000",
         "44".repeat(32),
         "55".repeat(32),
         "00".repeat(32),
@@ -566,7 +575,7 @@ async fn submit_sends_checked_request() {
                 json!({"batches": [{"burnIntents": [expected_intent], "burnSignatures": [
             format!("0x{}{}1b", "00".repeat(31) + "01", "00".repeat(31) + "01"),
             format!("0x{}{}1b", "00".repeat(31) + "02", "00".repeat(31) + "02")],
-            "burnTxId": ledger.burns[0].note_id().to_hex(), "useCircleForwarding": false}]})
+            "burnTxId": ledger.burns[0].note_id().to_hex(), "useCircleForwarding": true}]})
             );
         }
         if expected == Expired {
@@ -634,23 +643,6 @@ async fn submit_sends_checked_request() {
         Submitting,
         "only 201 creates a submission"
     );
-
-    let ledger = Ledger::new().await;
-    let mut response = ledger.response(0, "created");
-    response["useCircleForwarding"] = json!(true);
-    ledger
-        .config
-        .lock()
-        .unwrap()
-        .replace("--use-circle-forwarding", "true");
-    let (mut attester, requests) = ledger.start(vec![reply(201, json!([response]))]).await;
-    ledger.submit(&mut attester, 0).await.unwrap();
-    let body: Value = match &requests.lock().unwrap()[0] {
-        ObservedRequest::Submit { body, .. } => serde_json::from_slice(body).unwrap(),
-        other => panic!("expected the withdraw request, got {other:?}"),
-    };
-    assert_eq!(body["batches"][0]["useCircleForwarding"], true);
-    assert_eq!(ledger.record(&attester, 0).status, Submitted);
 }
 
 /// A history row is written with the change it records: when the row cannot be written, the
@@ -1084,7 +1076,7 @@ async fn conflicts_are_checked() {
         ("wrong hash", |v| {
             v["transferSpecHashes"][0] = json!(format!("0x{}", "ff".repeat(32)))
         }),
-        ("forwarding", |v| v["useCircleForwarding"] = json!(true)),
+        ("forwarding", |v| v["useCircleForwarding"] = json!(false)),
     ];
     for (name, change) in mismatches {
         let ledger = Ledger::new().await;

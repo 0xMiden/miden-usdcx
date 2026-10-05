@@ -21,7 +21,7 @@ CREATE TABLE burns (
         CHECK (consumption_block > creation_block AND consumption_block <= 4294967295),
     burn_tx_id BLOB,
     status TEXT NOT NULL CHECK (status IN ('CANDIDATE', 'DISCOVERED')),
-    hold_reason INTEGER CHECK (hold_reason IN (1)),
+    hold_reason INTEGER CHECK (hold_reason IN (1, 2)),
     CHECK ((status = 'CANDIDATE') = (consumption_block IS NULL)),
     CHECK ((consumption_block IS NULL) = (burn_tx_id IS NULL))
 ) STRICT;
@@ -32,7 +32,6 @@ CREATE TABLE submissions (
     endpoint TEXT NOT NULL,
     body BLOB NOT NULL,
     transfer_spec_hash BLOB NOT NULL,
-    use_circle_forwarding INTEGER NOT NULL CHECK (use_circle_forwarding IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN (
         'SUBMITTING', 'SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED', 'HELD'
     )),

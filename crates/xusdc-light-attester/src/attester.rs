@@ -366,9 +366,10 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit. A store error
-    /// stops the cycle. A prepare 400 holds the burn. Other errors are retried next cycle while
-    /// later burns continue. A 429 stops Circle requests for this cycle.
+    /// Takes each eligible burn through prepare, verify, sign and submit. A store error stops the
+    /// cycle. A prepare 400, or a forwarded burn no larger than the CCTP fee, holds the burn. Other
+    /// errors are retried next cycle while later burns continue. A 429 stops Circle requests for
+    /// this cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -409,7 +410,7 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         let prepared = self
             .circle
-            .prepare_withdrawal(burn, self.config.use_circle_forwarding())
+            .prepare_withdrawal(burn, self.config.cctp_forwarding().0)
             .await
             .inspect_err(|error| {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });
@@ -481,8 +482,7 @@ pub(crate) fn burn_hold(
     error: &SubmitError,
 ) -> (Option<BurnHoldReason>, Option<(u16, &[u8])>, Option<String>) {
     match error {
-        // A 400 is Circle refusing to prepare this burn. Any other failure, including a reply
-        // that fails our checks, is tried again next cycle.
+        // A 400 is Circle refusing to prepare this burn.
         SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body })
             if *status == StatusCode::BAD_REQUEST =>
         {
@@ -492,6 +492,13 @@ pub(crate) fn burn_hold(
                 circle_message(body),
             )
         }
+        // A forwarded burn no larger than the configured CCTP fee cannot pay it even without a
+        // Circle fee, so it fails the same way every cycle until that fee changes.
+        SubmitError::Verification(VerifyError::TooSmallToForward) => {
+            (Some(BurnHoldReason::TooSmallToForward), None, None)
+        }
+        // Any other failure, including a reply that fails our other checks, is tried again next
+        // cycle.
         _ => (None, None, None),
     }
 }

@@ -42,9 +42,11 @@ fn cli_surface_is_explicit() {
         "--circle-url",
         "--request-timeout",
         "--faucet-account-id",
-        "--use-circle-forwarding",
         "--max-withdrawal-fee",
         "--max-withdrawal-fee-bps",
+        "--cctp-forwarding-max-fee",
+        "--cctp-forwarder-address",
+        "--cctp-token-messenger-address",
         "--poll-interval",
         "--faucet-deployment-block",
         "--trusted-anchor-block",
@@ -77,9 +79,17 @@ fn cli_surface_is_explicit() {
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
         ("--faucet-account-id", super::FAUCET_ACCOUNT_ID),
-        ("--use-circle-forwarding", "false"),
         ("--max-withdrawal-fee", "0"),
         ("--max-withdrawal-fee-bps", "0"),
+        ("--cctp-forwarding-max-fee", "1"),
+        (
+            "--cctp-forwarder-address",
+            "0x008888878f94c0d87defdf0b07f46b93c1934442",
+        ),
+        (
+            "--cctp-token-messenger-address",
+            "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+        ),
         ("--poll-interval", "2s"),
         ("--faucet-deployment-block", "1"),
         ("--trusted-anchor-block", "0"),
@@ -232,6 +242,46 @@ fn invalid_config_is_rejected() {
         assert_config_error(&args, expected_error);
     }
 
+    const FORWARDER: &str = "0x008888878f94c0d87defdf0b07f46b93c1934442";
+    const TOKEN_MESSENGER: &str = "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa";
+    let mut zero_forwarding_fee = valid.clone();
+    zero_forwarding_fee.replace("--cctp-forwarding-max-fee", "0");
+    assert_config_error(
+        &zero_forwarding_fee,
+        "cctp forwarding max fee must be above zero",
+    );
+    let mut forwarding = valid.clone();
+    forwarding.replace("--max-withdrawal-fee", "1000");
+    forwarding.replace("--cctp-forwarding-max-fee", "1000");
+    forwarding.load();
+    forwarding.replace("--cctp-forwarder-address", "0x1234");
+    assert_config_error(&forwarding, "cctp forwarder address is invalid");
+    forwarding.replace(
+        "--cctp-forwarder-address",
+        "0x0000000000000000000000000000000000000000",
+    );
+    assert_config_error(&forwarding, "cctp forwarder address must not be zero");
+    forwarding.replace("--cctp-forwarder-address", FORWARDER);
+    for (messenger, expected_error) in [
+        ("0x1234", "cctp token messenger address is invalid"),
+        (
+            "0x0000000000000000000000000000000000000000",
+            "cctp token messenger address must not be zero",
+        ),
+    ] {
+        let mut args = forwarding.clone();
+        args.replace("--cctp-token-messenger-address", messenger);
+        assert_config_error(&args, expected_error);
+    }
+    assert_eq!(
+        forwarding.load().cctp_forwarding(),
+        (
+            1000,
+            FORWARDER.parse().unwrap(),
+            TOKEN_MESSENGER.parse().unwrap()
+        )
+    );
+
     for (flag, value, kind) in [
         ("--request-timeout", "invalid", ErrorKind::ValueValidation),
         (
@@ -244,7 +294,6 @@ fn invalid_config_is_rejected() {
             "4294967296",
             ErrorKind::ValueValidation,
         ),
-        ("--use-circle-forwarding", "yes", ErrorKind::InvalidValue),
     ] {
         let mut args = valid.clone();
         args.replace(flag, value);
@@ -280,7 +329,7 @@ fn invalid_config_is_rejected() {
         config.expected_signing_public_keys_hex(),
         [SIGNING_KEY_ONE, SIGNING_KEY_TWO]
     );
-    assert_eq!(config.max_withdrawal_fee(), AssetAmount::ZERO);
+    assert_eq!(config.max_withdrawal_fee().as_u64(), 1_000_000);
 
     let mut relative = valid.clone();
     relative.replace("--store-path", "relative.sqlite3");
@@ -291,6 +340,7 @@ fn invalid_config_is_rejected() {
 
     let mut fee = valid.clone();
     fee.replace("--max-withdrawal-fee", "3500");
+    fee.replace("--cctp-forwarding-max-fee", "1000");
     let config = fee.load();
     assert_eq!(config.max_withdrawal_fee().as_u64(), 3500);
 

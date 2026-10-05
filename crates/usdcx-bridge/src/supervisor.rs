@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures_util::FutureExt;
 use tokio::signal::unix::{signal, Signal, SignalKind};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, instrument};
 use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
 use xusdc_attester::service::AttesterService;
 
@@ -39,6 +39,7 @@ impl Signals {
     }
 }
 
+#[instrument(name = "bridge", skip_all)]
 pub(crate) async fn run(config: Config, mut signals: Signals) -> Result<()> {
     // No deposit work starts until the attester and both KMS signers pass startup.
     let startup = AttesterService::start(config.attester);
@@ -51,12 +52,14 @@ pub(crate) async fn run(config: Config, mut signals: Signals) -> Result<()> {
         }
         result = &mut startup => result?,
     };
+    info!(service = "attester", "startup checks passed");
     let (relayer_stop, relayer_shutdown) = mpsc::channel();
     let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
     // The blocking relayer owns an SDK runtime and must run outside the async runtime.
     let relayer = tokio::task::spawn_blocking(move || {
         let node = NodeClient::new(&config.relayer).context("connecting relayer to Miden")?;
         let relayer = Relayer::new(config.relayer, Box::new(node))?;
+        info!(service = "relayer", "startup checks passed");
         let _ = ready_sender.send(());
         relayer.run_until(relayer_shutdown)
     });
@@ -64,7 +67,10 @@ pub(crate) async fn run(config: Config, mut signals: Signals) -> Result<()> {
     tokio::pin!(relayer);
     let relayer_started = tokio::select! {
         biased;
-        signal = signals.recv() => signal.map(|()| false),
+        signal = signals.recv() => {
+            info!("shutdown requested during relayer startup");
+            signal.map(|()| false)
+        },
         ready = ready_receiver => ready.context("relayer startup failed").map(|()| true),
     };
     if !matches!(relayer_started, Ok(true)) {
@@ -105,13 +111,18 @@ async fn wait_for_shutdown(
     // A completed service future must not be polled again during shutdown.
     let stop_reason = tokio::select! {
         biased;
-        result = &mut signal => result,
+        result = &mut signal => {
+            info!(reason = "process signal", "shutdown requested");
+            result
+        },
         result = &mut attester => {
             attester_done = true;
+            info!(service = "attester", "service exited; stopping its peer");
             service_exit("attester", result)
         }
         result = &mut relayer => {
             relayer_done = true;
+            info!(service = "relayer", "service exited; stopping its peer");
             service_exit("relayer", result)
         }
     };
@@ -137,7 +148,9 @@ async fn wait_for_shutdown(
         )
     })
     .await;
-    stop_reason.and(attester).and(relayer)
+    let result = stop_reason.and(attester).and(relayer);
+    info!(success = result.is_ok(), "bridge shutdown complete");
+    result
 }
 
 async fn finish_shutdown<T>(cleanup: impl Future<Output = T>) -> T {

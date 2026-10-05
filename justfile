@@ -9,3 +9,7 @@ lint:
 
 run-relayer *args:
     cargo run --locked -p xreserve-deposit-relayer -- {{args}}
+
+# Build one architecture and load the image into the local Docker engine.
+build-bridge-image platform="linux/arm64" tag="usdcx-bridge:local":
+    docker buildx build --file crates/usdcx-bridge/Dockerfile --platform {{quote(platform)}} --tag {{quote(tag)}} --load .

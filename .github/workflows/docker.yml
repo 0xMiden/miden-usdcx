@@ -1,0 +1,132 @@
+name: Docker
+
+on:
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/0xmiden/miden-usdcx-bridge
+
+jobs:
+  validate:
+    name: Validate image (${{ matrix.architecture }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: crates/usdcx-bridge/Dockerfile
+          platforms: linux/${{ matrix.architecture }}
+          load: true
+          push: false
+          tags: usdcx-bridge:check
+          build-args: |
+            VERSION=pr-${{ github.event.number }}
+            COMMIT=${{ github.sha }}
+      - name: Check normal entry point
+        run: docker run --rm --network none usdcx-bridge:check --help
+
+  stage:
+    name: Build release image (${{ matrix.architecture }})
+    if: >-
+      github.event_name == 'release' &&
+      github.repository == '0xMiden/miden-usdcx' &&
+      github.ref == format('refs/tags/{0}', github.event.release.tag_name)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      VERSION: ${{ github.event.release.tag_name }}
+      STAGED_IMAGE: ghcr.io/0xmiden/miden-usdcx-bridge:sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release tag and source
+        run: |
+          set -euo pipefail
+          [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+          [[ "$(git rev-parse "refs/tags/${VERSION}^{commit}")" == "${GITHUB_SHA}" ]]
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build the normal image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: crates/usdcx-bridge/Dockerfile
+          platforms: linux/${{ matrix.architecture }}
+          load: true
+          push: false
+          tags: ${{ env.STAGED_IMAGE }}
+          build-args: |
+            CREATED=${{ github.event.release.published_at }}
+            VERSION=${{ env.VERSION }}
+            COMMIT=${{ github.sha }}
+      - name: Check normal entry point
+        run: docker run --rm --network none "${STAGED_IMAGE}" --help
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Stage validated image
+        run: docker push "${STAGED_IMAGE}"
+
+  publish:
+    name: Publish multi-arch release
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ github.event.release.tag_name }}
+      STAGED_IMAGE: ghcr.io/0xmiden/miden-usdcx-bridge:sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the release tag only after both architectures passed
+        run: |
+          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" \
+            "${STAGED_IMAGE}-amd64" "${STAGED_IMAGE}-arm64"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"

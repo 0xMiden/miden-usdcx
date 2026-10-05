@@ -82,6 +82,76 @@ fn page_server(body: String, next: bool) -> (String, thread::JoinHandle<()>) {
 }
 
 #[test]
+fn startup_creates_progress_and_preserves_a_resumed_scan() {
+    let directory = TempDir::new().unwrap();
+    let config = config(&directory, "http://127.0.0.1:1");
+    let store = Store::new(config.state_file.clone());
+    let build = |config| {
+        Relayer::new(
+            config,
+            Box::new(TestMiden {
+                reached_page: mpsc::channel().0,
+            }),
+        )
+    };
+    drop(build(config.clone()).unwrap());
+    assert_eq!(store.state().unwrap(), store::State::default());
+
+    let saved = store::State {
+        watermark: Some(MessageHash::new([1; 32])),
+        scan: Some(ScanProgress {
+            head: MessageHash::new([2; 32]),
+            resume: CircleCursor::new("older"),
+        }),
+    };
+    store.set_state(&saved).unwrap();
+    let bytes = std::fs::read(&config.state_file).unwrap();
+    drop(build(config.clone()).unwrap());
+    assert_eq!(store.state().unwrap(), saved);
+    assert_eq!(std::fs::read(&config.state_file).unwrap(), bytes);
+}
+
+#[test]
+fn startup_refuses_corrupt_progress_without_replacing_it() {
+    let directory = TempDir::new().unwrap();
+    let config = config(&directory, "http://127.0.0.1:1");
+    std::fs::write(&config.state_file, "{broken").unwrap();
+    let result = Relayer::new(
+        config.clone(),
+        Box::new(TestMiden {
+            reached_page: mpsc::channel().0,
+        }),
+    );
+    let error = format!("{:#}", result.err().unwrap());
+    assert!(error.contains("reading relayer startup progress"));
+    assert_eq!(std::fs::read(&config.state_file).unwrap(), b"{broken");
+    assert!(!config.state_file.with_extension("tmp").exists());
+}
+
+#[test]
+fn startup_refuses_a_progress_directory_without_write_permission() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TempDir::new().unwrap();
+    let config = config(&directory, "http://127.0.0.1:1");
+    let store = Store::new(config.state_file.clone());
+    store.set_state(&store::State::default()).unwrap();
+    let bytes = std::fs::read(&config.state_file).unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = Relayer::new(
+        config.clone(),
+        Box::new(TestMiden {
+            reached_page: mpsc::channel().0,
+        }),
+    );
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = format!("{:#}", result.err().unwrap());
+    assert!(error.contains("checking relayer progress persistence"));
+    assert!(error.contains("Permission denied"));
+    assert_eq!(std::fs::read(&config.state_file).unwrap(), bytes);
+}
+
+#[test]
 fn stopping_after_a_page_saves_the_resume_cursor() {
     let directory = TempDir::new().unwrap();
     let body = serde_json::json!({"attestations": [{

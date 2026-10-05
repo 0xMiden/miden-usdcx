@@ -12,6 +12,7 @@ use rusqlite::params;
 
 use crate::config::Config;
 use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
+use crate::tests::support::store_version;
 
 use super::{
     config_toml, create_store_parent, faucet_account_id, load_config, ready_circle, start,
@@ -178,13 +179,6 @@ fn create_valid_store(path: &Path) {
         )
         .unwrap(),
     );
-}
-
-fn store_version(path: &Path) -> u32 {
-    rusqlite::Connection::open(path)
-        .unwrap()
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap()
 }
 
 fn write_invalid_store(path: &Path, case: InvalidStoreCase) {

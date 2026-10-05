@@ -3,7 +3,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context};
+use alloy_primitives::B256;
+use anyhow::{anyhow, bail, ensure, Context};
 use miden_objects::prost::Message;
 use miden_objects::{proto, DecodeMessageExt};
 use miden_protocol::account::AccountId;
@@ -12,9 +13,12 @@ use miden_protocol::note::{NoteId, Nullifier};
 use miden_protocol::transaction::{PublicOutputNote, TransactionId};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
+use reqwest::Url;
 use rusqlite::{params, Params, Transaction};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
+use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
+use crate::verify::validate_saved_request;
 
 const DISCOVERED: &str = "DISCOVERED";
 
@@ -135,9 +139,102 @@ impl Store {
         Ok(candidates.pop())
     }
 
+    /// Saves a signed request before it is sent. It can replace only an expired withdrawal; any
+    /// other saved submission, a failed one included, stays as it is.
+    pub(crate) fn save_submission(&self, record: &SavedSubmission) -> anyhow::Result<()> {
+        validate_submission(record)?;
+        let written = self
+            .connection
+            .execute(
+                "INSERT INTO submissions (
+                note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status
+             ) SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE EXISTS (SELECT 1 FROM burns
+                 WHERE note_id = ?1 AND status = 'DISCOVERED')
+             ON CONFLICT (note_id) DO UPDATE SET
+                endpoint = excluded.endpoint, body = excluded.body,
+                transfer_spec_hash = excluded.transfer_spec_hash,
+                use_circle_forwarding = excluded.use_circle_forwarding,
+                status = ?6, withdrawal_id = NULL, hold_reason = NULL,
+                last_http_status = NULL, last_response = NULL, last_error = NULL
+             WHERE submissions.status = ?7 AND submissions.withdrawal_id IS NOT NULL",
+                params![
+                    record.note_id.to_bytes(),
+                    record.endpoint.as_str(),
+                    record.body,
+                    record.transfer_spec_hash.as_slice(),
+                    record.use_circle_forwarding,
+                    SubmissionStatus::Submitting.as_ref(),
+                    SubmissionStatus::Expired.as_ref(),
+                ],
+            )
+            .map_err(classify_write_error)?;
+        ensure!(written == 1, CONFLICT);
+        Ok(())
+    }
+
+    /// The saved submission for `note_id`, if there is one.
+    #[cfg(test)]
+    pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
+        Ok(select_submissions(&self.connection, Some(note_id), false)?.pop())
+    }
+
+    /// The submissions still being sent, which recovery resumes.
+    pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
+        select_submissions(&self.connection, None, true)
+    }
+
+    /// Saves the latest outcome of a submission that is still being sent. Only the outcome
+    /// changes: the saved signed request and a known withdrawal ID stay as they are.
+    pub(crate) fn update_submission_outcome(
+        &self,
+        outcome: &SavedSubmission,
+    ) -> anyhow::Result<()> {
+        validate_submission_outcome(outcome)?;
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE submissions SET status = ?1, withdrawal_id = ?2, hold_reason = ?3,
+                last_http_status = ?4, last_response = ?5, last_error = ?6
+             WHERE note_id = ?7",
+                params![
+                    outcome.status.as_ref(),
+                    outcome.withdrawal_id,
+                    outcome.hold_reason.map(HoldReason::as_str),
+                    outcome.last_http_status,
+                    outcome.last_response,
+                    outcome.last_error,
+                    outcome.note_id.to_bytes(),
+                ],
+            )
+            .map_err(classify_error)?;
+        ensure!(updated == 1, CONFLICT);
+        Ok(())
+    }
+
+    /// Puts a held withdrawal back to be sent. Its saved request and any known withdrawal ID stay,
+    /// so recovery asks Circle for its status instead of posting it again once the ID is known.
+    pub(crate) fn retry_held_submission(&self, note_id: NoteId) -> anyhow::Result<()> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE submissions SET status = ?2, hold_reason = NULL
+             WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
+                params![
+                    note_id.to_bytes(),
+                    SubmissionStatus::Submitting.as_ref(),
+                    SubmissionStatus::Held.as_ref(),
+                    HoldReason::HttpRejected.as_str()
+                ],
+            )
+            .map_err(classify_error)?;
+        ensure!(updated == 1, CONFLICT);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
-        load_burns(&self.connection, self.faucet_account_id)
+        load_burns(&self.connection, self.faucet_account_id, true)
     }
 
     /// Filters discovered burns by verified waiting depth; used by the later submit stage.
@@ -156,7 +253,7 @@ impl Store {
         };
         // Waiting depth comes from the header we verified and saved, not the RPC's reported tip.
         let last_ready_block = std::cmp::min(proof_lag_block, last_depth_safe_block);
-        Ok(load_burns(&self.connection, self.faucet_account_id)?
+        Ok(load_burns(&self.connection, self.faucet_account_id, false)?
             .into_iter()
             .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
@@ -283,6 +380,17 @@ fn validate_store(
 ) -> anyhow::Result<ScanCursor> {
     validate_store_format(connection)?;
 
+    // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
+    let mut statement = connection
+        .prepare("SELECT withdrawal_id FROM submissions WHERE withdrawal_id IS NOT NULL")
+        .map_err(classify_error)?;
+    for id in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(classify_error)?
+    {
+        ensure!(is_well_formed_id(&id.map_err(classify_error)?), INVALID);
+    }
+
     // Stored chain state becomes the next run's trust base, so reject any malformed or
     // internally inconsistent row before using it.
     let row_count = connection
@@ -329,7 +437,7 @@ fn validate_store(
     }
     let state = load_scan_state(connection, initial_cursor)?;
     load_candidates(connection, faucet_account_id, "", [])?;
-    load_burns(connection, faucet_account_id)?;
+    load_burns(connection, faucet_account_id, true)?;
     if state
         .authenticated_parent
         .as_ref()
@@ -349,16 +457,132 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
         // SQLite names what it found, such as a failed CHECK constraint.
         return Err(anyhow!(quick_check).context(INVALID));
     }
-
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
             next_block, authenticated_parent FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status
             FROM burns LIMIT 0",
+        "SELECT note_id, endpoint, body, transfer_spec_hash, use_circle_forwarding, status,
+            withdrawal_id, hold_reason, last_http_status, last_response, last_error
+            FROM submissions LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }
 
+    Ok(())
+}
+
+impl HoldReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpRejected => "http_rejected",
+        }
+    }
+}
+
+/// Reads the saved submissions in note order: only `note_id`'s when it is given, and only those
+/// still being sent when `recoverable_only` is set. A row that fails its checks makes the store
+/// invalid.
+fn select_submissions(
+    connection: &rusqlite::Connection,
+    note_id: Option<NoteId>,
+    recoverable_only: bool,
+) -> anyhow::Result<Vec<SavedSubmission>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT note_id, endpoint, body, transfer_spec_hash,
+            use_circle_forwarding, status, withdrawal_id, hold_reason,
+            last_http_status, last_response, last_error FROM submissions
+         WHERE (?1 IS NULL OR note_id = ?1) AND (?2 = 0 OR status = ?3)
+         ORDER BY note_id",
+        )
+        .map_err(classify_error)?;
+    let mut rows = statement
+        .query(params![
+            note_id.map(|id| id.to_bytes()),
+            recoverable_only,
+            SubmissionStatus::Submitting.as_ref()
+        ])
+        .map_err(classify_error)?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next().map_err(classify_error)? {
+        let status: SubmissionStatus = row
+            .get::<_, String>(5)
+            .map_err(classify_error)?
+            .parse()
+            .context(INVALID)?;
+        let hold_reason = match row
+            .get::<_, Option<String>>(7)
+            .map_err(classify_error)?
+            .as_deref()
+        {
+            None => None,
+            Some("http_rejected") => Some(HoldReason::HttpRejected),
+            _ => bail!(INVALID),
+        };
+        let record = SavedSubmission {
+            note_id: decode_canonical(&row.get::<_, Vec<u8>>(0).map_err(classify_error)?)?,
+            endpoint: Url::parse(&row.get::<_, String>(1).map_err(classify_error)?)
+                .context(INVALID)?,
+            body: row.get(2).map_err(classify_error)?,
+            transfer_spec_hash: B256::from(row.get::<_, [u8; 32]>(3).map_err(classify_error)?),
+            use_circle_forwarding: match row.get::<_, i64>(4).map_err(classify_error)? {
+                0 => false,
+                1 => true,
+                _ => bail!(INVALID),
+            },
+            status,
+            withdrawal_id: row.get(6).map_err(classify_error)?,
+            hold_reason,
+            last_http_status: row.get(8).map_err(classify_error)?,
+            last_response: row.get(9).map_err(classify_error)?,
+            last_error: row.get(10).map_err(classify_error)?,
+        };
+        validate_submission(&record)?;
+        if !exists(
+            connection,
+            "SELECT EXISTS (SELECT 1 FROM burns
+             WHERE note_id = ?1 AND status = 'DISCOVERED')",
+            [record.note_id.to_bytes()],
+        )? {
+            bail!(INVALID);
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn validate_submission(record: &SavedSubmission) -> anyhow::Result<()> {
+    let endpoint = &record.endpoint;
+    if endpoint.scheme() != "https"
+        || endpoint.host_str().is_none()
+        || endpoint.path() != "/v1/withdraw"
+        || !validate_saved_request(record)
+    {
+        bail!(INVALID);
+    }
+    validate_submission_outcome(record)
+}
+
+fn validate_submission_outcome(outcome: &SavedSubmission) -> anyhow::Result<()> {
+    if (outcome.status == SubmissionStatus::Held) != outcome.hold_reason.is_some()
+        || outcome
+            .withdrawal_id
+            .as_deref()
+            .is_some_and(|id| !is_well_formed_id(id))
+        || (matches!(
+            outcome.status,
+            SubmissionStatus::Submitted
+                | SubmissionStatus::Finalized
+                | SubmissionStatus::Expired
+                | SubmissionStatus::Failed
+        ) && outcome.withdrawal_id.is_none())
+        || outcome
+            .last_http_status
+            .is_some_and(|code| reqwest::StatusCode::from_u16(code).is_err())
+    {
+        bail!(INVALID);
+    }
     Ok(())
 }
 
@@ -459,16 +683,19 @@ fn load_candidates<P: Params>(
 fn load_burns(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
+    include_submitted: bool,
 ) -> anyhow::Result<Vec<DiscoveredBurn>> {
     let mut statement = connection
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block,
                     burn_tx_id FROM burns
-             WHERE status = 'DISCOVERED'",
+             WHERE status = 'DISCOVERED' AND (?1 OR NOT EXISTS (
+                  SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
+             ))",
         )
         .map_err(classify_error)?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map([include_submitted], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -618,7 +845,11 @@ fn classify_write_error(error: rusqlite::Error) -> anyhow::Error {
     if matches!(
         &error,
         rusqlite::Error::SqliteFailure(sqlite_error, _)
-            if sqlite_error.code == rusqlite::ErrorCode::ConstraintViolation
+            if matches!(
+                sqlite_error.extended_code,
+                rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                    | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            )
     ) {
         anyhow::Error::new(error).context(CONFLICT)
     } else {

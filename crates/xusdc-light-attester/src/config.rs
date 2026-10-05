@@ -84,7 +84,8 @@ pub struct Cli {
     /// Maximum CCTP fee for a forwarded withdrawal, in the smallest USDC unit.
     /// The total withdrawal fee limit must cover this fee and Circle's fee.
     /// CCTP deducts only the fee it charges, which may be lower than this limit.
-    /// Allow 10 to 20 percent above Circle's current fee for the most expensive destination you support.
+    /// Allow 10 to 20 percent above Circle's current fee for the most expensive destination you
+    /// support.
     #[arg(long)]
     cctp_forwarding_max_fee: u64,
 

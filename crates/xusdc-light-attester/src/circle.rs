@@ -401,7 +401,8 @@ impl PrepareBatch {
     }
 }
 
-/// An amount as Circle takes it: a decimal string of whole USDC with all six fractional digits, so 1_000_001 smallest units is "1.000001", not a smallest-unit integer.
+/// An amount as Circle takes it: a decimal string of whole USDC with all six fractional digits,
+/// so 1_000_001 smallest units is "1.000001", not a smallest-unit integer.
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 struct UsdcDecimals(String);

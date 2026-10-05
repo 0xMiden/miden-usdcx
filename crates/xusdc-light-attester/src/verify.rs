@@ -89,7 +89,7 @@ pub enum VerifyError {
     WrongBurnField(&'static str),
     #[error("Circle's payout and fee do not account for the burn")]
     BadAmount,
-    #[error("Circle's fee exceeds the configured ceiling")]
+    #[error("Circle's fee plus the CCTP fee cap exceeds the configured ceiling")]
     FeeTooHigh,
     #[error("Circle's source signer and depositor differ")]
     WrongSigner,

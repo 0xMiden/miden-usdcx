@@ -1,4 +1,7 @@
-//! Signing-provider boundary; AWS KMS is not connected yet.
+//! Signing-provider boundary for AWS KMS keys, and a local signer for tests.
+
+mod kms;
+pub use kms::KmsSigner;
 
 use std::error::Error;
 use std::future::Future;
@@ -6,7 +9,9 @@ use std::pin::Pin;
 
 use alloy_primitives::{Signature, B256};
 use anyhow::Context;
-use k256::ecdsa::{SigningKey, VerifyingKey};
+#[cfg(test)]
+use k256::ecdsa::SigningKey;
+use k256::ecdsa::VerifyingKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SigningPublicKey(pub(crate) [u8; 33]);
@@ -118,11 +123,13 @@ impl SignerPair {
     }
 }
 
-/// A local secp256k1 signer for development.
+/// A local secp256k1 signer for tests.
+#[cfg(test)]
 pub struct DevelopmentSigner {
     key: SigningKey,
 }
 
+#[cfg(test)]
 impl DevelopmentSigner {
     /// Reads a 32-byte private key written as hex, with or without `0x`. A malformed key is
     /// refused without the hex decoder's error, which can quote a character of the key.
@@ -140,6 +147,7 @@ impl DevelopmentSigner {
     }
 }
 
+#[cfg(test)]
 impl Signer for DevelopmentSigner {
     fn public_key(&self) -> SignerFuture<'_, SigningPublicKey> {
         Box::pin(async move {

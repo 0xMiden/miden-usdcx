@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::error::ErrorKind;
@@ -6,7 +7,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{parse_note_ids, Command, Invocation};
+use crate::config::{parse_note_ids, Command, Invocation, SignerConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -38,6 +39,7 @@ fn cli_surface_is_explicit() {
     assert_eq!(local.load().miden_rpc_url(), &Endpoint::localhost());
 
     for required in [
+        "--signer-provider",
         "--miden-rpc-url",
         "--circle-url",
         "--request-timeout",
@@ -75,6 +77,7 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
+        ("--signer-provider", "aws-kms"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -382,4 +385,67 @@ fn note_ids_file_takes_the_first_word_of_each_line() {
         "no note IDs given"
     );
     assert_eq!(parse_note_ids(&[flagged], Some(&file)).unwrap().len(), 1);
+}
+
+#[test]
+fn signer_mode_validates_only_its_own_settings() {
+    const FIRST: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
+    const SECOND: &str =
+        "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let kms = TestArgs::new(&directory, 1);
+    assert!(matches!(
+        kms.load().signer(),
+        SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
+            && *operation_timeout == std::time::Duration::from_secs(10)
+    ));
+    for provider in ["development", "fallback"] {
+        let mut unsupported = kms.clone();
+        unsupported.replace("--signer-provider", provider);
+        assert_cli_error(&unsupported, ErrorKind::InvalidValue);
+    }
+
+    let options: [(&str, &[&str]); 3] = [
+        ("--aws-kms-region", &["eu-north-1"]),
+        ("--aws-kms-key-arn", &[FIRST, SECOND]),
+        ("--aws-kms-operation-timeout", &["10s"]),
+    ];
+    let values = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+    for (flag, _) in options {
+        let mut missing = kms.clone();
+        missing.remove(flag);
+        assert_cli_error(&missing, ErrorKind::MissingRequiredArgument);
+    }
+
+    // One --aws-kms-key-arn with exactly two ARNs.
+    for (arns, kind) in [
+        (&[FIRST][..], ErrorKind::WrongNumberOfValues),
+        (&[FIRST, SECOND, FIRST][..], ErrorKind::UnknownArgument),
+    ] {
+        let mut wrong_count = kms.clone();
+        wrong_count.remove("--aws-kms-key-arn");
+        wrong_count.append_values("--aws-kms-key-arn", &values(arns));
+        assert_cli_error(&wrong_count, kind);
+    }
+    let mut repeated_flag = kms.clone();
+    repeated_flag.remove("--aws-kms-key-arn");
+    repeated_flag.append("--aws-kms-key-arn", FIRST);
+    repeated_flag.append("--aws-kms-key-arn", SECOND);
+    assert_cli_error(&repeated_flag, ErrorKind::WrongNumberOfValues);
+    let mut second_pair = kms.clone();
+    second_pair.append_values("--aws-kms-key-arn", &values(&[FIRST, SECOND]));
+    assert_cli_error(&second_pair, ErrorKind::ArgumentConflict);
+
+    let mut same_arn = kms.clone();
+    same_arn.replace("--aws-kms-key-arn", SECOND);
+    assert_config_error(&same_arn, "the two KMS key ARNs must differ");
+    let mut empty_region = kms.clone();
+    empty_region.replace("--aws-kms-region", "");
+    assert_cli_error(&empty_region, ErrorKind::InvalidValue);
+    let mut zero = kms;
+    zero.replace("--aws-kms-operation-timeout", "0s");
+    assert_config_error(&zero, "AWS KMS operation timeout must be greater than zero");
 }

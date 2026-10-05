@@ -7,12 +7,14 @@ description = "Off-chain xUSDC withdrawal attester"
 
 [dependencies]
 anyhow = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-kms = { workspace = true }
 alloy-primitives = { workspace = true, features = ["k256"] }
 alloy-sol-types = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
 humantime = "2"
-k256 = { workspace = true }
+k256 = { workspace = true, features = ["pkcs8"] }
 miden-usdcx = { workspace = true }
 miden-client = { workspace = true, features = ["std", "tonic"] }
 miden-protocol = { workspace = true }
@@ -31,6 +33,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 
 [dev-dependencies]
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+aws-smithy-types = "1"
 http = "1"
 miden-protocol = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }

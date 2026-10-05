@@ -68,14 +68,6 @@ impl AttesterService {
             .context("Circle request worker failed")?;
         result
     }
-
-    /// Closes an initialized service before its withdrawal loop starts.
-    pub async fn shutdown(self) -> Result<()> {
-        drop(self.attester);
-        self.circle_worker
-            .await
-            .context("Circle request worker failed")
-    }
 }
 
 /// Runs a one-off maintenance command against a stopped attester's store.

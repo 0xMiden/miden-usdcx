@@ -8,7 +8,6 @@ description = "Runs the USDCx deposit relayer and withdrawal attester together"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
 humantime = "2"
 miden-protocol = { workspace = true }
 miden-usdcx = { workspace = true }

@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
-use crate::config::Config;
+use crate::config::{CctpForwarding, Config};
 use crate::signer::{Signer, SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
@@ -252,9 +252,9 @@ impl UnverifiedPrepareResponse {
         let forwarded =
             hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
         let cctp_fee = if forwarded {
-            let (fee, forwarder, token_messenger) = config.cctp_forwarding();
-            verify_forwarded_leg(&intent, &hook, burn, fee, forwarder, token_messenger)?;
-            U256::from(fee)
+            let forwarding = config.cctp_forwarding();
+            verify_forwarded_leg(&intent, &hook, burn, forwarding)?;
+            U256::from(forwarding.max_fee)
         } else {
             if spec.destinationDomain != burn.items().dest_domain.as_u32() {
                 return Err(VerifyError::WrongBurnField("destinationDomain"));
@@ -344,18 +344,16 @@ fn verify_forwarded_leg(
     intent: &eip712::BurnIntent,
     hook: &HookData,
     burn: &DiscoveredBurn,
-    cctp_fee: u64,
-    forwarder: Address,
-    token_messenger: Address,
+    forwarding: CctpForwarding,
 ) -> Result<(), VerifyError> {
     use VerifyError::ForwardedField;
     // xReserve calls this contract with the calldata below, so it must be CCTP's TokenMessengerV2;
     // the checks on that calldata only hold if TokenMessengerV2 is the contract that runs it.
-    if hook.forwarding_contract != token_messenger {
+    if hook.forwarding_contract != forwarding.token_messenger {
         return Err(ForwardedField("forwardingContractAddress"));
     }
     let spec = &intent.spec;
-    let forwarder = forwarder.into_word();
+    let forwarder = forwarding.forwarder.into_word();
     if spec.destinationRecipient != forwarder {
         return Err(ForwardedField("destinationRecipient"));
     }
@@ -389,7 +387,7 @@ fn verify_forwarded_leg(
     if call.destinationCaller != B256::ZERO {
         return Err(ForwardedField("calldata destinationCaller"));
     }
-    if call.maxFee != U256::from(cctp_fee) {
+    if call.maxFee != U256::from(forwarding.max_fee) {
         return Err(ForwardedField("calldata maxFee"));
     }
     if call.minFinalityThreshold != CCTP_FAST_FINALITY {

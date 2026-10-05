@@ -93,13 +93,13 @@ pub struct Cli {
     /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
     /// plus CCTP.
     #[arg(long)]
-    cctp_forwarder_address: String,
+    cctp_forwarder_address: Address,
 
     /// 0x-prefixed address of CCTP's TokenMessengerV2 contract on Arc for the environment
     /// --circle-url points at. A forwarded response must name it as the forwarding contract: the
     /// contract xReserve calls with the CCTP transfer.
     #[arg(long)]
-    cctp_token_messenger_address: String,
+    cctp_token_messenger_address: Address,
 
     /// Delay between attester cycles (for example, "1s" or "500ms").
     #[arg(long, value_parser = humantime::parse_duration)]
@@ -212,6 +212,17 @@ impl SignerConfig {
     }
 }
 
+/// What a forwarded withdrawal is checked against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CctpForwarding {
+    /// Cap on the CCTP leg's fee, in the smallest USDC unit.
+    pub(crate) max_fee: u64,
+    /// Circle's xReserve contract on Arc.
+    pub(crate) forwarder: Address,
+    /// CCTP's TokenMessengerV2 on Arc.
+    pub(crate) token_messenger: Address,
+}
+
 #[derive(Debug)]
 pub struct Config {
     signer: SignerConfig,
@@ -221,8 +232,7 @@ pub struct Config {
     circle_api_base_url: Url,
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
-    /// The CCTP leg's fee, the xReserve contract on Arc and CCTP's TokenMessengerV2 there.
-    cctp_forwarding: (u64, Address, Address),
+    cctp_forwarding: CctpForwarding,
     poll_interval: Duration,
     faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
@@ -241,24 +251,27 @@ impl TryFrom<Cli> for Config {
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
-        let forwarder = cli
-            .cctp_forwarder_address
-            .parse::<Address>()
-            .context("cctp forwarder address is invalid")?;
-        if forwarder == Address::ZERO {
-            bail!("cctp forwarder address must not be zero");
-        }
-        let token_messenger = cli
-            .cctp_token_messenger_address
-            .parse::<Address>()
-            .context("cctp token messenger address is invalid")?;
-        if token_messenger == Address::ZERO {
-            bail!("cctp token messenger address must not be zero");
-        }
-        if cli.cctp_forwarding_max_fee == 0 {
-            bail!("cctp forwarding max fee must be above zero");
-        }
-        let cctp_forwarding = (cli.cctp_forwarding_max_fee, forwarder, token_messenger);
+        let cctp_forwarding = CctpForwarding {
+            max_fee: cli.cctp_forwarding_max_fee,
+            forwarder: cli.cctp_forwarder_address,
+            token_messenger: cli.cctp_token_messenger_address,
+        };
+        ensure!(
+            cctp_forwarding.max_fee != 0,
+            "cctp forwarding max fee must be above zero"
+        );
+        ensure!(
+            cctp_forwarding.forwarder != Address::ZERO,
+            "cctp forwarder address must not be zero"
+        );
+        ensure!(
+            cctp_forwarding.token_messenger != Address::ZERO,
+            "cctp token messenger address must not be zero"
+        );
+        ensure!(
+            cctp_forwarding.forwarder != cctp_forwarding.token_messenger,
+            "cctp forwarder and token messenger addresses must differ"
+        );
 
         if cli.request_timeout.is_zero() {
             bail!("circle request timeout must be greater than zero");
@@ -353,7 +366,7 @@ impl Config {
         self.max_withdrawal_fee_bps
     }
 
-    pub(crate) fn cctp_forwarding(&self) -> (u64, Address, Address) {
+    pub(crate) fn cctp_forwarding(&self) -> CctpForwarding {
         self.cctp_forwarding
     }
 

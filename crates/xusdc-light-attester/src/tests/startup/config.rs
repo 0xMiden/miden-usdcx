@@ -7,7 +7,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{parse_note_ids, Command, Invocation, SignerConfig};
+use crate::config::{parse_note_ids, CctpForwarding, Command, Invocation, SignerConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -258,18 +258,24 @@ fn invalid_config_is_rejected() {
     forwarding.replace("--cctp-forwarding-max-fee", "1000");
     forwarding.load();
     forwarding.replace("--cctp-forwarder-address", "0x1234");
-    assert_config_error(&forwarding, "cctp forwarder address is invalid");
+    assert_cli_error(&forwarding, ErrorKind::ValueValidation);
     forwarding.replace(
         "--cctp-forwarder-address",
         "0x0000000000000000000000000000000000000000",
     );
     assert_config_error(&forwarding, "cctp forwarder address must not be zero");
     forwarding.replace("--cctp-forwarder-address", FORWARDER);
+    let mut malformed_messenger = forwarding.clone();
+    malformed_messenger.replace("--cctp-token-messenger-address", "0x1234");
+    assert_cli_error(&malformed_messenger, ErrorKind::ValueValidation);
     for (messenger, expected_error) in [
-        ("0x1234", "cctp token messenger address is invalid"),
         (
             "0x0000000000000000000000000000000000000000",
             "cctp token messenger address must not be zero",
+        ),
+        (
+            FORWARDER,
+            "cctp forwarder and token messenger addresses must differ",
         ),
     ] {
         let mut args = forwarding.clone();
@@ -278,11 +284,11 @@ fn invalid_config_is_rejected() {
     }
     assert_eq!(
         forwarding.load().cctp_forwarding(),
-        (
-            1000,
-            FORWARDER.parse().unwrap(),
-            TOKEN_MESSENGER.parse().unwrap()
-        )
+        CctpForwarding {
+            max_fee: 1000,
+            forwarder: FORWARDER.parse().unwrap(),
+            token_messenger: TOKEN_MESSENGER.parse().unwrap(),
+        }
     );
 
     for (flag, value, kind) in [

@@ -1,7 +1,5 @@
 mod config;
-mod shutdown;
 mod supervisor;
-mod worker;
 
 use std::ffi::OsString;
 

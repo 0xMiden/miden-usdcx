@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
     let config = Config::try_from(invocation.run.context("missing run arguments")?)
         .context("invalid configuration")?;
     let miden_rpc_url = config.miden_rpc_url().clone();
+    let service = AttesterService::start(config).await?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("failed to install SIGTERM handler")?;
     let shutdown = CancellationToken::new();
@@ -70,12 +71,8 @@ async fn main() -> Result<()> {
         }
         signal_token.cancel();
     });
-    let result = async {
-        let service = AttesterService::start(config).await?;
-        warn!(%miden_rpc_url, "attester started");
-        service.run(shutdown).await
-    }
-    .await;
+    warn!(%miden_rpc_url, "attester started");
+    let result = service.run(shutdown).await;
     signal_task.abort();
     result
 }

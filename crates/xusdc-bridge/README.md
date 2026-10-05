@@ -72,7 +72,6 @@ starting points, not network identities or fee policy:
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_URL>' \
   --faucet-account-id '<XUSDC_FAUCET_ID>' \
-  --shutdown-grace 5m \
   --relayer \
     --page-size 100 \
     --request-timeout 30s \
@@ -108,5 +107,6 @@ Common options must appear before `--relayer`; relayer options go between `--rel
 
 Run exactly one instance against these stores. Do not run either standalone service beside it.
 Wait for `deposit relayer and withdrawal attester started` before enabling deposits. Send
-`SIGTERM` to stop; configure the host termination timeout above `--shutdown-grace`, and reuse the
-same volume on restart. Never delete state to clear an operational error.
+`SIGTERM` to stop. The process waits up to five minutes for the current page and withdrawal cycle
+to finish; set the host termination timeout above five minutes. Reuse the same volume on restart.
+Never delete state to clear an operational error.

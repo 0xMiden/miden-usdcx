@@ -9,7 +9,7 @@ description = "Runs the xUSDC deposit relayer and withdrawal attester together"
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-humantime = { workspace = true }
+miden-usdcx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -18,5 +18,4 @@ xreserve-deposit-relayer = { path = "../xreserve-deposit-relayer" }
 xusdc-attester = { path = "../xusdc-light-attester" }
 
 [dev-dependencies]
-rstest = { workspace = true }
 tempfile = { workspace = true }

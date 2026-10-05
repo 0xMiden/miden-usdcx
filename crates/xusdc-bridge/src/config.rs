@@ -1,8 +1,8 @@
 use std::ffi::{OsStr, OsString};
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser};
+use miden_usdcx::xreserve::encoding::CircleDomain;
 use xreserve_deposit_relayer::config::Config as RelayerConfig;
 use xusdc_attester::config::{
     parse_faucet_account_id, Cli as AttesterCli, Config as AttesterConfig,
@@ -26,15 +26,11 @@ struct Common {
     /// Canonical lowercase hex ID of the xUSDC faucet.
     #[arg(long)]
     faucet_account_id: String,
-    /// Time allowed to stop before the whole process exits with an error.
-    #[arg(long, value_parser = humantime::parse_duration)]
-    shutdown_grace: Duration,
 }
 
 pub(crate) struct Config {
     pub(crate) relayer: RelayerConfig,
     pub(crate) attester: AttesterConfig,
-    pub(crate) shutdown_grace: Duration,
 }
 
 impl Config {
@@ -46,9 +42,6 @@ impl Config {
             bail!("--relayer must come before --attester");
         }
         let common = Common::try_parse_from(&args[..relayer_at])?;
-        if common.shutdown_grace.is_zero() {
-            bail!("shutdown grace must be greater than zero");
-        }
         parse_faucet_account_id(&common.faucet_account_id)?;
 
         let relayer_args = &args[relayer_at + 1..attester_at];
@@ -64,7 +57,6 @@ impl Config {
                             | b"--circle-url"
                             | b"--faucet-account-id"
                             | b"--remote-domain"
-                            | b"--shutdown-grace"
                     )
                 ) {
                     bail!(
@@ -91,7 +83,7 @@ impl Config {
         let mut relayer = shared("xreserve-deposit-relayer", "--miden-node-url");
         relayer.extend([
             OsString::from("--remote-domain"),
-            OsString::from(AttesterConfig::source_domain().to_string()),
+            OsString::from(CircleDomain::MIDEN.as_u32().to_string()),
         ]);
         relayer.extend_from_slice(relayer_args);
         let relayer =
@@ -100,11 +92,7 @@ impl Config {
         attester.extend_from_slice(attester_args);
         let attester = AttesterConfig::try_from(AttesterCli::try_parse_from(attester)?)
             .context("invalid attester arguments")?;
-        Ok(Self {
-            relayer,
-            attester,
-            shutdown_grace: common.shutdown_grace,
-        })
+        Ok(Self { relayer, attester })
     }
 }
 

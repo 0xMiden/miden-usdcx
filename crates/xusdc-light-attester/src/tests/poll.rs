@@ -7,7 +7,7 @@ use crate::circle::CircleError;
 use crate::submission::{SavedSubmission, SubmissionStatus::*, SubmitError};
 
 use super::submit::{poll, reply, Ledger};
-use super::support::{CircleState, ObservedRequest};
+use super::support::{read_store, CircleState, ObservedRequest};
 
 async fn submitted(ledger: &Ledger, indices: &[usize]) {
     let replies = indices
@@ -315,4 +315,45 @@ async fn rate_limited_status_check_stops_the_cycle() {
     poll(&mut attester).await.unwrap();
     assert_eq!(ledger.record(&attester, first).status, Finalized);
     assert_eq!(ledger.record(&attester, second).status, Finalized);
+}
+
+/// Circle's created, verified and confirmed are all saved as submitted, so the history keeps the
+/// status Circle reported: each change adds a row, and a repeated answer adds none.
+#[tokio::test]
+async fn history_records_each_status_circle_reports() {
+    let ledger = Ledger::new().await;
+    submitted(&ledger, &[0]).await;
+    let replies = ["verified", "confirmed", "confirmed", "finalized"]
+        .map(|status| reply(200, ledger.response(0, status)))
+        .to_vec();
+    let (mut attester, _) = ledger.start(replies).await;
+    for _ in 0..3 {
+        poll(&mut attester).await.unwrap();
+    }
+    assert_eq!(ledger.record(&attester, 0).status, Submitted);
+    poll(&mut attester).await.unwrap();
+    assert_eq!(ledger.record(&attester, 0).status, Finalized);
+
+    let reported: Vec<(String, Option<String>)> = read_store(&ledger.path())
+        .prepare(
+            "SELECT kind, circle_status FROM submission_events WHERE note_id = ?1 ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([ledger.burns[0].note_id().to_bytes()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let outcome = |status: &str| ("OUTCOME".to_owned(), Some(status.to_owned()));
+    assert_eq!(
+        reported,
+        [
+            ("AUTHORIZED".to_owned(), None),
+            outcome("created"),
+            outcome("verified"),
+            outcome("confirmed"),
+            outcome("finalized"),
+        ]
+    );
 }

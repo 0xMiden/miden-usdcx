@@ -148,6 +148,7 @@ enum InvalidStoreCase {
     Corrupt,
     WrongSchema,
     MissingColumn,
+    MissingHistory,
     MissingRow,
     ExtraRow,
     OutOfRange,
@@ -197,6 +198,13 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap();
             connection
                 .pragma_update(None, "user_version", STORE_VERSION)
+                .unwrap();
+        }
+        InvalidStoreCase::MissingHistory => {
+            create_valid_store(path);
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute("DROP TABLE submission_events", [])
                 .unwrap();
         }
         InvalidStoreCase::MissingRow => {
@@ -325,6 +333,7 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::Corrupt,
         InvalidStoreCase::WrongSchema,
         InvalidStoreCase::MissingColumn,
+        InvalidStoreCase::MissingHistory,
         InvalidStoreCase::MissingRow,
         InvalidStoreCase::ExtraRow,
         InvalidStoreCase::OutOfRange,

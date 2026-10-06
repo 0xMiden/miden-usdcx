@@ -345,9 +345,11 @@ async fn holds_are_listed() {
         let connection = rusqlite::Connection::open(ledger.path()).unwrap();
         let changed = connection
             .execute(
-                "UPDATE submission_events
-                 SET status = 'EXPIRED', http_status = 200, response = ?2
-                 WHERE note_id = ?1 AND kind = 'BURN_HELD'",
+                "INSERT INTO submission_events (
+                    note_id, recorded_at, kind, status, http_status, response, burn_hold_reason
+                 )
+                 SELECT note_id, recorded_at, kind, 'EXPIRED', 200, ?2, burn_hold_reason
+                 FROM submission_events WHERE note_id = ?1 AND kind = 'BURN_HELD'",
                 rusqlite::params![
                     unreadable.to_bytes(),
                     serde_json::to_vec(&json!({"message": "old withdrawal"})).unwrap()

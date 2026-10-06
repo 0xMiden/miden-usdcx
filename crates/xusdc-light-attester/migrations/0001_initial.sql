@@ -59,7 +59,19 @@ CREATE TABLE submission_events (
     endpoint TEXT,
     hold_reason TEXT,
     -- The burn's hold reason when the row was written; hold_reason is the withdrawal's.
-    burn_hold_reason INTEGER
+    burn_hold_reason INTEGER,
+    circle_status TEXT -- the status Circle's reply reported, on an outcome
 ) STRICT;
 
 CREATE INDEX submission_events_by_note ON submission_events (note_id, seq);
+
+-- History is never rewritten: a row, once written, is neither changed nor removed.
+CREATE TRIGGER submission_events_keep_rows BEFORE UPDATE ON submission_events
+BEGIN
+    SELECT RAISE(ABORT, 'submission history cannot be changed');
+END;
+
+CREATE TRIGGER submission_events_keep_history BEFORE DELETE ON submission_events
+BEGIN
+    SELECT RAISE(ABORT, 'submission history cannot be removed');
+END;

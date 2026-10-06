@@ -72,7 +72,7 @@ pub struct Config {
 }
 
 /// Accepts either account ID form; the network prefix of a bech32 ID is parsed and then discarded.
-fn parse_account_id(value: &str) -> Result<AccountId, String> {
+pub fn parse_account_id(value: &str) -> Result<AccountId, String> {
     AccountId::parse(value)
         .map(|(account_id, _network_id)| account_id)
         .map_err(|error| error.to_string())

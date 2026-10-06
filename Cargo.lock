@@ -6637,6 +6637,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
+name = "usdcx-bridge"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "humantime",
+ "miden-protocol",
+ "miden-usdcx",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "xreserve-deposit-relayer",
+ "xusdc-attester",
+]
+
+[[package]]
 name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7111,23 +7130,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "usdcx-bridge"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "miden-usdcx",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "xreserve-deposit-relayer",
- "xusdc-attester",
 ]
 
 [[package]]

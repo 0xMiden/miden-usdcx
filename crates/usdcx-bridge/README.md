@@ -52,6 +52,7 @@ docker run --name usdcx-bridge --stop-timeout 360 \
   --mount type=bind,src=/srv/usdcx,dst=/data \
   --env RUST_LOG=info \
   'ghcr.io/0xmiden/miden-usdcx-bridge:<RELEASE_TAG>' \
+  run \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_URL>' \
   --faucet-account-id '<USDCX_FAUCET_ID>' \
@@ -92,7 +93,7 @@ docker run --name usdcx-bridge --stop-timeout 360 \
 
 The relayer's own flags start with `--relayer-`. The attester's timeout, poll interval and store
 path start with `--attester-`; its other flags keep their own names. For every supported flag, run
-the image with `--help`.
+the image with `run --help`.
 
 Run one instance against these stores, without standalone workers beside it. Wait for
 `deposit relayer and withdrawal attester started` before enabling deposits. The relayer progress
@@ -104,3 +105,24 @@ prerequisite. Later transient scan failures are logged and retried.
 with a five-minute process limit; keep the host timeout above five minutes. If either worker exits
 unexpectedly, the supervisor stops the other and exits with an error. Restart with the same volume
 and configuration. Never delete state to clear an operational error.
+
+## Release held withdrawals
+
+The attester holds a burn that Circle refuses to prepare, and leaves it held until an operator
+releases it. Stop the bridge first, because only one process may open the attester store, then run
+`release-holds` from the same image against the same volume:
+
+```sh
+docker run --rm \
+  --mount type=bind,src=/srv/usdcx,dst=/data \
+  'ghcr.io/0xmiden/miden-usdcx-bridge:<RELEASE_TAG>' \
+  release-holds \
+    --store-path /data/attester/store.sqlite3 \
+    --faucet-account-id '<USDCX_FAUCET_ID>' \
+    --trusted-anchor-block '<ANCHOR_BLOCK>' \
+    --trusted-anchor-commitment '<ANCHOR_COMMITMENT>'
+```
+
+Without `--note-id` it lists the holds. Add `--note-id '<NOTE_ID>'` once per hold to release.
+Release a held withdrawal only after checking that Circle did not accept its saved request, then
+start the bridge again.

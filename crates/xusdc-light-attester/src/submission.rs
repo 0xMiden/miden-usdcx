@@ -336,7 +336,6 @@ impl SavedSubmission {
 
         if !is_well_formed_id(&withdrawal.withdrawal_id)
             || !self.matches_note(&withdrawal.burn_note_id)
-            || !withdrawal.use_circle_forwarding
             || withdrawal.transfer_spec_hashes.len() != 1
             || withdrawal.transfer_spec_hashes[0].parse::<B256>().ok()
                 != Some(self.transfer_spec_hash)

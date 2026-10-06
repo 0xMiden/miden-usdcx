@@ -401,7 +401,8 @@ impl PrepareBatch {
     }
 }
 
-/// An amount as Circle takes it: a decimal string of whole USDC with all six fractional digits, so 1_000_001 smallest units is "1.000001", not a smallest-unit integer.
+/// An amount as Circle takes it: a decimal string of whole USDC with all six fractional digits,
+/// so 1_000_001 smallest units is "1.000001", not a smallest-unit integer.
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 struct UsdcDecimals(String);
@@ -477,7 +478,6 @@ pub(crate) struct WithdrawalResponse {
     #[serde(rename = "burnTxId")]
     pub(crate) burn_note_id: String,
     pub(crate) status: String,
-    pub(crate) use_circle_forwarding: bool,
     pub(crate) transfer_spec_hashes: Vec<String>,
     pub(crate) failure_reason: Option<String>,
 }

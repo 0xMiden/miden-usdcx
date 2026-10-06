@@ -410,7 +410,7 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         let prepared = self
             .circle
-            .prepare_withdrawal(burn, self.config.cctp_forwarding().0)
+            .prepare_withdrawal(burn, self.config.cctp_forwarding().max_fee)
             .await
             .inspect_err(|error| {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });

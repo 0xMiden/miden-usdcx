@@ -1,7 +1,7 @@
 //! Assembles and starts the deposit relayer.
 //!
-//! The Miden client is built before the first Circle request, so a node the relayer cannot mint
-//! through stops the service at startup rather than after it has read the feed.
+//! Node access, account tracking and local progress persistence are checked before the first Circle
+//! request. Installing the relayer account's signing key remains an operator prerequisite.
 
 use anyhow::{Context, Result};
 use clap::Parser;

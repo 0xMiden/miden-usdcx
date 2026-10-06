@@ -54,10 +54,12 @@ on chain.
   Nothing it returns is trusted: a forged or altered attestation fails the faucet's signature check.
 - **The attester public key** is configuration, not something the feed carries. The mint note
   needs the key alongside the signature; the faucet derives a commitment from it and requires that
-  commitment to be enabled in its attester map. The relayer does not verify signatures itself, so
-  a wrong key is not caught off chain — every mint transaction lands, and every mint note is
-  refused when the faucet consumes it. When the faucet's attester is rotated (by the
-  `ATTEST_ADMIN` role), restart the relayer with the new key.
+  commitment to be enabled in its attester map. At startup the relayer reads that map and refuses
+  to start with a key the faucet has not enabled. It does not verify signatures itself, so an
+  enabled key that is not the one Circle signed with is not caught off chain — every mint
+  transaction lands, and every mint note is refused when the faucet consumes it. When the faucet's
+  attester is rotated (by the `ATTEST_ADMIN` role), restart the relayer with the new key: a key
+  disabled while the relayer runs is noticed only at the next start.
 - **The Miden node** is the operator's own. The relayer treats a transaction as done once that node
   reports it committed in a block; it does not seek independent finality. It also takes the
   faucet's used-nonce map from that node, so a node that lied about it could make the relayer skip
@@ -123,9 +125,8 @@ a smaller one notices a lost transaction sooner.
 
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
-duplicate that slipped past the used-nonce check, a wrong attester key, a paused faucet — simply
-stays unconsumed. The relayer does not
-watch for that.
+duplicate that slipped past the used-nonce check, an attester key Circle did not sign with, a paused
+faucet — simply stays unconsumed. The relayer does not watch for that.
 
 ## Malformed attestations
 
@@ -162,11 +163,12 @@ The Circle domain identifier and the account identifiers depend on the deploymen
 be a public account, since the mint notes are routed to it as a network account. The attester
 public key must use compressed SEC1 format.
 
-The relayer account must already exist on chain, and its signing key must already be in the
-keystore directory. Neither is created here. Startup checks node access, account availability and
-local progress persistence before the first Circle request. A malformed or unwritable progress
-file fails startup. Key possession is not checked until transaction authentication, so successful
-startup does not replace the operator's key setup or guarantee a transaction will succeed.
+The relayer account must already exist on chain, and its signing key must already be in the keystore
+directory. Neither is created here. Startup checks node access, account availability, that the
+faucet has enabled the attester public key, and local progress persistence before the first Circle
+request. A malformed or unwritable progress file fails startup. Key possession is not checked until
+transaction authentication, so successful startup does not replace the operator's key setup or
+guarantee a transaction will succeed.
 
 Logs are a tree per page — the page, its Circle request, the notes it built and the transaction
 that carried them — filtered by `RUST_LOG` (default `info`).

@@ -7,7 +7,7 @@
 use std::str::FromStr;
 
 use anyhow::{ensure, Context, Result};
-use miden_protocol::account::AccountId;
+use miden_protocol::account::{AccountId, StorageMapKey};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
@@ -28,6 +28,12 @@ pub struct AttesterPublicKey(PublicKey);
 impl AttesterPublicKey {
     /// The only key form handled: 33-byte compressed SEC1.
     const COMPRESSED_LEN: usize = 33;
+
+    /// The key the faucet's attester map lists this public key under: the commitment the faucet
+    /// derives from the public key a mint note presents.
+    pub fn to_storage_map_key(&self) -> StorageMapKey {
+        StorageMapKey::new(self.0.to_commitment())
+    }
 }
 
 impl FromStr for AttesterPublicKey {
@@ -155,11 +161,16 @@ impl Minter {
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
+    use miden_protocol::account::{
+        AccountComponent, AccountId, AccountIdVersion, AccountType, AssetCallbackFlag,
+        StorageSlotContent,
+    };
     use miden_protocol::crypto::utils::Serializable;
     use miden_protocol::note::{Note, NoteId};
+    use miden_protocol::{Word, EMPTY_WORD};
     use rstest::rstest;
 
+    use miden_usdcx::account::XReserveFaucetExtension;
     use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
     use miden_usdcx::vectors::load;
     use miden_usdcx::xreserve::encoding::{
@@ -179,6 +190,10 @@ mod tests {
     /// never verify a signature, so it only has to be a real curve point.
     const ATTESTER_PUBKEY_HEX: &str =
         "03a13f9dcab6e20fe08b99362d9be1771810cff0b4e242dee574ce696630780d3f";
+
+    /// A second valid compressed SEC1 key, which no faucet in these tests enables.
+    const OTHER_PUBKEY_HEX: &str =
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
     /// A public account with this seed byte. All the identities here are public because the
     /// note's routing attachment can bind nothing else.
@@ -338,6 +353,42 @@ mod tests {
         let first = minter.build_notes(&[&Attestation::buildable(1)]);
         let second = minter.build_notes(&[&Attestation::buildable(1)]);
         assert_ne!(only_note_id(first), only_note_id(second));
+    }
+
+    /// What a faucet whose only enabled attester is `enabled` stores for `key` in its attester
+    /// map. It is read from the component the faucet account is built from, so the entry is the
+    /// one the faucet's own constructor wrote.
+    fn attester_map_value(enabled: &AttesterPublicKey, key: &AttesterPublicKey) -> Word {
+        let faucet_extension =
+            XReserveFaucetExtension::new(REMOTE_DOMAIN, std::slice::from_ref(&enabled.0))
+                .expect("a single attester key cannot be listed twice");
+        let component = AccountComponent::from(faucet_extension);
+        let slot = component
+            .storage_slots()
+            .iter()
+            .find(|slot| slot.name() == XReserveFaucetExtension::xreserve_attesters_slot())
+            .expect("the faucet extension has an attester map");
+        let StorageSlotContent::Map(attesters) = slot.content() else {
+            panic!("the attester slot is not a map");
+        };
+
+        attesters.get(&key.to_storage_map_key())
+    }
+
+    /// The startup check reads the faucet's attester map under the key computed here, so that key
+    /// has to be the one the faucet lists an enabled attester under, and a different public key
+    /// must not land on it.
+    #[rstest]
+    #[case::the_enabled_key(ATTESTER_PUBKEY_HEX, true)]
+    #[case::another_key(OTHER_PUBKEY_HEX, false)]
+    fn only_the_enabled_attester_key_is_listed_in_the_faucets_attester_map(
+        #[case] key: &str,
+        #[case] listed: bool,
+    ) {
+        let enabled: AttesterPublicKey = ATTESTER_PUBKEY_HEX.parse().unwrap();
+        let value = attester_map_value(&enabled, &key.parse().unwrap());
+
+        assert_eq!(value != EMPTY_WORD, listed);
     }
 
     /// The `0x` prefix is optional and does not change the key.

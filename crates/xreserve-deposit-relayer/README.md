@@ -191,6 +191,11 @@ Nothing in the data directory is read back to resume work: a restart picks up fr
 recorded in the state file below and fetches that page again. The deposits on it that already
 minted are dropped by the used-nonce check rather than proven a second time.
 
+SIGTERM or SIGINT stops the relayer once the page in flight is on chain and recorded, with a
+five-minute limit, so keep a host's stop timeout above five minutes. If the page is still waiting
+for its transaction when the limit passes, for example because the chain stopped producing blocks,
+the process exits with an error and the next start fetches that page again.
+
 ## Tracing
 
 Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports

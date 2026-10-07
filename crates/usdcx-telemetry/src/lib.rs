@@ -99,13 +99,35 @@ pub enum FailureClass {
     Transient,
 }
 
-/// Marks `span` failed and records why: `class` as `failure.class` and `kind`, a short name for
-/// what happened, as `failure.kind`. The caller still logs the failure at `error`, inside the span,
-/// so it reaches stdout and the exported span carries the details.
-pub fn record_failure(span: &Span, class: FailureClass, kind: &'static str) {
-    span.set_attribute("failure.class", <&'static str>::from(class));
-    span.set_attribute("failure.kind", kind);
-    span.set_status(Status::error(kind));
+/// Marks a span failed and records why. The caller still logs the failure at `error`, inside the
+/// span, so it reaches stdout and the exported span carries the details.
+pub trait FailureSpanExt {
+    /// Records `class` as `failure.class` and `kind`, a short name for what happened, as
+    /// `failure.kind`, and sets the span's status to an error.
+    fn record_failure(&self, class: FailureClass, kind: &'static str);
+
+    /// Records an [`Integrity`](FailureClass::Integrity) failure.
+    fn record_integrity(&self, kind: &'static str) {
+        self.record_failure(FailureClass::Integrity, kind);
+    }
+
+    /// Records an [`Actionable`](FailureClass::Actionable) failure.
+    fn record_actionable(&self, kind: &'static str) {
+        self.record_failure(FailureClass::Actionable, kind);
+    }
+
+    /// Records a [`Transient`](FailureClass::Transient) failure.
+    fn record_transient(&self, kind: &'static str) {
+        self.record_failure(FailureClass::Transient, kind);
+    }
+}
+
+impl FailureSpanExt for Span {
+    fn record_failure(&self, class: FailureClass, kind: &'static str) {
+        self.set_attribute("failure.class", <&'static str>::from(class));
+        self.set_attribute("failure.kind", kind);
+        self.set_status(Status::error(kind));
+    }
 }
 
 /// Installs the global subscriber: stdout always, and the OTLP export when it is configured.
@@ -204,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_failure_marks_the_exported_span() {
+    fn a_recorded_failure_marks_the_exported_span() {
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -213,7 +235,7 @@ mod tests {
             tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("attester.cycle");
-            record_failure(&span, FailureClass::Integrity, "chain_diverged");
+            span.record_integrity("chain_diverged");
         });
 
         let spans = exporter.get_finished_spans().unwrap();

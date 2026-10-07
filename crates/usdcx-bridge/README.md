@@ -1,30 +1,40 @@
 # Run the USDCx bridge
 
-`usdcx-bridge` runs two services in one process:
+`usdcx-bridge` is one service that handles deposits and withdrawals. Run one binary or Docker
+container with one `run` command. It starts both workers:
 
 - The deposit relayer reads Circle's deposit attestations and submits mint notes to the Miden
   USDCx faucet.
 - The withdrawal attester verifies burns on Miden, signs withdrawals with two AWS KMS
   keys, and submits them to Circle.
 
+The faucet is the Miden contract that creates (mints) and destroys (burns) USDCx.
+
+You do not need to start or configure separate relayer and attester binaries. All flags below
+belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
+work only after both workers pass startup checks, and stops both if either exits unexpectedly.
+
 Use `ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1`, available for `linux/amd64` and `linux/arm64`.
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
-## Network configuration
+## Gather the configuration
 
 Supply these values for the target network:
 
-- Miden RPC URL, Circle xReserve HTTPS URL, and USDCx faucet account ID.
-- Circle's deposit signing public key, already enabled on the faucet.
-- Faucet deployment block, a verified block number and hash (the trusted anchor), and minimum
-  finality depth. The anchor must be at or before deployment; finality depth counts blocks above
-  a burn before submission.
-- Approved withdrawal fee limits, CCTP forwarding fee limit, and the xReserve and TokenMessengerV2
-  contract addresses on Arc for that environment.
+- From the network deployment configuration: Miden RPC URL, faucet ID and deployment block,
+  verified checkpoint (the trusted anchor), and agreed finality depth. Do not guess these values.
+- From Circle's configuration for that environment: xReserve API URL, deposit signing public key,
+  and xReserve and TokenMessengerV2 addresses on Arc. The deposit key must be enabled on the faucet.
+- From your infrastructure: durable storage paths, a public relayer account and its keystore, and two
+  AWS KMS withdrawal keys. The sections below explain storage and KMS setup.
+- From current Circle fee quotes and the deployment's fee policy: the three withdrawal fee limits.
+  Use the [fee setup guide](FEES.md); fees differ by destination and withdrawal amount.
 
-Provision a funded Miden relayer account on chain and install its SDK-format signing key as
-described below. The bridge does not create or fund the account.
+Use a public Miden relayer account that is already deployed on the target network. **Miden funds
+this account to cover the transaction fees for submitting mint notes.** Coordinate initial funding
+and top-ups with Miden Ops; the operator is not expected to pay these fees. The bridge does not
+create or automatically fund the account.
 
 ## Set up withdrawal signing
 
@@ -61,8 +71,11 @@ sudo install -d -m 0700 -o 10001 -g 10001 \
   "$USDCX_DATA_DIR/attester"
 ```
 
-Install the SDK-format relayer key in `$USDCX_DATA_DIR/relayer/miden/keystore`, owned by
-`10001:10001` and readable only by that user. Preserve the whole directory across restarts.
+Obtain the relayer account ID and its complete Miden SDK 0.17.2 keystore directory securely from
+whoever provisions the account. Copy the directory's contents into
+`$USDCX_DATA_DIR/relayer/miden/keystore`, preserving filenames. Set ownership to `10001:10001`,
+directory permissions to `0700` and key-file permissions to `0600`. This is separate from the
+withdrawal KMS keys. Preserve the whole directory across restarts.
 
 In the same shell, replace every `<PLACEHOLDER>` below. Add your platform's credential
 mounts or environment settings; the command does not supply AWS credentials. Page size and timing
@@ -121,60 +134,44 @@ docker run --rm --network none ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 run --
 
 ## Configuration flags
 
-These tables describe `usdcx-bridge run` in v0.17.1. **Required** means there is no default.
+This is the complete flag reference for the single `usdcx-bridge run` command in v0.17.1.
+Pass all required flags together, as in the Docker command above. **Required** means there is no default.
 Only the relayer polling interval and expiration delta have defaults. KMS settings are required
 because `aws-kms` is the only supported signer. Durations accept values such as `30s` or `500ms`;
 paths below refer to locations inside the container.
 
-### Shared network settings
-
-| Flag | Required or default | What to supply |
-| --- | --- | --- |
-| `--miden-rpc-url` | Required | Miden RPC URL for the target network, including `https://` or `http://`. |
-| `--circle-url` | Required | Circle xReserve HTTPS API base URL for that environment. |
-| `--faucet-account-id` | Required | Deployed USDCx faucet ID in canonical `0x`-prefixed lowercase hex. Both services use this faucet. |
-
-### Deposit relayer
-
-| Flag | Required or default | What to supply |
-| --- | --- | --- |
-| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`. One page is submitted as one mint transaction. |
-| `--relayer-request-timeout` | Required | Positive timeout for each relayer request to Circle. |
-| `--relayer-poll-interval` | Optional; `5s` | Wait between polls after catching up with the deposit feed. |
-| `--relayer-miden-data-dir` | Required | Durable directory for the Miden client store and relayer keystore. |
-| `--relayer-expiration-delta` | Optional; `64` | Blocks allowed for mint transaction inclusion before retrying the page. Integer from `1` to `65535`. |
-| `--relayer-account-id` | Required | Funded account that creates mint notes, as `0x`-prefixed hex or bech32. Its key must be in the keystore. |
-| `--relayer-attester-public-key` | Required | Circle's deposit signing key, already enabled on the faucet. Compressed SEC1 hex, optionally prefixed with `0x`. Not a withdrawal KMS key. |
-| `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |
-
-### Withdrawal attester
-
 Fee amounts use USDC base units: `1000000` = 1 USDC. One basis point = 0.01%.
 The [fee setup guide](FEES.md) explains how the three fee settings work together.
 
-| Flag | Required or default | What to supply |
+| Flag | Required or default | Purpose and how to choose the value |
 | --- | --- | --- |
-| `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. |
-| `--attester-poll-interval` | Required | Positive delay between attester cycles. |
+| `--miden-rpc-url` | Required | RPC URL supplied for the target Miden network, including `https://` or `http://`. Used by both workers. |
+| `--circle-url` | Required | Circle xReserve HTTPS API base URL for the matching environment. Used by both workers. |
+| `--faucet-account-id` | Required | Deployed USDCx faucet ID from the network configuration, in canonical lowercase `0x` hex. Used by both workers. |
+| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`. One page becomes one mint transaction. The example uses `100`; size for expected traffic and transaction limits. |
+| `--relayer-request-timeout` | Required | Positive timeout for each relayer request to Circle. The example uses `30s`; allow for network latency. |
+| `--relayer-poll-interval` | Optional; `5s` | Wait between polls after catching up with the deposit feed. |
+| `--relayer-miden-data-dir` | Required | Durable directory for the Miden client store and relayer keystore. |
+| `--relayer-expiration-delta` | Optional; `64` | Blocks allowed for mint transaction inclusion before retrying the page. Integer from `1` to `65535`. |
+| `--relayer-account-id` | Required | ID of the deployed, funded public Miden account that creates mint notes, as `0x` hex or bech32. Install its keystore and coordinate fee funding with Miden Ops. |
+| `--relayer-attester-public-key` | Required | Deposit signing public key supplied by Circle and enabled on the faucet. Compressed SEC1 hex, optionally prefixed with `0x`. Not a withdrawal KMS key. |
+| `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |
+| `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. The example uses `30s`; allow for network latency. |
+| `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
-| `--faucet-deployment-block` | Required | Faucet deployment height, where a fresh store starts scanning. An existing store retains its scan start. |
-| `--trusted-anchor-block` | Required | Verified checkpoint height at or before faucet deployment. |
-| `--trusted-anchor-commitment` | Required | That checkpoint's 32-byte block commitment in canonical lowercase `0x` hex. Keep the original anchor for an existing store. |
-| `--minimum-finality-depth-blocks` | Required | Positive number of blocks above a burn before it can be submitted. |
-| `--max-withdrawal-fee` | Required | Fixed part of the total fee allowance per withdrawal, in USDC base units. |
-| `--max-withdrawal-fee-bps` | Required | Extra allowance as whole basis points of the burned amount, added to the fixed part. |
-| `--cctp-forwarding-max-fee` | Required | Positive cap in USDC base units for the additional CCTP transfer. Required even when only direct destinations are used. |
-| `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc for the target environment. |
-| `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc for that environment. Must differ from the xReserve address. |
-
-### Withdrawal signing
-
-| Flag | Required or default | What to supply |
-| --- | --- | --- |
+| `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. A fresh store starts scanning here; an existing store retains its scan start. |
+| `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. |
+| `--trusted-anchor-commitment` | Required | That checkpoint's verified 32-byte block commitment, in canonical lowercase `0x` hex. Keep the original anchor for an existing store. |
+| `--minimum-finality-depth-blocks` | Required | Positive number of blocks above a burn before submission. Use the network's agreed withdrawal finality depth. |
+| `--max-withdrawal-fee` | Required | Fixed part of the withdrawal fee allowance, in USDC base units. Size from Circle quotes using the fee guide. |
+| `--max-withdrawal-fee-bps` | Required | Extra allowance as whole basis points of the burned amount. Choose with the fixed allowance using the fee guide. |
+| `--cctp-forwarding-max-fee` | Required | Positive cap for an additional CCTP transfer, in USDC base units. Size using the fee guide; required but not added for direct routes. |
+| `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc, confirmed for the target Circle environment. |
+| `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc, confirmed for that environment. Must differ from the xReserve address. |
 | `--signer-provider` | Required | `aws-kms`. No other provider is supported. |
 | `--aws-kms-region` | Required | AWS Region containing both keys. |
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
-| `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. |
+| `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.

@@ -4,6 +4,7 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_sol_types::SolCall;
 use miden_protocol::{Felt, Word};
 use serde_json::json;
+use usdcx_telemetry::FailureClass;
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};
@@ -614,4 +615,30 @@ fn forwarded_route_is_bound_to_the_burn() {
         Some(CallerRestricted),
         "a direct reply keeps the caller check"
     );
+}
+
+/// A fee or payout that does not fit the configuration needs an operator; every other failed check
+/// means Circle asked for a signature over something other than the burn.
+#[test]
+fn verification_failures_are_classed_for_alerting() {
+    use VerifyError::*;
+    for error in [FeeTooHigh, PayoutTooSmallToForward, TooSmallToForward] {
+        assert_eq!(error.failure().0, FailureClass::Actionable, "{error:?}");
+    }
+    for error in [
+        WrongCount,
+        UnknownSalt,
+        BadAmount,
+        WrongSigner,
+        WrongSourceToken,
+        WrongSourceDomain,
+        CallerRestricted,
+        ForwardedField("recipient"),
+        MalformedField("salt"),
+        WrongBurnField("value"),
+        DigestMismatch,
+        EncodedMismatch,
+    ] {
+        assert_eq!(error.failure().0, FailureClass::Integrity, "{error:?}");
+    }
 }

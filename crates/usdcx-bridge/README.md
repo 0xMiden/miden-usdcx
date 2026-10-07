@@ -134,9 +134,11 @@ and events at `info` and above, and only warnings from their dependencies.
 
 The attester's startup is an `attester.startup` span. Each cycle is an `attester.cycle` span, with
 `attester.discover`, `attester.recover`, `attester.submit` and `attester.poll` under it for its
-phases and an `attester.withdraw` span, carrying `note.id`, for each burn it submits. A cycle span
-fails only when the cycle as a whole could not do its work: discovery failed, the chain diverged or
-the store failed. A failure confined to one burn never fails the cycle span. Every failed span
+phases. Each burn the attester prepares, and each saved withdrawal it sends or checks with Circle,
+is an `attester.withdraw` span carrying `note.id`. A cycle span fails only when the cycle as a whole
+could not do its work: discovery failed, the chain diverged or the store failed. A failure confined
+to one burn, such as a hold, a withdrawal Circle reports as failed, or a prepared withdrawal that
+fails verification, fails only that burn's `attester.withdraw` span. Every failed span
 carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
 
 ## Release held withdrawals

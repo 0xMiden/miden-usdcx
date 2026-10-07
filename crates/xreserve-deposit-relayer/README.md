@@ -22,9 +22,9 @@ The relayer is a courier. It does not decide whether a deposit gets minted: the 
 it decides on the note's contents alone. The relayer's job is to get every attested deposit in
 front of the faucet exactly as Circle signed it, and to keep doing so across failures and restarts.
 
-The service is one synchronous loop: poll Circle, build notes, drop the already-minted ones,
-submit, wait for inclusion, record progress, sleep. The Miden client's asynchronous API is driven to completion on a single-threaded
-runtime, so there is never more than one page in flight.
+The service is one sequential loop: poll Circle, build notes, drop the already-minted ones,
+submit, wait for inclusion, record progress, sleep. Each step is awaited before the next starts, so
+there is never more than one page in flight.
 
 ## Authorization and trust
 

@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
@@ -15,17 +14,17 @@ use super::*;
 
 #[derive(Debug)]
 struct TestMiden {
-    reached_page: Sender<()>,
+    reached_page: CancellationToken,
 }
 
 impl MidenClient for TestMiden {
-    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
+    async fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
         assert!(notes.is_empty());
-        self.reached_page.send(())?;
+        self.reached_page.cancel();
         Ok(notes)
     }
 
-    fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId> {
+    async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId> {
         bail!("the shutdown fixture must not submit a transaction")
     }
 }
@@ -89,9 +88,9 @@ fn startup_creates_progress_and_preserves_a_resumed_scan() {
     let build = |config| {
         Relayer::new(
             config,
-            Box::new(TestMiden {
-                reached_page: mpsc::channel().0,
-            }),
+            TestMiden {
+                reached_page: CancellationToken::new(),
+            },
         )
     };
     drop(build(config.clone()).unwrap());
@@ -118,9 +117,9 @@ fn startup_refuses_corrupt_progress_without_replacing_it() {
     std::fs::write(&config.state_file, "{broken").unwrap();
     let result = Relayer::new(
         config.clone(),
-        Box::new(TestMiden {
-            reached_page: mpsc::channel().0,
-        }),
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
     );
     let error = format!("{:#}", result.err().unwrap());
     assert!(error.contains("reading relayer startup progress"));
@@ -140,9 +139,9 @@ fn startup_refuses_a_progress_directory_without_write_permission() {
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
     let result = Relayer::new(
         config.clone(),
-        Box::new(TestMiden {
-            reached_page: mpsc::channel().0,
-        }),
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
     );
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let error = format!("{:#}", result.err().unwrap());
@@ -151,8 +150,8 @@ fn startup_refuses_a_progress_directory_without_write_permission() {
     assert_eq!(std::fs::read(&config.state_file).unwrap(), bytes);
 }
 
-#[test]
-fn stopping_after_a_page_saves_the_resume_cursor() {
+#[tokio::test]
+async fn stopping_after_a_page_saves_the_resume_cursor() {
     let directory = TempDir::new().unwrap();
     let body = serde_json::json!({"attestations": [{
         "payload": "0x", "messageHash": format!("0x{}", "01".repeat(32)),
@@ -162,9 +161,15 @@ fn stopping_after_a_page_saves_the_resume_cursor() {
     let (url, server) = page_server(body, true);
     let config = config(&directory, &url);
     let path = config.state_file.clone();
-    let (stop, shutdown) = mpsc::channel();
-    let mut relayer = Relayer::new(config, Box::new(TestMiden { reached_page: stop })).unwrap();
-    assert_eq!(relayer.scan(&shutdown).unwrap(), ScanOutcome::Stopped);
+    let shutdown = CancellationToken::new();
+    let mut relayer = Relayer::new(
+        config,
+        TestMiden {
+            reached_page: shutdown.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(relayer.scan(&shutdown).await.unwrap(), ScanOutcome::Stopped);
     drop(relayer);
     server.join().unwrap();
     let saved = Store::new(path).state().unwrap();
@@ -174,24 +179,29 @@ fn stopping_after_a_page_saves_the_resume_cursor() {
     assert_eq!(scan.resume.as_str(), "older");
 }
 
-#[test]
-fn shutdown_wakes_the_poll_wait() {
+#[tokio::test]
+async fn shutdown_wakes_the_poll_wait() {
     let directory = TempDir::new().unwrap();
     let (url, server) = page_server("{\"attestations\":[]}".into(), false);
     let config = config(&directory, &url);
-    let (stop, shutdown) = mpsc::channel();
-    let (reached_page, page) = mpsc::channel();
-    let (done, result) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        let relayer = Relayer::new(config, Box::new(TestMiden { reached_page })).unwrap();
-        done.send(relayer.run_until(shutdown)).unwrap();
-    });
-    page.recv_timeout(Duration::from_secs(2)).unwrap();
+    let shutdown = CancellationToken::new();
+    let reached_page = CancellationToken::new();
+    let relayer = Relayer::new(
+        config,
+        TestMiden {
+            reached_page: reached_page.clone(),
+        },
+    )
+    .unwrap();
+    let worker = tokio::spawn(relayer.run_until(shutdown.clone()));
+    tokio::time::timeout(Duration::from_secs(2), reached_page.cancelled())
+        .await
+        .unwrap();
     server.join().unwrap();
-    stop.send(()).unwrap();
-    result
-        .recv_timeout(Duration::from_secs(2))
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(2), worker)
+        .await
+        .unwrap()
         .unwrap()
         .unwrap();
-    worker.join().unwrap();
 }

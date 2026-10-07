@@ -5,12 +5,10 @@ members = [
   "crates/usdcx-bridge",
   "crates/xreserve-deposit-relayer",
 ]
-# PARKED: `crates/xusdc-validation` sits outside the workspace. The members above resolve
-# the protocol family from the published crates.io `=0.17.0` release, but the validation crate
-# still carries the `=0.16.0-alpha.4` protocol pins (via the alpha `miden-client`) and predates
-# the current encoding API, so it cannot build alongside the rest. A released `miden-client`
-# (`0.17.0`) now exists; un-parking is a deliberate follow-up migration of the crate onto the
-# workspace pin plus that client, not a side effect of this workspace's version bumps.
+# PARKED: `crates/xusdc-validation` sits outside the workspace. The members above use
+# published protocol-family crates at `=0.17.1`, and client and SQLite store crates at
+# `=0.17.2`. The validation crate still uses v0.16-alpha dependencies and the old encoding
+# API; updating the workspace does not migrate that harness.
 exclude = [
   "crates/xusdc-validation",
   "crates/withdrawal-listener-attester"
@@ -22,12 +20,12 @@ exclude = [
 # `serde`'s `derive` is the one exception (every consumer needs it).
 [workspace.dependencies]
 # Miden dependencies
-miden-protocol              = "=0.17.0"
-miden-usdcx                 = "=0.17.0"
-miden-standards             = "=0.17.0"
-miden-objects               = "=0.17.0"
-miden-client                = { version = "=0.17.0", default-features = false }
-miden-client-sqlite-store   = "=0.17.0"
+miden-protocol              = "=0.17.1"
+miden-usdcx                 = "=0.17.1"
+miden-standards             = "=0.17.1"
+miden-objects               = "=0.17.1"
+miden-client                = { version = "=0.17.2", default-features = false }
+miden-client-sqlite-store   = "=0.17.2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

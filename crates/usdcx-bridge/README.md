@@ -11,6 +11,14 @@ The release workflow publishes `ghcr.io/0xmiden/miden-usdcx-bridge:<RELEASE_TAG>
 rollbacks. Publishing requires GHCR package access from this repository; make the package public
 if operators should pull it without authentication. Adding this workflow does not publish a release.
 
+A V2 fee faucet needs a bridge build with the V2 callback libraries, even if its account ID stays
+the same. Use a release tested with that faucet version. Run separate bridge instances for testnet
+and mainnet, each with its own network configuration, identities and stores. Updating the bridge
+does not upgrade the faucet.
+
+Before upgrading, stop the bridge and back up the relayer's SDK store. Client 0.17.2 updates its
+store version; older clients cannot reopen it.
+
 For a local build from the repository root:
 
 ```sh

@@ -21,7 +21,7 @@ use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
 use tracing::{error, info, info_span, warn, Instrument as _, Span};
-use usdcx_telemetry::{record_failure, FailureClass};
+use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
 
 pub mod circle;
 pub mod config;
@@ -85,7 +85,7 @@ impl Relayer<NodeClient> {
         async {
             let result = Self::connect(config).await;
             if let Err(error) = &result {
-                record_failure(&Span::current(), FailureClass::Actionable, "startup");
+                Span::current().record_actionable("startup");
                 error!(error = %format_args!("{error:#}"), "relayer startup failed");
             }
             result
@@ -377,7 +377,7 @@ impl<M: MidenClient> Relayer<M> {
                 Ok(ScanOutcome::Complete) => {}
                 // The failure was logged in the span it happened in, and the next scan resumes
                 // where this one stopped. This marks the scan as a whole failed.
-                Err(failure) => record_failure(&span, failure.class, failure.kind),
+                Err(failure) => span.record_failure(failure.class, failure.kind),
             }
             tokio::select! {
                 () = tokio::time::sleep(self.config.poll_interval) => {}

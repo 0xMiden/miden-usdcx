@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info, info_span, warn, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, warn, Instrument as _, Span};
 use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
 
 pub mod circle;
@@ -81,17 +81,14 @@ impl Relayer<NodeClient> {
     /// - The node cannot be reached, does not know the relayer account or the faucet, or the
     ///   faucet has not enabled the configured attester public key (see [`NodeClient::new`]).
     /// - Any of the checks of [`Relayer::new`] fails.
+    #[instrument(name = "relayer.startup", skip_all)]
     pub async fn start(config: Config) -> Result<Self> {
-        async {
-            let result = Self::connect(config).await;
-            if let Err(error) = &result {
-                Span::current().record_actionable_failure("startup");
-                error!(error = %format_args!("{error:#}"), "relayer startup failed");
-            }
-            result
+        let result = Self::connect(config).await;
+        if let Err(error) = &result {
+            Span::current().record_actionable_failure("startup");
+            error!(error = %format_args!("{error:#}"), "relayer startup failed");
         }
-        .instrument(info_span!("relayer.startup"))
-        .await
+        result
     }
 
     async fn connect(config: Config) -> Result<Self> {

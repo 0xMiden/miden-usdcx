@@ -13,7 +13,8 @@ use xreserve_deposit_relayer::config::Config;
 use xreserve_deposit_relayer::miden::NodeClient;
 use xreserve_deposit_relayer::Relayer;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_forest::ForestLayer::default())
@@ -21,7 +22,9 @@ fn main() -> Result<()> {
 
     let config = Config::parse();
 
-    let miden = NodeClient::new(&config).context("connecting to miden")?;
+    let miden = NodeClient::new(&config)
+        .await
+        .context("connecting to miden")?;
 
-    Relayer::new(config, Box::new(miden))?.run()
+    Relayer::new(config, miden)?.run().await
 }

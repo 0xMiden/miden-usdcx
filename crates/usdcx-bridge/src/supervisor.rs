@@ -1,7 +1,6 @@
 //! Starts both bridge services and stops them together on a signal or when either one exits.
 
 use std::future::Future;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
@@ -23,22 +22,33 @@ pub(crate) async fn run(config: Config) -> Result<()> {
     // No deposit work starts until the attester and both KMS signers pass startup.
     let attester = AttesterService::start(config.attester).await?;
     info!(service = "attester", "startup checks passed");
-    // The blocking relayer owns an SDK runtime and must run outside the async runtime.
+    let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+    // The Miden client's futures are not `Send`, so the relayer cannot be spawned as a task.
+    // It runs on a blocking thread of its own, driven by this runtime, which also keeps proving a
+    // mint transaction from stalling the attester.
+    let relayer_shutdown = shutdown.clone();
+    let runtime = tokio::runtime::Handle::current();
     let relayer = tokio::task::spawn_blocking(move || {
-        let node = NodeClient::new(&config.relayer).context("connecting relayer to Miden")?;
-        Relayer::new(config.relayer, Box::new(node))
-    })
-    .await
-    .context("relayer startup task failed")??;
-    info!(service = "relayer", "startup checks passed");
+        runtime.block_on(async move {
+            let node = NodeClient::new(&config.relayer)
+                .await
+                .context("connecting relayer to Miden")?;
+            let relayer = Relayer::new(config.relayer, node)?;
+            info!(service = "relayer", "startup checks passed");
+            let _ = ready_sender.send(());
+            relayer.run_until(relayer_shutdown).await
+        })
+    });
+    let relayer = async { relayer.await.context("relayer task failed")? };
+    if ready_receiver.await.is_err() {
+        // The relayer only drops its readiness sender without sending when its startup fails.
+        return relayer.await.context("relayer startup failed");
+    }
     info!("deposit relayer and withdrawal attester started");
 
-    let (relayer_stop, relayer_shutdown) = mpsc::channel();
-    let relayer = tokio::task::spawn_blocking(move || relayer.run_until(relayer_shutdown));
     supervise(
         attester.run(shutdown.clone()),
-        async { relayer.await.context("relayer task failed")? },
-        relayer_stop,
+        relayer,
         shutdown,
         SHUTDOWN_TIMEOUT,
     )
@@ -66,7 +76,6 @@ fn cancel_on_signal(shutdown: CancellationToken) -> Result<()> {
 async fn supervise(
     attester: impl Future<Output = Result<()>> + 'static,
     relayer: impl Future<Output = Result<()>>,
-    relayer_stop: mpsc::Sender<()>,
     shutdown: CancellationToken,
     timeout: Duration,
 ) -> Result<()> {
@@ -80,11 +89,6 @@ async fn supervise(
         tokio::join!(
             stop_peer_on_exit("attester", attester, &shutdown),
             stop_peer_on_exit("relayer", relayer, &shutdown),
-            async {
-                // The relayer is not async, so it learns of shutdown through its own channel.
-                shutdown.cancelled().await;
-                drop(relayer_stop);
-            },
         )
     });
     let deadline = async {
@@ -92,7 +96,7 @@ async fn supervise(
         info!("stopping bridge services");
         tokio::time::sleep(timeout).await;
     };
-    let (attester, relayer, ()) = tokio::select! {
+    let (attester, relayer) = tokio::select! {
         results = services => results,
         // The relayer can wait on a chain confirmation indefinitely if blocks stop.
         () = deadline => {

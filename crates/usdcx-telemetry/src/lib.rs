@@ -84,8 +84,10 @@ pub fn flush() {
     }
 }
 
-/// How loudly a failure is alerted on, exported as the span's `failure.class`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How loudly a failure is alerted on, exported as the span's `failure.class` under its name in
+/// snake case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum FailureClass {
     /// Something the service authenticates did not check out, such as a diverged chain.
     Integrity,
@@ -97,22 +99,11 @@ pub enum FailureClass {
     Transient,
 }
 
-impl FailureClass {
-    /// The exported value of `failure.class`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Integrity => "integrity",
-            Self::Actionable => "actionable",
-            Self::Transient => "transient",
-        }
-    }
-}
-
 /// Marks `span` failed and records why: `class` as `failure.class` and `kind`, a short name for
 /// what happened, as `failure.kind`. The caller still logs the failure at `error`, inside the span,
 /// so it reaches stdout and the exported span carries the details.
 pub fn record_failure(span: &Span, class: FailureClass, kind: &'static str) {
-    span.set_attribute("failure.class", class.as_str());
+    span.set_attribute("failure.class", <&'static str>::from(class));
     span.set_attribute("failure.kind", kind);
     span.set_status(Status::error(kind));
 }
@@ -240,6 +231,18 @@ mod tests {
                 "missing {key}={value} in {:?}",
                 span.attributes
             );
+        }
+    }
+
+    /// The alerts match on these names, so a renamed variant must not change them.
+    #[test]
+    fn failure_classes_export_under_their_alerting_names() {
+        for (class, name) in [
+            (FailureClass::Integrity, "integrity"),
+            (FailureClass::Actionable, "actionable"),
+            (FailureClass::Transient, "transient"),
+        ] {
+            assert_eq!(<&'static str>::from(class), name);
         }
     }
 }

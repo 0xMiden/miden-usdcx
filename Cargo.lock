@@ -6724,6 +6724,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "strum",
  "tokio",
  "tokio-util",
  "tonic",

@@ -1,19 +1,19 @@
 # Run the USDCx bridge
 
-Gateway runs `usdcx-bridge` as one process with two services:
+`usdcx-bridge` runs two services in one process:
 
 - The deposit relayer reads Circle's deposit attestations and submits mint notes to the Miden
   USDCx faucet.
-- The withdrawal attester verifies burns on Miden, signs withdrawals with Gateway's two AWS KMS
+- The withdrawal attester verifies burns on Miden, signs withdrawals with two AWS KMS
   keys, and submits them to Circle.
 
 Use `ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1`, available for `linux/amd64` and `linux/arm64`.
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
-## Get the network configuration
+## Network configuration
 
-Ask **Philipp on Slack** for this network's values:
+Supply these values for the target network:
 
 - Miden RPC URL, Circle xReserve HTTPS URL, and USDCx faucet account ID.
 - Circle's deposit signing public key, already enabled on the faucet.
@@ -23,24 +23,24 @@ Ask **Philipp on Slack** for this network's values:
 - Approved withdrawal fee limits, CCTP forwarding fee limit, and the xReserve and TokenMessengerV2
   contract addresses on Arc for that environment.
 
-Ask Philipp to arrange secure provisioning of a funded Miden relayer account, already on chain,
-and its SDK-format signing key. Install the key as described below; the bridge creates neither.
+Provision a funded Miden relayer account on chain and install its SDK-format signing key as
+described below. The bridge does not create or fund the account.
 
-## Create Gateway's withdrawal keys
+## Set up withdrawal signing
 
-Gateway must create **two distinct AWS KMS keys** in one Region, with key spec `ECC_SECG_P256K1`
-and usage `SIGN_VERIFY`. Keep both enabled; use full key ARNs. Share their public-key exports with
-Philipp so Circle registers both before startup. Private keys stay in KMS and must never be shared.
+Create **two distinct AWS KMS keys** in one Region, with key spec `ECC_SECG_P256K1` and usage
+`SIGN_VERIFY`. Keep both enabled and use full key ARNs. Both public keys must be registered with
+Circle for the target network before startup. Private keys stay in KMS and must never be shared.
 
-The bridge needs compressed SEC1 public keys (33-byte hex). AWS exports DER/base64; ask Philipp
-for the matching hex values. These are Gateway's withdrawal keys. **Circle's deposit public key**
-goes in `--relayer-attester-public-key`.
+Set `--expected-signing-public-key` to each key's compressed SEC1 public key (33-byte hex), not
+the DER/base64 export returned by AWS. These are the withdrawal keys. **Circle's deposit public
+key** is separate and goes in `--relayer-attester-public-key`.
 
 Grant the container's workload role `kms:DescribeKey`, `kms:GetPublicKey` and `kms:Sign` on both
 keys, including permission in their key policies. Configure AWS credentials inside the container
-through Gateway's platform, such as ECS task roles or EKS workload identity. Make sure credentials
-are available inside the container, not just on the host. Do not put access keys in the image or
-command line.
+through your deployment platform, such as ECS task roles or EKS workload identity. Make sure
+credentials are available inside the container, not just on the host. Do not put access keys in
+the image or command line.
 
 Allow outbound access to Miden RPC, Circle, AWS KMS and the workload credential provider. The
 service listens on no inbound ports and has no HTTP health endpoint.
@@ -64,7 +64,7 @@ sudo install -d -m 0700 -o 10001 -g 10001 \
 Install the SDK-format relayer key in `$USDCX_DATA_DIR/relayer/miden/keystore`, owned by
 `10001:10001` and readable only by that user. Preserve the whole directory across restarts.
 
-In the same shell, replace every `<PLACEHOLDER>` below. Add Gateway's platform-specific credential
+In the same shell, replace every `<PLACEHOLDER>` below. Add your platform's credential
 mounts or environment settings; the command does not supply AWS credentials. Page size and timing
 values are examples.
 
@@ -87,10 +87,10 @@ docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --relayer-state-file /data/relayer/progress.json \
   --signer-provider aws-kms \
   --aws-kms-region '<AWS_REGION>' \
-  --aws-kms-key-arn '<GATEWAY_KEY_ARN_1>' '<GATEWAY_KEY_ARN_2>' \
+  --aws-kms-key-arn '<KMS_KEY_ARN_1>' '<KMS_KEY_ARN_2>' \
   --aws-kms-operation-timeout 10s \
-  --expected-signing-public-key '<GATEWAY_PUBLIC_KEY_1_HEX>' \
-  --expected-signing-public-key '<GATEWAY_PUBLIC_KEY_2_HEX>' \
+  --expected-signing-public-key '<SIGNING_PUBLIC_KEY_1_HEX>' \
+  --expected-signing-public-key '<SIGNING_PUBLIC_KEY_2_HEX>' \
   --attester-request-timeout 30s \
   --faucet-deployment-block '<DEPLOYMENT_BLOCK>' \
   --trusted-anchor-block '<ANCHOR_BLOCK>' \
@@ -132,16 +132,15 @@ timeout above the process's five-minute limit (360 seconds above). If either ser
 unexpectedly, both stop with an error. Restart with the same volume and configuration.
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
-Confirm the image version with Philipp for the deployed faucet; updating the service does not
-update the faucet. Client 0.17.2 upgrades its store version, which older clients cannot open;
-coordinate rollback with Philipp.
+Use an image version compatible with the deployed faucet; updating the service does not update
+the faucet. Client 0.17.2 upgrades its store version, which older clients cannot open. Keep a
+backup from before the upgrade if rollback is needed.
 
 ## Troubleshooting
 
 Use the logs and exit status to check configuration, AWS permissions, outbound access and directory
-ownership. A locked store may mean another instance is running. For persistent errors, send Philipp
-the network, image tag, logs and affected transaction or note IDs on Slack; never send secrets.
+ownership. A locked store may mean another instance is running.
 
-Contact Philipp for held withdrawals; restarting does not release them. Do not automatically
-release holds, delete state or change the anchor to clear an error. Stop the bridge before agreed
-maintenance; the image's `release-holds --help` describes that command.
+Investigate held withdrawals before releasing them; restarting does not release them. Do not
+automatically release holds, delete state or change the anchor to clear an error. Stop the bridge
+before releasing holds; the image's `release-holds --help` describes that command.

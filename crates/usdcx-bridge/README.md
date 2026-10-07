@@ -106,9 +106,8 @@ docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
 ```
 
 Use canonical `0x`-prefixed lowercase hex for the faucet ID and 32-byte anchor commitment.
-Fee units: `1000000` = 1 USDC; 1 basis point = 0.01%. The withdrawal fee limit is the fixed fee
-plus basis points of the burned amount and must cover Circle and CCTP fees. The CCTP limit must
-be positive.
+Choose the fee limits using the [fee setup guide](FEES.md), which shows how to retrieve Circle's
+current fees, add a buffer and convert the results into CLI values.
 
 Watch startup with `docker logs -f "usdcx-bridge-$USDCX_NETWORK"`. Wait for
 `deposit relayer and withdrawal attester started` before enabling deposits. This confirms startup,
@@ -119,6 +118,67 @@ All options:
 ```sh
 docker run --rm --network none ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 run --help
 ```
+
+## Configuration flags
+
+These tables describe `usdcx-bridge run` in v0.17.1. **Required** means there is no default.
+Only the relayer polling interval and expiration delta have defaults. KMS settings are required
+because `aws-kms` is the only supported signer. Durations accept values such as `30s` or `500ms`;
+paths below refer to locations inside the container.
+
+### Shared network settings
+
+| Flag | Required or default | What to supply |
+| --- | --- | --- |
+| `--miden-rpc-url` | Required | Miden RPC URL for the target network, including `https://` or `http://`. |
+| `--circle-url` | Required | Circle xReserve HTTPS API base URL for that environment. |
+| `--faucet-account-id` | Required | Deployed USDCx faucet ID in canonical `0x`-prefixed lowercase hex. Both services use this faucet. |
+
+### Deposit relayer
+
+| Flag | Required or default | What to supply |
+| --- | --- | --- |
+| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`. One page is submitted as one mint transaction. |
+| `--relayer-request-timeout` | Required | Positive timeout for each relayer request to Circle. |
+| `--relayer-poll-interval` | Optional; `5s` | Wait between polls after catching up with the deposit feed. |
+| `--relayer-miden-data-dir` | Required | Durable directory for the Miden client store and relayer keystore. |
+| `--relayer-expiration-delta` | Optional; `64` | Blocks allowed for mint transaction inclusion before retrying the page. Integer from `1` to `65535`. |
+| `--relayer-account-id` | Required | Funded account that creates mint notes, as `0x`-prefixed hex or bech32. Its key must be in the keystore. |
+| `--relayer-attester-public-key` | Required | Circle's deposit signing key, already enabled on the faucet. Compressed SEC1 hex, optionally prefixed with `0x`. Not a withdrawal KMS key. |
+| `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |
+
+### Withdrawal attester
+
+Fee amounts use USDC base units: `1000000` = 1 USDC. One basis point = 0.01%.
+The [fee setup guide](FEES.md) explains how the three fee settings work together.
+
+| Flag | Required or default | What to supply |
+| --- | --- | --- |
+| `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. |
+| `--attester-poll-interval` | Required | Positive delay between attester cycles. |
+| `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
+| `--faucet-deployment-block` | Required | Faucet deployment height, where a fresh store starts scanning. An existing store retains its scan start. |
+| `--trusted-anchor-block` | Required | Verified checkpoint height at or before faucet deployment. |
+| `--trusted-anchor-commitment` | Required | That checkpoint's 32-byte block commitment in canonical lowercase `0x` hex. Keep the original anchor for an existing store. |
+| `--minimum-finality-depth-blocks` | Required | Positive number of blocks above a burn before it can be submitted. |
+| `--max-withdrawal-fee` | Required | Fixed part of the total fee allowance per withdrawal, in USDC base units. |
+| `--max-withdrawal-fee-bps` | Required | Extra allowance as whole basis points of the burned amount, added to the fixed part. |
+| `--cctp-forwarding-max-fee` | Required | Positive cap in USDC base units for the additional CCTP transfer. Required even when only direct destinations are used. |
+| `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc for the target environment. |
+| `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc for that environment. Must differ from the xReserve address. |
+
+### Withdrawal signing
+
+| Flag | Required or default | What to supply |
+| --- | --- | --- |
+| `--signer-provider` | Required | `aws-kms`. No other provider is supported. |
+| `--aws-kms-region` | Required | AWS Region containing both keys. |
+| `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
+| `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. |
+| `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
+
+`-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
+`RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
 
 ## Stop, restart and upgrade
 
@@ -144,3 +204,19 @@ ownership. A locked store may mean another instance is running.
 Investigate held withdrawals before releasing them; restarting does not release them. Do not
 automatically release holds, delete state or change the anchor to clear an error. Stop the bridge
 before releasing holds; the image's `release-holds --help` describes that command.
+
+### Hold maintenance flags
+
+`usdcx-bridge release-holds` runs once and exits; it does not start either service or require KMS.
+Without note IDs it only lists holds. Supply IDs only after checking that Circle did not accept
+any saved withdrawal request: releasing that hold deletes the request and permits new preparation.
+
+| Flag | Required or default | What to supply |
+| --- | --- | --- |
+| `--store-path` | Required | Existing attester SQLite file. This command uses `--store-path`, not `--attester-store-path`. |
+| `--faucet-account-id` | Required | Faucet ID saved in that store. |
+| `--trusted-anchor-block` | Required | Original anchor height saved in that store. |
+| `--trusted-anchor-commitment` | Required | Original anchor commitment saved in that store. |
+| `--note-id` | Optional | A held note ID to release. Repeat for multiple IDs. |
+| `--note-ids-file` | Optional | File of held note IDs to release. The first word on each line is read as an ID. |
+| `-h` / `--help` | Optional | Show help without opening the store. |

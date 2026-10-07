@@ -139,7 +139,7 @@ impl Minter {
             match self.build_note(attestation) {
                 Ok(note) => built.notes.push(note),
                 Err(error) => {
-                    Span::current().record_actionable("attestation_skipped");
+                    Span::current().record_actionable_failure("attestation_skipped");
                     error!(
                         message_hash = %attestation.message_hash,
                         error = format!("{error:#}"),

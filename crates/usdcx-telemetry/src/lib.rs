@@ -23,6 +23,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tonic::transport::ClientTlsConfig;
+use tracing::error;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -59,7 +60,7 @@ impl Drop for Telemetry {
     fn drop(&mut self) {
         if let Some(provider) = PROVIDER.get() {
             if let Err(error) = provider.shutdown() {
-                eprintln!("failed to export the remaining spans: {error}");
+                error!(%error, "failed to export the remaining spans");
             }
         }
     }
@@ -70,7 +71,7 @@ impl Drop for Telemetry {
 pub fn flush() {
     if let Some(provider) = PROVIDER.get() {
         if let Err(error) = provider.force_flush() {
-            eprintln!("failed to export the remaining spans: {error}");
+            error!(%error, "failed to export the remaining spans");
         }
     }
 }

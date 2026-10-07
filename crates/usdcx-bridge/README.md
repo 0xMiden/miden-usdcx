@@ -28,10 +28,10 @@ just build-bridge-image linux/arm64 usdcx-bridge:local
 
 The image runs as UID/GID `10001`, includes CA certificates, and stores state below `/data`. It
 listens on **no inbound ports** and currently has **no HTTP health endpoint**. Logs go to stdout;
-`RUST_LOG` controls their level. Startup checks cover configuration, local state, the attester's
-chain/KMS checks, and that the faucet has enabled the relayer's Circle deposit public key. They do
-not prove that every external request or transaction will succeed. The relayer key must be installed
-before start.
+`RUST_LOG` controls their level, and [Tracing](#tracing) covers exporting spans. Startup checks
+cover configuration, local state, the attester's chain/KMS checks, and that the faucet has enabled
+the relayer's Circle deposit public key. They do not prove that every external request or
+transaction will succeed. The relayer key must be installed before start.
 
 ## AWS KMS access
 
@@ -98,7 +98,7 @@ docker run --name usdcx-bridge --stop-timeout 360 \
 | Network and Circle | RPC URL, HTTPS Circle URL and faucet ID, each given once and used by both workers; outbound access to RPC, Circle, KMS and the workload credential provider. |
 | Deposit relayer | Funded account ID and installed Miden key, registered Circle deposit public key, page size and durable progress/SDK paths. |
 | Withdrawal attester | Two KMS ARNs, Region, expected public keys, faucet deployment block, authenticated anchor, finality depth, withdrawal/CCTP fee limits and forwarding addresses. |
-| Runtime | Workload identity, writable durable `/data`, optional `RUST_LOG`; no inbound port or health URL. |
+| Runtime | Workload identity, writable durable `/data`, optional `RUST_LOG` and `OTEL_*` variables; no inbound port or health URL. |
 
 The relayer's own flags start with `--relayer-`. The attester's timeout, poll interval and store
 path start with `--attester-`; its other flags keep their own names. For every supported flag, run
@@ -114,6 +114,23 @@ prerequisite. Later transient scan failures are logged and retried.
 with a five-minute process limit; keep the host timeout above five minutes. If either worker exits
 unexpectedly, the supervisor stops the other and exits with an error. Restart with the same volume
 and configuration. Never delete state to clear an operational error.
+
+## Tracing
+
+Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
+the relayer's and attester's spans over OpenTelemetry, using gRPC with the system's root
+certificates for TLS:
+
+| Variable | Meaning |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
+| `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `usdcx-bridge`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
+well. `RUST_LOG` does not filter the export: it always carries the relayer's and attester's spans
+and events at `info` and above, and only warnings from their dependencies.
 
 ## Release held withdrawals
 

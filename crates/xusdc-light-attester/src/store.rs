@@ -135,6 +135,23 @@ pub(crate) struct ScanState {
     pub(crate) authenticated_parent: Option<BlockHeader>,
 }
 
+/// The work the attester has not finished, as the alerts count it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Progress {
+    /// Burns held before submission.
+    pub(crate) burns_held: u64,
+    /// Withdrawals held after Circle rejected them.
+    pub(crate) withdrawals_held: u64,
+    /// Withdrawals Circle reported as failed.
+    pub(crate) withdrawals_failed: u64,
+    /// Withdrawals being sent, or accepted by Circle and not final yet.
+    pub(crate) withdrawals_pending: u64,
+    /// Consumed burns that are not paid out yet, leaving out the held and failed ones.
+    pub(crate) burns_unfinished: u64,
+    /// The block that consumed the oldest unfinished burn.
+    pub(crate) oldest_unfinished_burn: Option<BlockNumber>,
+}
+
 pub(crate) struct Store {
     connection: rusqlite::Connection,
     /// Where this store started scanning, saved when it was created.
@@ -539,6 +556,46 @@ impl Store {
             .into_iter()
             .filter(|burn| burn.consumption_block() <= last_ready_block)
             .collect())
+    }
+
+    /// The held, failed, pending and unfinished work, in one read.
+    pub(crate) fn progress(&self) -> anyhow::Result<Progress> {
+        // An unfinished burn was consumed and is not held, and its withdrawal, if it has one, is
+        // neither final nor held nor failed. Expired work counts, since it is prepared again.
+        self.connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM burns WHERE hold_reason IS NOT NULL),
+                    (SELECT COUNT(*) FROM submissions WHERE status = ?1),
+                    (SELECT COUNT(*) FROM submissions WHERE status = ?2),
+                    (SELECT COUNT(*) FROM submissions WHERE status IN (?3, ?4)),
+                    COUNT(*),
+                    MIN(burns.consumption_block)
+                 FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
+                 WHERE burns.status = ?5 AND burns.hold_reason IS NULL
+                    AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?6))",
+                params![
+                    SubmissionStatus::Held.as_ref(),
+                    SubmissionStatus::Failed.as_ref(),
+                    SubmissionStatus::Submitting.as_ref(),
+                    SubmissionStatus::Submitted.as_ref(),
+                    DISCOVERED,
+                    SubmissionStatus::Finalized.as_ref(),
+                ],
+                |row| {
+                    Ok(Progress {
+                        burns_held: row.get(0)?,
+                        withdrawals_held: row.get(1)?,
+                        withdrawals_failed: row.get(2)?,
+                        withdrawals_pending: row.get(3)?,
+                        burns_unfinished: row.get(4)?,
+                        oldest_unfinished_burn: row
+                            .get::<_, Option<u32>>(5)?
+                            .map(BlockNumber::from),
+                    })
+                },
+            )
+            .map_err(classify_error)
     }
 
     pub(crate) fn save_scan_progress(

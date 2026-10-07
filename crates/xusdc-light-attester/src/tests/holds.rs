@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
-use crate::store::{BurnHoldReason, ScanCursor, Store, TrustedAnchor};
+use crate::store::{BurnHoldReason, Progress, ScanCursor, Store, TrustedAnchor};
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
@@ -589,4 +589,64 @@ fn failures_that_hold_a_burn() {
             "{name}"
         );
     }
+}
+
+/// The cycle's progress counts held, failed and pending work, and leaves held and failed burns out
+/// of the unfinished ones.
+#[tokio::test]
+async fn progress_counts_unfinished_work() {
+    let ledger = Ledger::new().await;
+    let consumed = ledger.burns[0].consumption_block();
+    let (mut attester, _) = ledger
+        .start(vec![
+            reply(201, json!([ledger.response(0, "created")])),
+            reply(201, json!([ledger.response(1, "failed")])),
+            reply(400, json!({"message": "rejected"})),
+        ])
+        .await;
+    let nothing_started = Progress {
+        burns_held: 0,
+        withdrawals_held: 0,
+        withdrawals_failed: 0,
+        withdrawals_pending: 0,
+        burns_unfinished: 3,
+        oldest_unfinished_burn: Some(consumed),
+    };
+    assert_eq!(attester.store.progress().unwrap(), nothing_started);
+
+    for index in 0..3 {
+        ledger.submit(&mut attester, index).await.unwrap();
+    }
+    assert_eq!(
+        attester.store.progress().unwrap(),
+        Progress {
+            withdrawals_held: 1,
+            withdrawals_failed: 1,
+            withdrawals_pending: 1,
+            burns_unfinished: 1,
+            ..nothing_started
+        }
+    );
+
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(201, json!([ledger.response(0, "finalized")]))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    attester
+        .store
+        .hold_burn(
+            ledger.burns[1].note_id(),
+            BurnHoldReason::TooSmallToForward,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        attester.store.progress().unwrap(),
+        Progress {
+            burns_held: 1,
+            burns_unfinished: 1,
+            ..nothing_started
+        }
+    );
 }

@@ -3,7 +3,7 @@
 //! Node access, account tracking and local progress persistence are checked before the first Circle
 //! request. Installing the relayer account's signing key remains an operator prerequisite.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 

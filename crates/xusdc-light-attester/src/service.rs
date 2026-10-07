@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use miden_protocol::block::BlockNumber;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info, info_span, Instrument as _, Span};
+use usdcx_telemetry::{record_failure, FailureClass};
 
 use crate::attester::{list_holds, release_holds};
 use crate::chain::MidenChainReader;
@@ -25,7 +26,22 @@ pub struct AttesterService {
 }
 
 impl AttesterService {
+    /// Connects the attester's dependencies and runs its startup checks, in the `attester.startup`
+    /// span. A failure marks that span failed as `actionable`.
     pub async fn start(config: Config) -> Result<Self> {
+        async {
+            let result = Self::connect(config).await;
+            if let Err(error) = &result {
+                record_failure(&Span::current(), FailureClass::Actionable, "startup");
+                error!(error = %format_args!("{error:#}"), "attester startup failed");
+            }
+            result
+        }
+        .instrument(info_span!("attester.startup"))
+        .await
+    }
+
+    async fn connect(config: Config) -> Result<Self> {
         let (circle, circle_worker) =
             CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
         let SignerConfig::AwsKms {

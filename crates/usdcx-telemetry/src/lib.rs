@@ -22,7 +22,7 @@ pub use shutdown::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
 use std::sync::OnceLock;
 
 use anyhow::{bail, ensure, Context};
-use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::trace::{Status, TracerProvider as _};
 use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
 use opentelemetry_sdk::resource::{
     EnvResourceDetector, ResourceDetector, TelemetryResourceDetector,
@@ -31,8 +31,8 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tonic::transport::ClientTlsConfig;
-use tracing::error;
-use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing::{error, Span};
+use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
@@ -82,6 +82,39 @@ pub fn flush() {
             error!(%error, "failed to export the remaining spans");
         }
     }
+}
+
+/// How loudly a failure is alerted on, exported as the span's `failure.class`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    /// Something the service authenticates did not check out, such as a diverged chain.
+    Integrity,
+    /// A failure that will not fix itself and needs an operator, such as a hold or a failed
+    /// startup.
+    Actionable,
+    /// A failure that is retried by design and matters only when it persists, such as a request
+    /// that timed out.
+    Transient,
+}
+
+impl FailureClass {
+    /// The exported value of `failure.class`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Integrity => "integrity",
+            Self::Actionable => "actionable",
+            Self::Transient => "transient",
+        }
+    }
+}
+
+/// Marks `span` failed and records why: `class` as `failure.class` and `kind`, a short name for
+/// what happened, as `failure.kind`. The caller still logs the failure at `error`, inside the span,
+/// so it reaches stdout and the exported span carries the details.
+pub fn record_failure(span: &Span, class: FailureClass, kind: &'static str) {
+    span.set_attribute("failure.class", class.as_str());
+    span.set_attribute("failure.kind", kind);
+    span.set_status(Status::error(kind));
 }
 
 /// Installs the global subscriber: stdout always, and the OTLP export when it is configured.
@@ -169,4 +202,44 @@ fn non_blank_variable(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::Status;
+    use opentelemetry::{KeyValue, Value};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    use super::*;
+
+    #[test]
+    fn record_failure_marks_the_exported_span() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("attester.cycle");
+            record_failure(&span, FailureClass::Integrity, "chain_diverged");
+        });
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let [span] = spans.as_slice() else {
+            panic!("expected one span, got {}", spans.len());
+        };
+        assert_eq!(span.status, Status::error("chain_diverged"));
+        for (key, value) in [
+            ("failure.class", "integrity"),
+            ("failure.kind", "chain_diverged"),
+        ] {
+            assert!(
+                span.attributes
+                    .contains(&KeyValue::new(key, Value::from(value))),
+                "missing {key}={value} in {:?}",
+                span.attributes
+            );
+        }
+    }
 }

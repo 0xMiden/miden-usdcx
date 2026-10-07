@@ -11,8 +11,8 @@ use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info_span, instrument, warn, Instrument as _, Span};
-use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
+use tracing::{info_span, instrument, warn, Instrument as _};
+use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -179,7 +179,9 @@ impl Attester {
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
     #[cfg(test)]
     pub async fn run_one_cycle(&mut self) -> anyhow::Result<CycleReport> {
-        self.cycle(&mut false).await
+        self.cycle(&mut false)
+            .await
+            .map_err(|failure| failure.error)
     }
 
     /// Circle's 429 sets `rate_limited`: the rest of the cycle then leaves Circle alone, and
@@ -187,32 +189,41 @@ impl Attester {
     ///
     /// Discovery, recovery, submission and polling each run in a child span of their own, opened
     /// every cycle even when the phase has nothing to do.
-    async fn cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<CycleReport> {
+    ///
+    /// Every error that stops a cycle without being discovery's is the store's.
+    async fn cycle(&mut self, rate_limited: &mut bool) -> Result<CycleReport, Failure> {
         let discovered = self
             .discover_burns()
             .instrument(info_span!("attester.discover"))
             .await;
         let (proof_lag_block, discover) = discovery_outcome(discovered)?;
 
-        let (to_recover, to_poll) = self.snapshot_submissions()?;
+        let (to_recover, to_poll) = self
+            .snapshot_submissions()
+            .classify(FailureClass::Actionable, "store")?;
         let fresh_burns = match proof_lag_block {
-            Some(block) => self.ready_burns(block)?,
+            Some(block) => self
+                .ready_burns(block)
+                .classify(FailureClass::Actionable, "store")?,
             None => Vec::new(),
         };
 
         self.advance_submissions(to_recover, rate_limited)
             .instrument(info_span!("attester.recover"))
             .await
-            .context("recovery stopped")?;
+            .context("recovery stopped")
+            .classify(FailureClass::Actionable, "store")?;
         let submit = self
             .submit_withdrawals(fresh_burns, rate_limited)
             .instrument(info_span!("attester.submit"))
             .await
-            .context("submission stopped")?;
+            .context("submission stopped")
+            .classify(FailureClass::Actionable, "store")?;
         self.advance_submissions(to_poll, rate_limited)
             .instrument(info_span!("attester.poll"))
             .await
-            .context("polling stopped")?;
+            .context("polling stopped")
+            .classify(FailureClass::Actionable, "store")?;
         Ok(CycleReport { discover, submit })
     }
 
@@ -488,12 +499,12 @@ fn open_existing(
 /// the service.
 fn discovery_outcome(
     discover: Result<BlockNumber, DiscoverError>,
-) -> anyhow::Result<(Option<BlockNumber>, Result<(), DiscoverError>)> {
+) -> Result<(Option<BlockNumber>, Result<(), DiscoverError>), Failure> {
     match discover {
         Ok(proof_lag_block) => Ok((Some(proof_lag_block), Ok(()))),
         Err(error @ DiscoverError::Chain(_)) => Ok((None, Err(error))),
         Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) => {
-            Err(error).context("discovery stopped")
+            Err(Failure::classified(error).context("discovery stopped"))
         }
     }
 }
@@ -502,8 +513,7 @@ fn discovery_outcome(
 /// the cycle as a whole could not do its work: discovery failed, the chain diverged or the store
 /// failed. A failure confined to one burn or one withdrawal leaves it alone. Returns the error that
 /// ends the run, which is a diverged chain.
-fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
-    let span = Span::current();
+fn finish_cycle(outcome: Result<CycleReport, Failure>) -> anyhow::Result<()> {
     match outcome {
         Ok(CycleReport {
             discover: Ok(()), ..
@@ -512,31 +522,19 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
             discover: Err(error),
             ..
         }) => {
-            span.record_error(&error);
-            error!(
-                error = &error as &dyn std::error::Error,
-                "discovery failed; new signing paused for this cycle"
-            );
+            Failure::classified(error)
+                .report("discovery failed; new signing paused for this cycle");
             Ok(())
         }
-        Err(error) => {
-            // Every error that stops a cycle without being discovery's is the store's.
-            let discover = error.downcast_ref::<DiscoverError>();
-            match discover {
-                Some(discover) => span.record_error(discover),
-                None => span.record_actionable_failure("store"),
+        Err(failure) => {
+            if matches!(
+                failure.error.downcast_ref::<DiscoverError>(),
+                Some(DiscoverError::ChainDiverged)
+            ) {
+                failure.report("chain diverged; stopping the attester");
+                return Err(failure.error);
             }
-            if matches!(discover, Some(DiscoverError::ChainDiverged)) {
-                error!(
-                    error = %format_args!("{error:#}"),
-                    "chain diverged; stopping the attester"
-                );
-                return Err(error);
-            }
-            error!(
-                error = %format_args!("{error:#}"),
-                "cycle stopped; retrying after the pause between cycles"
-            );
+            failure.report("cycle stopped; retrying after the pause between cycles");
             Ok(())
         }
     }

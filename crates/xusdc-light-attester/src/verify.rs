@@ -8,6 +8,7 @@ use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
+use usdcx_telemetry::FailureClass;
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
@@ -111,6 +112,33 @@ pub enum VerifyError {
     EncodedMismatch,
     #[error("Circle returned a malformed {0}")]
     MalformedField(&'static str),
+}
+
+impl VerifyError {
+    /// How loudly the failure is alerted on, and its name on the span. A fee or payout that does
+    /// not fit the configuration needs an operator; anything else means Circle asked for a
+    /// signature over something other than the burn.
+    pub(crate) fn failure(&self) -> (FailureClass, &'static str) {
+        match self {
+            Self::FeeTooHigh => (FailureClass::Actionable, "fee_too_high"),
+            Self::TooSmallToForward => (FailureClass::Actionable, "too_small_to_forward"),
+            Self::PayoutTooSmallToForward => {
+                (FailureClass::Actionable, "payout_too_small_to_forward")
+            }
+            Self::WrongCount => (FailureClass::Integrity, "wrong_count"),
+            Self::UnknownSalt => (FailureClass::Integrity, "unknown_salt"),
+            Self::WrongBurnField(_) => (FailureClass::Integrity, "wrong_burn_field"),
+            Self::BadAmount => (FailureClass::Integrity, "bad_amount"),
+            Self::WrongSigner => (FailureClass::Integrity, "wrong_signer"),
+            Self::WrongSourceToken => (FailureClass::Integrity, "wrong_source_token"),
+            Self::WrongSourceDomain => (FailureClass::Integrity, "wrong_source_domain"),
+            Self::CallerRestricted => (FailureClass::Integrity, "caller_restricted"),
+            Self::ForwardedField(_) => (FailureClass::Integrity, "forwarded_field"),
+            Self::DigestMismatch => (FailureClass::Integrity, "digest_mismatch"),
+            Self::EncodedMismatch => (FailureClass::Integrity, "encoded_mismatch"),
+            Self::MalformedField(_) => (FailureClass::Integrity, "malformed_field"),
+        }
+    }
 }
 
 /// Only this module can construct or change a verified authorization.

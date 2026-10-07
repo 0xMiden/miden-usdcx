@@ -99,12 +99,25 @@ pub enum FailureClass {
     Transient,
 }
 
+/// An error that knows how loudly it is alerted on, so a span can be marked failed from the error
+/// alone.
+pub trait Classified {
+    /// The error's class, and `kind`, a short name for what happened.
+    fn failure(&self) -> (FailureClass, &'static str);
+}
+
 /// Marks a span failed and records why. The caller still logs the failure at `error`, inside the
 /// span, so it reaches stdout and the exported span carries the details.
 pub trait FailureSpanExt {
     /// Records `class` as `failure.class` and `kind`, a short name for what happened, as
     /// `failure.kind`, and sets the span's status to an error.
     fn record_failure(&self, class: FailureClass, kind: &'static str);
+
+    /// Records the failure `error` classifies itself as.
+    fn record_error(&self, error: &impl Classified) {
+        let (class, kind) = error.failure();
+        self.record_failure(class, kind);
+    }
 
     /// Records an [`Integrity`](FailureClass::Integrity) failure.
     fn record_integrity_failure(&self, kind: &'static str) {
@@ -225,6 +238,14 @@ mod tests {
 
     use super::*;
 
+    struct Diverged;
+
+    impl Classified for Diverged {
+        fn failure(&self) -> (FailureClass, &'static str) {
+            (FailureClass::Integrity, "chain_diverged")
+        }
+    }
+
     #[test]
     fn a_recorded_failure_marks_the_exported_span() {
         let exporter = InMemorySpanExporter::default();
@@ -235,7 +256,7 @@ mod tests {
             tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("attester.cycle");
-            span.record_integrity_failure("chain_diverged");
+            span.record_error(&Diverged);
         });
 
         let spans = exporter.get_finished_spans().unwrap();

@@ -4,7 +4,7 @@ use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
 use tracing::{error, info, info_span, warn, Instrument as _, Span};
-use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
+use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 use crate::attester::Attester;
 use crate::circle::{
@@ -36,11 +36,12 @@ impl SubmitError {
     pub(crate) fn is_fatal(&self) -> bool {
         matches!(self, Self::Store(_))
     }
+}
 
-    /// How loudly the failure is alerted on, and its name on the span. Circle refusing to prepare
-    /// a burn holds it, so that needs an operator like every failure of our own; Circle's other
-    /// failures are classed by [`CircleError::failure`].
-    pub(crate) fn failure(&self) -> Failure {
+/// Circle refusing to prepare a burn holds it, so that needs an operator like every failure of our
+/// own; Circle's other failures keep the class [`CircleError`] gives them.
+impl Classified for SubmitError {
+    fn failure(&self) -> Failure {
         match self {
             Self::InvalidRequest(_) => (FailureClass::Actionable, "invalid_request"),
             Self::Store(_) => (FailureClass::Actionable, "store"),

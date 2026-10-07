@@ -8,7 +8,7 @@ use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
@@ -114,11 +114,10 @@ pub enum VerifyError {
     MalformedField(&'static str),
 }
 
-impl VerifyError {
-    /// How loudly the failure is alerted on, and its name on the span. A fee or payout that does
-    /// not fit the configuration needs an operator; anything else means Circle asked for a
-    /// signature over something other than the burn.
-    pub(crate) fn failure(&self) -> (FailureClass, &'static str) {
+/// A fee or payout that does not fit the configuration needs an operator; anything else means
+/// Circle asked for a signature over something other than the burn.
+impl Classified for VerifyError {
+    fn failure(&self) -> (FailureClass, &'static str) {
         match self {
             Self::FeeTooHigh => (FailureClass::Actionable, "fee_too_high"),
             Self::TooSmallToForward => (FailureClass::Actionable, "too_small_to_forward"),

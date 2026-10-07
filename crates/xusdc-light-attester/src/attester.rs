@@ -422,8 +422,7 @@ impl Attester {
         if let Some(reason) = hold {
             self.store.hold_burn(burn.note_id(), reason, response)?;
         }
-        let (class, kind) = error.failure();
-        Span::current().record_failure(class, kind);
+        Span::current().record_error(&error);
         error!(
             note_id = %burn.note_id(),
             error = &error as &dyn std::error::Error,

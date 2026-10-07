@@ -377,7 +377,7 @@ impl<M: MidenClient> Relayer<M> {
                 Ok(ScanOutcome::Complete) => {}
                 // The failure was logged in the span it happened in, and the next scan resumes
                 // where this one stopped. This marks the scan as a whole failed.
-                Err(failure) => span.record_failure(failure.class, failure.kind),
+                Err(failure) => span.record_error(&failure),
             }
             tokio::select! {
                 () = tokio::time::sleep(self.config.poll_interval) => {}

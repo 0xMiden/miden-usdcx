@@ -8,7 +8,7 @@
 use std::fmt;
 
 use tracing::{error, Span};
-use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
+use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 /// An error, with the `failure.class` and `failure.kind` the span it stopped is marked with.
 #[derive(Debug)]
@@ -29,8 +29,14 @@ impl Failure {
 
     /// Marks the current span failed and logs the error inside it at `error`.
     pub(crate) fn report(&self, message: &str) {
-        Span::current().record_failure(self.class, self.kind);
+        Span::current().record_error(self);
         error!(error = %format_args!("{:#}", self.error), "{message}");
+    }
+}
+
+impl Classified for Failure {
+    fn failure(&self) -> (FailureClass, &'static str) {
+        (self.class, self.kind)
     }
 }
 

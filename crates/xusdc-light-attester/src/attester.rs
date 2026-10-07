@@ -1,7 +1,7 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use miden_protocol::account::AccountId;
@@ -11,6 +11,7 @@ use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
+use tracing::field::Empty;
 use tracing::{error, info_span, instrument, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
@@ -70,6 +71,8 @@ pub struct Attester {
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
+    /// The node's latest committed block, as this cycle's discovery read it.
+    node_tip: Option<BlockNumber>,
 }
 
 impl Attester {
@@ -144,6 +147,7 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
+            node_tip: None,
         })
     }
 
@@ -153,14 +157,25 @@ impl Attester {
     /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
     /// without one. A diverged chain ends the run with its error.
     ///
-    /// Each cycle is an `attester.cycle` span with no parent.
+    /// Each cycle is an `attester.cycle` span with no parent, carrying the cycle's progress.
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
             let mut rate_limited = false;
-            async { finish_cycle(self.cycle(&mut rate_limited).await) }
-                .instrument(info_span!(parent: None, "attester.cycle"))
-                .await?;
+            async {
+                let ended = finish_cycle(self.cycle(&mut rate_limited).await);
+                let span = Span::current();
+                if let Err(error) = self.record_progress(&span) {
+                    record_failure(&span, FailureClass::Actionable, "store");
+                    error!(
+                        error = %format_args!("{error:#}"),
+                        "could not read the cycle's progress"
+                    );
+                }
+                ended
+            }
+            .instrument(cycle_span())
+            .await?;
             pause = if rate_limited {
                 pause
                     .saturating_mul(2)
@@ -224,6 +239,43 @@ impl Attester {
         Ok(CycleReport { discover, submit })
     }
 
+    /// Writes the cycle's progress on its span: the last verified block, the node's tip and how
+    /// long ago the verified block was made, then the held, failed, pending and unfinished work.
+    /// Every field but the tip is written each cycle, zeros included, so the alerts always find
+    /// them; the tip is left out when discovery could not read it.
+    fn record_progress(&self, span: &Span) -> anyhow::Result<()> {
+        let verified = match self.store.scan_state()?.authenticated_parent {
+            Some(header) => header,
+            None => self
+                .trusted_anchor_block
+                .as_ref()
+                .map(|block| block.header().clone())
+                .context(INVALID)?,
+        };
+        let progress = self.store.progress()?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let oldest_age_blocks = progress.oldest_unfinished_burn.map_or(0, |block| {
+            verified.block_num().as_u32().saturating_sub(block.as_u32())
+        });
+        span.record("block.number", verified.block_num().as_u32());
+        if let Some(tip) = self.node_tip {
+            span.record("tip.number", tip.as_u32());
+        }
+        span.record(
+            "tip.stale_duration_secs",
+            now.saturating_sub(u64::from(verified.timestamp())),
+        );
+        span.record("burns.held.count", progress.burns_held);
+        span.record("withdrawals.held.count", progress.withdrawals_held);
+        span.record("withdrawals.failed.count", progress.withdrawals_failed);
+        span.record("withdrawals.pending.count", progress.withdrawals_pending);
+        span.record("burns.unfinished.count", progress.burns_unfinished);
+        span.record("burns.unfinished.oldest_age_blocks", oldest_age_blocks);
+        Ok(())
+    }
+
     /// Loads the saved submissions to recover and to poll before anything changes their status,
     /// so work that expires or is newly submitted in this cycle waits for the next one.
     fn snapshot_submissions(&self) -> anyhow::Result<(Vec<SavedSubmission>, Vec<SavedSubmission>)> {
@@ -238,12 +290,14 @@ impl Attester {
     /// block's header, one block per store transaction, so a crash never skips or half-records
     /// a block. Returns the node's proof-lag height, the bound for withdrawal readiness.
     pub(crate) async fn discover_burns(&mut self) -> Result<BlockNumber, DiscoverError> {
+        self.node_tip = None;
         let saved_scan = self.store.scan_state()?;
         let scan_limits = self
             .chain
             .scan_limits()
             .await
             .map_err(DiscoverError::Chain)?;
+        self.node_tip = Some(scan_limits.latest_committed_block);
         let Some(last_block_to_scan) =
             self.find_last_block_to_scan(&saved_scan, scan_limits.latest_committed_block)?
         else {
@@ -505,6 +559,24 @@ fn discovery_outcome(
             Err(Failure::classified(error).context("discovery stopped"))
         }
     }
+}
+
+/// A cycle's root span, with its progress fields declared so [`Attester::record_progress`] can
+/// write them.
+fn cycle_span() -> Span {
+    info_span!(
+        parent: None,
+        "attester.cycle",
+        block.number = Empty,
+        tip.number = Empty,
+        tip.stale_duration_secs = Empty,
+        burns.held.count = Empty,
+        withdrawals.held.count = Empty,
+        withdrawals.failed.count = Empty,
+        withdrawals.pending.count = Empty,
+        burns.unfinished.count = Empty,
+        burns.unfinished.oldest_age_blocks = Empty,
+    )
 }
 
 /// Logs how a cycle ended, inside its `attester.cycle` span. That span is marked failed only when

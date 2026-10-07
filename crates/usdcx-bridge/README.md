@@ -141,6 +141,20 @@ to one burn, such as a hold, a withdrawal Circle reports as failed, or a prepare
 fails verification, fails only that burn's `attester.withdraw` span. Every failed span
 carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
 
+Every cycle span also carries the attester's progress, zeros included:
+
+| Field | Meaning |
+| --- | --- |
+| `block.number` | The last block the attester verified. |
+| `tip.number` | The node's latest committed block. Left out when the node could not be read. |
+| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the faucet's deployment block. |
+| `burns.held.count` | Burns held before submission. |
+| `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
+| `withdrawals.failed.count` | Withdrawals Circle reported as failed. |
+| `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
+| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
+| `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
+
 ## Release held withdrawals
 
 The attester holds a burn that Circle refuses to prepare, and leaves it held until an operator

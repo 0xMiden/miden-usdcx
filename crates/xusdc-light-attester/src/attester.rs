@@ -166,7 +166,7 @@ impl Attester {
                 let ended = finish_cycle(self.cycle(&mut rate_limited).await);
                 let span = Span::current();
                 if let Err(error) = self.record_progress(&span) {
-                    span.record_actionable("store");
+                    span.record_actionable_failure("store");
                     error!(
                         error = %format_args!("{error:#}"),
                         "could not read the cycle's progress"

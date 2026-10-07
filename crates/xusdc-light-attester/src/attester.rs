@@ -12,7 +12,7 @@ use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info_span, warn, Instrument as _, Span};
-use usdcx_telemetry::FailureSpanExt as _;
+use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -34,6 +34,18 @@ pub enum DiscoverError {
     ChainDiverged,
     #[error("attester store failed")]
     Store(#[from] anyhow::Error),
+}
+
+/// A failed chain read is retried next cycle, a diverged chain is never trusted again, and a store
+/// failure needs an operator.
+impl Classified for DiscoverError {
+    fn failure(&self) -> (FailureClass, &'static str) {
+        match self {
+            Self::Chain(_) => (FailureClass::Transient, "chain_read"),
+            Self::ChainDiverged => (FailureClass::Integrity, "chain_diverged"),
+            Self::Store(_) => (FailureClass::Actionable, "store"),
+        }
+    }
 }
 
 pub use crate::store::Hold;
@@ -489,29 +501,27 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
             discover: Err(error),
             ..
         }) => {
-            span.record_transient_failure("chain_read");
+            span.record_error(&error);
             error!(
                 error = &error as &dyn std::error::Error,
                 "discovery failed; new signing paused for this cycle"
             );
             Ok(())
         }
-        Err(error)
-            if matches!(
-                error.downcast_ref::<DiscoverError>(),
-                Some(DiscoverError::ChainDiverged)
-            ) =>
-        {
-            span.record_integrity_failure("chain_diverged");
-            error!(
-                error = %format_args!("{error:#}"),
-                "chain diverged; stopping the attester"
-            );
-            Err(error)
-        }
-        // Every other error that stops a cycle is the store's.
         Err(error) => {
-            span.record_actionable_failure("store");
+            // Every error that stops a cycle without being discovery's is the store's.
+            let discover = error.downcast_ref::<DiscoverError>();
+            match discover {
+                Some(discover) => span.record_error(discover),
+                None => span.record_actionable_failure("store"),
+            }
+            if matches!(discover, Some(DiscoverError::ChainDiverged)) {
+                error!(
+                    error = %format_args!("{error:#}"),
+                    "chain diverged; stopping the attester"
+                );
+                return Err(error);
+            }
             error!(
                 error = %format_args!("{error:#}"),
                 "cycle stopped; retrying after the pause between cycles"

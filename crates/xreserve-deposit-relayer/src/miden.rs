@@ -48,14 +48,13 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::{Classify, Failure, FailureClass};
 
 use miden_usdcx::account::XReserveFaucetExtension;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 
 use crate::circle::PageSize;
 use crate::config::Config;
-use crate::failure::{Classify, Failure};
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.

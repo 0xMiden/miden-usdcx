@@ -20,19 +20,17 @@ use anyhow::{Context, Result};
 use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info, info_span, instrument, warn, Instrument as _, Span};
-use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
+use tracing::{info, info_span, instrument, warn, Instrument as _, Span};
+use usdcx_telemetry::{Classify, Failure, FailureClass, FailureSpanExt as _};
 
 pub mod circle;
 pub mod config;
-pub mod failure;
 pub mod miden;
 pub mod mint;
 pub mod store;
 
 use circle::{Attestation, CircleClient, CircleCursor, MessageHash};
 use config::Config;
-use failure::{Classify, Failure};
 use miden::{MidenClient, NodeClient};
 use mint::{BuiltNotes, Minter};
 use store::{ScanProgress, State, Store};
@@ -83,12 +81,13 @@ impl Relayer<NodeClient> {
     /// - Any of the checks of [`Relayer::new`] fails.
     #[instrument(name = "relayer.startup", skip_all)]
     pub async fn start(config: Config) -> Result<Self> {
-        let result = Self::connect(config).await;
-        if let Err(error) = &result {
-            Span::current().record_actionable_failure("startup");
-            error!(error = %format_args!("{error:#}"), "relayer startup failed");
-        }
-        result
+        Self::connect(config)
+            .await
+            .classify(FailureClass::Actionable, "startup")
+            .map_err(|failure| {
+                failure.report("relayer startup failed");
+                failure.error
+            })
     }
 
     async fn connect(config: Config) -> Result<Self> {

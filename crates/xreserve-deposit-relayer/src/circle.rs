@@ -21,11 +21,9 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::{Classify, Failure, FailureClass};
 
 use miden_usdcx::xreserve::encoding::{CircleDomain, Signature};
-
-use crate::failure::{Classify, Failure};
 
 /// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
 ///

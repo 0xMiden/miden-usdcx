@@ -11,10 +11,9 @@
 //! [`Relayer::run`] begins a scan every polling interval; a relayer that is caught up meets the
 //! watermark at the top of the head page and ends the scan after that one request.
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
-
 use anyhow::{Context, Result};
 use miden_protocol::note::Note;
+use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
 
@@ -32,11 +31,11 @@ use store::{ScanProgress, State, Store};
 
 /// The relay loop's parts: the Circle feed, the store holding how far the scan got, the note
 /// builder, and the Miden client that lands the notes on chain.
-pub struct Relayer {
+pub struct Relayer<M> {
     config: Config,
     circle: CircleClient,
     store: Store,
-    miden_client: Box<dyn MidenClient>,
+    miden_client: M,
     minter: Minter,
 }
 
@@ -65,14 +64,14 @@ enum ScanOutcome {
     Stopped,
 }
 
-impl Relayer {
+impl<M: MidenClient> Relayer<M> {
     /// Assembles a relayer and checks its local progress can be read and saved before polling.
     ///
     /// # Errors
     ///
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
     /// - The progress file is malformed or cannot be read or replaced.
-    pub fn new(config: Config, miden_client: Box<dyn MidenClient>) -> Result<Self> {
+    pub fn new(config: Config, miden_client: M) -> Result<Self> {
         let store = Store::new(config.state_file.clone());
         let state = store.state().context("reading relayer startup progress")?;
         // Save the same progress to exercise the normal write/sync/rename path without advancing it.
@@ -113,17 +112,19 @@ impl Relayer {
     /// - Reading or persisting the state fails.
     /// - Fetching a Circle page fails.
     /// - Submitting the mint notes fails.
-    fn scan(&mut self, shutdown: &Receiver<()>) -> Result<ScanOutcome> {
+    async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome> {
         let mut state = self.store.state()?;
 
         loop {
-            if stop_requested(shutdown) {
+            if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
-            let outcome = self.process_page(
-                state.scan.as_ref().map(|scan| &scan.resume),
-                state.watermark.as_ref(),
-            )?;
+            let outcome = self
+                .process_page(
+                    state.scan.as_ref().map(|scan| &scan.resume),
+                    state.watermark.as_ref(),
+                )
+                .await?;
 
             // A scan that has progress keeps the head it started at, so a fresh scan reads the
             // page's newest attestation only on the first time round this loop — by the second it
@@ -148,7 +149,7 @@ impl Relayer {
             if next != state {
                 self.store.set_state(&next)?;
             }
-            if stop_requested(shutdown) {
+            if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
             if next.scan.is_none() {
@@ -198,7 +199,7 @@ impl Relayer {
             transaction.id = Empty,
         ),
     )]
-    fn process_page(
+    async fn process_page(
         &mut self,
         resume: Option<&CircleCursor>,
         watermark: Option<&MessageHash>,
@@ -206,7 +207,10 @@ impl Relayer {
         let span = Span::current();
         span.record("cursor", resume.map(CircleCursor::as_str).unwrap_or("None"));
 
-        let page = self.circle.fetch_page(self.config.remote_domain, resume)?;
+        let page = self
+            .circle
+            .fetch_page(self.config.remote_domain, resume)
+            .await?;
         span.record("attestations.count", page.attestations.len());
         span.record(
             "attestations.message_hashes",
@@ -234,7 +238,7 @@ impl Relayer {
 
         // A deposit the faucet has already minted would only be refused, so it is dropped here
         // rather than proven. This is what makes a replay of the feed cheap.
-        let notes = self.miden_client.retain_unminted(notes)?;
+        let notes = self.miden_client.retain_unminted(notes).await?;
         span.record("notes.already_minted", built - notes.len());
 
         // The minter yields its own note type; the chain takes protocol notes, so the page is
@@ -253,7 +257,8 @@ impl Relayer {
         } else if !notes.is_empty() {
             let transaction = self
                 .miden_client
-                .submit_notes(self.minter.mint_account(), notes)?;
+                .submit_notes(self.minter.mint_account(), notes)
+                .await?;
             span.record("transaction.id", transaction.to_string().as_str());
             info!("page minted and on chain");
         }
@@ -273,22 +278,21 @@ impl Relayer {
     ///
     /// A failed scan leaves the watermark where it was, and the next one resumes at the page the
     /// failure stopped it on rather than repeating the pages already on chain.
-    pub fn run(self) -> Result<()> {
-        // Keep the sender alive so the standalone relayer continues running.
-        let (_keep_running, shutdown) = mpsc::channel();
-        self.run_until(shutdown)
+    pub async fn run(self) -> Result<()> {
+        // A token nothing cancels keeps the standalone relayer running.
+        self.run_until(CancellationToken::new()).await
     }
 
-    /// Runs until a shutdown message arrives or its sender is dropped.
+    /// Runs until `shutdown` is cancelled.
     ///
     /// The current page finishes and its progress is saved before stopping. Waiting for a mint
     /// transaction can continue indefinitely if the chain stops producing blocks.
-    pub fn run_until(mut self, shutdown: Receiver<()>) -> Result<()> {
+    pub async fn run_until(mut self, shutdown: CancellationToken) -> Result<()> {
         loop {
-            if stop_requested(&shutdown) {
+            if shutdown.is_cancelled() {
                 return Ok(());
             }
-            match self.scan(&shutdown) {
+            match self.scan(&shutdown).await {
                 Ok(ScanOutcome::Stopped) => return Ok(()),
                 Ok(ScanOutcome::Complete) => {}
                 Err(error) => warn!(
@@ -296,19 +300,12 @@ impl Relayer {
                     "the scan failed; the next one resumes where it stopped"
                 ),
             }
-            match shutdown.recv_timeout(self.config.poll_interval) {
-                Err(RecvTimeoutError::Timeout) => {}
-                Ok(()) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            tokio::select! {
+                () = tokio::time::sleep(self.config.poll_interval) => {}
+                () = shutdown.cancelled() => return Ok(()),
             }
         }
     }
-}
-
-fn stop_requested(shutdown: &Receiver<()>) -> bool {
-    matches!(
-        shutdown.try_recv(),
-        Ok(()) | Err(TryRecvError::Disconnected)
-    )
 }
 
 #[cfg(test)]

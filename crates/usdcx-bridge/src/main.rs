@@ -6,7 +6,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use xusdc_attester::service::run_command;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<()> {
     let cli = config::Cli::parse();
     tracing_subscriber::fmt()

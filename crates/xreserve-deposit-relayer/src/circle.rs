@@ -12,7 +12,6 @@
 //! No authentication is sent because Circle has not documented an authentication scheme yet.
 
 use std::fmt;
-use std::io::Read;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -193,7 +192,7 @@ impl Page {
 pub struct CircleClient {
     base_url: Url,
     page_size: PageSize,
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
 }
 
 impl CircleClient {
@@ -208,7 +207,7 @@ impl CircleClient {
             !request_timeout.is_zero(),
             "request timeout must be greater than zero"
         );
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(request_timeout)
             .build()
             .context("building the circle http client")?;
@@ -233,16 +232,17 @@ impl CircleClient {
         skip_all,
         fields(remote_domain = %remote_domain, status = Empty, attestations = Empty, next = Empty),
     )]
-    pub fn fetch_page(
+    pub async fn fetch_page(
         &self,
         remote_domain: CircleDomain,
         cursor: Option<&CircleCursor>,
     ) -> Result<Page> {
         let span = Span::current();
-        let response = self
+        let mut response = self
             .client
             .get(self.page_url(remote_domain, cursor))
             .send()
+            .await
             .context("the circle request failed")?;
         span.record("status", response.status().as_u16());
         ensure!(
@@ -259,18 +259,21 @@ impl CircleClient {
             .context("decoding the circle Link header")?
             .map(str::to_owned);
 
-        // Read one byte past the ceiling rather than `bytes()`: a runaway body must not be
-        // buffered in full before it is rejected.
+        // Read chunk by chunk rather than `bytes()`: a runaway body must not be buffered in full
+        // before it is rejected.
         let mut body = Vec::new();
-        response
-            .take(Page::MAX_RESPONSE_BYTES as u64 + 1)
-            .read_to_end(&mut body)
-            .context("reading the circle response")?;
-        ensure!(
-            body.len() <= Page::MAX_RESPONSE_BYTES,
-            "the circle response exceeded the {}-byte ceiling",
-            Page::MAX_RESPONSE_BYTES
-        );
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("reading the circle response")?
+        {
+            body.extend_from_slice(&chunk);
+            ensure!(
+                body.len() <= Page::MAX_RESPONSE_BYTES,
+                "the circle response exceeded the {}-byte ceiling",
+                Page::MAX_RESPONSE_BYTES
+            );
+        }
 
         let page = Page::decode(&body, link.as_deref())?;
         span.record("attestations", page.attestations.len());

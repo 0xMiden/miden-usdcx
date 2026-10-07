@@ -23,6 +23,7 @@
 
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::num::NonZeroU16;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -75,21 +76,29 @@ const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 /// Miden and waits for them to be included on chain.
 ///
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
-/// can be exercised without a node.
+/// can be exercised without a node. Its futures are not required to be `Send`, because the Miden
+/// client's own futures are not.
 pub trait MidenClient: fmt::Debug + Send {
     /// Keeps the notes whose deposit the faucet has not minted yet, in their original order.
     ///
     /// Dropping a note is final: the faucet only ever adds to its used-nonce map. Keeping one is
     /// not, because a mint note already on chain for the same deposit may be consumed before the
     /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
-    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>>;
+    fn retain_unminted(
+        &mut self,
+        notes: Vec<XUsdcMintNote>,
+    ) -> impl Future<Output = Result<Vec<XUsdcMintNote>>>;
 
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
     ///
     /// The caller counts the page as handled after this method succeeds. Returning before
     /// inclusion could move the watermark past deposits whose transaction is later dropped.
-    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId>;
+    fn submit_notes(
+        &mut self,
+        sender: AccountId,
+        notes: Vec<Note>,
+    ) -> impl Future<Output = Result<TransactionId>>;
 }
 
 /// How many blocks past the one it was built against a mint transaction may still be included in.
@@ -141,9 +150,6 @@ impl fmt::Display for ExpirationDelta {
 /// A Miden client pointed at a node, with the relayer's account tracked and its signing key to
 /// hand, and the faucet watched so its storage can be read locally.
 pub struct NodeClient {
-    /// `miden-client` is asynchronous and the relay loop is not, so every call is driven to
-    /// completion on this runtime.
-    runtime: tokio::runtime::Runtime,
     client: Client<FilesystemKeyStore>,
     /// The faucet the client was told to watch at startup, and so the only one whose storage it
     /// can read.
@@ -186,12 +192,7 @@ impl NodeClient {
     /// - The data directory, its store, or its keystore cannot be opened.
     /// - The node does not know the relayer account or the faucet.
     /// - The faucet has not enabled the configured attester public key.
-    pub fn new(config: &Config) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("building the runtime the miden client runs on")?;
-
+    pub async fn new(config: &Config) -> Result<Self> {
         let endpoint = Endpoint::try_from(config.miden_node_url.as_str())
             .map_err(|error| anyhow!("the miden node url is not an endpoint: {error}"))?;
 
@@ -202,70 +203,60 @@ impl NodeClient {
         let keystore = FilesystemKeyStore::new(data_dir.join(KEYSTORE_DIR))
             .map_err(|error| anyhow!("opening the miden keystore: {error}"))?;
 
-        let mut client = runtime
-            .block_on(
-                ClientBuilder::new()
-                    .rpc(Arc::new(GrpcClient::new(
-                        &endpoint,
-                        RPC_TIMEOUT.as_millis() as u64,
-                    )))
-                    .sqlite_store(data_dir.join(STORE_FILE))
-                    .authenticator(Arc::new(keystore))
-                    .build(),
-            )
+        let mut client = ClientBuilder::new()
+            .rpc(Arc::new(GrpcClient::new(
+                &endpoint,
+                RPC_TIMEOUT.as_millis() as u64,
+            )))
+            .sqlite_store(data_dir.join(STORE_FILE))
+            .authenticator(Arc::new(keystore))
+            .build()
+            .await
             .context("building the miden client")?;
 
+        client
+            .sync_state()
+            .await
+            .context("the first sync with the miden node")?;
+
+        // A store carried over from an earlier run already tracks the account; a fresh one has to
+        // be told about it, which fails loudly if the node has never seen it.
         let relayer = config.relayer_account_id;
-        let faucet = config.faucet_account_id;
-        runtime.block_on(async {
+        if client.get_account(relayer).await?.is_none() {
             client
-                .sync_state()
+                .import_account_by_id(relayer)
                 .await
-                .context("the first sync with the miden node")?;
+                .with_context(|| format!("the node does not know the relayer account {relayer}"))?;
+        }
 
-            // A store carried over from an earlier run already tracks the account; a fresh one has
-            // to be told about it, which fails loudly if the node has never seen it.
-            if client.get_account(relayer).await?.is_none() {
-                client
-                    .import_account_by_id(relayer)
-                    .await
-                    .with_context(|| {
-                        format!("the node does not know the relayer account {relayer}")
-                    })?;
-            }
-
-            // Watched rather than imported: the client keeps the faucet's storage current on every
-            // sync but does not pull the notes addressed to it, which are every mint note on chain.
-            if client.get_account(faucet).await?.is_none() {
-                client
-                    .import_watched_account_by_id(faucet)
-                    .await
-                    .with_context(|| format!("watching the faucet {faucet}"))?;
-            }
-
-            // The faucet refuses every mint note presenting a key it has not enabled, and the
-            // relayer would never see those refusals: its own transactions keep landing. So a key
-            // the faucet does not list is caught here, before any deposit is relayed. The faucet
-            // stores an empty word for a key it has disabled, which reads the same as one it never
-            // listed.
-            let attester = client
-                .account_reader(faucet)
-                .get_storage_map_item(
-                    XReserveFaucetExtension::xreserve_attesters_slot().clone(),
-                    config.attester_public_key.to_storage_map_key(),
-                )
+        // Watched rather than imported: the client keeps the faucet's storage current on every
+        // sync but does not pull the notes addressed to it, which are every mint note on chain.
+        let faucet = config.faucet_account_id;
+        if client.get_account(faucet).await?.is_none() {
+            client
+                .import_watched_account_by_id(faucet)
                 .await
-                .with_context(|| format!("reading the attesters of the faucet {faucet}"))?;
-            ensure!(
-                attester != EMPTY_WORD,
-                "the attester public key is not enabled on the faucet {faucet}"
-            );
+                .with_context(|| format!("watching the faucet {faucet}"))?;
+        }
 
-            Ok::<(), anyhow::Error>(())
-        })?;
+        // The faucet refuses every mint note presenting a key it has not enabled, and the relayer
+        // would never see those refusals: its own transactions keep landing. So a key the faucet
+        // does not list is caught here, before any deposit is relayed. The faucet stores an empty
+        // word for a key it has disabled, which reads the same as one it never listed.
+        let attester = client
+            .account_reader(faucet)
+            .get_storage_map_item(
+                XReserveFaucetExtension::xreserve_attesters_slot().clone(),
+                config.attester_public_key.to_storage_map_key(),
+            )
+            .await
+            .with_context(|| format!("reading the attesters of the faucet {faucet}"))?;
+        ensure!(
+            attester != EMPTY_WORD,
+            "the attester public key is not enabled on the faucet {faucet}"
+        );
 
         Ok(Self {
-            runtime,
             client,
             faucet,
             expiration_delta: config.expiration_delta,
@@ -280,40 +271,30 @@ impl MidenClient for NodeClient {
     /// has not synced since its last transaction, and the faucet has minted since. The reads
     /// themselves never reach the node.
     #[instrument(name = "retain_unminted", skip_all, fields(notes.count = notes.len(), unminted.count = Empty))]
-    fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
+    async fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
         // A page with nothing to check is not worth a sync.
         if notes.is_empty() {
             return Ok(notes);
         }
 
+        self.client
+            .sync_state()
+            .await
+            .context("syncing before reading the used nonces")?;
+
         let slot = XReserveFaucetExtension::used_nonces_slot();
-        let Self {
-            runtime,
-            client,
-            faucet,
-            ..
-        } = self;
-
-        let unminted = runtime.block_on(async {
-            client
-                .sync_state()
+        let faucet = self.faucet;
+        let faucet_storage = self.client.account_reader(faucet);
+        let mut unminted = Vec::with_capacity(notes.len());
+        for note in notes {
+            let value = faucet_storage
+                .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
                 .await
-                .context("syncing before reading the used nonces")?;
-
-            let faucet_storage = client.account_reader(*faucet);
-            let mut unminted = Vec::with_capacity(notes.len());
-            for note in notes {
-                let value = faucet_storage
-                    .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
-                    .await
-                    .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
-                if value == EMPTY_WORD {
-                    unminted.push(note);
-                }
+                .with_context(|| format!("reading the used nonces of the faucet {faucet}"))?;
+            if value == EMPTY_WORD {
+                unminted.push(note);
             }
-
-            Ok::<_, anyhow::Error>(unminted)
-        })?;
+        }
 
         Span::current().record("unminted.count", unminted.len());
         Ok(unminted)
@@ -333,7 +314,7 @@ impl MidenClient for NodeClient {
             block = Empty,
         ),
     )]
-    fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId> {
+    async fn submit_notes(&mut self, sender: AccountId, notes: Vec<Note>) -> Result<TransactionId> {
         let span = Span::current();
         let request = TransactionRequestBuilder::new()
             .own_output_notes(notes)
@@ -341,60 +322,56 @@ impl MidenClient for NodeClient {
             .build()
             .context("building the mint transaction")?;
 
-        let Self {
-            runtime, client, ..
-        } = self;
+        let client = &mut self.client;
 
-        runtime.block_on(async {
-            // The transaction executes against the account's committed state, so that state has to
-            // be current before it is built.
+        // The transaction executes against the account's committed state, so that state has to be
+        // current before it is built.
+        client
+            .sync_state()
+            .await
+            .context("syncing before the mint transaction")?;
+
+        let transaction = client
+            .submit_new_transaction(sender, request)
+            .await
+            .context("submitting the mint transaction")?;
+        span.record("transaction.id", display(transaction));
+
+        loop {
+            // Only a sync moves a submitted transaction out of `Pending`: it is how the node reports
+            // which transactions reached a block.
             client
                 .sync_state()
                 .await
-                .context("syncing before the mint transaction")?;
+                .context("syncing while waiting for the mint transaction")?;
 
-            let transaction = client
-                .submit_new_transaction(sender, request)
+            let record = client
+                .get_transactions(TransactionFilter::Ids(vec![transaction]))
                 .await
-                .context("submitting the mint transaction")?;
-            span.record("transaction.id", display(transaction));
+                .context("reading the mint transaction's status")?
+                .pop()
+                .with_context(|| {
+                    format!("the client stopped tracking the transaction {transaction}")
+                })?;
+            let expiration_block = record.details.expiration_block_num;
+            span.record("expiration_block", expiration_block.as_u32());
 
-            loop {
-                // Only a sync moves a submitted transaction out of `Pending`: it is how the node
-                // reports which transactions reached a block.
-                client
-                    .sync_state()
-                    .await
-                    .context("syncing while waiting for the mint transaction")?;
+            // The chain tip as this client last saw it, which the sync above just refreshed.
+            let chain_tip = client
+                .get_sync_height()
+                .await
+                .context("reading how far the chain has been synced")?;
 
-                let record = client
-                    .get_transactions(TransactionFilter::Ids(vec![transaction]))
-                    .await
-                    .context("reading the mint transaction's status")?
-                    .pop()
-                    .with_context(|| {
-                        format!("the client stopped tracking the transaction {transaction}")
-                    })?;
-                let expiration_block = record.details.expiration_block_num;
-                span.record("expiration_block", expiration_block.as_u32());
-
-                // The chain tip as this client last saw it, which the sync above just refreshed.
-                let chain_tip = client
-                    .get_sync_height()
-                    .await
-                    .context("reading how far the chain has been synced")?;
-
-                match inclusion(&record.status, chain_tip, expiration_block)
-                    .with_context(|| format!("the mint transaction {transaction} never landed"))?
-                {
-                    Inclusion::Included(block) => {
-                        span.record("block", block.as_u32());
-                        return Ok(transaction);
-                    }
-                    Inclusion::Waiting => tokio::time::sleep(INCLUSION_POLL_INTERVAL).await,
+            match inclusion(&record.status, chain_tip, expiration_block)
+                .with_context(|| format!("the mint transaction {transaction} never landed"))?
+            {
+                Inclusion::Included(block) => {
+                    span.record("block", block.as_u32());
+                    return Ok(transaction);
                 }
+                Inclusion::Waiting => tokio::time::sleep(INCLUSION_POLL_INTERVAL).await,
             }
-        })
+        }
     }
 }
 

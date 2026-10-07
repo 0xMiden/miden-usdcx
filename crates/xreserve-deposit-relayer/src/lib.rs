@@ -185,9 +185,10 @@ impl<M: MidenClient> Relayer<M> {
     ///
     /// A failure marks the page span failed and is logged inside it, so the span says why the page
     /// was not recorded as done.
-    async fn run_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
-        let span = info_span!(
-            "relayer.page",
+    #[instrument(
+        name = "relayer.page",
+        skip_all,
+        fields(
             remote_domain = %self.config.remote_domain,
             cursor = Empty,
             attestations.count = Empty,
@@ -198,18 +199,16 @@ impl<M: MidenClient> Relayer<M> {
             notes.count = Empty,
             notes.ids = Empty,
             transaction.id = Empty,
-        );
-        async {
-            // Boxed because the page's future, which holds the Miden client's, is deep enough that
-            // nesting it in the scan's future exceeds the compiler's recursion limit.
-            let result = Box::pin(self.finish_page(state)).await;
-            if let Err(failure) = &result {
-                failure.report("the page failed; the next scan resumes at it");
-            }
-            result
+        )
+    )]
+    async fn run_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
+        // Boxed because the page's future, which holds the Miden client's, is deep enough that
+        // nesting it in the scan's future exceeds the compiler's recursion limit.
+        let result = Box::pin(self.finish_page(state)).await;
+        if let Err(failure) = &result {
+            failure.report("the page failed; the next scan resumes at it");
         }
-        .instrument(span)
-        .await
+        result
     }
 
     /// Processes the page `state` resumes at and saves the state that follows it.

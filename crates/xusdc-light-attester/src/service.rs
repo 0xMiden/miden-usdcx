@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use miden_protocol::block::BlockNumber;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument, Span};
-use usdcx_telemetry::FailureSpanExt as _;
+use tracing::{info, instrument};
+use usdcx_telemetry::{Classify as _, FailureClass};
 
 use crate::attester::{list_holds, release_holds};
 use crate::chain::MidenChainReader;
@@ -30,12 +30,13 @@ impl AttesterService {
     /// span. A failure marks that span failed as `actionable`.
     #[instrument(name = "attester.startup", skip_all)]
     pub async fn start(config: Config) -> Result<Self> {
-        let result = Self::connect(config).await;
-        if let Err(error) = &result {
-            Span::current().record_actionable_failure("startup");
-            error!(error = %format_args!("{error:#}"), "attester startup failed");
-        }
-        result
+        Self::connect(config)
+            .await
+            .classify(FailureClass::Actionable, "startup")
+            .map_err(|failure| {
+                failure.report("attester startup failed");
+                failure.error
+            })
     }
 
     async fn connect(config: Config) -> Result<Self> {

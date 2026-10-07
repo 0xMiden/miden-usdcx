@@ -7,7 +7,7 @@ use miden_protocol::block::BlockNumber;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, info_span, Instrument as _, Span};
-use usdcx_telemetry::{record_failure, FailureClass};
+use usdcx_telemetry::FailureSpanExt as _;
 
 use crate::attester::{list_holds, release_holds};
 use crate::chain::MidenChainReader;
@@ -32,7 +32,7 @@ impl AttesterService {
         async {
             let result = Self::connect(config).await;
             if let Err(error) = &result {
-                record_failure(&Span::current(), FailureClass::Actionable, "startup");
+                Span::current().record_actionable("startup");
                 error!(error = %format_args!("{error:#}"), "attester startup failed");
             }
             result

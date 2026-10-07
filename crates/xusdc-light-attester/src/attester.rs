@@ -12,7 +12,7 @@ use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info_span, warn, Instrument as _, Span};
-use usdcx_telemetry::{record_failure, FailureClass};
+use usdcx_telemetry::FailureSpanExt as _;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -489,7 +489,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
             discover: Err(error),
             ..
         }) => {
-            record_failure(&span, FailureClass::Transient, "chain_read");
+            span.record_transient("chain_read");
             error!(
                 error = &error as &dyn std::error::Error,
                 "discovery failed; new signing paused for this cycle"
@@ -502,7 +502,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
                 Some(DiscoverError::ChainDiverged)
             ) =>
         {
-            record_failure(&span, FailureClass::Integrity, "chain_diverged");
+            span.record_integrity("chain_diverged");
             error!(
                 error = %format_args!("{error:#}"),
                 "chain diverged; stopping the attester"
@@ -511,7 +511,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
         }
         // Every other error that stops a cycle is the store's.
         Err(error) => {
-            record_failure(&span, FailureClass::Actionable, "store");
+            span.record_actionable("store");
             error!(
                 error = %format_args!("{error:#}"),
                 "cycle stopped; retrying after the pause between cycles"

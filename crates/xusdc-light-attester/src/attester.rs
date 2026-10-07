@@ -162,20 +162,7 @@ impl Attester {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
             let mut rate_limited = false;
-            async {
-                let ended = finish_cycle(self.cycle(&mut rate_limited).await);
-                let span = Span::current();
-                if let Err(error) = self.record_progress(&span) {
-                    span.record_actionable_failure("store");
-                    error!(
-                        error = %format_args!("{error:#}"),
-                        "could not read the cycle's progress"
-                    );
-                }
-                ended
-            }
-            .instrument(cycle_span())
-            .await?;
+            self.traced_cycle(&mut rate_limited).await?;
             pause = if rate_limited {
                 pause
                     .saturating_mul(2)
@@ -190,6 +177,37 @@ impl Attester {
             }
         }
         Ok(())
+    }
+
+    /// Runs one cycle in its `attester.cycle` span, logs how it ended and writes its progress on the
+    /// span. Returns the error that ends the run, which is a diverged chain.
+    #[instrument(
+        name = "attester.cycle",
+        parent = None,
+        skip_all,
+        fields(
+            block.number = Empty,
+            tip.number = Empty,
+            tip.stale_duration_secs = Empty,
+            burns.held.count = Empty,
+            withdrawals.held.count = Empty,
+            withdrawals.failed.count = Empty,
+            withdrawals.pending.count = Empty,
+            burns.unfinished.count = Empty,
+            burns.unfinished.oldest_age_blocks = Empty,
+        )
+    )]
+    async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
+        let ended = finish_cycle(self.cycle(rate_limited).await);
+        let span = Span::current();
+        if let Err(error) = self.record_progress(&span) {
+            span.record_actionable_failure("store");
+            error!(
+                error = %format_args!("{error:#}"),
+                "could not read the cycle's progress"
+            );
+        }
+        ended
     }
 
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
@@ -559,24 +577,6 @@ fn discovery_outcome(
             Err(Failure::classified(error).context("discovery stopped"))
         }
     }
-}
-
-/// A cycle's root span, with its progress fields declared so [`Attester::record_progress`] can
-/// write them.
-fn cycle_span() -> Span {
-    info_span!(
-        parent: None,
-        "attester.cycle",
-        block.number = Empty,
-        tip.number = Empty,
-        tip.stale_duration_secs = Empty,
-        burns.held.count = Empty,
-        withdrawals.held.count = Empty,
-        withdrawals.failed.count = Empty,
-        withdrawals.pending.count = Empty,
-        burns.unfinished.count = Empty,
-        burns.unfinished.oldest_age_blocks = Empty,
-    )
 }
 
 /// Logs how a cycle ended, inside its `attester.cycle` span. That span is marked failed only when

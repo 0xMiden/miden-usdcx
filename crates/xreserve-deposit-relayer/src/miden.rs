@@ -19,7 +19,8 @@
 //! deposit the faucet has already minted is dropped before any proof is built for it. That is what
 //! keeps replaying the feed cheap after the state file is lost: the replay costs reads, not proofs.
 //! The client watches the faucet alongside the relayer's own account, so those reads are answered
-//! from the local store, as of the client's last sync.
+//! from the local store, as of the client's last sync. The same read follows the deposits of
+//! earlier pages until the faucet mints them.
 //!
 //! A failed node request, or a transaction that expired or was discarded, is `transient`: the page is
 //! retried on the next scan. A failure of the client's own store, or a transaction request the client
@@ -52,7 +53,7 @@ use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classify, Failure};
 
 use miden_usdcx::account::XReserveFaucetExtension;
-use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
+use miden_usdcx::xreserve::encoding::DepositNonce;
 
 use crate::circle::PageSize;
 use crate::config::Config;
@@ -85,15 +86,15 @@ const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 /// can be exercised without a node. Its futures are not required to be `Send`, because the Miden
 /// client's own futures are not.
 pub trait MidenClient: fmt::Debug + Send {
-    /// Keeps the notes whose deposit the faucet has not minted yet, in their original order.
+    /// Keeps the deposit nonces the faucet has not minted yet, in their original order.
     ///
-    /// Dropping a note is final: the faucet only ever adds to its used-nonce map. Keeping one is
+    /// Dropping a deposit is final: the faucet only ever adds to its used-nonce map. Keeping one is
     /// not, because a mint note already on chain for the same deposit may be consumed before the
     /// new one; the faucet refuses the second of the two, so that costs a proof and nothing more.
     fn retain_unminted(
         &mut self,
-        notes: Vec<XUsdcMintNote>,
-    ) -> impl Future<Output = Result<Vec<XUsdcMintNote>, Failure>>;
+        nonces: Vec<DepositNonce>,
+    ) -> impl Future<Output = Result<Vec<DepositNonce>, Failure>>;
 
     /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
     /// included in a block.
@@ -271,19 +272,19 @@ impl NodeClient {
 }
 
 impl MidenClient for NodeClient {
-    /// Syncs, then reads each note's nonce entry in the faucet's used-nonce map from the local store.
+    /// Syncs, then reads each nonce's entry in the faucet's used-nonce map from the local store.
     ///
     /// The sync is what keeps the answer current: a relayer that has been caught up for a while
     /// has not synced since its last transaction, and the faucet has minted since. The reads
     /// themselves never reach the node.
-    #[instrument(name = "relayer.retain_unminted", skip_all, fields(notes.count = notes.len(), unminted.count = Empty))]
+    #[instrument(name = "relayer.retain_unminted", skip_all, fields(nonces.count = nonces.len(), unminted.count = Empty))]
     async fn retain_unminted(
         &mut self,
-        notes: Vec<XUsdcMintNote>,
-    ) -> Result<Vec<XUsdcMintNote>, Failure> {
-        // A page with nothing to check is not worth a sync.
-        if notes.is_empty() {
-            return Ok(notes);
+        nonces: Vec<DepositNonce>,
+    ) -> Result<Vec<DepositNonce>, Failure> {
+        // Nothing to check is not worth a sync.
+        if nonces.is_empty() {
+            return Ok(nonces);
         }
 
         self.client
@@ -295,15 +296,15 @@ impl MidenClient for NodeClient {
         let slot = XReserveFaucetExtension::used_nonces_slot();
         let faucet = self.faucet;
         let faucet_storage = self.client.account_reader(faucet);
-        let mut unminted = Vec::with_capacity(notes.len());
-        for note in notes {
+        let mut unminted = Vec::with_capacity(nonces.len());
+        for nonce in nonces {
             let value = faucet_storage
-                .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
+                .get_storage_map_item(slot.clone(), nonce.to_storage_map_key())
                 .await
                 .with_context(|| format!("reading the used nonces of the faucet {faucet}"))
                 .classify(Actionable("client_store"))?;
             if value == EMPTY_WORD {
-                unminted.push(note);
+                unminted.push(nonce);
             }
         }
 

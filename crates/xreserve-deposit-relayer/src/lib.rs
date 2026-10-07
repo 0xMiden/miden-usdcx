@@ -14,10 +14,14 @@
 //! Each scan is a `relayer.scan` root span, and each page it walks is a `relayer.page` span under
 //! it. A page fails when anything stops it being recorded as done; the scan it stopped fails with
 //! it. An attestation that will not build fails only the `relayer.build_notes` span that skipped
-//! it, and the page counts it in `attestations.skipped.count`.
+//! it, and the page counts it in `attestations.skipped.count`. Every page also reports the
+//! deposits earlier pages put on chain that the faucet has not minted yet (see [`unminted`]).
+
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use miden_protocol::note::Note;
+use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
@@ -29,12 +33,14 @@ pub mod config;
 pub mod miden;
 pub mod mint;
 pub mod store;
+mod unminted;
 
 use circle::{Attestation, CircleClient, CircleCursor, MessageHash};
 use config::Config;
 use miden::{MidenClient, NodeClient};
 use mint::{BuiltNotes, Minter};
 use store::{ScanProgress, State, Store};
+use unminted::Unminted;
 
 /// The relay loop's parts: the Circle feed, the store holding how far the scan got, the note
 /// builder, and the Miden client that lands the notes on chain.
@@ -44,6 +50,7 @@ pub struct Relayer<M> {
     store: Store,
     miden_client: M,
     minter: Minter,
+    unminted: Unminted,
 }
 
 /// Renders the identifiers of a page's items as one tracing field, so a page's trace names every
@@ -122,6 +129,7 @@ impl<M: MidenClient> Relayer<M> {
             store,
             minter: Minter::from_config(&config),
             miden_client,
+            unminted: Unminted::default(),
             config,
         })
     }
@@ -192,6 +200,8 @@ impl<M: MidenClient> Relayer<M> {
             attestations.skipped.count = Empty,
             attestations.skipped.message_hashes = Empty,
             notes.already_minted.count = Empty,
+            deposits.unminted.count = Empty,
+            deposits.unminted.oldest_age_secs = Empty,
             notes.count = Empty,
             notes.ids = Empty,
             transaction.id = Empty,
@@ -252,7 +262,8 @@ impl<M: MidenClient> Relayer<M> {
     ///
     /// Malformed attestations are skipped inside [`Minter::build_notes`], and deposits the faucet
     /// has already minted are dropped by [`MidenClient::retain_unminted`], so no proof is spent on a note
-    /// the faucet would refuse. Every remaining note goes into one transaction, and the page is
+    /// the faucet would refuse. The same check, under the same sync, drops the deposits of earlier
+    /// pages that the faucet has minted since. Every remaining note goes into one transaction, and the page is
     /// done only once [`MidenClient::submit_notes`] confirms that transaction is included on
     /// chain — so returning is what entitles the caller to record the page as done. One page to
     /// one transaction is what makes the retry of a failed page clean: there is no part of it that
@@ -306,9 +317,30 @@ impl<M: MidenClient> Relayer<M> {
         let built = notes.len();
 
         // A deposit the faucet has already minted would only be refused, so it is dropped here
-        // rather than proven. This is what makes a replay of the feed cheap.
-        let notes = self.miden_client.retain_unminted(notes).await?;
+        // rather than proven. This is what makes a replay of the feed cheap. The deposits earlier
+        // pages put on chain are checked in the same call, so one sync answers both.
+        let unminted = self
+            .miden_client
+            .retain_unminted(
+                notes
+                    .iter()
+                    .map(XUsdcMintNote::nonce)
+                    .chain(self.unminted.nonces())
+                    .collect(),
+            )
+            .await?;
+        self.unminted.retain(&unminted);
+        span.record("deposits.unminted.count", self.unminted.count());
+        span.record(
+            "deposits.unminted.oldest_age_secs",
+            self.unminted.oldest_age(Instant::now()).as_secs(),
+        );
+        let notes: Vec<XUsdcMintNote> = notes
+            .into_iter()
+            .filter(|note| unminted.contains(&note.nonce()))
+            .collect();
         span.record("notes.already_minted.count", built - notes.len());
+        let nonces: Vec<_> = notes.iter().map(XUsdcMintNote::nonce).collect();
 
         // The minter yields its own note type; the chain takes protocol notes, so the page is
         // converted here, once, on its way to being submitted.
@@ -330,6 +362,9 @@ impl<M: MidenClient> Relayer<M> {
                 .await?;
             span.record("transaction.id", transaction.to_string().as_str());
             info!("page minted and on chain");
+            // On chain is not minted: the faucet consumes the notes later, and the next pages
+            // check that it did.
+            self.unminted.submitted(nonces, Instant::now());
         }
 
         Ok(PageOutcome {

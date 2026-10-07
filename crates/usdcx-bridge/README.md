@@ -142,8 +142,10 @@ fails verification, fails only that burn's `attester.withdraw` span. Every faile
 carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
 
 The relayer's spans are `relayer.startup`, a `relayer.scan` root per scan and a `relayer.page` span
-per page under it. [The relayer's README](../xreserve-deposit-relayer/README.md#tracing) describes
-them and its failure kinds.
+per page under it. Each page carries `deposits.unminted.count` and
+`deposits.unminted.oldest_age_secs`, for deposits on chain that the faucet has not minted yet.
+[The relayer's README](../xreserve-deposit-relayer/README.md#tracing) describes them and its failure
+kinds.
 
 Every cycle span also carries the attester's progress, zeros included:
 

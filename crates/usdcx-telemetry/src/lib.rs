@@ -10,6 +10,14 @@
 //! `OTEL_EXPORTER_OTLP_HEADERS` for the credentials, `OTEL_SERVICE_NAME` and
 //! `OTEL_RESOURCE_ATTRIBUTES`. `RUST_LOG` filters stdout only, so lowering the log level never
 //! removes the spans the alerts are built on.
+//!
+//! The guard only sends what is buffered when `main` returns, so each service stops on SIGTERM or
+//! SIGINT through [`cancel_on_signal`] instead of being killed by it, and bounds that stop with
+//! [`stop_within`].
+
+mod shutdown;
+
+pub use shutdown::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
 
 use std::sync::OnceLock;
 

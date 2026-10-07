@@ -3,14 +3,16 @@ name = "usdcx-telemetry"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Tracing setup shared by the USDCx deposit relayer, withdrawal attester and bridge"
+description = "Tracing setup and signal shutdown shared by the USDCx deposit relayer, withdrawal attester and bridge"
 
 [dependencies]
 anyhow = { workspace = true }
+humantime = "2"
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }

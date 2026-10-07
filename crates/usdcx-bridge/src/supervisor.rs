@@ -4,15 +4,13 @@ use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::info;
+use usdcx_telemetry::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
 use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
 use xusdc_attester::service::AttesterService;
 
 use crate::config::Config;
-
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
@@ -54,21 +52,6 @@ pub(crate) async fn run(config: Config) -> Result<()> {
     .await
 }
 
-/// Requests shutdown on the first SIGTERM or SIGINT.
-fn cancel_on_signal(shutdown: CancellationToken) -> Result<()> {
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
-        }
-        info!(reason = "process signal", "shutdown requested");
-        shutdown.cancel();
-    });
-    Ok(())
-}
-
 /// Runs both services until both have stopped. Either one stopping requests shutdown of the other,
 /// and one that stops before shutdown was requested is an error. If they have not both stopped
 /// within `timeout` of shutdown being requested, the process exits with a failure status.
@@ -90,24 +73,8 @@ async fn supervise(
             stop_peer_on_exit("relayer", relayer, &shutdown),
         )
     });
-    let deadline = async {
-        shutdown.cancelled().await;
-        info!("stopping bridge services");
-        tokio::time::sleep(timeout).await;
-    };
-    let (attester, relayer) = tokio::select! {
-        results = services => results,
-        // The relayer can wait on a chain confirmation indefinitely if blocks stop.
-        () = deadline => {
-            error!(
-                timeout = %humantime::format_duration(timeout),
-                "bridge shutdown did not finish in time; terminating the process"
-            );
-            // Exiting skips the telemetry guard in `main`, so send the buffered spans first.
-            usdcx_telemetry::flush();
-            std::process::exit(1);
-        }
-    };
+    // The relayer can wait on a chain confirmation indefinitely if blocks stop.
+    let (attester, relayer) = stop_within(services, &shutdown, timeout).await;
     let result = attester.and(relayer);
     info!(success = result.is_ok(), "bridge shutdown complete");
     result

@@ -6718,10 +6718,12 @@ name = "usdcx-telemetry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "humantime",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "tokio",
+ "tokio-util",
  "tonic",
  "tracing",
  "tracing-opentelemetry",

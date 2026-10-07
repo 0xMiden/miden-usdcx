@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use clap::Parser;
 use miden_protocol::account::AccountId;
 use miden_protocol::transaction::TransactionId;
-use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
+use miden_usdcx::xreserve::encoding::DepositNonce;
 use tempfile::TempDir;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
@@ -21,11 +21,11 @@ struct TestMiden {
 impl MidenClient for TestMiden {
     async fn retain_unminted(
         &mut self,
-        notes: Vec<XUsdcMintNote>,
-    ) -> Result<Vec<XUsdcMintNote>, Failure> {
-        assert!(notes.is_empty());
+        nonces: Vec<DepositNonce>,
+    ) -> Result<Vec<DepositNonce>, Failure> {
+        assert!(nonces.is_empty());
         self.reached_page.cancel();
-        Ok(notes)
+        Ok(nonces)
     }
 
     async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId, Failure> {

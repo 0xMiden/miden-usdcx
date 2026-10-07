@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
 use crate::config::Config;
@@ -48,10 +48,9 @@ pub enum CircleError {
     },
 }
 
-impl CircleError {
-    /// How loudly the failure is alerted on, and its name on the span. A request that cannot be
-    /// built needs an operator; every other failure is retried next cycle.
-    pub(crate) fn failure(&self) -> (FailureClass, &'static str) {
+/// A request that cannot be built needs an operator; every other failure is retried next cycle.
+impl Classified for CircleError {
+    fn failure(&self) -> (FailureClass, &'static str) {
         match self {
             Self::InvalidUrl(_) => (FailureClass::Actionable, "invalid_url"),
             Self::RateLimited { .. } => (FailureClass::Transient, "rate_limited"),

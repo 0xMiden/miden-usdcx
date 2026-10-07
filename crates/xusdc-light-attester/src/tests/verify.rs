@@ -4,7 +4,7 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_sol_types::SolCall;
 use miden_protocol::{Felt, Word};
 use serde_json::json;
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::{Classified as _, FailureClass};
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{UnverifiedPrepareBatch, UnverifiedPrepareResponse};

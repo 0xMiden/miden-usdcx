@@ -11,7 +11,7 @@ use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info_span, warn, Instrument as _, Span};
+use tracing::{error, info_span, instrument, warn, Instrument as _, Span};
 use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -384,33 +384,44 @@ impl Attester {
             if *rate_limited {
                 break;
             }
-            let note_id = burn.note_id();
-            let span = info_span!("attester.withdraw", note.id = %note_id);
-            let withdrawn = self
-                .withdraw(&burn, rate_limited)
-                .instrument(span.clone())
-                .await;
-            if let Err(error) = withdrawn {
-                if error.is_fatal() {
-                    return Err(error);
+            match self.attempt_withdrawal(&burn, rate_limited).await {
+                Ok(()) => {}
+                Err(error) if error.is_fatal() => return Err(error),
+                Err(error) => {
+                    first_error.get_or_insert(error);
                 }
-                // The burn's failure belongs on its own span, never on the submission phase's.
-                let _entered = span.enter();
-                let (hold, response, message) = burn_hold(&error);
-                if let Some(reason) = hold {
-                    self.store.hold_burn(note_id, reason, response)?;
-                }
-                warn!(
-                    note_id = %note_id,
-                    error = &error as &dyn std::error::Error,
-                    hold_reason = ?hold,
-                    circle_message = message.as_deref(),
-                    "withdrawal failed before submission"
-                );
-                first_error.get_or_insert(error);
             }
         }
         Ok(first_error.map_or(Ok(()), Err))
+    }
+
+    /// Withdraws one burn in its own `attester.withdraw` span, so its failure lands there and never
+    /// on the submission phase's span. A failure that is not fatal holds the burn when it calls for
+    /// a hold, and is logged; a fatal one is returned for the cycle to stop on.
+    #[instrument(name = "attester.withdraw", skip_all, fields(note.id = %burn.note_id()))]
+    async fn attempt_withdrawal(
+        &mut self,
+        burn: &DiscoveredBurn,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
+        let Err(error) = self.withdraw(burn, rate_limited).await else {
+            return Ok(());
+        };
+        if error.is_fatal() {
+            return Err(error);
+        }
+        let (hold, response, message) = burn_hold(&error);
+        if let Some(reason) = hold {
+            self.store.hold_burn(burn.note_id(), reason, response)?;
+        }
+        warn!(
+            note_id = %burn.note_id(),
+            error = &error as &dyn std::error::Error,
+            hold_reason = ?hold,
+            circle_message = message.as_deref(),
+            "withdrawal failed before submission"
+        );
+        Err(error)
     }
 
     /// Prepares one burn's withdrawal with Circle, verifies the reply, signs it and submits it.

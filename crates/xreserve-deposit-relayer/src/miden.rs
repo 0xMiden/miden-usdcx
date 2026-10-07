@@ -28,7 +28,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient};
@@ -171,6 +171,11 @@ impl NodeClient {
     /// access and account availability, not possession of the signing key or future transaction
     /// success.
     ///
+    /// The configured attester public key must be one the faucet has enabled. This is a check of
+    /// the configuration, not of any signature: it does not show that the key signed the
+    /// attestations Circle serves, and a key the faucet disables later is noticed only at the next
+    /// start.
+    ///
     /// Watching the faucet on a fresh store downloads its whole used-nonce map, which holds one
     /// entry per deposit ever minted, so the first start against a long-lived faucet is slow. A
     /// store carried over from an earlier run already has it and only syncs what changed since.
@@ -180,6 +185,7 @@ impl NodeClient {
     /// - The node URL is not an endpoint, or the node cannot be reached.
     /// - The data directory, its store, or its keystore cannot be opened.
     /// - The node does not know the relayer account or the faucet.
+    /// - The faucet has not enabled the configured attester public key.
     pub fn new(config: &Config) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -236,6 +242,24 @@ impl NodeClient {
                     .await
                     .with_context(|| format!("watching the faucet {faucet}"))?;
             }
+
+            // The faucet refuses every mint note presenting a key it has not enabled, and the
+            // relayer would never see those refusals: its own transactions keep landing. So a key
+            // the faucet does not list is caught here, before any deposit is relayed. The faucet
+            // stores an empty word for a key it has disabled, which reads the same as one it never
+            // listed.
+            let attester = client
+                .account_reader(faucet)
+                .get_storage_map_item(
+                    XReserveFaucetExtension::xreserve_attesters_slot().clone(),
+                    config.attester_public_key.to_storage_map_key(),
+                )
+                .await
+                .with_context(|| format!("reading the attesters of the faucet {faucet}"))?;
+            ensure!(
+                attester != EMPTY_WORD,
+                "the attester public key is not enabled on the faucet {faucet}"
+            );
 
             Ok::<(), anyhow::Error>(())
         })?;

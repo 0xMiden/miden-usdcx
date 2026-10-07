@@ -18,11 +18,12 @@ just build-bridge-image linux/arm64 usdcx-bridge:local
 # Use linux/amd64 for an x86-64 image.
 ```
 
-The image runs as UID/GID `10001`, includes CA certificates, and stores state below `/data`.
-It listens on **no inbound ports** and currently has **no HTTP health endpoint**. Logs go to
-stdout; `RUST_LOG` controls their level. Startup checks cover configuration, local state and the
-attester's chain/KMS checks. They do not prove that every external request or transaction will
-succeed. The relayer key must be installed before start.
+The image runs as UID/GID `10001`, includes CA certificates, and stores state below `/data`. It
+listens on **no inbound ports** and currently has **no HTTP health endpoint**. Logs go to stdout;
+`RUST_LOG` controls their level. Startup checks cover configuration, local state, the attester's
+chain/KMS checks, and that the faucet has enabled the relayer's Circle deposit public key. They do
+not prove that every external request or transaction will succeed. The relayer key must be installed
+before start.
 
 ## AWS KMS access
 

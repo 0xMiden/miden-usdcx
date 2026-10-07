@@ -4,7 +4,7 @@ use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
 use tracing::{error, info, info_span, warn, Instrument as _, Span};
-use usdcx_telemetry::{record_failure, FailureClass};
+use usdcx_telemetry::{FailureClass, FailureSpanExt as _};
 
 use crate::attester::Attester;
 use crate::circle::{
@@ -266,7 +266,7 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         self.store.update_submission_outcome(saved)?;
         if let Some((class, kind)) = failure {
-            record_failure(&Span::current(), class, kind);
+            Span::current().record_failure(class, kind);
             // For a failed withdrawal the saved text is Circle's own failure reason: outside text
             // that stays in the store and out of the log. Every other saved text is one of ours.
             let reason = saved

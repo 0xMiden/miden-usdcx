@@ -21,6 +21,5 @@ async fn main() -> Result<()> {
         config::Command::Attester(command) => return run_command(command),
     };
     let config = config::Config::try_from(run)?;
-    let signals = supervisor::Signals::install()?;
-    supervisor::run(config, signals).await
+    supervisor::run(config).await
 }

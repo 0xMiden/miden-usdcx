@@ -1,71 +1,155 @@
-use std::cell::Cell;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use anyhow::bail;
 
 use super::*;
 
-#[tokio::test]
-async fn shutdown_waits_for_both_services() {
-    let shutdown = CancellationToken::new();
-    let (stop, wait) = mpsc::channel();
+/// A relayer stand-in that runs until its stop channel closes.
+fn relayer_until_stopped() -> (mpsc::Sender<()>, impl Future<Output = Result<()>>) {
+    let (stop, wait) = mpsc::channel::<()>();
     let relayer = tokio::task::spawn_blocking(move || {
         assert!(wait.recv().is_err());
         Ok(())
     });
-    let finished = Cell::new(false);
-    let attester = async {
+    (stop, async { relayer.await? })
+}
+
+/// Long enough that no test below reaches it unless it means to.
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// An attester stand-in that runs until shutdown is requested.
+fn attester_until_shutdown(shutdown: &CancellationToken) -> impl Future<Output = Result<()>> {
+    let shutdown = shutdown.clone();
+    async move {
         shutdown.cancelled().await;
-        tokio::task::yield_now().await;
-        finished.set(true);
         Ok(())
-    };
-    wait_for_shutdown(
-        attester,
-        async { relayer.await? },
-        async { Ok(()) },
-        shutdown.clone(),
-        stop,
-    )
-    .await
-    .unwrap();
-    assert!(finished.get());
+    }
 }
 
 #[tokio::test]
-async fn service_failure_stops_the_other_service() {
-    for attester_fails in [false, true] {
-        let shutdown = CancellationToken::new();
-        let (stop, wait) = mpsc::channel();
-        let relayer = tokio::task::spawn_blocking(move || {
-            if !attester_fails {
-                bail!("relayer test failure");
-            }
-            assert!(wait.recv().is_err());
-            Ok(())
+async fn shutdown_stops_both_services() {
+    let shutdown = CancellationToken::new();
+    let (stop, relayer) = relayer_until_stopped();
+    let attester = attester_until_shutdown(&shutdown);
+    shutdown.cancel();
+    supervise(attester, relayer, stop, shutdown, TEST_TIMEOUT)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_relayer_stops_the_attester() {
+    let shutdown = CancellationToken::new();
+    let (stop, _wait) = mpsc::channel();
+    let attester = attester_until_shutdown(&shutdown);
+    let relayer = async { bail!("relayer test failure") };
+    let error = supervise(attester, relayer, stop, shutdown, TEST_TIMEOUT)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("relayer test failure"));
+}
+
+#[tokio::test]
+async fn a_service_that_stops_early_is_an_error_and_stops_its_peer() {
+    let shutdown = CancellationToken::new();
+    let (stop, relayer) = relayer_until_stopped();
+    let error = supervise(async { Ok(()) }, relayer, stop, shutdown, TEST_TIMEOUT)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("attester stopped unexpectedly"));
+}
+
+#[tokio::test]
+async fn an_attester_panic_is_an_error_after_the_relayer_finishes() {
+    let relayer_finished = Arc::new(AtomicBool::new(false));
+    let finished = relayer_finished.clone();
+    let (stop, wait) = mpsc::channel::<()>();
+    let relayer = tokio::task::spawn_blocking(move || {
+        assert!(wait.recv().is_err());
+        // Stands in for the page the relayer finishes after shutdown is requested.
+        std::thread::sleep(Duration::from_millis(200));
+        finished.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+    let attester = async {
+        tokio::task::yield_now().await;
+        panic!("attester test panic")
+    };
+    let error = supervise(
+        attester,
+        async { relayer.await? },
+        stop,
+        CancellationToken::new(),
+        TEST_TIMEOUT,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("attester test panic"));
+    assert!(relayer_finished.load(Ordering::SeqCst));
+}
+
+#[test]
+fn an_attester_panic_with_a_stuck_relayer_exits_the_process_after_the_timeout() {
+    const CHILD: &str = "USDCX_BRIDGE_PANIC_TEST_CHILD";
+    const TIMEOUT: Duration = Duration::from_millis(200);
+    if std::env::var_os(CHILD).is_some() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = runtime.block_on(async {
+            let (stop, wait) = mpsc::channel::<()>();
+            // Stands in for a relayer waiting on a transaction while the node produces no blocks.
+            let relayer = tokio::task::spawn_blocking(move || {
+                assert!(wait.recv().is_err());
+                loop {
+                    std::thread::park();
+                }
+            });
+            let attester = async {
+                tokio::task::yield_now().await;
+                panic!("attester test panic")
+            };
+            supervise(
+                attester,
+                async { relayer.await? },
+                stop,
+                CancellationToken::new(),
+                TIMEOUT,
+            )
+            .await
         });
-        let attester = catch_attester_panic(async {
-            if attester_fails {
-                panic!("attester test panic");
-            }
-            shutdown.cancelled().await;
-            Ok(())
-        });
-        let result = wait_for_shutdown(
-            attester,
-            async { relayer.await? },
-            std::future::pending(),
-            shutdown.clone(),
-            stop,
-        )
-        .await;
-        let error = format!("{:#}", result.unwrap_err());
-        assert!(error.contains(if attester_fails {
-            "attester panicked"
-        } else {
-            "relayer test failure"
-        }));
-        assert!(shutdown.is_cancelled());
+        // Only reached if the supervisor returned instead of terminating the process.
+        std::process::exit(0);
     }
+    let started = Instant::now();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "supervisor::tests::an_attester_panic_with_a_stuck_relayer_exits_the_process_after_the_timeout",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("process did not exit after an attester panic");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(1));
+    assert!(started.elapsed() >= TIMEOUT);
 }
 
 #[test]
@@ -77,27 +161,14 @@ fn process_signal_stops_both_services() {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let mut signals = Signals::install().unwrap();
             let shutdown = CancellationToken::new();
-            let (stop, wait) = mpsc::channel();
-            let relayer = tokio::task::spawn_blocking(move || {
-                assert!(wait.recv().is_err());
-                Ok(())
-            });
-            let attester = async {
-                shutdown.cancelled().await;
-                Ok(())
-            };
+            cancel_on_signal(shutdown.clone()).unwrap();
+            let (stop, relayer) = relayer_until_stopped();
+            let attester = attester_until_shutdown(&shutdown);
             std::fs::write(&path, "ready").unwrap();
-            wait_for_shutdown(
-                attester,
-                async { relayer.await? },
-                signals.recv(),
-                shutdown.clone(),
-                stop,
-            )
-            .await
-            .unwrap();
+            supervise(attester, relayer, stop, shutdown, TEST_TIMEOUT)
+                .await
+                .unwrap();
             std::fs::write(path, "stopped").unwrap();
         });
         return;

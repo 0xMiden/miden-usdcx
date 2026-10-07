@@ -6642,7 +6642,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "futures-util",
  "humantime",
  "miden-protocol",
  "miden-usdcx",

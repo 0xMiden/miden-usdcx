@@ -199,13 +199,11 @@ impl Attester {
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
         let ended = finish_cycle(self.cycle(rate_limited).await);
-        let span = Span::current();
-        if let Err(error) = self.record_progress(&span) {
-            span.record_actionable_failure("store");
-            error!(
-                error = %format_args!("{error:#}"),
-                "could not read the cycle's progress"
-            );
+        if let Err(failure) = self
+            .record_progress(&Span::current())
+            .classify(FailureClass::Actionable, "store")
+        {
+            failure.report("could not read the cycle's progress");
         }
         ended
     }

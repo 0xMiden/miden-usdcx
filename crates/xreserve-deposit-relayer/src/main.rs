@@ -8,7 +8,6 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
 use xreserve_deposit_relayer::config::Config;
-use xreserve_deposit_relayer::miden::NodeClient;
 use xreserve_deposit_relayer::Relayer;
 
 #[tokio::main]
@@ -17,11 +16,7 @@ async fn main() -> Result<()> {
 
     let config = Config::parse();
 
-    let miden = NodeClient::new(&config)
-        .await
-        .context("connecting to miden")?;
-
-    let relayer = Relayer::new(config, miden)?;
+    let relayer = Relayer::start(config).await?;
     let shutdown = CancellationToken::new();
     usdcx_telemetry::cancel_on_signal(shutdown.clone())?;
 

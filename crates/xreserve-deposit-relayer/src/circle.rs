@@ -15,14 +15,17 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
-use reqwest::Url;
+use anyhow::{anyhow, ensure, Context, Result};
+use reqwest::{StatusCode, Url};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
+use usdcx_telemetry::FailureClass;
 
 use miden_usdcx::xreserve::encoding::{CircleDomain, Signature};
+
+use crate::failure::{Classify, Failure};
 
 /// Circle's opaque `pageAfter` pagination token, held exactly as the feed returned it.
 ///
@@ -221,42 +224,55 @@ impl CircleClient {
 
     /// Fetches the page after `cursor`, or the first page when it is `None`.
     ///
+    /// Every failure is transient: the page is fetched again on the next scan.
+    ///
     /// # Errors
     ///
-    /// - The request fails or times out.
-    /// - Circle answers with a non-success status.
-    /// - The response exceeds the size ceiling.
-    /// - The response does not decode as a page (see [`Page::decode`]).
+    /// - The request fails or times out (`circle_unavailable`).
+    /// - Circle answers `429` (`rate_limited`) or another non-success status
+    ///   (`unexpected_status`).
+    /// - The response exceeds the size ceiling or does not decode as a page (see [`Page::decode`])
+    ///   (`invalid_response`).
     #[instrument(
-        name = "circle.fetch_page",
+        name = "relayer.fetch_page",
         skip_all,
-        fields(remote_domain = %remote_domain, status = Empty, attestations = Empty, next = Empty),
+        fields(remote_domain = %remote_domain, status = Empty, attestations.count = Empty, next = Empty),
     )]
     pub async fn fetch_page(
         &self,
         remote_domain: CircleDomain,
         cursor: Option<&CircleCursor>,
-    ) -> Result<Page> {
+    ) -> Result<Page, Failure> {
         let span = Span::current();
         let mut response = self
             .client
             .get(self.page_url(remote_domain, cursor))
             .send()
             .await
-            .context("the circle request failed")?;
-        span.record("status", response.status().as_u16());
-        ensure!(
-            response.status().is_success(),
-            "circle answered {} for the attestation page",
-            response.status()
-        );
+            .context("the circle request failed")
+            .classify(FailureClass::Transient, "circle_unavailable")?;
+        let status = response.status();
+        span.record("status", status.as_u16());
+        if !status.is_success() {
+            let kind = if status == StatusCode::TOO_MANY_REQUESTS {
+                "rate_limited"
+            } else {
+                "unexpected_status"
+            };
+            return Err(Failure::new(
+                FailureClass::Transient,
+                kind,
+                anyhow!("circle answered {status} for the attestation page"),
+            ));
+        }
 
         let link = response
             .headers()
             .get(reqwest::header::LINK)
             .map(|value| value.to_str())
             .transpose()
-            .context("decoding the circle Link header")?
+            .context("decoding the circle Link header")
+            .classify(FailureClass::Transient, "invalid_response")?
             .map(str::to_owned);
 
         // Read chunk by chunk rather than `bytes()`: a runaway body must not be buffered in full
@@ -265,18 +281,25 @@ impl CircleClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .context("reading the circle response")?
+            .context("reading the circle response")
+            .classify(FailureClass::Transient, "circle_unavailable")?
         {
             body.extend_from_slice(&chunk);
-            ensure!(
-                body.len() <= Page::MAX_RESPONSE_BYTES,
-                "the circle response exceeded the {}-byte ceiling",
-                Page::MAX_RESPONSE_BYTES
-            );
+            if body.len() > Page::MAX_RESPONSE_BYTES {
+                return Err(Failure::new(
+                    FailureClass::Transient,
+                    "invalid_response",
+                    anyhow!(
+                        "the circle response exceeded the {}-byte ceiling",
+                        Page::MAX_RESPONSE_BYTES
+                    ),
+                ));
+            }
         }
 
-        let page = Page::decode(&body, link.as_deref())?;
-        span.record("attestations", page.attestations.len());
+        let page = Page::decode(&body, link.as_deref())
+            .classify(FailureClass::Transient, "invalid_response")?;
+        span.record("attestations.count", page.attestations.len());
         if let Some(next) = page.next_cursor() {
             span.record("next", next.as_str());
         }

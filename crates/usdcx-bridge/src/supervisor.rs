@@ -7,7 +7,7 @@ use anyhow::{ensure, Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use usdcx_telemetry::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
-use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
+use xreserve_deposit_relayer::Relayer;
 use xusdc_attester::service::AttesterService;
 
 use crate::config::Config;
@@ -27,10 +27,7 @@ pub(crate) async fn run(config: Config) -> Result<()> {
     let runtime = tokio::runtime::Handle::current();
     let relayer = tokio::task::spawn_blocking(move || {
         runtime.block_on(async move {
-            let node = NodeClient::new(&config.relayer)
-                .await
-                .context("connecting relayer to Miden")?;
-            let relayer = Relayer::new(config.relayer, node)?;
+            let relayer = Relayer::start(config.relayer).await?;
             info!(service = "relayer", "startup checks passed");
             let _ = ready_sender.send(());
             relayer.run_until(relayer_shutdown).await

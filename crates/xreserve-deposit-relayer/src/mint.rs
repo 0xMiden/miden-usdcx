@@ -2,7 +2,8 @@
 //!
 //! The note encoding is delegated to `xusdc-encoding`. This module supplies the configured
 //! attester key required by the note and skips individual attestations that cannot be decoded or
-//! built, allowing the remaining attestations in the page to proceed.
+//! built, allowing the remaining attestations in the page to proceed. A skip is `actionable`: the
+//! scan moves past the attestation, so its deposit is never minted unless an operator steps in.
 
 use std::str::FromStr;
 
@@ -12,12 +13,13 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
-use tracing::{error, instrument};
+use tracing::{error, instrument, Span};
+use usdcx_telemetry::{record_failure, FailureClass};
 
 use miden_usdcx::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use miden_usdcx::xreserve::encoding::{CircleDomain, DepositIntent};
 
-use crate::circle::Attestation;
+use crate::circle::{Attestation, MessageHash};
 use crate::config::Config;
 
 /// The public key of the Circle attester whose signatures the mint notes carry. Parsed from the
@@ -80,6 +82,14 @@ fn entropy_seed() -> Word {
     ])
 }
 
+/// What one page's attestations became.
+pub struct BuiltNotes {
+    /// One note per attestation that built, in the page's order.
+    pub notes: Vec<XUsdcMintNote>,
+    /// The attestations that would not build, which the scan moves past.
+    pub skipped: Vec<MessageHash>,
+}
+
 /// Builds mint notes for one faucet from the attestations of one remote domain.
 ///
 /// Every identity is validated when the command line is parsed, so an invalid configuration
@@ -116,24 +126,34 @@ impl Minter {
     /// The attestations are borrowed rather than owned, so a caller that is minting a subset of a
     /// page does not have to copy it first.
     ///
-    /// An attestation that cannot be decoded or built is logged and skipped. Each successful note
-    /// receives a fresh serial number, so rebuilding the same deposit produces a distinct note.
-    #[instrument(name = "build_notes", skip_all, fields(attestations = attestations.len()))]
-    pub fn build_notes(&mut self, attestations: &[&Attestation]) -> Vec<XUsdcMintNote> {
-        attestations
-            .iter()
-            .filter_map(|attestation| {
-                self.build_note(attestation)
-                    .map_err(|error| {
-                        error!(
-                            message_hash = %attestation.message_hash,
-                            error = format!("{error:#}"),
-                            "skipping an attestation that will not build"
-                        );
-                    })
-                    .ok()
-            })
-            .collect()
+    /// An attestation that cannot be decoded or built is logged at `error` and skipped, and marks
+    /// this span failed. Each successful note receives a fresh serial number, so rebuilding the same
+    /// deposit produces a distinct note.
+    #[instrument(name = "relayer.build_notes", skip_all, fields(attestations.count = attestations.len()))]
+    pub fn build_notes(&mut self, attestations: &[&Attestation]) -> BuiltNotes {
+        let mut built = BuiltNotes {
+            notes: Vec::with_capacity(attestations.len()),
+            skipped: Vec::new(),
+        };
+        for attestation in attestations {
+            match self.build_note(attestation) {
+                Ok(note) => built.notes.push(note),
+                Err(error) => {
+                    record_failure(
+                        &Span::current(),
+                        FailureClass::Actionable,
+                        "attestation_skipped",
+                    );
+                    error!(
+                        message_hash = %attestation.message_hash,
+                        error = format!("{error:#}"),
+                        "skipping an attestation that will not build"
+                    );
+                    built.skipped.push(attestation.message_hash);
+                }
+            }
+        }
+        built
     }
 
     /// Builds one note from one attestation.
@@ -177,7 +197,7 @@ mod tests {
         CircleDomain, DepositIntent, DepositIntentHeader, DepositNonce, Signature,
     };
 
-    use super::{AttesterPublicKey, Minter};
+    use super::{AttesterPublicKey, BuiltNotes, Minter};
     use crate::circle::{Attestation, MessageHash, PageSize};
     use crate::config::Config;
     use crate::miden::ExpirationDelta;
@@ -283,6 +303,15 @@ mod tests {
             }
         }
 
+        /// The same attestation under another message hash, so a test can tell which one was
+        /// skipped.
+        fn named(self, seed: u8) -> Self {
+            Self {
+                message_hash: MessageHash::new([seed; 32]),
+                ..self
+            }
+        }
+
         /// A buildable attestation for a deposit with this nonce seed, addressed to the dummy
         /// xUSDC faucet.
         fn buildable(seed: u8) -> Self {
@@ -302,28 +331,34 @@ mod tests {
     /// Every valid attestation on a page becomes a note.
     #[test]
     fn valid_attestations_build_notes() {
-        let notes =
+        let BuiltNotes { notes, skipped } =
             Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
         assert_eq!(notes.len(), 2);
+        assert!(skipped.is_empty());
     }
 
-    /// A malformed attestation is skipped while the valid attestations in the page still build.
+    /// A malformed attestation is skipped while the valid attestations in the page still build,
+    /// and the skip names it.
     #[test]
     fn a_malformed_attestation_is_skipped_not_fatal() {
-        let notes = Minter::test().build_notes(&[
+        let BuiltNotes { notes, skipped } = Minter::test().build_notes(&[
             &Attestation::buildable(1),
-            &Attestation::undecodable(),
+            &Attestation::undecodable().named(2),
             &Attestation::buildable(3),
         ]);
         assert_eq!(notes.len(), 2, "the two good deposits still build");
+        assert_eq!(skipped, [MessageHash::new([2; 32])]);
     }
 
     /// A deposit addressed to another faucet is skipped while the rest of the page still builds.
     #[test]
     fn a_deposit_for_another_faucet_is_skipped() {
-        let elsewhere = Attestation::for_intent(&deposit_intent([9; 32], other_dummy_faucet_id()));
-        let notes = Minter::test().build_notes(&[&elsewhere, &Attestation::buildable(2)]);
+        let elsewhere =
+            Attestation::for_intent(&deposit_intent([9; 32], other_dummy_faucet_id())).named(9);
+        let BuiltNotes { notes, skipped } =
+            Minter::test().build_notes(&[&elsewhere, &Attestation::buildable(2)]);
         assert_eq!(notes.len(), 1);
+        assert_eq!(skipped, [MessageHash::new([9; 32])]);
     }
 
     /// The protocol note identifier of the one note a page was expected to build. Converting is
@@ -336,8 +371,9 @@ mod tests {
     /// keyed by.
     #[test]
     fn each_note_carries_its_deposit_nonce() {
-        let notes =
-            Minter::test().build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)]);
+        let notes = Minter::test()
+            .build_notes(&[&Attestation::buildable(1), &Attestation::buildable(2)])
+            .notes;
         let nonces: Vec<_> = notes.iter().map(XUsdcMintNote::nonce).collect();
         assert_eq!(
             nonces,
@@ -350,8 +386,8 @@ mod tests {
     #[test]
     fn a_rebuilt_deposit_is_a_distinct_note() {
         let mut minter = Minter::test();
-        let first = minter.build_notes(&[&Attestation::buildable(1)]);
-        let second = minter.build_notes(&[&Attestation::buildable(1)]);
+        let first = minter.build_notes(&[&Attestation::buildable(1)]).notes;
+        let second = minter.build_notes(&[&Attestation::buildable(1)]).notes;
         assert_ne!(only_note_id(first), only_note_id(second));
     }
 

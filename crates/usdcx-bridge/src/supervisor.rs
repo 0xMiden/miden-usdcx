@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{ensure, Context, Result};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument};
+use tracing::{error, info};
 use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
 use xusdc_attester::service::AttesterService;
 
@@ -14,7 +14,6 @@ use crate::config::Config;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-#[instrument(name = "bridge", skip_all)]
 pub(crate) async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
     cancel_on_signal(shutdown.clone())?;
@@ -104,6 +103,8 @@ async fn supervise(
                 timeout = %humantime::format_duration(timeout),
                 "bridge shutdown did not finish in time; terminating the process"
             );
+            // Exiting skips the telemetry guard in `main`, so send the buffered spans first.
+            usdcx_telemetry::flush();
             std::process::exit(1);
         }
     };

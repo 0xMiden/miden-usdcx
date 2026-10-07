@@ -14,7 +14,7 @@ miden-usdcx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+usdcx-telemetry = { path = "../usdcx-telemetry" }
 xreserve-deposit-relayer = { path = "../xreserve-deposit-relayer" }
 xusdc-attester = { path = "../xusdc-light-attester" }
 

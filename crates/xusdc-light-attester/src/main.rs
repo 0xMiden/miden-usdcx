@@ -2,14 +2,13 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
-use tracing_subscriber::EnvFilter;
 
 use xusdc_attester::config::{Config, Invocation};
 use xusdc_attester::service::{run_command, AttesterService};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    let _telemetry = usdcx_telemetry::init("xusdc-attester")?;
     let invocation = Invocation::parse();
     if let Some(command) = invocation.command {
         return run_command(command);
@@ -34,12 +33,4 @@ async fn main() -> Result<()> {
     let result = service.run(shutdown).await;
     signal_task.abort();
     result
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stdout)
-        .init();
 }

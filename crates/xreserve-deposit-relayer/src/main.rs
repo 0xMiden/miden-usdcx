@@ -5,9 +5,6 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use xreserve_deposit_relayer::config::Config;
 use xreserve_deposit_relayer::miden::NodeClient;
@@ -15,10 +12,7 @@ use xreserve_deposit_relayer::Relayer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_forest::ForestLayer::default())
-        .init();
+    let _telemetry = usdcx_telemetry::init("xreserve-deposit-relayer")?;
 
     let config = Config::parse();
 

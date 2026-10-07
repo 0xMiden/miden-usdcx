@@ -177,15 +177,7 @@ impl<M: MidenClient> Relayer<M> {
     /// - Fetching the page fails.
     /// - Reading which deposits are already minted fails.
     /// - Submitting the mint notes fails.
-    ///
-    /// # Tracing
-    ///
-    /// **`parent = None` is load-bearing.** The forest renderer buffers a span into its parent and
-    /// only prints once a root span closes; [`Relayer::run`] never returns, so an inherited parent
-    /// would mean nothing was ever printed. Detached, each page is its own root and its tree —
-    /// every skip and submit nested under it — is emitted the moment the page ends.
     #[instrument(
-        parent = None,
         name = "page",
         skip_all,
         fields(

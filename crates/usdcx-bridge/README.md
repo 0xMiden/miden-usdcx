@@ -176,6 +176,7 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
+The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Stop, restart and upgrade
 
@@ -192,6 +193,23 @@ Before upgrading, stop and securely back up the entire data directory, including
 Use an image version compatible with the deployed faucet; updating the service does not update
 the faucet. Client 0.17.2 upgrades its store version, which older clients cannot open. Keep a
 backup from before the upgrade if rollback is needed.
+
+## Tracing
+
+Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
+the relayer's and attester's spans over OpenTelemetry, using gRPC with the system's root
+certificates for TLS:
+
+| Variable | Meaning |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
+| `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `usdcx-bridge`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
+well. `RUST_LOG` does not filter the export: it always carries the relayer's and attester's spans
+and events at `info` and above, and only warnings from their dependencies.
 
 ## Troubleshooting
 

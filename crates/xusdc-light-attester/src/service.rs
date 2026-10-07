@@ -32,7 +32,7 @@ impl AttesterService {
         async {
             let result = Self::connect(config).await;
             if let Err(error) = &result {
-                Span::current().record_actionable("startup");
+                Span::current().record_actionable_failure("startup");
                 error!(error = %format_args!("{error:#}"), "attester startup failed");
             }
             result

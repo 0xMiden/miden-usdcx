@@ -489,7 +489,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
             discover: Err(error),
             ..
         }) => {
-            span.record_transient("chain_read");
+            span.record_transient_failure("chain_read");
             error!(
                 error = &error as &dyn std::error::Error,
                 "discovery failed; new signing paused for this cycle"
@@ -502,7 +502,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
                 Some(DiscoverError::ChainDiverged)
             ) =>
         {
-            span.record_integrity("chain_diverged");
+            span.record_integrity_failure("chain_diverged");
             error!(
                 error = %format_args!("{error:#}"),
                 "chain diverged; stopping the attester"
@@ -511,7 +511,7 @@ fn finish_cycle(outcome: anyhow::Result<CycleReport>) -> anyhow::Result<()> {
         }
         // Every other error that stops a cycle is the store's.
         Err(error) => {
-            span.record_actionable("store");
+            span.record_actionable_failure("store");
             error!(
                 error = %format_args!("{error:#}"),
                 "cycle stopped; retrying after the pause between cycles"

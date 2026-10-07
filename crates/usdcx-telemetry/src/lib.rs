@@ -107,17 +107,17 @@ pub trait FailureSpanExt {
     fn record_failure(&self, class: FailureClass, kind: &'static str);
 
     /// Records an [`Integrity`](FailureClass::Integrity) failure.
-    fn record_integrity(&self, kind: &'static str) {
+    fn record_integrity_failure(&self, kind: &'static str) {
         self.record_failure(FailureClass::Integrity, kind);
     }
 
     /// Records an [`Actionable`](FailureClass::Actionable) failure.
-    fn record_actionable(&self, kind: &'static str) {
+    fn record_actionable_failure(&self, kind: &'static str) {
         self.record_failure(FailureClass::Actionable, kind);
     }
 
     /// Records a [`Transient`](FailureClass::Transient) failure.
-    fn record_transient(&self, kind: &'static str) {
+    fn record_transient_failure(&self, kind: &'static str) {
         self.record_failure(FailureClass::Transient, kind);
     }
 }
@@ -235,7 +235,7 @@ mod tests {
             tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("attester.cycle");
-            span.record_integrity("chain_diverged");
+            span.record_integrity_failure("chain_diverged");
         });
 
         let spans = exporter.get_finished_spans().unwrap();

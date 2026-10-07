@@ -3,13 +3,12 @@
 //! Node access, account tracking and local progress persistence are checked before the first Circle
 //! request. Installing the relayer account's signing key remains an operator prerequisite.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
 use usdcx_telemetry::TelemetryArgs;
 use xreserve_deposit_relayer::config::Config;
-use xreserve_deposit_relayer::miden::NodeClient;
 use xreserve_deposit_relayer::Relayer;
 
 #[derive(Parser)]
@@ -34,16 +33,14 @@ async fn main() -> Result<()> {
     let shutdown = CancellationToken::new();
     usdcx_telemetry::cancel_on_signal(shutdown.clone())?;
     usdcx_telemetry::stop_within(
-        async { start(config).await?.run_until(shutdown.clone()).await },
+        async {
+            Relayer::start(config)
+                .await?
+                .run_until(shutdown.clone())
+                .await
+        },
         &shutdown,
         usdcx_telemetry::SHUTDOWN_TIMEOUT,
     )
     .await
-}
-
-async fn start(config: Config) -> Result<Relayer<NodeClient>> {
-    let miden = NodeClient::new(&config)
-        .await
-        .context("connecting to miden")?;
-    Relayer::new(config, miden)
 }

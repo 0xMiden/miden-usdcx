@@ -12,6 +12,7 @@ use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::{info_span, instrument, warn, Instrument as _};
+use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
@@ -39,11 +40,11 @@ pub enum DiscoverError {
 /// A failed chain read is retried next cycle, a diverged chain is never trusted again, and a store
 /// failure needs an operator.
 impl Classified for DiscoverError {
-    fn failure(&self) -> (FailureClass, &'static str) {
+    fn failure(&self) -> FailureClass {
         match self {
-            Self::Chain(_) => (FailureClass::Transient, "chain_read"),
-            Self::ChainDiverged => (FailureClass::Integrity, "chain_diverged"),
-            Self::Store(_) => (FailureClass::Actionable, "store"),
+            Self::Chain(_) => Transient("chain_read"),
+            Self::ChainDiverged => Integrity("chain_diverged"),
+            Self::Store(_) => Actionable("store"),
         }
     }
 }
@@ -198,13 +199,9 @@ impl Attester {
             .await;
         let (proof_lag_block, discover) = discovery_outcome(discovered)?;
 
-        let (to_recover, to_poll) = self
-            .snapshot_submissions()
-            .classify(FailureClass::Actionable, "store")?;
+        let (to_recover, to_poll) = self.snapshot_submissions().classify(Actionable("store"))?;
         let fresh_burns = match proof_lag_block {
-            Some(block) => self
-                .ready_burns(block)
-                .classify(FailureClass::Actionable, "store")?,
+            Some(block) => self.ready_burns(block).classify(Actionable("store"))?,
             None => Vec::new(),
         };
 
@@ -212,18 +209,18 @@ impl Attester {
             .instrument(info_span!("attester.recover"))
             .await
             .context("recovery stopped")
-            .classify(FailureClass::Actionable, "store")?;
+            .classify(Actionable("store"))?;
         let submit = self
             .submit_withdrawals(fresh_burns, rate_limited)
             .instrument(info_span!("attester.submit"))
             .await
             .context("submission stopped")
-            .classify(FailureClass::Actionable, "store")?;
+            .classify(Actionable("store"))?;
         self.advance_submissions(to_poll, rate_limited)
             .instrument(info_span!("attester.poll"))
             .await
             .context("polling stopped")
-            .classify(FailureClass::Actionable, "store")?;
+            .classify(Actionable("store"))?;
         Ok(CycleReport { discover, submit })
     }
 

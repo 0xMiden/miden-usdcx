@@ -85,62 +85,55 @@ pub fn flush() {
     }
 }
 
-/// How loudly a failure is alerted on, exported as the span's `failure.class` under its name in
-/// snake case.
+/// How loudly a failure is alerted on, exported as the span's `failure.class` under the variant's
+/// name in snake case, and its kind, a short name for what happened, exported as `failure.kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum FailureClass {
     /// Something the service authenticates did not check out, such as a diverged chain.
-    Integrity,
+    Integrity(&'static str),
     /// A failure that will not fix itself and needs an operator, such as a hold or a failed
     /// startup.
-    Actionable,
+    Actionable(&'static str),
     /// A failure that is retried by design and matters only when it persists, such as a request
     /// that timed out.
-    Transient,
+    Transient(&'static str),
+}
+
+impl FailureClass {
+    /// The short name for what happened, exported as `failure.kind`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Integrity(kind) | Self::Actionable(kind) | Self::Transient(kind) => kind,
+        }
+    }
 }
 
 /// An error that knows how loudly it is alerted on, so a span can be marked failed from the error
 /// alone.
 pub trait Classified {
-    /// The error's class, and `kind`, a short name for what happened.
-    fn failure(&self) -> (FailureClass, &'static str);
+    /// The error's class and kind.
+    fn failure(&self) -> FailureClass;
 }
 
 /// Marks a span failed and records why. The caller still logs the failure at `error`, inside the
 /// span, so it reaches stdout and the exported span carries the details.
 pub trait FailureSpanExt {
-    /// Records `class` as `failure.class` and `kind`, a short name for what happened, as
-    /// `failure.kind`, and sets the span's status to an error.
-    fn record_failure(&self, class: FailureClass, kind: &'static str);
+    /// Records `class` as `failure.class` and its kind as `failure.kind`, and sets the span's
+    /// status to an error.
+    fn record_failure(&self, class: FailureClass);
 
     /// Records the failure `error` classifies itself as.
     fn record_error(&self, error: &impl Classified) {
-        let (class, kind) = error.failure();
-        self.record_failure(class, kind);
-    }
-
-    /// Records an [`Integrity`](FailureClass::Integrity) failure.
-    fn record_integrity_failure(&self, kind: &'static str) {
-        self.record_failure(FailureClass::Integrity, kind);
-    }
-
-    /// Records an [`Actionable`](FailureClass::Actionable) failure.
-    fn record_actionable_failure(&self, kind: &'static str) {
-        self.record_failure(FailureClass::Actionable, kind);
-    }
-
-    /// Records a [`Transient`](FailureClass::Transient) failure.
-    fn record_transient_failure(&self, kind: &'static str) {
-        self.record_failure(FailureClass::Transient, kind);
+        self.record_failure(error.failure());
     }
 }
 
 impl FailureSpanExt for Span {
-    fn record_failure(&self, class: FailureClass, kind: &'static str) {
+    fn record_failure(&self, class: FailureClass) {
         self.set_attribute("failure.class", <&'static str>::from(class));
-        self.set_attribute("failure.kind", kind);
-        self.set_status(Status::error(kind));
+        self.set_attribute("failure.kind", class.kind());
+        self.set_status(Status::error(class.kind()));
     }
 }
 
@@ -153,23 +146,20 @@ impl FailureSpanExt for Span {
 #[derive(Debug)]
 pub struct Failure {
     pub class: FailureClass,
-    pub kind: &'static str,
     pub error: anyhow::Error,
 }
 
 impl Failure {
-    pub fn new(class: FailureClass, kind: &'static str, error: impl Into<anyhow::Error>) -> Self {
+    pub fn new(class: FailureClass, error: impl Into<anyhow::Error>) -> Self {
         Self {
             class,
-            kind,
             error: error.into(),
         }
     }
 
     /// Wraps an error that classifies itself, under its own class and kind.
     pub fn classified(error: impl Classified + Into<anyhow::Error>) -> Self {
-        let (class, kind) = error.failure();
-        Self::new(class, kind, error)
+        Self::new(error.failure(), error)
     }
 
     /// Adds `context` to the error, keeping its class and kind.
@@ -190,8 +180,8 @@ impl Failure {
 }
 
 impl Classified for Failure {
-    fn failure(&self) -> (FailureClass, &'static str) {
-        (self.class, self.kind)
+    fn failure(&self) -> FailureClass {
+        self.class
     }
 }
 
@@ -204,12 +194,12 @@ impl fmt::Display for Failure {
 
 /// Classifies the error of a [`Result`] where it is returned.
 pub trait Classify<T> {
-    fn classify(self, class: FailureClass, kind: &'static str) -> Result<T, Failure>;
+    fn classify(self, class: FailureClass) -> Result<T, Failure>;
 }
 
 impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
-    fn classify(self, class: FailureClass, kind: &'static str) -> Result<T, Failure> {
-        self.map_err(|error| Failure::new(class, kind, error))
+    fn classify(self, class: FailureClass) -> Result<T, Failure> {
+        self.map_err(|error| Failure::new(class, error))
     }
 }
 
@@ -311,8 +301,8 @@ mod tests {
     struct Diverged;
 
     impl Classified for Diverged {
-        fn failure(&self) -> (FailureClass, &'static str) {
-            (FailureClass::Integrity, "chain_diverged")
+        fn failure(&self) -> FailureClass {
+            FailureClass::Integrity("chain_diverged")
         }
     }
 
@@ -356,7 +346,7 @@ mod tests {
         let subscriber =
             tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
         let failure = Err::<(), _>(anyhow::anyhow!("disk full"))
-            .classify(FailureClass::Actionable, "store")
+            .classify(FailureClass::Actionable("store"))
             .unwrap_err()
             .context("saving the cursor");
         assert_eq!(format!("{failure:#}"), "saving the cursor: disk full");
@@ -378,9 +368,9 @@ mod tests {
     #[test]
     fn failure_classes_export_under_their_alerting_names() {
         for (class, name) in [
-            (FailureClass::Integrity, "integrity"),
-            (FailureClass::Actionable, "actionable"),
-            (FailureClass::Transient, "transient"),
+            (FailureClass::Integrity("chain_diverged"), "integrity"),
+            (FailureClass::Actionable("store"), "actionable"),
+            (FailureClass::Transient("chain_read"), "transient"),
         ] {
             assert_eq!(<&'static str>::from(class), name);
         }

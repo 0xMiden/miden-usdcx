@@ -1038,22 +1038,20 @@ async fn run_stops_when_shutdown_is_set() {
 /// classes and names.
 #[test]
 fn discovery_errors_classify_as_their_cycle_failures() {
-    use usdcx_telemetry::{Classified as _, FailureClass};
+    use usdcx_telemetry::Classified as _;
+    use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 
     use crate::chain::ChainError;
 
     for (error, failure) in [
         (
             DiscoverError::Chain(ChainError::Unavailable),
-            (FailureClass::Transient, "chain_read"),
+            Transient("chain_read"),
         ),
-        (
-            DiscoverError::ChainDiverged,
-            (FailureClass::Integrity, "chain_diverged"),
-        ),
+        (DiscoverError::ChainDiverged, Integrity("chain_diverged")),
         (
             DiscoverError::Store(anyhow::anyhow!("disk full")),
-            (FailureClass::Actionable, "store"),
+            Actionable("store"),
         ),
     ] {
         assert_eq!(error.failure(), failure, "{error:?}");

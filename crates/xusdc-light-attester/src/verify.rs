@@ -8,6 +8,7 @@ use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
+use usdcx_telemetry::FailureClass::{Actionable, Integrity};
 use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
@@ -117,25 +118,23 @@ pub enum VerifyError {
 /// A fee or payout that does not fit the configuration needs an operator; anything else means
 /// Circle asked for a signature over something other than the burn.
 impl Classified for VerifyError {
-    fn failure(&self) -> (FailureClass, &'static str) {
+    fn failure(&self) -> FailureClass {
         match self {
-            Self::FeeTooHigh => (FailureClass::Actionable, "fee_too_high"),
-            Self::TooSmallToForward => (FailureClass::Actionable, "too_small_to_forward"),
-            Self::PayoutTooSmallToForward => {
-                (FailureClass::Actionable, "payout_too_small_to_forward")
-            }
-            Self::WrongCount => (FailureClass::Integrity, "wrong_count"),
-            Self::UnknownSalt => (FailureClass::Integrity, "unknown_salt"),
-            Self::WrongBurnField(_) => (FailureClass::Integrity, "wrong_burn_field"),
-            Self::BadAmount => (FailureClass::Integrity, "bad_amount"),
-            Self::WrongSigner => (FailureClass::Integrity, "wrong_signer"),
-            Self::WrongSourceToken => (FailureClass::Integrity, "wrong_source_token"),
-            Self::WrongSourceDomain => (FailureClass::Integrity, "wrong_source_domain"),
-            Self::CallerRestricted => (FailureClass::Integrity, "caller_restricted"),
-            Self::ForwardedField(_) => (FailureClass::Integrity, "forwarded_field"),
-            Self::DigestMismatch => (FailureClass::Integrity, "digest_mismatch"),
-            Self::EncodedMismatch => (FailureClass::Integrity, "encoded_mismatch"),
-            Self::MalformedField(_) => (FailureClass::Integrity, "malformed_field"),
+            Self::FeeTooHigh => Actionable("fee_too_high"),
+            Self::TooSmallToForward => Actionable("too_small_to_forward"),
+            Self::PayoutTooSmallToForward => Actionable("payout_too_small_to_forward"),
+            Self::WrongCount => Integrity("wrong_count"),
+            Self::UnknownSalt => Integrity("unknown_salt"),
+            Self::WrongBurnField(_) => Integrity("wrong_burn_field"),
+            Self::BadAmount => Integrity("bad_amount"),
+            Self::WrongSigner => Integrity("wrong_signer"),
+            Self::WrongSourceToken => Integrity("wrong_source_token"),
+            Self::WrongSourceDomain => Integrity("wrong_source_domain"),
+            Self::CallerRestricted => Integrity("caller_restricted"),
+            Self::ForwardedField(_) => Integrity("forwarded_field"),
+            Self::DigestMismatch => Integrity("digest_mismatch"),
+            Self::EncodedMismatch => Integrity("encoded_mismatch"),
+            Self::MalformedField(_) => Integrity("malformed_field"),
         }
     }
 }

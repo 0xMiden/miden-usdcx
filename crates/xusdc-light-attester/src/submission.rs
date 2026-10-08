@@ -4,6 +4,7 @@ use alloy_primitives::B256;
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
 use tracing::{error, info, info_span, warn, Instrument as _, Span};
+use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 use crate::attester::Attester;
@@ -41,26 +42,22 @@ impl SubmitError {
 /// Circle refusing to prepare a burn holds it, so that needs an operator like every failure of our
 /// own; Circle's other failures keep the class [`CircleError`] gives them.
 impl Classified for SubmitError {
-    fn failure(&self) -> Failure {
+    fn failure(&self) -> FailureClass {
         match self {
-            Self::InvalidRequest(_) => (FailureClass::Actionable, "invalid_request"),
-            Self::Store(_) => (FailureClass::Actionable, "store"),
-            Self::Encoding(_) => (FailureClass::Actionable, "encoding"),
+            Self::InvalidRequest(_) => Actionable("invalid_request"),
+            Self::Store(_) => Actionable("store"),
+            Self::Encoding(_) => Actionable("encoding"),
             Self::Prepare(CircleError::UnexpectedPrepareStatus { status, .. })
                 if *status == StatusCode::BAD_REQUEST =>
             {
-                (FailureClass::Actionable, "prepare_rejected")
+                Actionable("prepare_rejected")
             }
             Self::Prepare(error) => error.failure(),
             Self::Verification(error) => error.failure(),
-            Self::Signing(_) => (FailureClass::Actionable, "signing"),
+            Self::Signing(_) => Actionable("signing"),
         }
     }
 }
-
-/// How loudly a failure is alerted on, and its name on the span: its `failure.class` and
-/// `failure.kind`.
-pub(crate) type Failure = (FailureClass, &'static str);
 
 /// A submission's status, stored under the name given here. A fresh authorization can replace an
 /// expired withdrawal, but not a failed one: that stays for an operator to investigate.
@@ -204,7 +201,7 @@ impl Attester {
         &self,
         saved: &mut SavedSubmission,
         rate_limited: &mut bool,
-    ) -> Result<RawResponse, Failure> {
+    ) -> Result<RawResponse, FailureClass> {
         let result = match &saved.withdrawal_id {
             Some(id) => self.circle.get_withdrawal(saved, id).await,
             None => self.circle.post_submission(saved).await,
@@ -263,11 +260,11 @@ impl Attester {
     fn save_outcome(
         &mut self,
         saved: &SavedSubmission,
-        failure: Option<Failure>,
+        failure: Option<FailureClass>,
     ) -> Result<(), SubmitError> {
         self.store.update_submission_outcome(saved)?;
-        if let Some((class, kind)) = failure {
-            Span::current().record_failure(class, kind);
+        if let Some(class) = failure {
+            Span::current().record_failure(class);
             // For a failed withdrawal the saved text is Circle's own failure reason: outside text
             // that stays in the store and out of the log. Every other saved text is one of ours.
             let reason = saved
@@ -302,7 +299,7 @@ impl SavedSubmission {
 
     /// Takes Circle's withdrawal ID from a 409 reply. Fails, with the reason saved, when the reply
     /// names another burn or carries no usable ID.
-    pub(crate) fn read_conflict(&mut self) -> Result<(), Failure> {
+    pub(crate) fn read_conflict(&mut self) -> Result<(), FailureClass> {
         let conflict = self
             .last_response
             .as_deref()
@@ -315,12 +312,12 @@ impl SavedSubmission {
                 .is_some_and(|id| !self.matches_note(id))
             {
                 self.last_error = Some("conflict names another burn note".into());
-                return Err((FailureClass::Integrity, "wrong_burn"));
+                return Err(Integrity("wrong_burn"));
             }
             if let Some(id) = conflict.withdrawal_id.filter(|id| !id.trim().is_empty()) {
                 if !is_well_formed_id(&id) {
                     self.last_error = Some("conflict names a malformed withdrawal ID".into());
-                    return Err((FailureClass::Integrity, "malformed_withdrawal_id"));
+                    return Err(Integrity("malformed_withdrawal_id"));
                 }
                 self.withdrawal_id = Some(id);
                 return Ok(());
@@ -329,11 +326,11 @@ impl SavedSubmission {
         // Circle confirms this race is retryable. Keep the same bytes queued for the next
         // paced cycle; do not guess an ID, re-sign, or retry immediately inside this pass.
         self.last_error = Some("conflict has no withdrawal ID yet".into());
-        Err((FailureClass::Transient, "conflict_without_id"))
+        Err(Transient("conflict_without_id"))
     }
 
     /// Records Circle's reply. Returns the failure it amounts to, if any, with the reason saved.
-    pub(crate) fn read_response(&mut self, response: RawResponse) -> Option<Failure> {
+    pub(crate) fn read_response(&mut self, response: RawResponse) -> Option<FailureClass> {
         let lookup = self.withdrawal_id.is_some();
         let expected_status = if lookup {
             StatusCode::OK
@@ -349,13 +346,13 @@ impl SavedSubmission {
                     HoldReason::HttpRejected,
                     "HTTP response needs operator review",
                 );
-                return Some((FailureClass::Actionable, "withdrawal_held"));
+                return Some(Actionable("withdrawal_held"));
             }
             self.last_error = Some(format!("Circle returned HTTP {}", response.status));
             if response.status == StatusCode::TOO_MANY_REQUESTS {
-                return Some((FailureClass::Transient, "rate_limited"));
+                return Some(Transient("rate_limited"));
             }
-            return Some((FailureClass::Transient, "unexpected_status"));
+            return Some(Transient("unexpected_status"));
         }
 
         let withdrawal = if lookup {
@@ -365,14 +362,14 @@ impl SavedSubmission {
                 Ok(mut withdrawals) if withdrawals.len() <= 1 => withdrawals.pop(),
                 Ok(_) => {
                     self.last_error = Some("response contains extra withdrawals".into());
-                    return Some((FailureClass::Integrity, "extra_withdrawals"));
+                    return Some(Integrity("extra_withdrawals"));
                 }
                 Err(_) => None,
             }
         };
         let Some(withdrawal) = withdrawal else {
             self.last_error = Some("Circle returned an incomplete or malformed response".into());
-            return Some((FailureClass::Transient, "invalid_response"));
+            return Some(Transient("invalid_response"));
         };
 
         if !is_well_formed_id(&withdrawal.withdrawal_id)
@@ -386,7 +383,7 @@ impl SavedSubmission {
                 .is_some_and(|id| id != &withdrawal.withdrawal_id)
         {
             self.last_error = Some("response does not identify the saved withdrawal".into());
-            return Some((FailureClass::Integrity, "wrong_withdrawal"));
+            return Some(Integrity("wrong_withdrawal"));
         }
 
         self.withdrawal_id = Some(withdrawal.withdrawal_id);
@@ -399,11 +396,11 @@ impl SavedSubmission {
                 // does not: it keeps Circle's reason and leaves the withdrawal to an operator.
                 self.last_error = withdrawal.failure_reason;
                 self.status = SubmissionStatus::Failed;
-                return Some((FailureClass::Actionable, "withdrawal_failed"));
+                return Some(Actionable("withdrawal_failed"));
             }
             _ => {
                 self.last_error = Some("Circle returned an unknown withdrawal status".into());
-                return Some((FailureClass::Transient, "unknown_status"));
+                return Some(Transient("unknown_status"));
             }
         };
         None

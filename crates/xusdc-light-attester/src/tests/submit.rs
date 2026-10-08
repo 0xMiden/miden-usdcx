@@ -16,6 +16,7 @@ use miden_protocol::utils::serde::Serializable;
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
+use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 
 use crate::attester::{release_holds, Attester};
 use crate::burn::DiscoveredBurn;
@@ -1486,10 +1487,22 @@ async fn circle_answers_are_read_into_the_saved_row() {
         if lookup {
             saved.withdrawal_id = Some(ID.into());
         }
-        saved.read_response(RawResponse::new(
+        let failure = saved.read_response(RawResponse::new(
             StatusCode::from_u16(status).unwrap(),
             reply,
         ));
+        let expected_failure = match name {
+            "created" | "lookup finalized" => None,
+            "failed" => Some(Actionable("withdrawal_failed")),
+            "rejected" => Some(Actionable("withdrawal_held")),
+            "unknown status" => Some(Transient("unknown_status")),
+            "rate limited" => Some(Transient("rate_limited")),
+            "timeout" | "answered 200" | "lookup rejected" => Some(Transient("unexpected_status")),
+            "malformed" => Some(Transient("invalid_response")),
+            "two withdrawals" => Some(Integrity("extra_withdrawals")),
+            _ => Some(Integrity("wrong_withdrawal")),
+        };
+        assert_eq!(failure, expected_failure, "{name}");
         assert_eq!(
             (
                 saved.status,
@@ -1539,7 +1552,13 @@ async fn circle_answers_are_read_into_the_saved_row() {
         saved.last_response = Some(body(
             json!({"success": false, "message": "already associated", "conflict": conflict}),
         ));
-        assert_eq!(saved.read_conflict(), id.is_some(), "{name}");
+        let expected_failure = match name {
+            "an ID" => Ok(()),
+            "no ID yet" => Err(Transient("conflict_without_id")),
+            "another burn note" => Err(Integrity("wrong_burn")),
+            _ => Err(Integrity("malformed_withdrawal_id")),
+        };
+        assert_eq!(saved.read_conflict(), expected_failure, "{name}");
         assert_eq!(
             (saved.withdrawal_id.as_deref(), saved.last_error.as_deref()),
             (id, error),

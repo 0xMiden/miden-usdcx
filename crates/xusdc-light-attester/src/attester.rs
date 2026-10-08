@@ -11,9 +11,9 @@ use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{info_span, instrument, warn, Instrument as _};
+use tracing::{error, info_span, instrument, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
-use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass};
+use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -422,7 +422,8 @@ impl Attester {
         if let Some(reason) = hold {
             self.store.hold_burn(burn.note_id(), reason, response)?;
         }
-        warn!(
+        Span::current().record_error(&error);
+        error!(
             note_id = %burn.note_id(),
             error = &error as &dyn std::error::Error,
             hold_reason = ?hold,

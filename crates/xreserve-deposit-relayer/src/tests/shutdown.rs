@@ -9,7 +9,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::transaction::TransactionId;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 use tempfile::TempDir;
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
 use super::*;
 
@@ -30,8 +30,7 @@ impl MidenClient for TestMiden {
 
     async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId, Failure> {
         Err(Failure::new(
-            FailureClass::Actionable,
-            "unexpected_submission",
+            Actionable("unexpected_submission"),
             anyhow!("the shutdown fixture must not submit a transaction"),
         ))
     }
@@ -225,10 +224,7 @@ async fn an_unreachable_circle_fails_the_scan_as_transient() {
     )
     .unwrap();
     let failure = relayer.scan(&CancellationToken::new()).await.unwrap_err();
-    assert_eq!(
-        (failure.class, failure.kind),
-        (FailureClass::Transient, "circle_unavailable")
-    );
+    assert_eq!(failure.class, Transient("circle_unavailable"));
 }
 
 #[tokio::test]
@@ -254,8 +250,5 @@ async fn a_page_that_cannot_be_recorded_fails_the_scan_as_actionable() {
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     server.join().unwrap();
     let failure = result.unwrap_err();
-    assert_eq!(
-        (failure.class, failure.kind),
-        (FailureClass::Actionable, "progress_file")
-    );
+    assert_eq!(failure.class, Actionable("progress_file"));
 }

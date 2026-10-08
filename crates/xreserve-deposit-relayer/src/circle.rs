@@ -21,7 +21,8 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
-use usdcx_telemetry::{Classify, Failure, FailureClass};
+use usdcx_telemetry::FailureClass::Transient;
+use usdcx_telemetry::{Classify, Failure};
 
 use miden_usdcx::xreserve::encoding::{CircleDomain, Signature};
 
@@ -248,18 +249,17 @@ impl CircleClient {
             .send()
             .await
             .context("the circle request failed")
-            .classify(FailureClass::Transient, "circle_unavailable")?;
+            .classify(Transient("circle_unavailable"))?;
         let status = response.status();
         span.record("status", status.as_u16());
         if !status.is_success() {
-            let kind = if status == StatusCode::TOO_MANY_REQUESTS {
-                "rate_limited"
+            let class = if status == StatusCode::TOO_MANY_REQUESTS {
+                Transient("rate_limited")
             } else {
-                "unexpected_status"
+                Transient("unexpected_status")
             };
             return Err(Failure::new(
-                FailureClass::Transient,
-                kind,
+                class,
                 anyhow!("circle answered {status} for the attestation page"),
             ));
         }
@@ -270,7 +270,7 @@ impl CircleClient {
             .map(|value| value.to_str())
             .transpose()
             .context("decoding the circle Link header")
-            .classify(FailureClass::Transient, "invalid_response")?
+            .classify(Transient("invalid_response"))?
             .map(str::to_owned);
 
         // Read chunk by chunk rather than `bytes()`: a runaway body must not be buffered in full
@@ -280,13 +280,12 @@ impl CircleClient {
             .chunk()
             .await
             .context("reading the circle response")
-            .classify(FailureClass::Transient, "circle_unavailable")?
+            .classify(Transient("circle_unavailable"))?
         {
             body.extend_from_slice(&chunk);
             if body.len() > Page::MAX_RESPONSE_BYTES {
                 return Err(Failure::new(
-                    FailureClass::Transient,
-                    "invalid_response",
+                    Transient("invalid_response"),
                     anyhow!(
                         "the circle response exceeded the {}-byte ceiling",
                         Page::MAX_RESPONSE_BYTES
@@ -295,8 +294,7 @@ impl CircleClient {
             }
         }
 
-        let page = Page::decode(&body, link.as_deref())
-            .classify(FailureClass::Transient, "invalid_response")?;
+        let page = Page::decode(&body, link.as_deref()).classify(Transient("invalid_response"))?;
         span.record("attestations.count", page.attestations.len());
         if let Some(next) = page.next_cursor() {
             span.record("next", next.as_str());

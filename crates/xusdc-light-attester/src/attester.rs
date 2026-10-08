@@ -201,7 +201,7 @@ impl Attester {
         let ended = finish_cycle(self.cycle(rate_limited).await);
         if let Err(failure) = self
             .record_progress(&Span::current())
-            .classify(FailureClass::Actionable, "store")
+            .classify(Actionable("store"))
         {
             failure.report("could not read the cycle's progress");
         }

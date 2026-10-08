@@ -16,7 +16,7 @@ use miden_protocol::utils::serde::Serializable;
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
-use usdcx_telemetry::FailureClass;
+use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 
 use crate::attester::{release_holds, Attester};
 use crate::burn::DiscoveredBurn;
@@ -1493,16 +1493,14 @@ async fn circle_answers_are_read_into_the_saved_row() {
         ));
         let expected_failure = match name {
             "created" | "lookup finalized" => None,
-            "failed" => Some((FailureClass::Actionable, "withdrawal_failed")),
-            "rejected" => Some((FailureClass::Actionable, "withdrawal_held")),
-            "unknown status" => Some((FailureClass::Transient, "unknown_status")),
-            "rate limited" => Some((FailureClass::Transient, "rate_limited")),
-            "timeout" | "answered 200" | "lookup rejected" => {
-                Some((FailureClass::Transient, "unexpected_status"))
-            }
-            "malformed" => Some((FailureClass::Transient, "invalid_response")),
-            "two withdrawals" => Some((FailureClass::Integrity, "extra_withdrawals")),
-            _ => Some((FailureClass::Integrity, "wrong_withdrawal")),
+            "failed" => Some(Actionable("withdrawal_failed")),
+            "rejected" => Some(Actionable("withdrawal_held")),
+            "unknown status" => Some(Transient("unknown_status")),
+            "rate limited" => Some(Transient("rate_limited")),
+            "timeout" | "answered 200" | "lookup rejected" => Some(Transient("unexpected_status")),
+            "malformed" => Some(Transient("invalid_response")),
+            "two withdrawals" => Some(Integrity("extra_withdrawals")),
+            _ => Some(Integrity("wrong_withdrawal")),
         };
         assert_eq!(failure, expected_failure, "{name}");
         assert_eq!(
@@ -1556,9 +1554,9 @@ async fn circle_answers_are_read_into_the_saved_row() {
         ));
         let expected_failure = match name {
             "an ID" => Ok(()),
-            "no ID yet" => Err((FailureClass::Transient, "conflict_without_id")),
-            "another burn note" => Err((FailureClass::Integrity, "wrong_burn")),
-            _ => Err((FailureClass::Integrity, "malformed_withdrawal_id")),
+            "no ID yet" => Err(Transient("conflict_without_id")),
+            "another burn note" => Err(Integrity("wrong_burn")),
+            _ => Err(Integrity("malformed_withdrawal_id")),
         };
         assert_eq!(saved.read_conflict(), expected_failure, "{name}");
         assert_eq!(

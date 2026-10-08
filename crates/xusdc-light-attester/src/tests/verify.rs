@@ -623,7 +623,10 @@ fn forwarded_route_is_bound_to_the_burn() {
 fn verification_failures_are_classed_for_alerting() {
     use VerifyError::*;
     for error in [FeeTooHigh, PayoutTooSmallToForward, TooSmallToForward] {
-        assert_eq!(error.failure().0, FailureClass::Actionable, "{error:?}");
+        assert!(
+            matches!(error.failure(), FailureClass::Actionable(_)),
+            "{error:?}"
+        );
     }
     for error in [
         WrongCount,
@@ -639,6 +642,9 @@ fn verification_failures_are_classed_for_alerting() {
         DigestMismatch,
         EncodedMismatch,
     ] {
-        assert_eq!(error.failure().0, FailureClass::Integrity, "{error:?}");
+        assert!(
+            matches!(error.failure(), FailureClass::Integrity(_)),
+            "{error:?}"
+        );
     }
 }

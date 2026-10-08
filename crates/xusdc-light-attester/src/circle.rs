@@ -15,6 +15,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
@@ -50,19 +51,15 @@ pub enum CircleError {
 
 /// A request that cannot be built needs an operator; every other failure is retried next cycle.
 impl Classified for CircleError {
-    fn failure(&self) -> (FailureClass, &'static str) {
+    fn failure(&self) -> FailureClass {
         match self {
-            Self::InvalidUrl(_) => (FailureClass::Actionable, "invalid_url"),
-            Self::RateLimited { .. } => (FailureClass::Transient, "rate_limited"),
-            Self::Unavailable | Self::Transport(_) => {
-                (FailureClass::Transient, "circle_unavailable")
-            }
+            Self::InvalidUrl(_) => Actionable("invalid_url"),
+            Self::RateLimited { .. } => Transient("rate_limited"),
+            Self::Unavailable | Self::Transport(_) => Transient("circle_unavailable"),
             Self::UnexpectedStatus(_) | Self::UnexpectedPrepareStatus { .. } => {
-                (FailureClass::Transient, "unexpected_status")
+                Transient("unexpected_status")
             }
-            Self::InvalidResponse(_) | Self::BodyTooLarge => {
-                (FailureClass::Transient, "invalid_response")
-            }
+            Self::InvalidResponse(_) | Self::BodyTooLarge => Transient("invalid_response"),
         }
     }
 }

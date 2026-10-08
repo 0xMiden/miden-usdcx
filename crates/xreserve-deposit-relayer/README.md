@@ -126,7 +126,11 @@ a smaller one notices a lost transaction sooner.
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
 duplicate that slipped past the used-nonce check, an attester key Circle did not sign with, a paused
-faucet — simply stays unconsumed. The relayer does not watch for that.
+faucet — simply stays unconsumed. The relayer keeps the deposits it put on chain in memory and
+checks the faucet's used-nonce map for them on every page, under the same sync as the page's own
+deposits, until the faucet mints them. Each page span reports how many are still waiting and for
+how long (see [Tracing](#tracing)). The list is lost on restart, and a deposit the faucet will never
+mint stays on it until then, so restarting is how an operator clears it after looking into it.
 
 ## Malformed attestations
 
@@ -219,7 +223,11 @@ as long as it takes, while a page closes once its notes are on chain, so the pag
 watch for liveness. A page fails when anything stops it being recorded as done, and the scan it
 stopped fails with it. An attestation that will not build fails only the `relayer.build_notes` span
 that skipped it, and the page counts it in `attestations.skipped.count` and names it in
-`attestations.skipped.message_hashes`. Every failed span carries `failure.class` and
+`attestations.skipped.message_hashes`.
+
+Every page also carries `deposits.unminted.count`, the deposits earlier pages put on chain that the
+faucet has not minted yet, and `deposits.unminted.oldest_age_secs`, how long the oldest of them has
+been on chain; both are 0 when none is waiting. Every failed span carries `failure.class` and
 `failure.kind`:
 
 | `failure.class` | Meaning | `failure.kind` |

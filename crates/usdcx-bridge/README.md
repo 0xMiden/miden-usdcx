@@ -141,6 +141,10 @@ to one burn, such as a hold, a withdrawal Circle reports as failed, or a prepare
 fails verification, fails only that burn's `attester.withdraw` span. Every failed span
 carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
 
+The relayer's spans are `relayer.startup`, a `relayer.scan` root per scan and a `relayer.page` span
+per page under it. [The relayer's README](../xreserve-deposit-relayer/README.md#tracing) describes
+them and its failure kinds.
+
 Every cycle span also carries the attester's progress, zeros included:
 
 | Field | Meaning |

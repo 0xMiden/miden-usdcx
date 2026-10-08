@@ -3,12 +3,13 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::bail;
+use anyhow::anyhow;
 use clap::Parser;
 use miden_protocol::account::AccountId;
 use miden_protocol::transaction::TransactionId;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 use tempfile::TempDir;
+use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
 use super::*;
 
@@ -18,14 +19,20 @@ struct TestMiden {
 }
 
 impl MidenClient for TestMiden {
-    async fn retain_unminted(&mut self, notes: Vec<XUsdcMintNote>) -> Result<Vec<XUsdcMintNote>> {
+    async fn retain_unminted(
+        &mut self,
+        notes: Vec<XUsdcMintNote>,
+    ) -> Result<Vec<XUsdcMintNote>, Failure> {
         assert!(notes.is_empty());
         self.reached_page.cancel();
         Ok(notes)
     }
 
-    async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId> {
-        bail!("the shutdown fixture must not submit a transaction")
+    async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId, Failure> {
+        Err(Failure::new(
+            Actionable("unexpected_submission"),
+            anyhow!("the shutdown fixture must not submit a transaction"),
+        ))
     }
 }
 
@@ -204,4 +211,44 @@ async fn shutdown_wakes_the_poll_wait() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_unreachable_circle_fails_the_scan_as_transient() {
+    let directory = TempDir::new().unwrap();
+    let mut relayer = Relayer::new(
+        config(&directory, "http://127.0.0.1:1"),
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
+    )
+    .unwrap();
+    let failure = relayer.scan(&CancellationToken::new()).await.unwrap_err();
+    assert_eq!(failure.class, Transient("circle_unavailable"));
+}
+
+#[tokio::test]
+async fn a_page_that_cannot_be_recorded_fails_the_scan_as_actionable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TempDir::new().unwrap();
+    let body = serde_json::json!({"attestations": [{
+        "payload": "0x", "messageHash": format!("0x{}", "01".repeat(32)),
+        "attestation": format!("0x{}", "00".repeat(65)),
+    }]})
+    .to_string();
+    let (url, server) = page_server(body, false);
+    let mut relayer = Relayer::new(
+        config(&directory, &url),
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
+    )
+    .unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let result = relayer.scan(&CancellationToken::new()).await;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    server.join().unwrap();
+    let failure = result.unwrap_err();
+    assert_eq!(failure.class, Actionable("progress_file"));
 }

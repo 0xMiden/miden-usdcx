@@ -10,12 +10,19 @@
 //! interrupted part way through resumes where it stopped instead of starting over.
 //! [`Relayer::run`] begins a scan every polling interval; a relayer that is caught up meets the
 //! watermark at the top of the head page and ends the scan after that one request.
+//!
+//! Each scan is a `relayer.scan` root span, and each page it walks is a `relayer.page` span under
+//! it. A page fails when anything stops it being recorded as done; the scan it stopped fails with
+//! it. An attestation that will not build fails only the `relayer.build_notes` span that skipped
+//! it, and the page counts it in `attestations.skipped.count`.
 
 use anyhow::{Context, Result};
 use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
+use usdcx_telemetry::FailureClass::Actionable;
+use usdcx_telemetry::{Classify, Failure, FailureSpanExt as _};
 
 pub mod circle;
 pub mod config;
@@ -25,8 +32,8 @@ pub mod store;
 
 use circle::{Attestation, CircleClient, CircleCursor, MessageHash};
 use config::Config;
-use miden::MidenClient;
-use mint::Minter;
+use miden::{MidenClient, NodeClient};
+use mint::{BuiltNotes, Minter};
 use store::{ScanProgress, State, Store};
 
 /// The relay loop's parts: the Circle feed, the store holding how far the scan got, the note
@@ -62,6 +69,34 @@ struct PageOutcome {
 enum ScanOutcome {
     Complete,
     Stopped,
+}
+
+impl Relayer<NodeClient> {
+    /// Connects to the configured node and assembles the relayer, in the `relayer.startup` span. A
+    /// failure marks that span failed as `actionable`.
+    ///
+    /// # Errors
+    ///
+    /// - The node cannot be reached, does not know the relayer account or the faucet, or the
+    ///   faucet has not enabled the configured attester public key (see [`NodeClient::new`]).
+    /// - Any of the checks of [`Relayer::new`] fails.
+    #[instrument(name = "relayer.startup", skip_all)]
+    pub async fn start(config: Config) -> Result<Self> {
+        Self::connect(config)
+            .await
+            .classify(Actionable("startup"))
+            .map_err(|failure| {
+                failure.report("relayer startup failed");
+                failure.error
+            })
+    }
+
+    async fn connect(config: Config) -> Result<Self> {
+        let miden = NodeClient::new(&config)
+            .await
+            .context("connecting to miden")?;
+        Self::new(config, miden)
+    }
 }
 
 impl<M: MidenClient> Relayer<M> {
@@ -107,48 +142,30 @@ impl<M: MidenClient> Relayer<M> {
     /// arrived in the meantime sit above that head for the scan after it. That keeps what has been
     /// handled one contiguous run of the feed, which is what lets a single watermark describe it.
     ///
+    /// Every failure has already been logged, in the span it happened in, when this returns it.
+    ///
     /// # Errors
     ///
     /// - Reading or persisting the state fails.
     /// - Fetching a Circle page fails.
     /// - Submitting the mint notes fails.
-    async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome> {
-        let mut state = self.store.state()?;
+    async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
+        let mut state = match self.store.state().classify(Actionable("progress_file")) {
+            Ok(state) => state,
+            Err(failure) => {
+                failure.report("could not read the relayer's progress");
+                return Err(failure);
+            }
+        };
 
         loop {
             if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
-            let outcome = self
-                .process_page(
-                    state.scan.as_ref().map(|scan| &scan.resume),
-                    state.watermark.as_ref(),
-                )
-                .await?;
-
-            // A scan that has progress keeps the head it started at, so a fresh scan reads the
-            // page's newest attestation only on the first time round this loop — by the second it
-            // has written progress of its own and the stored head wins.
-            let Some(head) = state.scan.as_ref().map(|scan| scan.head).or(outcome.newest) else {
+            let Some(next) = self.run_page(&state).await? else {
                 // The feed is empty, so there is nothing for the next scan to stop at.
                 return Ok(ScanOutcome::Complete);
             };
-
-            // The watermark moves only when the walk reaches its end, and the progress it replaces
-            // is dropped in the same write, so the file never claims both.
-            let next = State {
-                watermark: match outcome.next {
-                    Some(_) => state.watermark,
-                    None => Some(head),
-                },
-                scan: outcome.next.map(|resume| ScanProgress { head, resume }),
-            };
-
-            // A caught-up poll finds the watermark at the top of the first page and leaves the
-            // state exactly as it was, which is not worth an fsync every polling interval.
-            if next != state {
-                self.store.set_state(&next)?;
-            }
             if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
@@ -159,10 +176,79 @@ impl<M: MidenClient> Relayer<M> {
         }
     }
 
+    /// Runs one page of the scan in its `relayer.page` span: mints it, then records it as done.
+    /// Returns the state the scan continues from, or `None` when the feed is empty.
+    ///
+    /// A failure marks the page span failed and is logged inside it, so the span says why the page
+    /// was not recorded as done.
+    #[instrument(
+        name = "relayer.page",
+        skip_all,
+        fields(
+            remote_domain = %self.config.remote_domain,
+            cursor = Empty,
+            attestations.count = Empty,
+            attestations.message_hashes = Empty,
+            attestations.skipped.count = Empty,
+            attestations.skipped.message_hashes = Empty,
+            notes.already_minted.count = Empty,
+            notes.count = Empty,
+            notes.ids = Empty,
+            transaction.id = Empty,
+        )
+    )]
+    async fn run_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
+        // Boxed because the page's future, which holds the Miden client's, is deep enough that
+        // nesting it in the scan's future exceeds the compiler's recursion limit.
+        let result = Box::pin(self.finish_page(state)).await;
+        if let Err(failure) = &result {
+            failure.report("the page failed; the next scan resumes at it");
+        }
+        result
+    }
+
+    /// Processes the page `state` resumes at and saves the state that follows it.
+    async fn finish_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
+        let outcome = self
+            .process_page(
+                state.scan.as_ref().map(|scan| &scan.resume),
+                state.watermark.as_ref(),
+            )
+            .await?;
+
+        // A scan that has progress keeps the head it started at, so a fresh scan reads the page's
+        // newest attestation only on its first page — by the second it has written progress of
+        // its own and the stored head wins.
+        let Some(head) = state.scan.as_ref().map(|scan| scan.head).or(outcome.newest) else {
+            return Ok(None);
+        };
+
+        // The watermark moves only when the walk reaches its end, and the progress it replaces is
+        // dropped in the same write, so the file never claims both.
+        let next = State {
+            watermark: match outcome.next {
+                Some(_) => state.watermark,
+                None => Some(head),
+            },
+            scan: outcome.next.map(|resume| ScanProgress { head, resume }),
+        };
+
+        // A caught-up poll finds the watermark at the top of the first page and leaves the state
+        // exactly as it was, which is not worth an fsync every polling interval.
+        if next != *state {
+            self.store
+                .set_state(&next)
+                .classify(Actionable("progress_file"))?;
+        }
+        Ok(Some(next))
+    }
+
     /// Fetches one page and mints the attestations on it above the watermark.
     ///
     /// `resume` is the cursor of the page to fetch, which is `None` for the first page of a fresh
     /// scan and the stored progress for the page an interrupted scan stopped at.
+    ///
+    /// It records what it finds on the current span, which is the `relayer.page` span.
     ///
     /// Malformed attestations are skipped inside [`Minter::build_notes`], and deposits the faucet
     /// has already minted are dropped by [`MidenClient::retain_unminted`], so no proof is spent on a note
@@ -177,25 +263,11 @@ impl<M: MidenClient> Relayer<M> {
     /// - Fetching the page fails.
     /// - Reading which deposits are already minted fails.
     /// - Submitting the mint notes fails.
-    #[instrument(
-        name = "page",
-        skip_all,
-        fields(
-            remote_domain = %self.config.remote_domain,
-            cursor = Empty,
-            attestations.count = Empty,
-            attestations.message_hashes = Empty,
-            notes.already_minted = Empty,
-            notes.count = Empty,
-            notes.ids = Empty,
-            transaction.id = Empty,
-        ),
-    )]
     async fn process_page(
         &mut self,
         resume: Option<&CircleCursor>,
         watermark: Option<&MessageHash>,
-    ) -> Result<PageOutcome> {
+    ) -> Result<PageOutcome, Failure> {
         let span = Span::current();
         span.record("cursor", resume.map(CircleCursor::as_str).unwrap_or("None"));
 
@@ -225,13 +297,18 @@ impl<M: MidenClient> Relayer<M> {
             .iter()
             .collect();
 
-        let notes = self.minter.build_notes(&fresh);
+        let BuiltNotes { notes, skipped } = self.minter.build_notes(&fresh);
+        span.record("attestations.skipped.count", skipped.len());
+        span.record(
+            "attestations.skipped.message_hashes",
+            identifiers(skipped.iter().map(ToString::to_string)).as_str(),
+        );
         let built = notes.len();
 
         // A deposit the faucet has already minted would only be refused, so it is dropped here
         // rather than proven. This is what makes a replay of the feed cheap.
         let notes = self.miden_client.retain_unminted(notes).await?;
-        span.record("notes.already_minted", built - notes.len());
+        span.record("notes.already_minted.count", built - notes.len());
 
         // The minter yields its own note type; the chain takes protocol notes, so the page is
         // converted here, once, on its way to being submitted.
@@ -275,6 +352,20 @@ impl<M: MidenClient> Relayer<M> {
         self.run_until(CancellationToken::new()).await
     }
 
+    /// Runs one scan in its `relayer.scan` span. Each scan is a root of its own, so a long-running
+    /// relayer is a series of traces rather than one that never ends.
+    ///
+    /// A failure was already logged in the span it happened in; this marks the scan as a whole
+    /// failed.
+    #[instrument(name = "relayer.scan", parent = None, skip_all)]
+    async fn traced_scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
+        let outcome = self.scan(shutdown).await;
+        if let Err(failure) = &outcome {
+            Span::current().record_error(failure);
+        }
+        outcome
+    }
+
     /// Runs until `shutdown` is cancelled.
     ///
     /// The current page finishes and its progress is saved before stopping. Waiting for a mint
@@ -284,13 +375,10 @@ impl<M: MidenClient> Relayer<M> {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            match self.scan(&shutdown).await {
+            match self.traced_scan(&shutdown).await {
                 Ok(ScanOutcome::Stopped) => return Ok(()),
-                Ok(ScanOutcome::Complete) => {}
-                Err(error) => warn!(
-                    error = format!("{error:#}"),
-                    "the scan failed; the next one resumes where it stopped"
-                ),
+                // The next scan resumes where a failed one stopped.
+                Ok(ScanOutcome::Complete) | Err(_) => {}
             }
             tokio::select! {
                 () = tokio::time::sleep(self.config.poll_interval) => {}

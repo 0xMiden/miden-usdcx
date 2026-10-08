@@ -131,8 +131,8 @@ faucet — simply stays unconsumed. The relayer does not watch for that.
 ## Malformed attestations
 
 An attestation that cannot become a mint note — its payload is not a DepositIntent, or the intent
-is addressed to a different faucet or domain — is logged at `error` and skipped, and the rest of
-the page still mints. Such a failure depends only on the attestation and the configuration, so
+is addressed to a different faucet or domain — is logged at `error` with its message hash and the
+reason, and skipped, and the rest of the page still mints. Such a failure depends only on the attestation and the configuration, so
 retrying would never help, and holding up the page would stall every deposit behind it.
 
 A skipped deposit is not revisited: the scan moves past it like any other. If it was skipped
@@ -171,7 +171,7 @@ transaction authentication, so successful startup does not replace the operator'
 guarantee a transaction will succeed.
 
 Each page is a span, with its Circle request, the notes it built and the transaction that carried
-them nested under it. See [Tracing](#tracing) for where they go.
+them nested under it. See [Tracing](#tracing) for the spans and where they go.
 
 `--miden-data-dir` holds the Miden client's own state:
 
@@ -211,6 +211,21 @@ the relayer's spans over OpenTelemetry, using gRPC with the system's root certif
 The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
 well. `RUST_LOG` does not filter the export: it always carries the relayer's spans and events at
 `info` and above, and only warnings from its dependencies.
+
+Startup is a `relayer.startup` span. Each scan is a `relayer.scan` root span, and each page it walks
+is a `relayer.page` span under it, with `relayer.fetch_page`, `relayer.build_notes`,
+`relayer.retain_unminted` and `relayer.transaction` under that. A backlog keeps one scan open for
+as long as it takes, while a page closes once its notes are on chain, so the page is the span to
+watch for liveness. A page fails when anything stops it being recorded as done, and the scan it
+stopped fails with it. An attestation that will not build fails only the `relayer.build_notes` span
+that skipped it, and the page counts it in `attestations.skipped.count` and names it in
+`attestations.skipped.message_hashes`. Every failed span carries `failure.class` and
+`failure.kind`:
+
+| `failure.class` | Meaning | `failure.kind` |
+| --- | --- | --- |
+| `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request` |
+| `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
 
 ## Progress
 

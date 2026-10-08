@@ -19,10 +19,11 @@ mod shutdown;
 
 pub use shutdown::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
 
+use std::fmt;
 use std::sync::OnceLock;
 
 use anyhow::{bail, ensure, Context};
-use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::trace::{Status, TracerProvider as _};
 use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
 use opentelemetry_sdk::resource::{
     EnvResourceDetector, ResourceDetector, TelemetryResourceDetector,
@@ -31,8 +32,8 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tonic::transport::ClientTlsConfig;
-use tracing::error;
-use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing::{error, Span};
+use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt as _};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
@@ -81,6 +82,124 @@ pub fn flush() {
         if let Err(error) = provider.force_flush() {
             error!(%error, "failed to export the remaining spans");
         }
+    }
+}
+
+/// How loudly a failure is alerted on, exported as the span's `failure.class` under the variant's
+/// name in snake case, and its kind, a short name for what happened, exported as `failure.kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum FailureClass {
+    /// Something the service authenticates did not check out, such as a diverged chain.
+    Integrity(&'static str),
+    /// A failure that will not fix itself and needs an operator, such as a hold or a failed
+    /// startup.
+    Actionable(&'static str),
+    /// A failure that is retried by design and matters only when it persists, such as a request
+    /// that timed out.
+    Transient(&'static str),
+}
+
+impl FailureClass {
+    /// The short name for what happened, exported as `failure.kind`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Integrity(kind) | Self::Actionable(kind) | Self::Transient(kind) => kind,
+        }
+    }
+}
+
+/// An error that knows how loudly it is alerted on, so a span can be marked failed from the error
+/// alone.
+pub trait Classified {
+    /// The error's class and kind.
+    fn failure(&self) -> FailureClass;
+}
+
+/// Marks a span failed and records why. The caller still logs the failure at `error`, inside the
+/// span, so it reaches stdout and the exported span carries the details.
+pub trait FailureSpanExt {
+    /// Records `class` as `failure.class` and its kind as `failure.kind`, and sets the span's
+    /// status to an error.
+    fn record_failure(&self, class: FailureClass);
+
+    /// Records the failure `error` classifies itself as.
+    fn record_error(&self, error: &impl Classified) {
+        self.record_failure(error.failure());
+    }
+}
+
+impl FailureSpanExt for Span {
+    fn record_failure(&self, class: FailureClass) {
+        self.set_attribute("failure.class", <&'static str>::from(class));
+        self.set_attribute("failure.kind", class.kind());
+        self.set_status(Status::error(class.kind()));
+    }
+}
+
+/// An error, with the `failure.class` and `failure.kind` the span it stopped is marked with.
+///
+/// Errors that carry no class of their own, such as an [`anyhow::Error`], are classified where
+/// they happen with [`Classify::classify`], because that is the only place the difference is
+/// known: a request that timed out is retried by design, while a store that cannot be written
+/// will not fix itself.
+#[derive(Debug)]
+pub struct Failure {
+    pub class: FailureClass,
+    pub error: anyhow::Error,
+}
+
+impl Failure {
+    pub fn new(class: FailureClass, error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            class,
+            error: error.into(),
+        }
+    }
+
+    /// Wraps an error that classifies itself, under its own class and kind.
+    pub fn classified(error: impl Classified + Into<anyhow::Error>) -> Self {
+        Self::new(error.failure(), error)
+    }
+
+    /// Adds `context` to the error, keeping its class and kind.
+    #[must_use]
+    pub fn context(self, context: &'static str) -> Self {
+        Self {
+            error: self.error.context(context),
+            ..self
+        }
+    }
+
+    /// Marks the current span failed and logs the error inside it at `error`, with its whole
+    /// chain of context.
+    pub fn report(&self, message: &str) {
+        Span::current().record_error(self);
+        error!(error = %format_args!("{:#}", self.error), "{message}");
+    }
+}
+
+impl Classified for Failure {
+    fn failure(&self) -> FailureClass {
+        self.class
+    }
+}
+
+/// Renders the error alone, so `{:#}` still prints its whole chain of context.
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, f)
+    }
+}
+
+/// Classifies the error of a [`Result`] where it is returned.
+pub trait Classify<T> {
+    fn classify(self, class: FailureClass) -> Result<T, Failure>;
+}
+
+impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
+    fn classify(self, class: FailureClass) -> Result<T, Failure> {
+        self.map_err(|error| Failure::new(class, error))
     }
 }
 
@@ -169,4 +288,91 @@ fn non_blank_variable(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::Status;
+    use opentelemetry::{KeyValue, Value};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    use super::*;
+
+    struct Diverged;
+
+    impl Classified for Diverged {
+        fn failure(&self) -> FailureClass {
+            FailureClass::Integrity("chain_diverged")
+        }
+    }
+
+    #[test]
+    fn a_recorded_failure_marks_the_exported_span() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("attester.cycle");
+            span.record_error(&Diverged);
+        });
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let [span] = spans.as_slice() else {
+            panic!("expected one span, got {}", spans.len());
+        };
+        assert_eq!(span.status, Status::error("chain_diverged"));
+        for (key, value) in [
+            ("failure.class", "integrity"),
+            ("failure.kind", "chain_diverged"),
+        ] {
+            assert!(
+                span.attributes
+                    .contains(&KeyValue::new(key, Value::from(value))),
+                "missing {key}={value} in {:?}",
+                span.attributes
+            );
+        }
+    }
+
+    #[test]
+    fn a_reported_failure_keeps_its_class_and_context() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber =
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test")));
+        let failure = Err::<(), _>(anyhow::anyhow!("disk full"))
+            .classify(FailureClass::Actionable("store"))
+            .unwrap_err()
+            .context("saving the cursor");
+        assert_eq!(format!("{failure:#}"), "saving the cursor: disk full");
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info_span!("attester.cycle").in_scope(|| failure.report("cycle stopped"));
+        });
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let [span] = spans.as_slice() else {
+            panic!("expected one span, got {}", spans.len());
+        };
+        assert_eq!(span.status, Status::error("store"));
+        assert!(span
+            .attributes
+            .contains(&KeyValue::new("failure.class", Value::from("actionable"))));
+    }
+
+    /// The alerts match on these names, so a renamed variant must not change them.
+    #[test]
+    fn failure_classes_export_under_their_alerting_names() {
+        for (class, name) in [
+            (FailureClass::Integrity("chain_diverged"), "integrity"),
+            (FailureClass::Actionable("store"), "actionable"),
+            (FailureClass::Transient("chain_read"), "transient"),
+        ] {
+            assert_eq!(<&'static str>::from(class), name);
+        }
+    }
 }

@@ -1033,3 +1033,27 @@ async fn run_stops_when_shutdown_is_set() {
     assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 0);
     assert_eq!(*controls.requests.lock().unwrap(), [BlockNumber::GENESIS]);
 }
+
+/// A cycle's span is marked failed from the discovery error alone, so the alerts depend on these
+/// classes and names.
+#[test]
+fn discovery_errors_classify_as_their_cycle_failures() {
+    use usdcx_telemetry::Classified as _;
+    use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
+
+    use crate::chain::ChainError;
+
+    for (error, failure) in [
+        (
+            DiscoverError::Chain(ChainError::Unavailable),
+            Transient("chain_read"),
+        ),
+        (DiscoverError::ChainDiverged, Integrity("chain_diverged")),
+        (
+            DiscoverError::Store(anyhow::anyhow!("disk full")),
+            Actionable("store"),
+        ),
+    ] {
+        assert_eq!(error.failure(), failure, "{error:?}");
+    }
+}

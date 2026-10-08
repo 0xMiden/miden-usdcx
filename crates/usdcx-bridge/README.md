@@ -132,6 +132,13 @@ The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and com
 well. `RUST_LOG` does not filter the export: it always carries the relayer's and attester's spans
 and events at `info` and above, and only warnings from their dependencies.
 
+The attester's startup is an `attester.startup` span. Each cycle is an `attester.cycle` span, with
+`attester.discover`, `attester.recover`, `attester.submit` and `attester.poll` under it for its
+phases and an `attester.withdraw` span, carrying `note.id`, for each burn it submits. A cycle span
+fails only when the cycle as a whole could not do its work: discovery failed, the chain diverged or
+the store failed. A failure confined to one burn never fails the cycle span. Every failed span
+carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
+
 ## Release held withdrawals
 
 The attester holds a burn that Circle refuses to prepare, and leaves it held until an operator

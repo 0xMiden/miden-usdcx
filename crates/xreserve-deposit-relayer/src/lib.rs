@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{info, info_span, instrument, warn, Instrument as _, Span};
+use tracing::{info, instrument, warn, Span};
 use usdcx_telemetry::{Classify, Failure, FailureClass, FailureSpanExt as _};
 
 pub mod circle;
@@ -355,6 +355,20 @@ impl<M: MidenClient> Relayer<M> {
         self.run_until(CancellationToken::new()).await
     }
 
+    /// Runs one scan in its `relayer.scan` span. Each scan is a root of its own, so a long-running
+    /// relayer is a series of traces rather than one that never ends.
+    ///
+    /// A failure was already logged in the span it happened in; this marks the scan as a whole
+    /// failed.
+    #[instrument(name = "relayer.scan", parent = None, skip_all)]
+    async fn traced_scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
+        let outcome = self.scan(shutdown).await;
+        if let Err(failure) = &outcome {
+            Span::current().record_error(failure);
+        }
+        outcome
+    }
+
     /// Runs until `shutdown` is cancelled.
     ///
     /// The current page finishes and its progress is saved before stopping. Waiting for a mint
@@ -364,15 +378,10 @@ impl<M: MidenClient> Relayer<M> {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            // Each scan is a root of its own, so a long-running relayer is a series of traces rather
-            // than one that never ends.
-            let span = info_span!(parent: None, "relayer.scan");
-            match self.scan(&shutdown).instrument(span.clone()).await {
+            match self.traced_scan(&shutdown).await {
                 Ok(ScanOutcome::Stopped) => return Ok(()),
-                Ok(ScanOutcome::Complete) => {}
-                // The failure was logged in the span it happened in, and the next scan resumes
-                // where this one stopped. This marks the scan as a whole failed.
-                Err(failure) => span.record_error(&failure),
+                // The next scan resumes where a failed one stopped.
+                Ok(ScanOutcome::Complete) | Err(_) => {}
             }
             tokio::select! {
                 () = tokio::time::sleep(self.config.poll_interval) => {}

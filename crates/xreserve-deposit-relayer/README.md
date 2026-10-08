@@ -170,8 +170,8 @@ request. A malformed or unwritable progress file fails startup. Key possession i
 transaction authentication, so successful startup does not replace the operator's key setup or
 guarantee a transaction will succeed.
 
-Logs are a tree per page — the page, its Circle request, the notes it built and the transaction
-that carried them — filtered by `RUST_LOG` (default `info`).
+Each page is a span, with its Circle request, the notes it built and the transaction that carried
+them nested under it. See [Tracing](#tracing) for where they go.
 
 `--miden-data-dir` holds the Miden client's own state:
 
@@ -190,6 +190,27 @@ carried over from an earlier run only syncs what changed since.
 Nothing in the data directory is read back to resume work: a restart picks up from the page
 recorded in the state file below and fetches that page again. The deposits on it that already
 minted are dropped by the used-nonce check rather than proven a second time.
+
+SIGTERM or SIGINT stops the relayer once the page in flight is on chain and recorded, with a
+five-minute limit, so keep a host's stop timeout above five minutes. If the page is still waiting
+for its transaction when the limit passes, for example because the chain stopped producing blocks,
+the process exits with an error and the next start fetches that page again.
+
+## Tracing
+
+Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
+the relayer's spans over OpenTelemetry, using gRPC with the system's root certificates for TLS:
+
+| Variable | Meaning |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
+| `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `xreserve-deposit-relayer`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
+well. `RUST_LOG` does not filter the export: it always carries the relayer's spans and events at
+`info` and above, and only warnings from its dependencies.
 
 ## Progress
 

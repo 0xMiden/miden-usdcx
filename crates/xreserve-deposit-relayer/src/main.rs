@@ -5,9 +5,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use tokio_util::sync::CancellationToken;
 
 use xreserve_deposit_relayer::config::Config;
 use xreserve_deposit_relayer::miden::NodeClient;
@@ -15,10 +13,7 @@ use xreserve_deposit_relayer::Relayer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_forest::ForestLayer::default())
-        .init();
+    let _telemetry = usdcx_telemetry::init("xreserve-deposit-relayer")?;
 
     let config = Config::parse();
 
@@ -26,5 +21,16 @@ async fn main() -> Result<()> {
         .await
         .context("connecting to miden")?;
 
-    Relayer::new(config, miden)?.run().await
+    let relayer = Relayer::new(config, miden)?;
+    let shutdown = CancellationToken::new();
+    usdcx_telemetry::cancel_on_signal(shutdown.clone())?;
+
+    // A signal lets the page in flight finish and save its progress, and `main` then returns so the
+    // telemetry guard sends the spans that are still buffered.
+    usdcx_telemetry::stop_within(
+        relayer.run_until(shutdown.clone()),
+        &shutdown,
+        usdcx_telemetry::SHUTDOWN_TIMEOUT,
+    )
+    .await
 }

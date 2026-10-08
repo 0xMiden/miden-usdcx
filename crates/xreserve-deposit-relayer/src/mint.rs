@@ -14,7 +14,8 @@ use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
 use tracing::instrument;
-use usdcx_telemetry::{Classify as _, FailureClass};
+use usdcx_telemetry::Classify as _;
+use usdcx_telemetry::FailureClass::Actionable;
 
 use miden_usdcx::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use miden_usdcx::xreserve::encoding::{CircleDomain, DepositIntent};
@@ -139,7 +140,7 @@ impl Minter {
             match self
                 .build_note(attestation)
                 .with_context(|| format!("attestation {}", attestation.message_hash))
-                .classify(FailureClass::Actionable, "attestation_skipped")
+                .classify(Actionable("attestation_skipped"))
             {
                 Ok(note) => built.notes.push(note),
                 Err(failure) => {

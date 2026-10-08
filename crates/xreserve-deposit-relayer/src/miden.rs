@@ -48,7 +48,8 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
-use usdcx_telemetry::{Classify, Failure, FailureClass};
+use usdcx_telemetry::FailureClass::{Actionable, Transient};
+use usdcx_telemetry::{Classify, Failure};
 
 use miden_usdcx::account::XReserveFaucetExtension;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
@@ -289,7 +290,7 @@ impl MidenClient for NodeClient {
             .sync_state()
             .await
             .context("syncing before reading the used nonces")
-            .classify(FailureClass::Transient, "node_sync")?;
+            .classify(Transient("node_sync"))?;
 
         let slot = XReserveFaucetExtension::used_nonces_slot();
         let faucet = self.faucet;
@@ -300,7 +301,7 @@ impl MidenClient for NodeClient {
                 .get_storage_map_item(slot.clone(), note.nonce().to_storage_map_key())
                 .await
                 .with_context(|| format!("reading the used nonces of the faucet {faucet}"))
-                .classify(FailureClass::Actionable, "client_store")?;
+                .classify(Actionable("client_store"))?;
             if value == EMPTY_WORD {
                 unminted.push(note);
             }
@@ -335,7 +336,7 @@ impl MidenClient for NodeClient {
             .expiration_delta(self.expiration_delta.get())
             .build()
             .context("building the mint transaction")
-            .classify(FailureClass::Actionable, "transaction_request")?;
+            .classify(Actionable("transaction_request"))?;
 
         let client = &mut self.client;
 
@@ -345,13 +346,13 @@ impl MidenClient for NodeClient {
             .sync_state()
             .await
             .context("syncing before the mint transaction")
-            .classify(FailureClass::Transient, "node_sync")?;
+            .classify(Transient("node_sync"))?;
 
         let transaction = client
             .submit_new_transaction(sender, request)
             .await
             .context("submitting the mint transaction")
-            .classify(FailureClass::Transient, "transaction_submit")?;
+            .classify(Transient("transaction_submit"))?;
         span.record("transaction.id", display(transaction));
 
         loop {
@@ -361,7 +362,7 @@ impl MidenClient for NodeClient {
                 .sync_state()
                 .await
                 .context("syncing while waiting for the mint transaction")
-                .classify(FailureClass::Transient, "node_sync")?;
+                .classify(Transient("node_sync"))?;
 
             let record = client
                 .get_transactions(TransactionFilter::Ids(vec![transaction]))
@@ -372,7 +373,7 @@ impl MidenClient for NodeClient {
                         format!("the client stopped tracking the transaction {transaction}")
                     })
                 })
-                .classify(FailureClass::Actionable, "client_store")?;
+                .classify(Actionable("client_store"))?;
             let expiration_block = record.details.expiration_block_num;
             span.record("expiration_block", expiration_block.as_u32());
 
@@ -381,7 +382,7 @@ impl MidenClient for NodeClient {
                 .get_sync_height()
                 .await
                 .context("reading how far the chain has been synced")
-                .classify(FailureClass::Actionable, "client_store")?;
+                .classify(Actionable("client_store"))?;
 
             match inclusion(&record.status, chain_tip, expiration_block).map_err(|failure| {
                 Failure {
@@ -428,13 +429,11 @@ fn inclusion(
     match status {
         TransactionStatus::Committed { block_number, .. } => Ok(Inclusion::Included(*block_number)),
         TransactionStatus::Discarded(cause) => Err(Failure::new(
-            FailureClass::Transient,
-            "transaction_discarded",
+            Transient("transaction_discarded"),
             anyhow!("the node discarded it: {cause}"),
         )),
         TransactionStatus::Pending if chain_tip >= expiration_block => Err(Failure::new(
-            FailureClass::Transient,
-            "transaction_expired",
+            Transient("transaction_expired"),
             anyhow!(
                 "it expired at block {} and the chain is at {}",
                 expiration_block.as_u32(),
@@ -506,10 +505,7 @@ mod tests {
             failure.to_string().contains("expired at block 100"),
             "unexpected error: {failure}"
         );
-        assert_eq!(
-            (failure.class, failure.kind),
-            (FailureClass::Transient, "transaction_expired")
-        );
+        assert_eq!(failure.class, Transient("transaction_expired"));
     }
 
     /// A discarded transaction can never commit, so waiting on it would never end.
@@ -524,10 +520,7 @@ mod tests {
             failure.to_string().contains("discarded"),
             "unexpected error: {failure}"
         );
-        assert_eq!(
-            (failure.class, failure.kind),
-            (FailureClass::Transient, "transaction_discarded")
-        );
+        assert_eq!(failure.class, Transient("transaction_discarded"));
     }
 
     /// An expiration delta of at least one block leaves the transaction a block to land in.

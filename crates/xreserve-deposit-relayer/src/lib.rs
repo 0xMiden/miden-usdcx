@@ -21,7 +21,8 @@ use miden_protocol::note::Note;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
 use tracing::{info, instrument, warn, Span};
-use usdcx_telemetry::{Classify, Failure, FailureClass, FailureSpanExt as _};
+use usdcx_telemetry::FailureClass::Actionable;
+use usdcx_telemetry::{Classify, Failure, FailureSpanExt as _};
 
 pub mod circle;
 pub mod config;
@@ -83,7 +84,7 @@ impl Relayer<NodeClient> {
     pub async fn start(config: Config) -> Result<Self> {
         Self::connect(config)
             .await
-            .classify(FailureClass::Actionable, "startup")
+            .classify(Actionable("startup"))
             .map_err(|failure| {
                 failure.report("relayer startup failed");
                 failure.error
@@ -149,11 +150,7 @@ impl<M: MidenClient> Relayer<M> {
     /// - Fetching a Circle page fails.
     /// - Submitting the mint notes fails.
     async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
-        let mut state = match self
-            .store
-            .state()
-            .classify(FailureClass::Actionable, "progress_file")
-        {
+        let mut state = match self.store.state().classify(Actionable("progress_file")) {
             Ok(state) => state,
             Err(failure) => {
                 failure.report("could not read the relayer's progress");
@@ -241,7 +238,7 @@ impl<M: MidenClient> Relayer<M> {
         if next != *state {
             self.store
                 .set_state(&next)
-                .classify(FailureClass::Actionable, "progress_file")?;
+                .classify(Actionable("progress_file"))?;
         }
         Ok(Some(next))
     }

@@ -13,8 +13,8 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::crypto::utils::Deserializable;
 use miden_protocol::{Felt, Word};
-use tracing::{error, instrument, Span};
-use usdcx_telemetry::FailureSpanExt as _;
+use tracing::instrument;
+use usdcx_telemetry::{Classify as _, FailureClass};
 
 use miden_usdcx::note::xreserve_mint::{DepositAttestation, XUsdcMintNote};
 use miden_usdcx::xreserve::encoding::{CircleDomain, DepositIntent};
@@ -136,15 +136,14 @@ impl Minter {
             skipped: Vec::new(),
         };
         for attestation in attestations {
-            match self.build_note(attestation) {
+            match self
+                .build_note(attestation)
+                .with_context(|| format!("attestation {}", attestation.message_hash))
+                .classify(FailureClass::Actionable, "attestation_skipped")
+            {
                 Ok(note) => built.notes.push(note),
-                Err(error) => {
-                    Span::current().record_actionable_failure("attestation_skipped");
-                    error!(
-                        message_hash = %attestation.message_hash,
-                        error = format!("{error:#}"),
-                        "skipping an attestation that will not build"
-                    );
+                Err(failure) => {
+                    failure.report("skipping an attestation that will not build");
                     built.skipped.push(attestation.message_hash);
                 }
             }

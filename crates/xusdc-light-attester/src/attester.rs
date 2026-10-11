@@ -419,9 +419,7 @@ impl Attester {
             return Err(error);
         }
         let (hold, response, message) = burn_hold(&error);
-        if let Some(reason) = hold {
-            self.store.hold_burn(burn.note_id(), reason, response)?;
-        }
+        // Logged before the hold is written, so a failed write cannot lose the failure.
         Span::current().record_error(&error);
         error!(
             note_id = %burn.note_id(),
@@ -430,6 +428,9 @@ impl Attester {
             circle_message = message.as_deref(),
             "withdrawal failed before submission"
         );
+        if let Some(reason) = hold {
+            self.store.hold_burn(burn.note_id(), reason, response)?;
+        }
         Err(error)
     }
 

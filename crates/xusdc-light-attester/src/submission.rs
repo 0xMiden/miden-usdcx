@@ -256,13 +256,12 @@ impl Attester {
     }
 
     /// Saves the request's latest outcome. A `failure` is logged at `error` and marks the
-    /// request's span failed.
+    /// request's span failed before the write, so a failed write cannot lose it.
     fn save_outcome(
         &mut self,
         saved: &SavedSubmission,
         failure: Option<FailureClass>,
     ) -> Result<(), SubmitError> {
-        self.store.update_submission_outcome(saved)?;
         if let Some(class) = failure {
             Span::current().record_failure(class);
             // For a failed withdrawal the saved text is Circle's own failure reason: outside text
@@ -286,6 +285,7 @@ impl Attester {
                 "withdrawal submission needs attention"
             );
         }
+        self.store.update_submission_outcome(saved)?;
         Ok(())
     }
 }

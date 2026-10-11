@@ -39,7 +39,7 @@ use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionRequestBuilder, TransactionStatus};
-use miden_client::Client;
+use miden_client::{Client, ClientError};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -49,7 +49,7 @@ use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
 use tracing::{instrument, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
-use usdcx_telemetry::{Classify, Failure};
+use usdcx_telemetry::{Classify, Failure, FailureClass, FailureContext as _};
 
 use miden_usdcx::account::XReserveFaucetExtension;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
@@ -140,8 +140,8 @@ impl FromStr for ExpirationDelta {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
-        let value: u16 = value
-            .parse()
+        let value = value
+            .parse::<u16>()
             .context("the expiration delta is not a number of blocks")?;
         Self::try_from(value)
     }
@@ -289,8 +289,8 @@ impl MidenClient for NodeClient {
         self.client
             .sync_state()
             .await
-            .context("syncing before reading the used nonces")
-            .classify(Transient("node_sync"))?;
+            .classify_with(|error| client_class(error, "node_sync"))
+            .context("syncing before reading the used nonces")?;
 
         let slot = XReserveFaucetExtension::used_nonces_slot();
         let faucet = self.faucet;
@@ -345,14 +345,14 @@ impl MidenClient for NodeClient {
         client
             .sync_state()
             .await
-            .context("syncing before the mint transaction")
-            .classify(Transient("node_sync"))?;
+            .classify_with(|error| client_class(error, "node_sync"))
+            .context("syncing before the mint transaction")?;
 
         let transaction = client
             .submit_new_transaction(sender, request)
             .await
-            .context("submitting the mint transaction")
-            .classify(Transient("transaction_submit"))?;
+            .classify_with(|error| client_class(error, "transaction_submit"))
+            .context("submitting the mint transaction")?;
         span.record("transaction.id", display(transaction));
 
         loop {
@@ -361,8 +361,8 @@ impl MidenClient for NodeClient {
             client
                 .sync_state()
                 .await
-                .context("syncing while waiting for the mint transaction")
-                .classify(Transient("node_sync"))?;
+                .classify_with(|error| client_class(error, "node_sync"))
+                .context("syncing while waiting for the mint transaction")?;
 
             let record = client
                 .get_transactions(TransactionFilter::Ids(vec![transaction]))
@@ -399,6 +399,18 @@ impl MidenClient for NodeClient {
                 Inclusion::Waiting => tokio::time::sleep(INCLUSION_POLL_INTERVAL).await,
             }
         }
+    }
+}
+
+/// The class of a Miden client error under `kind`.
+///
+/// Only a failed exchange with the node is `transient`. The client's other errors come from its own
+/// store, its keystore, or executing and proving the transaction, such as a signing key missing
+/// from the keystore, and retrying will not fix those, so they are `actionable`.
+fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
+    match error {
+        ClientError::RpcError(_) => Transient(kind),
+        _ => Actionable(kind),
     }
 }
 
@@ -446,6 +458,7 @@ fn inclusion(
 
 #[cfg(test)]
 mod tests {
+    use miden_client::rpc::RpcError;
     use miden_client::transaction::DiscardCause;
     use rstest::rstest;
 
@@ -521,6 +534,21 @@ mod tests {
             "unexpected error: {failure}"
         );
         assert_eq!(failure.class, Transient("transaction_discarded"));
+    }
+
+    /// Only a failed exchange with the node is retried by design; a client error of its own needs
+    /// an operator.
+    #[rstest]
+    #[case::node(
+        ClientError::RpcError(RpcError::ExpectedDataMissing("block header".into())),
+        Transient("node_sync")
+    )]
+    #[case::client(ClientError::AccountNonceTooLow, Actionable("node_sync"))]
+    fn client_errors_are_transient_only_from_the_node(
+        #[case] error: ClientError,
+        #[case] class: FailureClass,
+    ) {
+        assert_eq!(client_class(&error, "node_sync"), class);
     }
 
     /// An expiration delta of at least one block leaves the transaction a block to land in.

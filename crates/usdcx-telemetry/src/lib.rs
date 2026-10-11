@@ -224,12 +224,39 @@ impl fmt::Display for Failure {
 
 /// Classifies the error of a [`Result`] where it is returned.
 pub trait Classify<T> {
+    /// The error being classified.
+    type Error;
+
     fn classify(self, class: FailureClass) -> Result<T, Failure>;
+
+    /// Classifies the error by looking at it first, for an error whose class depends on which of
+    /// its variants failed. Context added beforehand would hide the variant, so it is added to the
+    /// failure afterwards with [`FailureContext::context`].
+    fn classify_with(self, class: impl FnOnce(&Self::Error) -> FailureClass) -> Result<T, Failure>;
 }
 
 impl<T, E: Into<anyhow::Error>> Classify<T> for Result<T, E> {
+    type Error = E;
+
     fn classify(self, class: FailureClass) -> Result<T, Failure> {
         self.map_err(|error| Failure::new(class, error))
+    }
+
+    fn classify_with(self, class: impl FnOnce(&E) -> FailureClass) -> Result<T, Failure> {
+        self.map_err(|error| Failure::new(class(&error), error))
+    }
+}
+
+/// Adds context to the [`Failure`] of a [`Result`], for a failure classified before its context
+/// was added.
+pub trait FailureContext<T> {
+    /// Adds `context` to the failure, keeping its class and kind.
+    fn context(self, context: &'static str) -> Result<T, Failure>;
+}
+
+impl<T> FailureContext<T> for Result<T, Failure> {
+    fn context(self, context: &'static str) -> Result<T, Failure> {
+        self.map_err(|failure| failure.context(context))
     }
 }
 
@@ -435,6 +462,22 @@ mod tests {
         assert!(span
             .attributes
             .contains(&KeyValue::new("failure.class", Value::from("actionable"))));
+    }
+
+    /// The class can be chosen by looking at the error, which keeps it in the failure, and context
+    /// added afterwards keeps the class.
+    #[test]
+    fn an_error_can_choose_its_own_class() {
+        let failure = Err::<(), _>(std::io::Error::from(std::io::ErrorKind::TimedOut))
+            .classify_with(|error| match error.kind() {
+                std::io::ErrorKind::TimedOut => FailureClass::Transient("timeout"),
+                _ => FailureClass::Actionable("io"),
+            })
+            .context("reading the cursor")
+            .unwrap_err();
+        assert_eq!(failure.class, FailureClass::Transient("timeout"));
+        assert!(failure.error.downcast_ref::<std::io::Error>().is_some());
+        assert!(format!("{failure:#}").starts_with("reading the cursor: "));
     }
 
     /// The alerts match on these names, so a renamed variant must not change them.

@@ -229,6 +229,11 @@ that skipped it, and the page counts it in `attestations.skipped.count` and name
 | `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request` |
 | `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
 
+`node_sync` and `transaction_submit` are `transient` only when the node could not be reached or
+answered with an error. The same calls also use the Miden client's store and keystore and execute
+and prove the transaction. A failure there, such as a signing key missing from the keystore, keeps
+the kind and is `actionable`.
+
 ## Progress
 
 `--state-file` holds a small JSON document recording how far the relayer got:

@@ -186,8 +186,9 @@ docker start "usdcx-bridge-$USDCX_NETWORK"
 ```
 
 Stop sends SIGTERM and drains the current page and withdrawal cycle. Keep the platform's stop
-timeout above the process's five-minute limit (360 seconds above). If either service exits
-unexpectedly, both stop with an error. Restart with the same volume and configuration.
+timeout above the process's five-minute limit (360 seconds above). A signal during startup lets it
+finish under the same limit, and the bridge then stops before doing any work. If either service
+exits unexpectedly, both stop with an error. Restart with the same volume and configuration.
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
 Use an image version compatible with the deployed faucet; updating the service does not update
@@ -206,10 +207,11 @@ certificates for TLS:
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
 | `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `usdcx-bridge`. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+| `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
 
 The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
-well. `RUST_LOG` does not filter the export: it always carries the relayer's and attester's spans
-and events at `info` and above, and only warnings from their dependencies.
+well. `RUST_LOG` does not filter the export, so lowering the log level never removes the spans the
+alerts are built on.
 
 ## Troubleshooting
 

@@ -194,7 +194,8 @@ minted are dropped by the used-nonce check rather than proven a second time.
 SIGTERM or SIGINT stops the relayer once the page in flight is on chain and recorded, with a
 five-minute limit, so keep a host's stop timeout above five minutes. If the page is still waiting
 for its transaction when the limit passes, for example because the chain stopped producing blocks,
-the process exits with an error and the next start fetches that page again.
+the process exits with an error and the next start fetches that page again. A signal during startup
+lets it finish under the same limit, and the relayer then stops before its first page.
 
 ## Tracing
 
@@ -207,10 +208,11 @@ the relayer's spans over OpenTelemetry, using gRPC with the system's root certif
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
 | `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `xreserve-deposit-relayer`. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+| `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
 
 The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
-well. `RUST_LOG` does not filter the export: it always carries the relayer's spans and events at
-`info` and above, and only warnings from its dependencies.
+well. `RUST_LOG` does not filter the export, so lowering the log level never removes the spans the
+alerts are built on.
 
 ## Progress
 

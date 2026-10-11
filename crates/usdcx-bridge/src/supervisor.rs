@@ -3,7 +3,8 @@
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use usdcx_telemetry::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
@@ -16,6 +17,27 @@ pub(crate) async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
     cancel_on_signal(shutdown.clone())?;
 
+    // A signal during startup lets it finish under the same time limit as the work in flight, and
+    // both services then see the shutdown and stop before doing any work.
+    let (attester, relayer) =
+        stop_within(start(config, shutdown.clone()), &shutdown, SHUTDOWN_TIMEOUT).await?;
+    info!("deposit relayer and withdrawal attester started");
+
+    supervise(
+        attester.run(shutdown.clone()),
+        async { relayer.await.context("relayer task failed")? },
+        shutdown,
+        SHUTDOWN_TIMEOUT,
+    )
+    .await
+}
+
+/// Starts the attester, then the relayer on a thread of its own, and returns once both have passed
+/// startup. The relayer's thread goes on to run it until `shutdown` is cancelled.
+async fn start(
+    config: Config,
+    shutdown: CancellationToken,
+) -> Result<(AttesterService, JoinHandle<Result<()>>)> {
     // No deposit work starts until the attester and both KMS signers pass startup.
     let attester = AttesterService::start(config.attester).await?;
     info!(service = "attester", "startup checks passed");
@@ -23,7 +45,6 @@ pub(crate) async fn run(config: Config) -> Result<()> {
     // The Miden client's futures are not `Send`, so the relayer cannot be spawned as a task.
     // It runs on a blocking thread of its own, driven by this runtime, which also keeps proving a
     // mint transaction from stalling the attester.
-    let relayer_shutdown = shutdown.clone();
     let runtime = tokio::runtime::Handle::current();
     let relayer = tokio::task::spawn_blocking(move || {
         runtime.block_on(async move {
@@ -33,23 +54,17 @@ pub(crate) async fn run(config: Config) -> Result<()> {
             let relayer = Relayer::new(config.relayer, node)?;
             info!(service = "relayer", "startup checks passed");
             let _ = ready_sender.send(());
-            relayer.run_until(relayer_shutdown).await
+            relayer.run_until(shutdown).await
         })
     });
-    let relayer = async { relayer.await.context("relayer task failed")? };
     if ready_receiver.await.is_err() {
         // The relayer only drops its readiness sender without sending when its startup fails.
-        return relayer.await.context("relayer startup failed");
+        return Err(match relayer.await.context("relayer task failed")? {
+            Err(error) => error.context("relayer startup failed"),
+            Ok(()) => anyhow!("relayer stopped before passing startup"),
+        });
     }
-    info!("deposit relayer and withdrawal attester started");
-
-    supervise(
-        attester.run(shutdown.clone()),
-        relayer,
-        shutdown,
-        SHUTDOWN_TIMEOUT,
-    )
-    .await
+    Ok((attester, relayer))
 }
 
 /// Runs both services until both have stopped. Either one stopping requests shutdown of the other,

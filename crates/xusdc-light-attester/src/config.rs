@@ -16,6 +16,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteId;
 use miden_protocol::Word;
 use reqwest::Url;
+use usdcx_telemetry::TelemetryArgs;
 
 /// Command-line deployment settings for the attester.
 #[derive(Debug, Parser)]
@@ -144,6 +145,8 @@ pub struct Invocation {
     pub command: Option<Command>,
     #[command(flatten)]
     pub run: Option<Cli>,
+    #[command(flatten)]
+    pub telemetry: TelemetryArgs,
 }
 
 #[derive(Debug, Subcommand)]

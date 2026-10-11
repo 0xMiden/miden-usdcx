@@ -202,13 +202,13 @@ lets it finish under the same limit, and the relayer then stops before its first
 Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
 the relayer's spans over OpenTelemetry, using gRPC with the system's root certificates for TLS:
 
-| Variable | Meaning |
+| Option / variable | Meaning |
 | --- | --- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `--otel-exporter-otlp-endpoint` / `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `--otel-exporter-otlp-traces-endpoint` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
-| `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `xreserve-deposit-relayer`. |
+| `--otel-service-name` / `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `xreserve-deposit-relayer`. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
-| `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
+| `--export-filter` / `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
 
 The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
 well. `RUST_LOG` does not filter the export, so lowering the log level never removes the spans the

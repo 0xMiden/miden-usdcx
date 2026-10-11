@@ -8,8 +8,8 @@ use xusdc_attester::service::{run_command, AttesterService};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _telemetry = usdcx_telemetry::init("xusdc-attester")?;
     let invocation = Invocation::parse();
+    let _telemetry = usdcx_telemetry::init("xusdc-attester", &invocation.telemetry)?;
     if let Some(command) = invocation.command {
         return run_command(command);
     }

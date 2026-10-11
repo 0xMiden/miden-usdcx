@@ -36,7 +36,7 @@ anyhow = "1"
 aws-config = { version = "=1.12.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 thiserror = "2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 opentelemetry = "0.31"

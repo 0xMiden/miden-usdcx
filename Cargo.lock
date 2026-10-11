@@ -6718,6 +6718,7 @@ name = "usdcx-telemetry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "clap",
  "humantime",
  "opentelemetry",
  "opentelemetry-otlp",

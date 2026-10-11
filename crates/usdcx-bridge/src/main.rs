@@ -8,7 +8,7 @@ use xusdc_attester::service::run_command;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = config::Cli::parse();
-    let _telemetry = usdcx_telemetry::init("usdcx-bridge")?;
+    let _telemetry = usdcx_telemetry::init("usdcx-bridge", &cli.telemetry)?;
     let run = match cli.command {
         config::Command::Run(run) => *run,
         config::Command::Attester(command) => return run_command(command),

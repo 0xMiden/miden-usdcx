@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use miden_protocol::account::AccountId;
 use miden_usdcx::xreserve::encoding::CircleDomain;
+use usdcx_telemetry::TelemetryArgs;
 use xreserve_deposit_relayer::circle::PageSize;
 use xreserve_deposit_relayer::config::{parse_account_id, Config as RelayerConfig};
 use xreserve_deposit_relayer::miden::ExpirationDelta;
@@ -20,6 +21,8 @@ use xusdc_attester::config::{
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Command,
+    #[command(flatten)]
+    pub(crate) telemetry: TelemetryArgs,
 }
 
 #[derive(Subcommand)]

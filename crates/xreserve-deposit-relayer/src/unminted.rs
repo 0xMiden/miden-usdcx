@@ -25,14 +25,18 @@ impl Unminted {
         self.deposits.iter().map(|(nonce, _)| *nonce)
     }
 
-    /// Starts tracking deposits whose mint notes landed on chain at `at`.
+    /// Starts tracking deposits whose mint notes landed on chain at `at`. A deposit already tracked,
+    /// submitted again by a retried page, keeps the time it first landed and is counted once.
     pub(crate) fn submitted(
         &mut self,
         nonces: impl IntoIterator<Item = DepositNonce>,
         at: Instant,
     ) {
-        self.deposits
-            .extend(nonces.into_iter().map(|nonce| (nonce, at)));
+        for nonce in nonces {
+            if !self.deposits.iter().any(|(tracked, _)| *tracked == nonce) {
+                self.deposits.push((nonce, at));
+            }
+        }
     }
 
     /// Stops tracking every deposit that is not in `unminted`, the nonces the faucet has not
@@ -91,5 +95,19 @@ mod tests {
         unminted.retain(&[]);
         assert_eq!(unminted.count(), 0);
         assert_eq!(unminted.oldest_age(now), Duration::ZERO);
+    }
+
+    /// A deposit submitted again by a retried page is counted once and keeps its first time.
+    #[test]
+    fn a_deposit_submitted_twice_keeps_its_first_time() {
+        let start = Instant::now();
+        let mut unminted = Unminted::default();
+        unminted.submitted([nonce(1)], start);
+        unminted.submitted([nonce(1), nonce(2)], start + Duration::from_secs(10));
+        assert_eq!(unminted.nonces().collect::<Vec<_>>(), [nonce(1), nonce(2)]);
+        assert_eq!(
+            unminted.oldest_age(start + Duration::from_secs(25)),
+            Duration::from_secs(25)
+        );
     }
 }

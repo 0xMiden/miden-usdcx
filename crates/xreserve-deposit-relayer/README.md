@@ -227,9 +227,11 @@ stopped fails with it. An attestation that will not build fails only the `relaye
 that skipped it, and the page counts it in `attestations.skipped.count` and names it in
 `attestations.skipped.message_hashes`.
 
-Every page also carries `deposits.unminted.count`, the deposits earlier pages put on chain that the
-faucet has not minted yet, and `deposits.unminted.oldest_age_secs`, how long the oldest of them has
-been on chain; both are 0 when none is waiting. Every failed span carries `failure.class` and
+Every page also carries `deposits.unminted.count`, the deposits put on chain that the faucet has not
+minted yet, and `deposits.unminted.oldest_age_secs`, how long the oldest of them has been on chain;
+both are 0 when none is waiting. They are recorded when the page ends, so they include the deposits
+the page itself put on chain, and a page that fails still records the deposits already waiting. The
+list is kept in memory, so a restart clears it. Every failed span carries `failure.class` and
 `failure.kind`:
 
 | `failure.class` | Meaning | `failure.kind` |

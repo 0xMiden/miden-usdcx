@@ -189,6 +189,10 @@ impl<M: MidenClient> Relayer<M> {
     ///
     /// A failure marks the page span failed and is logged inside it, so the span says why the page
     /// was not recorded as done.
+    ///
+    /// The deposits still waiting for the faucet are recorded once the page ends, failed or not, so
+    /// they include the ones the page just put on chain, and a Circle or node outage does not hide
+    /// them.
     #[instrument(
         name = "relayer.page",
         skip_all,
@@ -211,6 +215,12 @@ impl<M: MidenClient> Relayer<M> {
         // Boxed because the page's future, which holds the Miden client's, is deep enough that
         // nesting it in the scan's future exceeds the compiler's recursion limit.
         let result = Box::pin(self.finish_page(state)).await;
+        let span = Span::current();
+        span.record("deposits.unminted.count", self.unminted.count());
+        span.record(
+            "deposits.unminted.oldest_age_secs",
+            self.unminted.oldest_age(Instant::now()).as_secs(),
+        );
         if let Err(failure) = &result {
             failure.report("the page failed; the next scan resumes at it");
         }
@@ -330,11 +340,6 @@ impl<M: MidenClient> Relayer<M> {
             )
             .await?;
         self.unminted.retain(&unminted);
-        span.record("deposits.unminted.count", self.unminted.count());
-        span.record(
-            "deposits.unminted.oldest_age_secs",
-            self.unminted.oldest_age(Instant::now()).as_secs(),
-        );
         let notes: Vec<XUsdcMintNote> = notes
             .into_iter()
             .filter(|note| unminted.contains(&note.nonce()))

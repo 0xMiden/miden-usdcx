@@ -198,14 +198,16 @@ impl Attester {
         )
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
-        let ended = finish_cycle(self.cycle(rate_limited).await);
+        let outcome = self.cycle(rate_limited).await;
         if let Err(failure) = self
             .record_progress(&Span::current())
             .classify(Actionable("store"))
         {
             failure.report("could not read the cycle's progress");
         }
-        ended
+        // The cycle's own failure is reported last, so it is the one the span keeps when reading
+        // the progress failed too.
+        finish_cycle(outcome)
     }
 
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.

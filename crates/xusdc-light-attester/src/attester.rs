@@ -581,23 +581,18 @@ fn finish_cycle(
     outcome: Result<CycleReport, Failure>,
     progress: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    if let Err(error) = progress {
-        // Keep the cycle's own failure as the main error when both operations fail.
-        if matches!(
-            &outcome,
-            Ok(CycleReport {
-                discover: Ok(()),
-                ..
-            })
-        ) {
-            Span::current().record_failure(Actionable("store"));
-        }
+    if let Err(error) = &progress {
         error!(error = %format_args!("{error:#}"), "could not read the cycle's progress");
     }
     match outcome {
         Ok(CycleReport {
             discover: Ok(()), ..
-        }) => Ok(()),
+        }) => {
+            if progress.is_err() {
+                Span::current().record_failure(Actionable("store"));
+            }
+            Ok(())
+        }
         Ok(CycleReport {
             discover: Err(error),
             ..

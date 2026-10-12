@@ -7197,6 +7197,8 @@ dependencies = [
  "miden-protocol",
  "miden-standards",
  "miden-usdcx",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest",
  "rusqlite",
  "serde",
@@ -7207,6 +7209,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
  "usdcx-telemetry",
 ]

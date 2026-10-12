@@ -199,15 +199,8 @@ impl Attester {
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
         let outcome = self.cycle(rate_limited).await;
-        if let Err(failure) = self
-            .record_progress(&Span::current())
-            .classify(Actionable("store"))
-        {
-            failure.report("could not read the cycle's progress");
-        }
-        // The cycle's own failure is reported last, so it is the one the span keeps when reading
-        // the progress failed too.
-        finish_cycle(outcome)
+        let progress = self.record_progress(&Span::current());
+        finish_cycle(outcome, progress)
     }
 
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
@@ -584,7 +577,23 @@ fn discovery_outcome(
 /// the cycle as a whole could not do its work: discovery failed, the chain diverged or the store
 /// failed. A failure confined to one burn or one withdrawal leaves it alone. Returns the error that
 /// ends the run, which is a diverged chain.
-fn finish_cycle(outcome: Result<CycleReport, Failure>) -> anyhow::Result<()> {
+fn finish_cycle(
+    outcome: Result<CycleReport, Failure>,
+    progress: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Err(error) = progress {
+        // Keep the cycle's own failure as the main error when both operations fail.
+        if matches!(
+            &outcome,
+            Ok(CycleReport {
+                discover: Ok(()),
+                ..
+            })
+        ) {
+            Span::current().record_failure(Actionable("store"));
+        }
+        error!(error = %format_args!("{error:#}"), "could not read the cycle's progress");
+    }
     match outcome {
         Ok(CycleReport {
             discover: Ok(()), ..
@@ -716,4 +725,92 @@ fn find_burns_in_block(
     }
 
     Ok((new_burn_notes, new_burns))
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::{Status, TracerProvider as _};
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::*;
+
+    #[test]
+    fn progress_errors_do_not_replace_cycle_errors() {
+        for (discover, progress_fails, expected) in [
+            (
+                Err(DiscoverError::ChainDiverged),
+                true,
+                Some(Integrity("chain_diverged")),
+            ),
+            (
+                Err(DiscoverError::Chain(ChainError::Unavailable)),
+                true,
+                Some(Transient("chain_read")),
+            ),
+            (Ok(()), true, Some(Actionable("store"))),
+            (Ok(()), false, None),
+        ] {
+            let stops = matches!(&discover, Err(DiscoverError::ChainDiverged));
+            let outcome = match discover {
+                Err(error @ DiscoverError::ChainDiverged) => Err(Failure::classified(error)),
+                discover => Ok(CycleReport {
+                    discover,
+                    submit: Ok(()),
+                }),
+            };
+            let progress = if progress_fails {
+                Err(anyhow::anyhow!("could not read the store"))
+            } else {
+                Ok(())
+            };
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            let subscriber = tracing_subscriber::registry()
+                .with(OpenTelemetryLayer::new(provider.tracer("test")));
+            let result = tracing::subscriber::with_default(subscriber, || {
+                info_span!(parent: None, "attester.cycle").in_scope(|| {
+                    info_span!("attester.discover").in_scope(|| {});
+                    finish_cycle(outcome, progress)
+                })
+            });
+            if stops {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<DiscoverError>(),
+                    Some(DiscoverError::ChainDiverged)
+                ));
+            } else {
+                result.unwrap();
+            }
+
+            let spans = exporter.get_finished_spans().unwrap();
+            let cycle = spans
+                .iter()
+                .find(|span| span.name == "attester.cycle")
+                .unwrap();
+            let failures: Vec<_> = cycle
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.key.as_str().starts_with("failure."))
+                .cloned()
+                .collect();
+            if let Some(class) = expected {
+                assert_eq!(cycle.status, Status::error(class.kind()));
+                assert_eq!(
+                    failures,
+                    [
+                        KeyValue::new("failure.class", <&'static str>::from(class)),
+                        KeyValue::new("failure.kind", class.kind()),
+                    ]
+                );
+            } else {
+                assert_eq!(cycle.status, Status::Unset);
+                assert!(failures.is_empty());
+            }
+        }
+    }
 }

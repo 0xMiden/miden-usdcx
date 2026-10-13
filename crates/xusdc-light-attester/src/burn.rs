@@ -3,7 +3,7 @@
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteId, Nullifier};
-use miden_protocol::transaction::{PublicOutputNote, TransactionId};
+use miden_protocol::transaction::PublicOutputNote;
 use miden_standards::note::NetworkAccountTarget;
 use miden_usdcx::note::xreserve_burn::{
     XReserveBurnNote, XUsdcBurnAttachment, XRESERVE_BURN_WITHDRAWAL_ATTACHMENT_SCHEME,
@@ -95,16 +95,11 @@ impl BurnCandidate {
         self.note.as_note().nullifier()
     }
 
-    pub(crate) fn into_discovered(
-        self,
-        consumption_block: BlockNumber,
-        burn_tx_id: TransactionId,
-    ) -> DiscoveredBurn {
+    pub(crate) fn into_discovered(self, consumption_block: BlockNumber) -> DiscoveredBurn {
         DiscoveredBurn {
             note: self.note,
             creation_block: self.creation_block,
             consumption_block,
-            burn_tx_id,
             items: self.items,
             amount: self.amount,
         }
@@ -117,7 +112,6 @@ pub struct DiscoveredBurn {
     note: PublicOutputNote,
     creation_block: BlockNumber,
     consumption_block: BlockNumber,
-    burn_tx_id: TransactionId,
     items: XReserveBurnItems,
     amount: u64,
 }
@@ -127,11 +121,10 @@ impl DiscoveredBurn {
         note: PublicOutputNote,
         creation_block: BlockNumber,
         consumption_block: BlockNumber,
-        burn_tx_id: TransactionId,
         faucet_account_id: AccountId,
     ) -> Result<Self, InvalidBurnCandidate> {
         BurnCandidate::new(note, creation_block, faucet_account_id)
-            .map(|candidate| candidate.into_discovered(consumption_block, burn_tx_id))
+            .map(|candidate| candidate.into_discovered(consumption_block))
     }
 
     /// The burn note.
@@ -145,10 +138,6 @@ impl DiscoveredBurn {
 
     pub(crate) fn consumption_block(&self) -> BlockNumber {
         self.consumption_block
-    }
-
-    pub(crate) fn burn_tx_id(&self) -> TransactionId {
-        self.burn_tx_id
     }
 
     pub(crate) fn note_id(&self) -> NoteId {

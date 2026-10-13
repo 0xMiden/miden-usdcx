@@ -627,9 +627,8 @@ fn find_burns_in_block(
         new_burn_notes.push(candidate);
     }
 
-    // Transaction headers from this validated block authenticate the consuming account, input
-    // nullifiers, and transaction ID. Do not use `created_nullifiers`, which `validate` does not
-    // authenticate.
+    // Transaction headers from this validated block authenticate the consuming account and its
+    // input nullifiers. Do not use `created_nullifiers`, which `validate` does not authenticate.
     for transaction in block.body().transactions().as_slice() {
         if transaction.account_id() != faucet_account_id {
             continue;
@@ -641,7 +640,7 @@ fn find_burns_in_block(
             let Some(candidate) = store.candidate_by_nullifier(input_note.nullifier())? else {
                 continue;
             };
-            new_burns.push(candidate.into_discovered(block_num, transaction.id()));
+            new_burns.push(candidate.into_discovered(block_num));
         }
     }
 

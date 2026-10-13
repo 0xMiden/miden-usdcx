@@ -196,7 +196,7 @@ pub(super) struct Ledger {
 
 impl Ledger {
     pub(super) async fn new() -> Self {
-        let mut burns: Vec<_> = (0..3)
+        let burns: Vec<_> = (0..3)
             .map(|i| discovered_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
         let mut factory = BlockFactory::new();
@@ -212,16 +212,6 @@ impl Ledger {
             faucet_account_id(),
             &[burns[0].nullifier(), burns[1].nullifier()],
         );
-        for burn in &mut burns[..2] {
-            *burn = DiscoveredBurn::new(
-                burn.note().clone(),
-                burn.creation_block(),
-                burn.consumption_block(),
-                shared.id(),
-                faucet_account_id(),
-            )
-            .unwrap();
-        }
         let transactions = vec![
             shared,
             transaction(faucet_account_id(), &[burns[2].nullifier()]),
@@ -1121,7 +1111,6 @@ async fn conflicts_are_checked() {
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;
-    assert_eq!(ledger.burns[0].burn_tx_id(), ledger.burns[1].burn_tx_id());
     let rejected = json!({"message": "operator must investigate", "code": "unrecognized"});
     let (mut attester, requests) = ledger
         .start(vec![

@@ -171,7 +171,6 @@ async fn burns_are_discovered_safely() {
             malformed_payload.nullifier,
         ],
     );
-    let consuming_tx_id = consuming_tx.id();
     factory.push(vec![later_burn.output], vec![consuming_tx]);
     factory.push(
         Vec::new(),
@@ -212,8 +211,6 @@ async fn burns_are_discovered_safely() {
         .unwrap();
     burns.sort_by_key(DiscoveredBurn::note_id);
     assert_eq!(burns.len(), 2);
-    assert_eq!(burns[0].burn_tx_id(), consuming_tx_id);
-    assert_eq!(burns[1].burn_tx_id(), consuming_tx_id);
     assert_eq!(
         burns
             .iter()
@@ -367,24 +364,16 @@ fn burns_and_scan_position_are_saved_together() {
         faucet_account_id(),
     )
     .unwrap();
-    let tx = transaction(faucet_account_id(), &[candidate.nullifier()]);
-    let burn = candidate
-        .clone()
-        .into_discovered(BlockNumber::from(1u32), tx.id());
+    let burn = candidate.clone().into_discovered(BlockNumber::from(1u32));
     let conflicting_burn = DiscoveredBurn::new(
         burn.note().clone(),
         burn.creation_block(),
         burn.consumption_block(),
-        transaction(
-            faucet_account_id(),
-            &[candidate.nullifier(), second_candidate.nullifier()],
-        )
-        .id(),
         faucet_account_id(),
     )
     .unwrap();
 
-    // The second consumption cannot replace the first one's evidence. The candidate inserted in
+    // A second consumption of the note cannot be recorded beside the first. The candidate inserted in
     // the same batch and the first promotion roll back with it.
     assert_eq!(
         store
@@ -497,8 +486,8 @@ fn burns_and_scan_position_are_saved_together() {
     let connection = rusqlite::Connection::open(&malformed_candidate_path).unwrap();
     connection
         .execute(
-            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
-             VALUES (X'00', X'01', X'02', 0, 'CANDIDATE')",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block)
+             VALUES (X'00', X'01', X'02', 0)",
             [],
         )
         .unwrap();

@@ -12,7 +12,7 @@ use miden_objects::{proto, DecodeMessageExt};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, Nullifier};
-use miden_protocol::transaction::{PublicOutputNote, TransactionId};
+use miden_protocol::transaction::PublicOutputNote;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
@@ -23,8 +23,6 @@ use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
-
-const DISCOVERED: &str = "DISCOVERED";
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
@@ -77,6 +75,7 @@ impl fmt::Display for Hold {
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_scan_from_the_anchor.sql"),
+    include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
 ];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
@@ -507,14 +506,13 @@ impl Store {
                     COUNT(*),
                     MIN(burns.consumption_block)
                  FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
-                 WHERE burns.status = ?5 AND burns.hold_reason IS NULL
-                    AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?6))",
+                 WHERE burns.consumption_block IS NOT NULL AND burns.hold_reason IS NULL
+                    AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?5))",
                 params![
                     SubmissionStatus::Held.as_ref(),
                     SubmissionStatus::Failed.as_ref(),
                     SubmissionStatus::Submitting.as_ref(),
                     SubmissionStatus::Submitted.as_ref(),
-                    DISCOVERED,
                     SubmissionStatus::Finalized.as_ref(),
                 ],
                 |row| {
@@ -800,8 +798,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
             FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
-            hold_reason FROM burns LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason
+            FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",
         "SELECT seq, note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
@@ -866,7 +864,7 @@ fn select_submissions(
         if !exists(
             connection,
             "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND status = 'DISCOVERED')",
+             WHERE note_id = ?1 AND consumption_block IS NOT NULL)",
             [record.note_id.to_bytes()],
         )? {
             bail!(INVALID);
@@ -951,7 +949,8 @@ fn load_candidates<P: Params>(
     let mut statement = connection
         .prepare(&format!(
             "SELECT note_id, nullifier, note, creation_block
-             FROM burns WHERE status = 'CANDIDATE' {filter} ORDER BY creation_block, note_id"
+             FROM burns WHERE consumption_block IS NULL {filter}
+             ORDER BY creation_block, note_id"
         ))
         .map_err(classify_error)?;
     let rows = statement
@@ -989,9 +988,8 @@ fn load_burns(
     // Expired work is eligible again; its old request remains saved until a fresh one replaces it.
     let mut statement = connection
         .prepare(
-            "SELECT note_id, nullifier, note, creation_block, consumption_block,
-                    burn_tx_id FROM burns
-             WHERE status = 'DISCOVERED' AND (?1 OR (
+            "SELECT note_id, nullifier, note, creation_block, consumption_block FROM burns
+             WHERE consumption_block IS NOT NULL AND (?1 OR (
                  hold_reason IS NULL AND NOT EXISTS (
                      SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                         AND submissions.status != ?2
@@ -1009,28 +1007,20 @@ fn load_burns(
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
             ))
         })
         .map_err(classify_error)?;
 
     let mut burns = Vec::new();
     for row in rows {
-        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id) =
+        let (note_id, nullifier, note, creation_block, consumption_block) =
             row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         let creation_block = decode_block_number(creation_block)?;
         let consumption_block = decode_block_number(consumption_block)?;
-        let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
         burns.push(
-            DiscoveredBurn::new(
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                faucet_account_id,
-            )
-            .context(INVALID)?,
+            DiscoveredBurn::new(note, creation_block, consumption_block, faucet_account_id)
+                .context(INVALID)?,
         );
     }
     Ok(burns)
@@ -1048,8 +1038,8 @@ fn insert_candidate(
     // A note already recorded, as a candidate or as a burn, clashes with the table's keys.
     transaction
         .execute(
-            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
-             VALUES (?1, ?2, ?3, ?4, 'CANDIDATE')",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block)
+             VALUES (?1, ?2, ?3, ?4)",
             params![note_id, nullifier, note, creation_block],
         )
         .map_err(classify_write_error)?;
@@ -1062,14 +1052,13 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     let note = burn.note().to_bytes();
     let creation_block = i64::from(burn.creation_block().as_u32());
     let consumption_block = i64::from(burn.consumption_block().as_u32());
-    let burn_tx_id = burn.burn_tx_id().to_bytes();
 
     // Promotion turns the exact saved candidate into this burn in place, one row per note.
     let promoted = transaction
         .execute(
-            "UPDATE burns SET consumption_block = ?2, burn_tx_id = ?3, status = ?4
-             WHERE note_id = ?1 AND status = 'CANDIDATE'",
-            params![note_id, consumption_block, burn_tx_id, DISCOVERED],
+            "UPDATE burns SET consumption_block = ?2
+             WHERE note_id = ?1 AND consumption_block IS NULL",
+            params![note_id, consumption_block],
         )
         .map_err(classify_write_error)?;
     if promoted == 1 {
@@ -1079,24 +1068,9 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     // Any other record of this note or its nullifier clashes with the table's keys.
     transaction
         .execute(
-            "INSERT INTO burns (
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                DISCOVERED,
-            ],
+            "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![note_id, nullifier, note, creation_block, consumption_block],
         )
         .map_err(classify_write_error)?;
     Ok(())

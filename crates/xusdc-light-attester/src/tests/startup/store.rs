@@ -18,7 +18,7 @@ use super::{
     create_store_parent, faucet_account_id, load_config, ready_circle, start, startup_anchor,
     TestArgs, TestChain,
 };
-use crate::tests::support::{note, test_note, transaction};
+use crate::tests::support::{note, test_note};
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
 const LOCK_CHILD_STORE_PATH: &str = "XUSDC_ATTESTER_LOCK_CHILD_STORE_PATH";
@@ -256,19 +256,16 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap(),
             ));
             let note = malformed.public_note.unwrap();
-            let burn_tx_id = transaction(faucet_account_id(), &[note.as_note().nullifier()]).id();
             rusqlite::Connection::open(path)
                 .unwrap()
                 .execute(
                     "INSERT INTO burns (
-                        note_id, nullifier, note, creation_block, consumption_block, burn_tx_id,
-                        status
-                     ) VALUES (?1, ?2, ?3, 0, 1, ?4, 'DISCOVERED')",
+                        note_id, nullifier, note, creation_block, consumption_block
+                     ) VALUES (?1, ?2, ?3, 0, 1)",
                     params![
                         note.id().to_bytes(),
                         note.as_note().nullifier().to_bytes(),
                         note.to_bytes(),
-                        burn_tx_id.to_bytes(),
                     ],
                 )
                 .unwrap();

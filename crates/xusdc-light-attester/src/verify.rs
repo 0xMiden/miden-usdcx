@@ -14,7 +14,7 @@ use usdcx_telemetry::{Classified, FailureClass};
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
 use crate::config::{CctpForwarding, Config};
-use crate::signer::{Signer, SignerError, SignerPair};
+use crate::signer::{SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
 // Circle's Gateway contracts (BurnIntents.sol) start an encoded burn intent with
@@ -152,22 +152,12 @@ impl VerifiedWithdrawal {
     }
 
     /// Keep the checked batch with both signatures; return no partial result on failure. The
-    /// signatures are ordered by signer address, ascending, the only order Circle's attester
-    /// contract accepts.
+    /// signatures follow the pair's order, ascending by signer address, the only order Circle's
+    /// attester contract accepts.
     pub(crate) async fn sign(self, signers: &SignerPair) -> Result<SignedWithdrawal, SignerError> {
-        let mut signers = signers.signers();
-        let addresses = [
-            signer_address(signers[0]).await?,
-            signer_address(signers[1]).await?,
-        ];
-        if addresses[0] == addresses[1] {
-            return Err(SignerError::new("both signers have the same address"));
-        }
-        if addresses[1] < addresses[0] {
-            signers.swap(0, 1);
-        }
-        let first = signers[0].sign_digest(self.batch.digest).await?;
-        let second = signers[1].sign_digest(self.batch.digest).await?;
+        let [first, second] = signers.signers();
+        let first = first.sign_digest(self.batch.digest).await?;
+        let second = second.sign_digest(self.batch.digest).await?;
         Ok(SignedWithdrawal {
             batch: SignedBatch {
                 batch: self.batch,
@@ -175,15 +165,6 @@ impl VerifiedWithdrawal {
             },
         })
     }
-}
-
-async fn signer_address(signer: &dyn Signer) -> Result<Address, SignerError> {
-    let key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&signer.public_key().await?.0).map_err(
-        |source| {
-            SignerError::with_source("signer public key is not a valid secp256k1 point", source)
-        },
-    )?;
-    Ok(Address::from_public_key(&key))
 }
 
 #[derive(Debug)]

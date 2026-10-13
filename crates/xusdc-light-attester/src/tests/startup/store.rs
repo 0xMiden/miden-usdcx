@@ -59,9 +59,16 @@ async fn new_store_starts_at_deployment_block() {
     .unwrap();
 
     assert!(store_path.is_file());
+    assert_eq!(attester.store.scan_start(), BlockNumber::from(1_234_567u32));
+    // The anchor is the store's first checkpoint, however far ahead the deployment block is.
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1_234_567u32)
+        attester
+            .store
+            .scan_state()
+            .unwrap()
+            .authenticated_parent
+            .as_ref(),
+        Some(startup_anchor().header())
     );
     drop(attester);
     assert_eq!(store_version(&store_path), STORE_VERSION);

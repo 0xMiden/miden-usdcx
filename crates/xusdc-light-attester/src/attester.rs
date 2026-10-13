@@ -69,7 +69,6 @@ pub struct Attester {
     pub(crate) store: Store,
     chain: Box<dyn ChainReader>,
     pub(crate) circle: Box<dyn CircleApi>,
-    trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
     /// The node's latest committed block, as this cycle's discovery read it.
     node_tip: Option<BlockNumber>,
@@ -132,23 +131,27 @@ impl Attester {
         let scan_state = store
             .scan_state()
             .context("failed to load attester scan state")?;
-        let trusted_anchor_block = scan_state.authenticated_parent.is_none().then_some(block);
-        // After a divergence, a restart must not send saved withdrawals while the node still
-        // disagrees with the saved checkpoint.
-        if let Some(checkpoint) = &scan_state.authenticated_parent {
-            check_checkpoint(chain.as_ref(), checkpoint)
-                .await
-                .context("failed to check the saved checkpoint against the Miden node")?;
-        }
-        Ok(Self {
+        let mut attester = Self {
             config,
             store,
             chain,
             circle,
-            trusted_anchor_block,
             signers,
             node_tip: None,
-        })
+        };
+        match &scan_state.authenticated_parent {
+            // After a divergence, a restart must not send saved withdrawals while the node still
+            // disagrees with the saved checkpoint.
+            Some(checkpoint) => check_checkpoint(attester.chain.as_ref(), checkpoint)
+                .await
+                .context("failed to check the saved checkpoint against the Miden node")?,
+            // A store that has not authenticated a block yet starts from the pinned anchor, which
+            // becomes its first checkpoint.
+            None => attester
+                .save_block(&block)
+                .context("failed to save the trusted anchor as the first checkpoint")?,
+        }
+        Ok(attester)
     }
 
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
@@ -255,14 +258,7 @@ impl Attester {
     /// Every field but the tip is written each cycle, zeros included, so the alerts always find
     /// them; the tip is left out when discovery could not read it.
     fn record_progress(&self, span: &Span) -> anyhow::Result<()> {
-        let verified = match self.store.scan_state()?.authenticated_parent {
-            Some(header) => header,
-            None => self
-                .trusted_anchor_block
-                .as_ref()
-                .map(|block| block.header().clone())
-                .context(INVALID)?,
-        };
+        let verified = self.checkpoint()?;
         let progress = self.store.progress()?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -296,110 +292,69 @@ impl Attester {
         ))
     }
 
-    /// Scans the blocks committed since the saved checkpoint. Each block's burn
-    /// candidates and faucet consumptions are saved together with the advanced cursor and the
-    /// block's header, one block per store transaction, so a crash never skips or half-records
-    /// a block. Returns the node's proof-lag height, the bound for withdrawal readiness.
+    /// The header of the last block this store authenticated. Startup saves the trusted anchor as
+    /// the first one, so a running attester always has it.
+    fn checkpoint(&self) -> anyhow::Result<BlockHeader> {
+        self.store
+            .scan_state()?
+            .authenticated_parent
+            .context(INVALID)
+    }
+
+    /// Authenticates the blocks committed since the saved checkpoint, each against the one before
+    /// it. Each block's burn candidates and faucet consumptions are saved together with the
+    /// checkpoint moved past it, one block per store transaction, so a crash never skips or
+    /// half-records a block. Returns the node's proof-lag height, the bound for withdrawal
+    /// readiness.
     pub(crate) async fn discover_burns(&mut self) -> Result<BlockNumber, DiscoverError> {
         self.node_tip = None;
-        let saved_scan = self.store.scan_state()?;
+        let mut last_verified_header = self.checkpoint()?;
         let scan_limits = self
             .chain
             .scan_limits()
             .await
             .map_err(DiscoverError::Chain)?;
-        self.node_tip = Some(scan_limits.latest_committed_block);
-        let Some(last_block_to_scan) =
-            self.find_last_block_to_scan(&saved_scan, scan_limits.latest_committed_block)?
-        else {
+        let tip = scan_limits.latest_committed_block;
+        self.node_tip = Some(tip);
+        if tip < last_verified_header.block_num() {
+            // The anchor is trusted because it was pinned, not because this node led up to it, so
+            // a node short of it has merely not caught up yet. A node behind a block authenticated
+            // since is no longer on that chain.
+            if last_verified_header.block_num() == self.config.trusted_anchor_block() {
+                return Ok(scan_limits.proof_lag_block);
+            }
+            return Err(DiscoverError::ChainDiverged);
+        }
+        if tip == last_verified_header.block_num() {
             // No new block to authenticate, so compare the saved checkpoint with the node's block
             // at that height: a same-height fork shows up only there.
-            if let Some(checkpoint) = &saved_scan.authenticated_parent {
-                check_checkpoint(self.chain.as_ref(), checkpoint).await?;
-            }
+            check_checkpoint(self.chain.as_ref(), &last_verified_header).await?;
             return Ok(scan_limits.proof_lag_block);
-        };
-        let mut last_verified_header = self.load_previous_verified_header(&saved_scan).await?;
-
-        // The anchor itself needs scanning once when it is also the faucet's deployment block.
-        if saved_scan.authenticated_parent.is_none()
-            && saved_scan.cursor.next_block == self.config.trusted_anchor_block()
-        {
-            let anchor = self.trusted_anchor_block.clone().context(INVALID)?;
-            self.scan_and_save_block(&anchor)?;
         }
 
-        let first_block_to_scan = last_verified_header.block_num().child();
-        for block_num in block_range(first_block_to_scan, last_block_to_scan) {
+        // Every available block is authenticated. Withdrawal readiness separately requires
+        // verified depth.
+        for block_num in block_range(last_verified_header.block_num().child(), tip) {
             let block = self
                 .fetch_and_verify_block(block_num, &last_verified_header)
                 .await?;
-            self.scan_and_save_block(&block)?;
+            self.save_block(&block)?;
             last_verified_header = block.header().clone();
         }
 
         Ok(scan_limits.proof_lag_block)
     }
 
-    fn find_last_block_to_scan(
-        &self,
-        saved_scan: &ScanState,
-        last_block_to_scan: BlockNumber,
-    ) -> Result<Option<BlockNumber>, DiscoverError> {
-        let last_verified_block_number = saved_scan
-            .authenticated_parent
-            .as_ref()
-            .map_or(self.config.trusted_anchor_block(), BlockHeader::block_num);
-        // Scan every available block. Withdrawal readiness separately requires verified depth.
-        if last_block_to_scan < last_verified_block_number {
-            return behind_verified_chain(saved_scan);
-        }
-        if last_block_to_scan < saved_scan.cursor.next_block {
-            return Ok(None);
-        }
-
-        Ok(Some(last_block_to_scan))
-    }
-
-    async fn load_previous_verified_header(
-        &self,
-        saved_scan: &ScanState,
-    ) -> Result<BlockHeader, DiscoverError> {
-        let mut last_verified_header = match &saved_scan.authenticated_parent {
-            Some(header) => header.clone(),
-            None => self
-                .trusted_anchor_block
-                .as_ref()
-                .map(|block| block.header().clone())
-                .context(INVALID)?,
-        };
-
-        // The anchor may predate the faucet. Authenticate the intervening headers, but do not
-        // inspect their notes because scanning starts at the store's scan start.
-        if last_verified_header.block_num() < saved_scan.cursor.next_block {
-            let first_predeployment_block = last_verified_header.block_num().child();
-            let last_predeployment_block = saved_scan
-                .cursor
-                .next_block
-                .parent()
-                .ok_or(DiscoverError::ChainDiverged)?;
-            for block_num in block_range(first_predeployment_block, last_predeployment_block) {
-                last_verified_header = self
-                    .fetch_and_verify_block(block_num, &last_verified_header)
-                    .await?
-                    .header()
-                    .clone();
-            }
-        }
-
-        Ok(last_verified_header)
-    }
-
     /// Records one authenticated block: its new candidates, the burns its faucet transactions
     /// consumed, and the checkpoint moved past it, in a single store transaction.
-    fn scan_and_save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
-        let (new_burn_notes, new_burns) =
-            find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?;
+    fn save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
+        // The anchor may predate the faucet. The blocks before the store's scan start are
+        // authenticated like any other, but their notes are not inspected.
+        let (new_burn_notes, new_burns) = if block.header().block_num() < self.store.scan_start() {
+            (Vec::new(), Vec::new())
+        } else {
+            find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?
+        };
         // Save this block atomically; a later RPC failure must not discard its progress.
         self.store.save_scan_progress(
             &new_burn_notes,
@@ -644,16 +599,6 @@ pub(crate) fn burn_hold(
 
 fn block_range(start: BlockNumber, end: BlockNumber) -> impl Iterator<Item = BlockNumber> {
     (start.as_u32()..=end.as_u32()).map(BlockNumber::from)
-}
-
-/// A scan bound below the verified chain is a divergence once a block has been authenticated;
-/// before that, the node has merely not reached the anchor yet.
-fn behind_verified_chain(saved_scan: &ScanState) -> Result<Option<BlockNumber>, DiscoverError> {
-    if saved_scan.authenticated_parent.is_some() {
-        Err(DiscoverError::ChainDiverged)
-    } else {
-        Ok(None)
-    }
 }
 
 /// Fails with a divergence when the node's block at the checkpoint's height is another block.

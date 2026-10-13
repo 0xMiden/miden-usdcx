@@ -703,13 +703,14 @@ async fn bad_blocks_are_rejected() {
                 assert!(matches!(error, DiscoverError::ChainDiverged), "{name}")
             }
         }
+        // The anchor stays the checkpoint.
         let state = attester.store.scan_state().unwrap();
+        assert_eq!(state.cursor.next_block, BlockNumber::from(1u32), "{name}");
         assert_eq!(
-            state.cursor.next_block,
-            BlockNumber::from(deployment_block),
+            state.authenticated_parent.as_ref(),
+            Some(anchor.header()),
             "{name}"
         );
-        assert!(state.authenticated_parent.is_none(), "{name}");
         assert!(attester.store.candidates().unwrap().is_empty(), "{name}");
         assert!(
             attester.store.discovered_burns().unwrap().is_empty(),
@@ -810,15 +811,19 @@ async fn bad_blocks_are_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
     let request_count = controls.requests.lock().unwrap().len();
+    // With no block past the anchor, discovery only compares that checkpoint with the node.
     attester.discover_burns().await.unwrap();
-    assert_eq!(controls.requests.lock().unwrap().len(), request_count);
+    assert_eq!(
+        controls.requests.lock().unwrap()[request_count..],
+        [BlockNumber::GENESIS]
+    );
     assert_eq!(
         attester.store.scan_state().unwrap(),
         ScanState {
             cursor: ScanCursor {
                 next_block: BlockNumber::from(1u32),
             },
-            authenticated_parent: None,
+            authenticated_parent: Some(factory.blocks()[0].header().clone()),
         }
     );
 
@@ -979,13 +984,10 @@ async fn anchor_after_scan_start_leaves_no_store() {
     let config = test_config(&tempdir, 1, &anchor, 1);
     let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
     let attester = start_attester(config, chain, ready_circle()).await.unwrap();
-    assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1u32)
-    );
+    assert_eq!(attester.store.scan_start(), BlockNumber::from(1u32));
 }
 
-/// Before any block is authenticated, a node still short of the anchor is not a divergence.
+/// While the anchor is the only checkpoint, a node still short of it is not a divergence.
 #[tokio::test]
 async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     let mut factory = BlockFactory::new();
@@ -1010,12 +1012,48 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
         *controls.requests.lock().unwrap(),
         [BlockNumber::from(2u32)]
     );
-    assert!(attester
-        .store
-        .scan_state()
-        .unwrap()
-        .authenticated_parent
-        .is_none());
+    assert_eq!(
+        attester
+            .store
+            .scan_state()
+            .unwrap()
+            .authenticated_parent
+            .as_ref(),
+        Some(anchor.header())
+    );
+}
+
+/// Blocks between the anchor and the scan start are authenticated and saved like any other, so a
+/// restart resumes after them, and their notes are never recorded.
+#[tokio::test]
+async fn blocks_before_the_scan_start_are_saved_without_their_notes() {
+    let mut factory = BlockFactory::new();
+    factory.push(Vec::new(), Vec::new());
+    let early = note(BurnNote::script(), NoteType::Public, 1, 61);
+    factory.push(vec![early.output], Vec::new());
+    factory.push(Vec::new(), Vec::new());
+    let tempdir = tempfile::tempdir().unwrap();
+    let (mut attester, _) = start(&tempdir, 3, factory.blocks(), scan_limits(1, 1)).await;
+    attester.discover_burns().await.unwrap();
+    assert_eq!(
+        attester.store.scan_state().unwrap().cursor.next_block,
+        BlockNumber::from(2u32)
+    );
+    assert!(attester.store.candidates().unwrap().is_empty());
+    drop(attester);
+
+    let (mut attester, controls) = start(&tempdir, 3, factory.blocks(), scan_limits(2, 2)).await;
+    attester.discover_burns().await.unwrap();
+    // Startup reads the anchor and the saved checkpoint; discovery then reads only the new block.
+    assert_eq!(
+        *controls.requests.lock().unwrap(),
+        [0u32, 1, 2].map(BlockNumber::from)
+    );
+    assert_eq!(
+        attester.store.scan_state().unwrap().cursor.next_block,
+        BlockNumber::from(3u32)
+    );
+    assert!(attester.store.candidates().unwrap().is_empty());
 }
 
 /// A token cancelled before the first cycle returns before any stage runs or any sleep starts.

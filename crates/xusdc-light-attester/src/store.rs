@@ -115,7 +115,7 @@ pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the att
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScanCursor {
-    /// The exact next block included in the next scan.
+    /// The next block to authenticate.
     pub(crate) next_block: BlockNumber,
 }
 
@@ -233,6 +233,11 @@ impl Store {
 
     pub(crate) fn scan_state(&self) -> anyhow::Result<ScanState> {
         load_scan_state(&self.connection, self.initial_cursor)
+    }
+
+    /// The first block whose notes are scanned, saved when the store was created.
+    pub(crate) fn scan_start(&self) -> BlockNumber {
+        self.initial_cursor.next_block
     }
 
     #[cfg(test)]

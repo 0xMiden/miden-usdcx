@@ -17,7 +17,7 @@ use super::verify::serial;
 fn client() -> CircleClient {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    CircleClient::new(&TestArgs::new(&tempdir, 1).load()).unwrap()
+    CircleClient::new(&TestArgs::new(&tempdir).load()).unwrap()
 }
 
 /// Every wire field comes from the right burn value, and the salt is the burn's note ID, so burns

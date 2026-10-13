@@ -74,7 +74,10 @@ impl fmt::Display for Hold {
 
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_scan_from_the_anchor.sql"),
+];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
 pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -114,22 +117,9 @@ pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScanCursor {
-    /// The next block to authenticate.
-    pub(crate) next_block: BlockNumber,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrustedAnchor {
     pub(crate) block_num: BlockNumber,
     pub(crate) commitment: Word,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScanState {
-    /// The cursor and its authenticated parent are one checkpoint: neither may advance alone.
-    pub(crate) cursor: ScanCursor,
-    pub(crate) authenticated_parent: Option<BlockHeader>,
 }
 
 /// The work the attester has not finished, as the alerts count it.
@@ -151,8 +141,6 @@ pub(crate) struct Progress {
 
 pub(crate) struct Store {
     connection: rusqlite::Connection,
-    /// Where this store started scanning, saved when it was created.
-    initial_cursor: ScanCursor,
     faucet_account_id: AccountId,
 }
 
@@ -168,22 +156,15 @@ fn plain_file_name(path: &Path) -> PathBuf {
 }
 
 impl Store {
-    /// Opens the store at `path`, or creates it there starting at `initial_cursor`. An existing
-    /// store keeps the scan start it was created with, so changing the configured deployment block
-    /// later cannot turn notes it already saved into conflicts.
+    /// Opens the store at `path`, or creates it there for this faucet and trusted anchor. A new
+    /// store has no checkpoint until the anchor is saved as its first one.
     pub(crate) fn open_or_create(
         path: &Path,
         faucet_account_id: AccountId,
-        initial_cursor: ScanCursor,
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
         let path = plain_file_name(path);
         let exists = path.try_exists().context(INVALID)?;
-        // A new store keeps its anchor and scan start for good, so a bad pair is refused before
-        // anything is created and the corrected config can use the same path.
-        if !exists && trusted_anchor.block_num > initial_cursor.next_block {
-            bail!("trusted anchor must not be after the scan start");
-        }
 
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
@@ -192,21 +173,14 @@ impl Store {
             rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;
 
-        let initial_cursor = if exists {
-            open_existing(&mut connection, faucet_account_id, trusted_anchor)?
+        if exists {
+            open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
         } else {
-            initialize_store(
-                &mut connection,
-                faucet_account_id,
-                initial_cursor,
-                trusted_anchor,
-            )?;
-            initial_cursor
-        };
+            initialize_store(&mut connection, faucet_account_id, trusted_anchor)?;
+        }
 
         Ok(Self {
             connection,
-            initial_cursor,
             faucet_account_id,
         })
     }
@@ -222,22 +196,18 @@ impl Store {
         let mut connection =
             rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;
-        let initial_cursor = open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
+        open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
 
         Ok(Self {
             connection,
-            initial_cursor,
             faucet_account_id,
         })
     }
 
-    pub(crate) fn scan_state(&self) -> anyhow::Result<ScanState> {
-        load_scan_state(&self.connection, self.initial_cursor)
-    }
-
-    /// The first block whose notes are scanned, saved when the store was created.
-    pub(crate) fn scan_start(&self) -> BlockNumber {
-        self.initial_cursor.next_block
+    /// The checkpoint: the header of the last authenticated block, which the next block is
+    /// authenticated against. `None` until the trusted anchor is saved as the first one.
+    pub(crate) fn checkpoint(&self) -> anyhow::Result<Option<BlockHeader>> {
+        load_checkpoint(&self.connection)
     }
 
     #[cfg(test)]
@@ -508,10 +478,10 @@ impl Store {
         proof_lag_block: BlockNumber,
         minimum_depth_blocks: u32,
     ) -> anyhow::Result<Vec<DiscoveredBurn>> {
-        let Some(parent) = self.scan_state()?.authenticated_parent else {
+        let Some(checkpoint) = self.checkpoint()? else {
             return Ok(Vec::new());
         };
-        let Some(last_depth_safe_block) = parent.block_num().checked_sub(minimum_depth_blocks)
+        let Some(last_depth_safe_block) = checkpoint.block_num().checked_sub(minimum_depth_blocks)
         else {
             return Ok(Vec::new());
         };
@@ -563,16 +533,17 @@ impl Store {
             .map_err(classify_error)
     }
 
+    /// Saves one authenticated block: the burn candidates and burns found in it, and its header
+    /// as the new checkpoint.
     pub(crate) fn save_scan_progress(
         &mut self,
         candidates: &[BurnCandidate],
         burns: &[DiscoveredBurn],
-        next_state: &ScanState,
+        checkpoint: &BlockHeader,
     ) -> anyhow::Result<()> {
-        validate_scan_state(next_state, self.initial_cursor)?;
-        validate_discovery_records(candidates, burns, next_state.cursor, self.initial_cursor)?;
+        validate_discovery_records(candidates, burns, checkpoint.block_num())?;
 
-        // One block's evidence, cursor, and verified header commit as one unit. A crash therefore
+        // One block's evidence and its verified header commit as one unit. A crash therefore
         // either records that complete block or scans it again from the previous checkpoint.
         let transaction = self.connection.transaction().map_err(classify_error)?;
 
@@ -583,19 +554,10 @@ impl Store {
             insert_burn(&transaction, burn)?;
         }
 
-        let authenticated_parent = next_state
-            .authenticated_parent
-            .as_ref()
-            .map(|header| proto::blockchain::BlockHeader::from(header).encode_to_vec());
         let updated = transaction
             .execute(
-                "UPDATE attester_state
-                 SET next_block = ?1, authenticated_parent = ?2
-                 WHERE singleton = 1",
-                params![
-                    i64::from(next_state.cursor.next_block.as_u32()),
-                    authenticated_parent
-                ],
+                "UPDATE attester_state SET checkpoint = ?1 WHERE singleton = 1",
+                [proto::blockchain::BlockHeader::from(checkpoint).encode_to_vec()],
             )
             .map_err(classify_error)?;
         if updated != 1 {
@@ -627,7 +589,6 @@ fn lock_exclusively(connection: &rusqlite::Connection) -> anyhow::Result<()> {
 fn initialize_store(
     connection: &mut rusqlite::Connection,
     faucet_account_id: AccountId,
-    initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
 ) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
@@ -639,15 +600,12 @@ fn initialize_store(
                 faucet_account_id,
                 anchor_block,
                 anchor_commitment,
-                scan_start,
-                next_block,
-                authenticated_parent
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?4, NULL)",
+                checkpoint
+             ) VALUES (1, ?1, ?2, ?3, NULL)",
             params![
                 faucet_account_id.to_bytes(),
                 i64::from(trusted_anchor.block_num.as_u32()),
                 trusted_anchor.commitment.to_bytes(),
-                i64::from(initial_cursor.next_block.as_u32()),
             ],
         )
         .map_err(classify_error)?;
@@ -655,13 +613,12 @@ fn initialize_store(
 }
 
 /// Brings an existing store to [`STORE_VERSION`] and checks it in one transaction, so a store that
-/// fails a check, or an upgrade that fails part way, is left as it was. Returns the scan start the
-/// store was created with.
+/// fails a check, or an upgrade that fails part way, is left as it was.
 fn open_existing(
     connection: &mut rusqlite::Connection,
     faucet_account_id: AccountId,
     trusted_anchor: TrustedAnchor,
-) -> anyhow::Result<ScanCursor> {
+) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
     let version: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -675,9 +632,8 @@ fn open_existing(
         }
         _ => upgrade(&transaction, version)?,
     }
-    let initial_cursor = validate_store(&transaction, faucet_account_id, trusted_anchor)?;
-    transaction.commit().map_err(classify_error)?;
-    Ok(initial_cursor)
+    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
+    transaction.commit().map_err(classify_error)
 }
 
 /// Runs the migrations after `version` in order and records the new version.
@@ -767,12 +723,12 @@ fn set_version(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         .map_err(classify_error)
 }
 
-/// Checks an existing store and returns the scan start it was created with.
+/// Checks an existing store against the configured faucet and trusted anchor.
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
     trusted_anchor: TrustedAnchor,
-) -> anyhow::Result<ScanCursor> {
+) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
     // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
@@ -797,9 +753,9 @@ fn validate_store(
         bail!(INVALID);
     }
 
-    let (stored_faucet, anchor_block, anchor_commitment, scan_start) = connection
+    let (stored_faucet, anchor_block, anchor_commitment) = connection
         .query_row(
-            "SELECT faucet_account_id, anchor_block, anchor_commitment, scan_start
+            "SELECT faucet_account_id, anchor_block, anchor_commitment
              FROM attester_state WHERE singleton = 1",
             [],
             |row| {
@@ -807,7 +763,6 @@ fn validate_store(
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, i64>(3)?,
                 ))
             },
         )
@@ -824,24 +779,14 @@ fn validate_store(
     if stored_anchor != trusted_anchor {
         bail!("configured trusted anchor differs from the store");
     }
-    let initial_cursor = ScanCursor {
-        next_block: decode_block_number(scan_start)?,
-    };
-    if trusted_anchor.block_num > initial_cursor.next_block {
-        bail!(INVALID);
-    }
-    let state = load_scan_state(connection, initial_cursor)?;
+    let checkpoint = load_checkpoint(connection)?;
     load_candidates(connection, faucet_account_id, "", [])?;
     load_burns(connection, faucet_account_id, true)?;
-    if state
-        .authenticated_parent
-        .as_ref()
-        .is_some_and(|parent| parent.block_num() < trusted_anchor.block_num)
-    {
+    if checkpoint.is_some_and(|checkpoint| checkpoint.block_num() < trusted_anchor.block_num) {
         bail!(INVALID);
     }
 
-    Ok(initial_cursor)
+    Ok(())
 }
 
 fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -853,8 +798,8 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
         return Err(anyhow!(quick_check).context(INVALID));
     }
     for probe in [
-        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
-            next_block, authenticated_parent FROM attester_state LIMIT 0",
+        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
+            FROM attester_state LIMIT 0",
         "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
             hold_reason FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
@@ -965,56 +910,33 @@ fn validate_submission_outcome(outcome: &SavedSubmission) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn load_scan_state(
-    connection: &rusqlite::Connection,
-    initial_cursor: ScanCursor,
-) -> anyhow::Result<ScanState> {
-    let (next_block, authenticated_parent) = connection
+fn load_checkpoint(connection: &rusqlite::Connection) -> anyhow::Result<Option<BlockHeader>> {
+    connection
         .query_row(
-            "SELECT next_block, authenticated_parent
-             FROM attester_state WHERE singleton = 1",
+            "SELECT checkpoint FROM attester_state WHERE singleton = 1",
             [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            |row| row.get::<_, Option<Vec<u8>>>(0),
         )
-        .map_err(classify_error)?;
-
-    let state = ScanState {
-        cursor: ScanCursor {
-            next_block: decode_block_number(next_block)?,
-        },
-        authenticated_parent: authenticated_parent
-            .as_deref()
-            .map(decode_header)
-            .transpose()?,
-    };
-    validate_scan_state(&state, initial_cursor)?;
-    Ok(state)
+        .map_err(classify_error)?
+        .as_deref()
+        .map(decode_header)
+        .transpose()
 }
 
-fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> anyhow::Result<()> {
-    match &state.authenticated_parent {
-        Some(parent) if state.cursor.next_block.checked_sub(1) != Some(parent.block_num()) => {
-            Err(anyhow!(INVALID))
-        }
-        None if state.cursor != initial_cursor => Err(anyhow!(INVALID)),
-        _ => Ok(()),
-    }
-}
-
+/// Nothing saved with a block can come from a later one, and a burn is consumed after it is
+/// created.
 fn validate_discovery_records(
     candidates: &[BurnCandidate],
     burns: &[DiscoveredBurn],
-    cursor: ScanCursor,
-    initial_cursor: ScanCursor,
+    block: BlockNumber,
 ) -> anyhow::Result<()> {
-    if candidates.iter().any(|candidate| {
-        candidate.creation_block() < initial_cursor.next_block
-            || candidate.creation_block() >= cursor.next_block
-    }) || burns.iter().any(|burn| {
-        burn.creation_block() < initial_cursor.next_block
-            || burn.creation_block() >= burn.consumption_block()
-            || burn.consumption_block() >= cursor.next_block
-    }) {
+    if candidates
+        .iter()
+        .any(|candidate| candidate.creation_block() > block)
+        || burns.iter().any(|burn| {
+            burn.creation_block() >= burn.consumption_block() || burn.consumption_block() > block
+        })
+    {
         bail!(CONFLICT);
     }
     Ok(())

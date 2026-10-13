@@ -24,7 +24,7 @@ use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
-use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
+use crate::store::{Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
@@ -233,7 +233,7 @@ impl Ledger {
         let directory = tempfile::tempdir().unwrap();
         let blocks = factory.blocks();
         let (mut attester, _) =
-            discovery::start(&directory, 1, blocks.clone(), scan_limits(3, 3)).await;
+            discovery::start(&directory, blocks.clone(), scan_limits(3, 3)).await;
         attester.discover_burns().await.unwrap();
         let fresh_indices = attester
             .store
@@ -247,7 +247,7 @@ impl Ledger {
                     .unwrap()
             })
             .collect();
-        let config = discovery::test_args(&directory, 1, &blocks[0], 1);
+        let config = discovery::test_args(&directory, &blocks[0], 1);
         Self {
             directory,
             blocks,
@@ -367,9 +367,6 @@ impl Ledger {
         Store::open_or_create(
             &self.path(),
             faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::from(1u32),
-            },
             TrustedAnchor {
                 block_num: BlockNumber::GENESIS,
                 commitment: self.blocks[0].header().commitment(),
@@ -387,7 +384,7 @@ impl Ledger {
     pub(super) fn rewind_empty_block(&self) {
         let header = proto::blockchain::BlockHeader::from(self.blocks[2].header()).encode_to_vec();
         self.sql(&format!(
-            "UPDATE attester_state SET next_block = 3, authenticated_parent = x'{}'",
+            "UPDATE attester_state SET checkpoint = x'{}'",
             hex::encode(header),
         ));
     }

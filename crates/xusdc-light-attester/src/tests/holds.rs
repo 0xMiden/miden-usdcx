@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
-use crate::store::{BurnHoldReason, Progress, ScanCursor, Store, TrustedAnchor};
+use crate::store::{BurnHoldReason, Progress, Store, TrustedAnchor};
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
@@ -280,9 +280,6 @@ async fn a_file_uri_store_path_cannot_bypass_the_lock() {
     let result = Store::open_or_create(
         &file_uri,
         faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
         TrustedAnchor {
             block_num: BlockNumber::GENESIS,
             commitment: ledger.blocks[0].header().commitment(),

@@ -20,7 +20,7 @@ use super::{
 async fn start_with_signing_keys(expected: &[&str], signers: SignerPair) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let mut args = TestArgs::new(&tempdir, 1);
+    let mut args = TestArgs::new(&tempdir);
     args.remove("--expected-signing-public-key");
     for key in expected {
         args.append("--expected-signing-public-key", key);
@@ -136,7 +136,7 @@ async fn unreachable_miden_node_is_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
     let result = start(
-        load_config(&tempdir, 1),
+        load_config(&tempdir),
         TestChain::anchor_only().unreachable(),
         ready_circle(),
     )
@@ -152,7 +152,7 @@ async fn missing_faucet_is_rejected() {
     let store_path = create_store_parent(&tempdir);
     let (circle, requests) = FakeCircle::new(CircleState::Response(StatusCode::OK));
     let result = start(
-        load_config(&tempdir, 1),
+        load_config(&tempdir),
         TestChain::anchor_only().faucet_missing(),
         Box::new(circle),
     )
@@ -173,7 +173,7 @@ async fn unreachable_circle_api_is_rejected() {
         let store_path = create_store_parent(&tempdir);
         let (circle, requests) = FakeCircle::new(state);
         let result = start(
-            load_config(&tempdir, 1),
+            load_config(&tempdir),
             TestChain::anchor_only(),
             Box::new(circle),
         )
@@ -191,7 +191,7 @@ async fn unreachable_circle_api_is_rejected() {
     // The real client asks for Circle's info with the configured timeout and nothing else.
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let request = CircleClient::new(&load_config(&tempdir, 1))
+    let request = CircleClient::new(&load_config(&tempdir))
         .unwrap()
         .info_request()
         .unwrap();
@@ -211,7 +211,7 @@ async fn unreachable_circle_api_is_rejected() {
 async fn circle_requests_are_paced() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let circle = CircleClient::new(&load_config(&tempdir, 1)).unwrap();
+    let circle = CircleClient::new(&load_config(&tempdir)).unwrap();
     let client = &circle;
     // Plain HTTP is refused before any network I/O, so every attempt fails at once. A call returns
     // the time its answer arrived.

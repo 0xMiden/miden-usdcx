@@ -93,12 +93,14 @@ pub struct Cli {
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
 
-    /// Block at which the faucet was deployed, where a new store starts scanning; an existing store
-    /// keeps the scan start it was created with.
+    /// Block at which the faucet was deployed. It is only checked against the trusted anchor: the
+    /// attester refuses to start with an anchor after it, which would miss the burn notes created
+    /// in between.
     #[arg(long)]
     faucet_deployment_block: u32,
 
-    /// Out-of-band verified anchor block, at deployment or shortly before it, never after.
+    /// Out-of-band verified anchor block, where a new store starts scanning: the block the faucet
+    /// was deployed in or one shortly before it, never after.
     #[arg(long)]
     trusted_anchor_block: u32,
 
@@ -213,7 +215,6 @@ pub struct Config {
     max_withdrawal_fee_bps: u64,
     cctp_forwarding: CctpForwarding,
     poll_interval: Duration,
-    faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
@@ -265,6 +266,13 @@ impl TryFrom<Cli> for Config {
             bail!("exactly two expected signing public keys are required");
         }
 
+        // A store scans from its anchor, so an anchor after the faucet's deployment would never
+        // see the burn notes created before it.
+        ensure!(
+            cli.trusted_anchor_block <= cli.faucet_deployment_block,
+            "trusted anchor must not be after the faucet deployment block"
+        );
+
         let faucet_account_id = parse_faucet_account_id(&cli.faucet_account_id)?;
         let trusted_anchor_commitment =
             parse_trusted_anchor_commitment(&cli.trusted_anchor_commitment)?;
@@ -306,7 +314,6 @@ impl TryFrom<Cli> for Config {
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             cctp_forwarding,
             poll_interval: cli.poll_interval,
-            faucet_deployment_block: BlockNumber::from(cli.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
@@ -351,10 +358,6 @@ impl Config {
 
     pub(crate) fn poll_interval(&self) -> Duration {
         self.poll_interval
-    }
-
-    pub(crate) fn faucet_deployment_block(&self) -> BlockNumber {
-        self.faucet_deployment_block
     }
 
     pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {

@@ -31,7 +31,7 @@ fn assert_cli_error(args: &TestArgs, expected_kind: ErrorKind) {
 fn cli_surface_is_explicit() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let valid = TestArgs::new(&tempdir, 1);
+    let valid = TestArgs::new(&tempdir);
 
     assert_eq!(valid.load().miden_rpc_url(), &Endpoint::devnet());
     let mut local = valid.clone();
@@ -177,7 +177,7 @@ fn cli_surface_is_explicit() {
 fn invalid_config_is_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let valid = TestArgs::new(&tempdir, 1);
+    let valid = TestArgs::new(&tempdir);
     let cases = [
         (
             "--request-timeout",
@@ -321,11 +321,10 @@ fn invalid_config_is_rejected() {
     );
 
     let absolute_store = tempdir.path().join("absolute.sqlite3");
-    let mut explicit = TestArgs::new(&tempdir, 0);
+    let mut explicit = TestArgs::new(&tempdir);
     explicit.replace("--store-path", &absolute_store);
     let config = explicit.load();
     assert_eq!(config.store_path(), absolute_store);
-    assert_eq!(config.faucet_deployment_block(), BlockNumber::from(0u32));
     assert_eq!(config.trusted_anchor_block(), BlockNumber::from(0u32));
     assert_eq!(
         config.trusted_anchor_commitment(),
@@ -357,6 +356,20 @@ fn invalid_config_is_rejected() {
         (AssetAmount::MAX.as_u64() + 1).to_string(),
     );
     assert_config_error(&excessive_fee, "maximum withdrawal fee is invalid");
+
+    // A store scans from its anchor, so the anchor may sit at the faucet's deployment block or
+    // before it, never after.
+    let mut at_deployment = valid.clone();
+    at_deployment.replace("--faucet-deployment-block", "7");
+    at_deployment.replace("--trusted-anchor-block", "7");
+    at_deployment.config().unwrap();
+    let mut anchor_after_deployment = valid.clone();
+    anchor_after_deployment.replace("--faucet-deployment-block", "7");
+    anchor_after_deployment.replace("--trusted-anchor-block", "8");
+    assert_config_error(
+        &anchor_after_deployment,
+        "trusted anchor must not be after the faucet deployment block",
+    );
 }
 
 /// A note IDs file takes the first word of each non-empty line, so an edited copy of the
@@ -399,7 +412,7 @@ fn kms_settings_are_validated() {
         "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let kms = TestArgs::new(&directory, 1);
+    let kms = TestArgs::new(&directory);
     assert!(matches!(
         kms.load().kms(),
         KmsConfig { region, key_arns, operation_timeout }

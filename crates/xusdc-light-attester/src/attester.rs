@@ -21,7 +21,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{BurnHoldReason, ScanCursor, ScanState, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
@@ -122,15 +122,12 @@ impl Attester {
         let store = Store::open_or_create(
             config.store_path(),
             config.faucet_account_id(),
-            ScanCursor {
-                next_block: config.faucet_deployment_block(),
-            },
             trusted_anchor,
         )
         .context("failed to open attester store")?;
-        let scan_state = store
-            .scan_state()
-            .context("failed to load attester scan state")?;
+        let checkpoint = store
+            .checkpoint()
+            .context("failed to load the attester's checkpoint")?;
         let mut attester = Self {
             config,
             store,
@@ -139,14 +136,14 @@ impl Attester {
             signers,
             node_tip: None,
         };
-        match &scan_state.authenticated_parent {
+        match &checkpoint {
             // After a divergence, a restart must not send saved withdrawals while the node still
             // disagrees with the saved checkpoint.
             Some(checkpoint) => check_checkpoint(attester.chain.as_ref(), checkpoint)
                 .await
                 .context("failed to check the saved checkpoint against the Miden node")?,
-            // A store that has not authenticated a block yet starts from the pinned anchor, which
-            // becomes its first checkpoint.
+            // A new store starts from the pinned anchor: it is the first block scanned and the
+            // first checkpoint.
             None => attester
                 .save_block(&block)
                 .context("failed to save the trusted anchor as the first checkpoint")?,
@@ -295,10 +292,7 @@ impl Attester {
     /// The header of the last block this store authenticated. Startup saves the trusted anchor as
     /// the first one, so a running attester always has it.
     fn checkpoint(&self) -> anyhow::Result<BlockHeader> {
-        self.store
-            .scan_state()?
-            .authenticated_parent
-            .context(INVALID)
+        self.store.checkpoint()?.context(INVALID)
     }
 
     /// Authenticates the blocks committed since the saved checkpoint, each against the one before
@@ -348,24 +342,11 @@ impl Attester {
     /// Records one authenticated block: its new candidates, the burns its faucet transactions
     /// consumed, and the checkpoint moved past it, in a single store transaction.
     fn save_block(&mut self, block: &SignedBlock) -> Result<(), DiscoverError> {
-        // The anchor may predate the faucet. The blocks before the store's scan start are
-        // authenticated like any other, but their notes are not inspected.
-        let (new_burn_notes, new_burns) = if block.header().block_num() < self.store.scan_start() {
-            (Vec::new(), Vec::new())
-        } else {
-            find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?
-        };
+        let (new_burn_notes, new_burns) =
+            find_burns_in_block(block, self.config.faucet_account_id(), &self.store)?;
         // Save this block atomically; a later RPC failure must not discard its progress.
-        self.store.save_scan_progress(
-            &new_burn_notes,
-            &new_burns,
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: block.header().block_num().child(),
-                },
-                authenticated_parent: Some(block.header().clone()),
-            },
-        )?;
+        self.store
+            .save_scan_progress(&new_burn_notes, &new_burns, block.header())?;
         Ok(())
     }
 

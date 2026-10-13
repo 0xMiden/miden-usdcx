@@ -167,8 +167,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. The example uses `30s`; allow for network latency. |
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
-| `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. A fresh store starts scanning here; an existing store retains its scan start. |
-| `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. |
+| `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
+| `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
 | `--trusted-anchor-commitment` | Required | That checkpoint's verified 32-byte block commitment, in canonical lowercase `0x` hex. Keep the original anchor for an existing store. |
 | `--minimum-finality-depth-blocks` | Required | Positive number of blocks above a burn before submission. Use the network's agreed withdrawal finality depth. |
 | `--max-withdrawal-fee` | Required | Fixed part of the withdrawal fee allowance, in USDC base units. Size from Circle quotes using the fee guide. |
@@ -242,7 +242,7 @@ Every cycle span also carries the attester's progress, zeros included:
 | --- | --- |
 | `block.number` | The last block the attester verified. |
 | `tip.number` | The node's latest committed block. Left out when the node could not be read. |
-| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the faucet's deployment block. |
+| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the trusted anchor. |
 | `burns.held.count` | Burns held before submission. |
 | `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
 | `withdrawals.failed.count` | Withdrawals Circle reported as failed. |

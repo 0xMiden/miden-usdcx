@@ -361,10 +361,7 @@ impl<M: MidenClient> Relayer<M> {
         } else if notes.is_empty() && built > 0 {
             info!("every deposit on the page is already minted");
         } else if !notes.is_empty() {
-            let transaction = self
-                .miden_client
-                .submit_notes(self.minter.mint_account(), notes)
-                .await?;
+            let transaction = self.miden_client.submit_notes(notes).await?;
             span.record("transaction.id", transaction.to_string().as_str());
             info!("page minted and on chain");
             // On chain is not minted: the faucet consumes the notes later, and the next pages

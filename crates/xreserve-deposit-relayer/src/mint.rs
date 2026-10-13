@@ -117,11 +117,6 @@ impl Minter {
         }
     }
 
-    /// The relayer's own account — the notes' producer.
-    pub fn mint_account(&self) -> AccountId {
-        self.mint_account
-    }
-
     /// Builds the mint notes for one page.
     ///
     /// The attestations are borrowed rather than owned, so a caller that is minting a subset of a

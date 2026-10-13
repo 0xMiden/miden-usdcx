@@ -85,7 +85,7 @@ const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 /// This is the surface the relay loop needs from a Miden client. It is a trait so that the loop
 /// can be exercised without a node. Its futures are not required to be `Send`, because the Miden
 /// client's own futures are not.
-pub trait MidenClient: fmt::Debug + Send {
+pub trait MidenClient {
     /// Keeps the deposit nonces the faucet has not minted yet, in their original order.
     ///
     /// Dropping a deposit is final: the faucet only ever adds to its used-nonce map. Keeping one is
@@ -96,14 +96,13 @@ pub trait MidenClient: fmt::Debug + Send {
         nonces: Vec<DepositNonce>,
     ) -> impl Future<Output = Result<Vec<DepositNonce>, Failure>>;
 
-    /// Submits `notes` from `sender` as ONE transaction and returns its identifier, already
-    /// included in a block.
+    /// Submits `notes` as ONE transaction of the relayer's account and returns its identifier,
+    /// already included in a block.
     ///
     /// The caller counts the page as handled after this method succeeds. Returning before
     /// inclusion could move the watermark past deposits whose transaction is later dropped.
     fn submit_notes(
         &mut self,
-        sender: AccountId,
         notes: Vec<Note>,
     ) -> impl Future<Output = Result<TransactionId, Failure>>;
 }
@@ -158,21 +157,12 @@ impl fmt::Display for ExpirationDelta {
 /// hand, and the faucet watched so its storage can be read locally.
 pub struct NodeClient {
     client: Client<FilesystemKeyStore>,
+    /// The relayer's account, which the client tracks and whose key signs the mint transactions.
+    relayer: AccountId,
     /// The faucet the client was told to watch at startup, and so the only one whose storage it
     /// can read.
     faucet: AccountId,
     expiration_delta: ExpirationDelta,
-}
-
-/// Hand-written because the Miden client holds a node connection and a local store, neither of
-/// which has a useful rendering.
-impl fmt::Debug for NodeClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NodeClient")
-            .field("faucet", &self.faucet)
-            .field("expiration_delta", &self.expiration_delta)
-            .finish_non_exhaustive()
-    }
 }
 
 impl NodeClient {
@@ -265,6 +255,7 @@ impl NodeClient {
 
         Ok(Self {
             client,
+            relayer,
             faucet,
             expiration_delta: config.expiration_delta,
         })
@@ -326,11 +317,7 @@ impl MidenClient for NodeClient {
             block.number = Empty,
         ),
     )]
-    async fn submit_notes(
-        &mut self,
-        sender: AccountId,
-        notes: Vec<Note>,
-    ) -> Result<TransactionId, Failure> {
+    async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
         let span = Span::current();
         let request = TransactionRequestBuilder::new()
             .own_output_notes(notes)
@@ -339,6 +326,7 @@ impl MidenClient for NodeClient {
             .context("building the mint transaction")
             .classify(Actionable("transaction_request"))?;
 
+        let sender = self.relayer;
         let client = &mut self.client;
 
         // The transaction executes against the account's committed state, so that state has to be

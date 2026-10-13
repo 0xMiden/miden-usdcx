@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use clap::Parser;
-use miden_protocol::account::AccountId;
 use miden_protocol::transaction::TransactionId;
 use miden_usdcx::xreserve::encoding::DepositNonce;
 use tempfile::TempDir;
@@ -28,7 +27,7 @@ impl MidenClient for TestMiden {
         Ok(nonces)
     }
 
-    async fn submit_notes(&mut self, _: AccountId, _: Vec<Note>) -> Result<TransactionId, Failure> {
+    async fn submit_notes(&mut self, _: Vec<Note>) -> Result<TransactionId, Failure> {
         Err(Failure::new(
             Actionable("unexpected_submission"),
             anyhow!("the shutdown fixture must not submit a transaction"),

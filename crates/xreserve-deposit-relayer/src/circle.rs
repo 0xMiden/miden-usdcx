@@ -2,9 +2,9 @@
 //! `GET /v1/remote-domains/{d}/attestations?pageSize=&pageAfter=`.
 //!
 //! Pagination travels in the RFC 8288 `Link` header, not the body. An absent header is the
-//! documented final page, while a present but unparseable header is an error. Treating the second
-//! as the first would make a corrupted header look like the end of the feed and silently end the
-//! scan early.
+//! documented final page, while a header that cannot be parsed, or whose `next` relation carries
+//! no token, is an error. Treating either as the final page would make a corrupted header look
+//! like the end of the feed and silently end the scan early.
 //!
 //! The feed is ordered newest first, so the first page holds the most recent deposits and the
 //! `next` relation leads into the past. Circle publishes no way to ask for the opposite order.
@@ -326,21 +326,32 @@ impl CircleClient {
     }
 }
 
-/// Extracts the `pageAfter` token of the `rel="next"` relation from a `Link` header.
+/// Extracts the `pageAfter` token of the `rel="next"` relation from a `Link` header, or `None`
+/// when the header has no such relation.
 ///
 /// # Errors
 ///
 /// - The header is not a valid RFC 8288 `Link` header with relation parameters.
+/// - The `next` relation carries no `pageAfter` token, or an empty one.
 fn parse_next_link(header: &str) -> Result<Option<String>> {
     let links =
         parse_link_header::parse_with_rel(header).context("parsing the circle Link header")?;
+    let Some(next) = links.get("next") else {
+        return Ok(None);
+    };
 
-    Ok(links.get("next").and_then(|link| {
-        link.uri
-            .query_pairs()
-            .find(|(key, _)| key == "pageAfter")
-            .map(|(_, value)| value.into_owned())
-    }))
+    // A `next` relation says the feed continues. Without a token there is no page to ask for, and
+    // reading that as the final page would end the scan and move the watermark past the entries
+    // it never reached.
+    let token = next
+        .uri
+        .query_pairs()
+        .find(|(key, _)| key == "pageAfter")
+        .map(|(_, value)| value.into_owned())
+        .filter(|token| !token.is_empty());
+    token
+        .map(Some)
+        .context("the circle Link header's next relation carries no pageAfter token")
 }
 
 /// Deserializes Circle wire hex, tolerating the optional `0x` prefix the API emits.
@@ -368,6 +379,8 @@ fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use rstest::rstest;
 
     use super::{
         Attestation, CircleClient, CircleCursor, CircleDomain, MessageHash, Page, PageSize,
@@ -520,6 +533,35 @@ mod tests {
         let page = Page::decode(&body, None).unwrap();
 
         assert_eq!(page.next, None);
+    }
+
+    /// A `Link` header without a `next` relation is the final page too.
+    #[test]
+    fn a_link_header_without_a_next_relation_is_the_final_page() {
+        let body = page_body(&[attestation(1)]);
+        let link = "<https://circle.test/v1/remote-domains/1/attestations>; rel=\"first\"";
+        let page = Page::decode(&body, Some(link)).unwrap();
+
+        assert_eq!(page.next, None);
+    }
+
+    /// A `next` relation that cannot be followed is an error rather than the end of the feed, which
+    /// would move the watermark past the pages below it.
+    #[rstest]
+    #[case::no_token(
+        "<https://circle.test/v1/remote-domains/1/attestations?pageSize=100>; rel=\"next\""
+    )]
+    #[case::empty_token(
+        "<https://circle.test/v1/remote-domains/1/attestations?pageSize=100&pageAfter=>; rel=\"next\""
+    )]
+    fn a_next_relation_without_a_token_is_an_error(#[case] link: &str) {
+        let body = page_body(&[attestation(1)]);
+        let error = format!("{:#}", Page::decode(&body, Some(link)).unwrap_err());
+
+        assert!(
+            error.contains("no pageAfter token"),
+            "unexpected error: {error}"
+        );
     }
 
     /// A present but unparseable `Link` header is an error rather than the end of the feed.

@@ -176,6 +176,7 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
+The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Stop, restart and upgrade
 
@@ -185,13 +186,61 @@ docker start "usdcx-bridge-$USDCX_NETWORK"
 ```
 
 Stop sends SIGTERM and drains the current page and withdrawal cycle. Keep the platform's stop
-timeout above the process's five-minute limit (360 seconds above). If either service exits
-unexpectedly, both stop with an error. Restart with the same volume and configuration.
+timeout above the process's five-minute limit (360 seconds above). A signal during startup lets it
+finish under the same limit, and the bridge then stops before doing any work. If either service
+exits unexpectedly, both stop with an error. Restart with the same volume and configuration.
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
 Use an image version compatible with the deployed faucet; updating the service does not update
 the faucet. Client 0.17.2 upgrades its store version, which older clients cannot open. Keep a
 backup from before the upgrade if rollback is needed.
+
+## Tracing
+
+Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
+the relayer's and attester's spans over OpenTelemetry, using gRPC with the system's root
+certificates for TLS:
+
+| Option / variable | Meaning |
+| --- | --- |
+| `--otel-exporter-otlp-endpoint` / `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `--otel-exporter-otlp-traces-endpoint` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
+| `--otel-service-name` / `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `usdcx-bridge`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+| `--export-filter` / `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
+well. `RUST_LOG` does not filter the export, so lowering the log level never removes the spans the
+alerts are built on.
+
+The attester's startup is an `attester.startup` span. Each cycle is an `attester.cycle` span, with
+`attester.discover`, `attester.recover`, `attester.submit` and `attester.poll` under it for its
+phases. Each burn the attester prepares, and each saved withdrawal it sends or checks with Circle,
+is an `attester.withdraw` span carrying `note.id`. A cycle span fails only when the cycle as a whole
+could not do its work: discovery failed, the chain diverged or the store failed. A failure confined
+to one burn, such as a hold, a withdrawal Circle reports as failed, or a prepared withdrawal that
+fails verification, fails only that burn's `attester.withdraw` span. Every failed span
+carries `failure.class` (`integrity`, `actionable` or `transient`) and `failure.kind`.
+
+The relayer's spans are `relayer.startup`, a `relayer.scan` root per scan and a `relayer.page` span
+per page under it. Each page carries `deposits.unminted.count` and
+`deposits.unminted.oldest_age_secs`, for deposits on chain that the faucet has not minted yet.
+[The relayer's README](../xreserve-deposit-relayer/README.md#tracing) describes them and its failure
+kinds.
+
+Every cycle span also carries the attester's progress, zeros included:
+
+| Field | Meaning |
+| --- | --- |
+| `block.number` | The last block the attester verified. |
+| `tip.number` | The node's latest committed block. Left out when the node could not be read. |
+| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the faucet's deployment block. |
+| `burns.held.count` | Burns held before submission. |
+| `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
+| `withdrawals.failed.count` | Withdrawals Circle reported as failed. |
+| `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
+| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
+| `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
 
 ## Troubleshooting
 

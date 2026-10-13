@@ -12,16 +12,17 @@
 //! No authentication is sent because Circle has not documented an authentication scheme yet.
 
 use std::fmt;
-use std::io::Read;
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
-use reqwest::Url;
+use anyhow::{anyhow, ensure, Context, Result};
+use reqwest::{StatusCode, Url};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use tracing::field::Empty;
 use tracing::{instrument, Span};
+use usdcx_telemetry::FailureClass::Transient;
+use usdcx_telemetry::{Classify, Failure};
 
 use miden_usdcx::xreserve::encoding::{CircleDomain, Signature};
 
@@ -193,7 +194,7 @@ impl Page {
 pub struct CircleClient {
     base_url: Url,
     page_size: PageSize,
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
 }
 
 impl CircleClient {
@@ -208,7 +209,7 @@ impl CircleClient {
             !request_timeout.is_zero(),
             "request timeout must be greater than zero"
         );
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(request_timeout)
             .build()
             .context("building the circle http client")?;
@@ -222,58 +223,79 @@ impl CircleClient {
 
     /// Fetches the page after `cursor`, or the first page when it is `None`.
     ///
+    /// Every failure is transient: the page is fetched again on the next scan.
+    ///
     /// # Errors
     ///
-    /// - The request fails or times out.
-    /// - Circle answers with a non-success status.
-    /// - The response exceeds the size ceiling.
-    /// - The response does not decode as a page (see [`Page::decode`]).
+    /// - The request fails or times out (`circle_unavailable`).
+    /// - Circle answers `429` (`rate_limited`) or another non-success status
+    ///   (`unexpected_status`).
+    /// - The response exceeds the size ceiling or does not decode as a page (see [`Page::decode`])
+    ///   (`invalid_response`).
     #[instrument(
-        name = "circle.fetch_page",
+        name = "relayer.fetch_page",
         skip_all,
-        fields(remote_domain = %remote_domain, status = Empty, attestations = Empty, next = Empty),
+        fields(remote_domain = %remote_domain, status = Empty, attestations.count = Empty, next = Empty),
     )]
-    pub fn fetch_page(
+    pub async fn fetch_page(
         &self,
         remote_domain: CircleDomain,
         cursor: Option<&CircleCursor>,
-    ) -> Result<Page> {
+    ) -> Result<Page, Failure> {
         let span = Span::current();
-        let response = self
+        let mut response = self
             .client
             .get(self.page_url(remote_domain, cursor))
             .send()
-            .context("the circle request failed")?;
-        span.record("status", response.status().as_u16());
-        ensure!(
-            response.status().is_success(),
-            "circle answered {} for the attestation page",
-            response.status()
-        );
+            .await
+            .context("the circle request failed")
+            .classify(Transient("circle_unavailable"))?;
+        let status = response.status();
+        span.record("status", status.as_u16());
+        if !status.is_success() {
+            let class = if status == StatusCode::TOO_MANY_REQUESTS {
+                Transient("rate_limited")
+            } else {
+                Transient("unexpected_status")
+            };
+            return Err(Failure::new(
+                class,
+                anyhow!("circle answered {status} for the attestation page"),
+            ));
+        }
 
         let link = response
             .headers()
             .get(reqwest::header::LINK)
             .map(|value| value.to_str())
             .transpose()
-            .context("decoding the circle Link header")?
+            .context("decoding the circle Link header")
+            .classify(Transient("invalid_response"))?
             .map(str::to_owned);
 
-        // Read one byte past the ceiling rather than `bytes()`: a runaway body must not be
-        // buffered in full before it is rejected.
+        // Read chunk by chunk rather than `bytes()`: a runaway body must not be buffered in full
+        // before it is rejected.
         let mut body = Vec::new();
-        response
-            .take(Page::MAX_RESPONSE_BYTES as u64 + 1)
-            .read_to_end(&mut body)
-            .context("reading the circle response")?;
-        ensure!(
-            body.len() <= Page::MAX_RESPONSE_BYTES,
-            "the circle response exceeded the {}-byte ceiling",
-            Page::MAX_RESPONSE_BYTES
-        );
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("reading the circle response")
+            .classify(Transient("circle_unavailable"))?
+        {
+            body.extend_from_slice(&chunk);
+            if body.len() > Page::MAX_RESPONSE_BYTES {
+                return Err(Failure::new(
+                    Transient("invalid_response"),
+                    anyhow!(
+                        "the circle response exceeded the {}-byte ceiling",
+                        Page::MAX_RESPONSE_BYTES
+                    ),
+                ));
+            }
+        }
 
-        let page = Page::decode(&body, link.as_deref())?;
-        span.record("attestations", page.attestations.len());
+        let page = Page::decode(&body, link.as_deref()).classify(Transient("invalid_response"))?;
+        span.record("attestations.count", page.attestations.len());
         if let Some(next) = page.next_cursor() {
             span.record("next", next.as_str());
         }

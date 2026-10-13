@@ -4,6 +4,7 @@ members = [
   "crates/xusdc-light-attester",
   "crates/usdcx-bridge",
   "crates/xreserve-deposit-relayer",
+  "crates/usdcx-telemetry",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The members above use
 # published protocol-family crates at `=0.17.1`, and client and SQLite store crates at
@@ -35,10 +36,14 @@ anyhow = "1"
 aws-config = { version = "=1.12.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 thiserror = "2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-forest = { version = "0.3", features = ["chrono"] }
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "tls-roots", "trace"] }
+opentelemetry_sdk = "0.31"
+tracing-opentelemetry = "0.32"
+tonic = { version = "0.14", default-features = false }
 rstest = "0.26"
 assert_matches = "1.5"
 strum = { version = "=0.28.0", features = ["derive"] }
@@ -76,10 +81,9 @@ rand = "0.10"
 # `RequestBuilder::query` — how every Circle query param (`txHash`, `pageSize`, `pageAfter`, …) is
 # built and percent-encoded — sits behind its own `query` feature. `default-features = false`
 # keeps the graph off system OpenSSL and off the default TLS backend; `json` pulls the serde_json
-# body codec, and `blocking` the synchronous client the deposit relayer's sequential loop calls (it
-# runs its own runtime thread, so no async surfaces in that crate). The pinned cargo cache carries
-# reqwest + its hyper/rustls/h2 closure, so the offline `--locked` gate resolves.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "blocking"] }
+# body codec. The pinned cargo cache carries reqwest + its hyper/rustls/h2 closure, so the offline
+# `--locked` gate resolves.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 # The withdrawal listener's per-burn idempotency ledger (`idempotency::SubmitLedger`) — the
 # submitted-burn log, whose check-then-insert has to be one atomic step. SQLite is the persistence
 # choice; it is pinned here, not in the crate, because the later off-chain services need the same

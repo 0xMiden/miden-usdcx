@@ -18,6 +18,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/xreserve-deposit-relayer/ crates/xreserve-deposit-relayer/
 COPY crates/xusdc-light-attester/ crates/xusdc-light-attester/
 COPY crates/usdcx-bridge/ crates/usdcx-bridge/
+COPY crates/usdcx-telemetry/ crates/usdcx-telemetry/
 RUN --mount=type=cache,sharing=locked,id=usdcx-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
     --mount=type=cache,sharing=locked,id=usdcx-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \

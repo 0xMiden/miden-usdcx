@@ -1,63 +1,67 @@
 //! Starts both bridge services and stops them together on a signal or when either one exits.
 
 use std::future::Future;
-use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
-use tokio::signal::unix::{signal, SignalKind};
+use anyhow::{anyhow, ensure, Context, Result};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, instrument};
-use xreserve_deposit_relayer::{miden::NodeClient, Relayer};
+use tracing::info;
+use usdcx_telemetry::{cancel_on_signal, stop_within, SHUTDOWN_TIMEOUT};
+use xreserve_deposit_relayer::Relayer;
 use xusdc_attester::service::AttesterService;
 
 use crate::config::Config;
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-#[instrument(name = "bridge", skip_all)]
 pub(crate) async fn run(config: Config) -> Result<()> {
     let shutdown = CancellationToken::new();
     cancel_on_signal(shutdown.clone())?;
 
-    // No deposit work starts until the attester and both KMS signers pass startup.
-    let attester = AttesterService::start(config.attester).await?;
-    info!(service = "attester", "startup checks passed");
-    // The blocking relayer owns an SDK runtime and must run outside the async runtime.
-    let relayer = tokio::task::spawn_blocking(move || {
-        let node = NodeClient::new(&config.relayer).context("connecting relayer to Miden")?;
-        Relayer::new(config.relayer, Box::new(node))
-    })
-    .await
-    .context("relayer startup task failed")??;
-    info!(service = "relayer", "startup checks passed");
+    // A signal during startup lets it finish under the same time limit as the work in flight, and
+    // both services then see the shutdown and stop before doing any work.
+    let (attester, relayer) =
+        stop_within(start(config, shutdown.clone()), &shutdown, SHUTDOWN_TIMEOUT).await?;
     info!("deposit relayer and withdrawal attester started");
 
-    let (relayer_stop, relayer_shutdown) = mpsc::channel();
-    let relayer = tokio::task::spawn_blocking(move || relayer.run_until(relayer_shutdown));
     supervise(
         attester.run(shutdown.clone()),
         async { relayer.await.context("relayer task failed")? },
-        relayer_stop,
         shutdown,
         SHUTDOWN_TIMEOUT,
     )
     .await
 }
 
-/// Requests shutdown on the first SIGTERM or SIGINT.
-fn cancel_on_signal(shutdown: CancellationToken) -> Result<()> {
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
-        }
-        info!(reason = "process signal", "shutdown requested");
-        shutdown.cancel();
+/// Starts the attester, then the relayer on a thread of its own, and returns once both have passed
+/// startup. The relayer's thread goes on to run it until `shutdown` is cancelled.
+async fn start(
+    config: Config,
+    shutdown: CancellationToken,
+) -> Result<(AttesterService, JoinHandle<Result<()>>)> {
+    // No deposit work starts until the attester and both KMS signers pass startup.
+    let attester = AttesterService::start(config.attester).await?;
+    info!(service = "attester", "startup checks passed");
+    let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+    // The Miden client's futures are not `Send`, so the relayer cannot be spawned as a task.
+    // It runs on a blocking thread of its own, driven by this runtime, which also keeps proving a
+    // mint transaction from stalling the attester.
+    let runtime = tokio::runtime::Handle::current();
+    let relayer = tokio::task::spawn_blocking(move || {
+        runtime.block_on(async move {
+            let relayer = Relayer::start(config.relayer).await?;
+            info!(service = "relayer", "startup checks passed");
+            let _ = ready_sender.send(());
+            relayer.run_until(shutdown).await
+        })
     });
-    Ok(())
+    if ready_receiver.await.is_err() {
+        // The relayer only drops its readiness sender without sending when its startup fails.
+        return Err(match relayer.await.context("relayer task failed")? {
+            Err(error) => error.context("relayer startup failed"),
+            Ok(()) => anyhow!("relayer stopped before passing startup"),
+        });
+    }
+    Ok((attester, relayer))
 }
 
 /// Runs both services until both have stopped. Either one stopping requests shutdown of the other,
@@ -66,7 +70,6 @@ fn cancel_on_signal(shutdown: CancellationToken) -> Result<()> {
 async fn supervise(
     attester: impl Future<Output = Result<()>> + 'static,
     relayer: impl Future<Output = Result<()>>,
-    relayer_stop: mpsc::Sender<()>,
     shutdown: CancellationToken,
     timeout: Duration,
 ) -> Result<()> {
@@ -80,29 +83,10 @@ async fn supervise(
         tokio::join!(
             stop_peer_on_exit("attester", attester, &shutdown),
             stop_peer_on_exit("relayer", relayer, &shutdown),
-            async {
-                // The relayer is not async, so it learns of shutdown through its own channel.
-                shutdown.cancelled().await;
-                drop(relayer_stop);
-            },
         )
     });
-    let deadline = async {
-        shutdown.cancelled().await;
-        info!("stopping bridge services");
-        tokio::time::sleep(timeout).await;
-    };
-    let (attester, relayer, ()) = tokio::select! {
-        results = services => results,
-        // The relayer can wait on a chain confirmation indefinitely if blocks stop.
-        () = deadline => {
-            error!(
-                timeout = %humantime::format_duration(timeout),
-                "bridge shutdown did not finish in time; terminating the process"
-            );
-            std::process::exit(1);
-        }
-    };
+    // The relayer can wait on a chain confirmation indefinitely if blocks stop.
+    let (attester, relayer) = stop_within(services, &shutdown, timeout).await;
     let result = attester.and(relayer);
     info!(success = result.is_ok(), "bridge shutdown complete");
     result

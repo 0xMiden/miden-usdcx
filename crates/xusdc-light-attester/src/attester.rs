@@ -1,7 +1,7 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use miden_protocol::account::AccountId;
@@ -11,7 +11,10 @@ use miden_protocol::transaction::OutputNote;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::field::Empty;
+use tracing::{error, info_span, instrument, Instrument as _, Span};
+use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
+use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
@@ -35,6 +38,18 @@ pub enum DiscoverError {
     Store(#[from] anyhow::Error),
 }
 
+/// A failed chain read is retried next cycle, a diverged chain is never trusted again, and a store
+/// failure needs an operator.
+impl Classified for DiscoverError {
+    fn failure(&self) -> FailureClass {
+        match self {
+            Self::Chain(_) => Transient("chain_read"),
+            Self::ChainDiverged => Integrity("chain_diverged"),
+            Self::Store(_) => Actionable("store"),
+        }
+    }
+}
+
 pub use crate::store::Hold;
 pub use crate::submission::SubmitError;
 pub use crate::verify::VerifyError;
@@ -56,6 +71,8 @@ pub struct Attester {
     pub(crate) circle: Box<dyn CircleApi>,
     trusted_anchor_block: Option<SignedBlock>,
     signers: SignerPair,
+    /// The node's latest committed block, as this cycle's discovery read it.
+    node_tip: Option<BlockNumber>,
 }
 
 impl Attester {
@@ -130,6 +147,7 @@ impl Attester {
             circle,
             trusted_anchor_block,
             signers,
+            node_tip: None,
         })
     }
 
@@ -138,34 +156,13 @@ impl Attester {
     /// A store failure aborts only this cycle; the next one runs after the usual pause. After
     /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
     /// without one. A diverged chain ends the run with its error.
+    ///
+    /// Each cycle is an `attester.cycle` span with no parent, carrying the cycle's progress.
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
             let mut rate_limited = false;
-            match self.cycle(&mut rate_limited).await {
-                Ok(report) => {
-                    if let Err(error) = report.discover {
-                        warn!(
-                            error = &error as &dyn std::error::Error,
-                            "discovery failed; new signing paused for this cycle"
-                        );
-                    }
-                }
-                Err(error)
-                    if matches!(
-                        error.downcast_ref::<DiscoverError>(),
-                        Some(DiscoverError::ChainDiverged)
-                    ) =>
-                {
-                    return Err(error);
-                }
-                Err(error) => {
-                    error!(
-                        error = %format_args!("{error:#}"),
-                        "cycle stopped; retrying after the pause between cycles"
-                    );
-                }
-            }
+            self.traced_cycle(&mut rate_limited).await?;
             pause = if rate_limited {
                 pause
                     .saturating_mul(2)
@@ -182,34 +179,112 @@ impl Attester {
         Ok(())
     }
 
+    /// Runs one cycle in its `attester.cycle` span, logs how it ended and writes its progress on the
+    /// span. Returns the error that ends the run, which is a diverged chain.
+    #[instrument(
+        name = "attester.cycle",
+        parent = None,
+        skip_all,
+        fields(
+            block.number = Empty,
+            tip.number = Empty,
+            tip.stale_duration_secs = Empty,
+            burns.held.count = Empty,
+            withdrawals.held.count = Empty,
+            withdrawals.failed.count = Empty,
+            withdrawals.pending.count = Empty,
+            burns.unfinished.count = Empty,
+            burns.unfinished.oldest_age_blocks = Empty,
+        )
+    )]
+    async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
+        let outcome = self.cycle(rate_limited).await;
+        let progress = self.record_progress(&Span::current());
+        finish_cycle(outcome, progress)
+    }
+
     /// Runs one cycle on its own; a 429 from an earlier cycle does not carry over.
     #[cfg(test)]
     pub async fn run_one_cycle(&mut self) -> anyhow::Result<CycleReport> {
-        self.cycle(&mut false).await
+        self.cycle(&mut false)
+            .await
+            .map_err(|failure| failure.error)
     }
 
     /// Circle's 429 sets `rate_limited`: the rest of the cycle then leaves Circle alone, and
     /// [`Self::run`] reads it to pace the next cycle.
-    async fn cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<CycleReport> {
-        let (proof_lag_block, discover) = discovery_outcome(self.discover_burns().await)?;
+    ///
+    /// Discovery, recovery, submission and polling each run in a child span of their own, opened
+    /// every cycle even when the phase has nothing to do.
+    ///
+    /// Every error that stops a cycle without being discovery's is the store's.
+    async fn cycle(&mut self, rate_limited: &mut bool) -> Result<CycleReport, Failure> {
+        let discovered = self
+            .discover_burns()
+            .instrument(info_span!("attester.discover"))
+            .await;
+        let (proof_lag_block, discover) = discovery_outcome(discovered)?;
 
-        let (to_recover, to_poll) = self.snapshot_submissions()?;
+        let (to_recover, to_poll) = self.snapshot_submissions().classify(Actionable("store"))?;
         let fresh_burns = match proof_lag_block {
-            Some(block) => self.ready_burns(block)?,
+            Some(block) => self.ready_burns(block).classify(Actionable("store"))?,
             None => Vec::new(),
         };
 
         self.advance_submissions(to_recover, rate_limited)
+            .instrument(info_span!("attester.recover"))
             .await
-            .context("recovery stopped")?;
+            .context("recovery stopped")
+            .classify(Actionable("store"))?;
         let submit = self
             .submit_withdrawals(fresh_burns, rate_limited)
+            .instrument(info_span!("attester.submit"))
             .await
-            .context("submission stopped")?;
+            .context("submission stopped")
+            .classify(Actionable("store"))?;
         self.advance_submissions(to_poll, rate_limited)
+            .instrument(info_span!("attester.poll"))
             .await
-            .context("polling stopped")?;
+            .context("polling stopped")
+            .classify(Actionable("store"))?;
         Ok(CycleReport { discover, submit })
+    }
+
+    /// Writes the cycle's progress on its span: the last verified block, the node's tip and how
+    /// long ago the verified block was made, then the held, failed, pending and unfinished work.
+    /// Every field but the tip is written each cycle, zeros included, so the alerts always find
+    /// them; the tip is left out when discovery could not read it.
+    fn record_progress(&self, span: &Span) -> anyhow::Result<()> {
+        let verified = match self.store.scan_state()?.authenticated_parent {
+            Some(header) => header,
+            None => self
+                .trusted_anchor_block
+                .as_ref()
+                .map(|block| block.header().clone())
+                .context(INVALID)?,
+        };
+        let progress = self.store.progress()?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let oldest_age_blocks = progress.oldest_unfinished_burn.map_or(0, |block| {
+            verified.block_num().as_u32().saturating_sub(block.as_u32())
+        });
+        span.record("block.number", verified.block_num().as_u32());
+        if let Some(tip) = self.node_tip {
+            span.record("tip.number", tip.as_u32());
+        }
+        span.record(
+            "tip.stale_duration_secs",
+            now.saturating_sub(u64::from(verified.timestamp())),
+        );
+        span.record("burns.held.count", progress.burns_held);
+        span.record("withdrawals.held.count", progress.withdrawals_held);
+        span.record("withdrawals.failed.count", progress.withdrawals_failed);
+        span.record("withdrawals.pending.count", progress.withdrawals_pending);
+        span.record("burns.unfinished.count", progress.burns_unfinished);
+        span.record("burns.unfinished.oldest_age_blocks", oldest_age_blocks);
+        Ok(())
     }
 
     /// Loads the saved submissions to recover and to poll before anything changes their status,
@@ -226,12 +301,14 @@ impl Attester {
     /// block's header, one block per store transaction, so a crash never skips or half-records
     /// a block. Returns the node's proof-lag height, the bound for withdrawal readiness.
     pub(crate) async fn discover_burns(&mut self) -> Result<BlockNumber, DiscoverError> {
+        self.node_tip = None;
         let saved_scan = self.store.scan_state()?;
         let scan_limits = self
             .chain
             .scan_limits()
             .await
             .map_err(DiscoverError::Chain)?;
+        self.node_tip = Some(scan_limits.latest_committed_block);
         let Some(last_block_to_scan) =
             self.find_last_block_to_scan(&saved_scan, scan_limits.latest_committed_block)?
         else {
@@ -366,10 +443,10 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit. A store error stops the
-    /// cycle. A prepare 400, or a forwarded burn no larger than the CCTP fee, holds the burn. Other
-    /// errors are retried next cycle while later burns continue. A 429 stops Circle requests for
-    /// this cycle.
+    /// Takes each eligible burn through prepare, verify, sign and submit, each burn in an
+    /// `attester.withdraw` span. A store error stops the cycle. A prepare 400, or a forwarded burn
+    /// no larger than the CCTP fee, holds the burn. Other errors are retried next cycle while later
+    /// burns continue. A 429 stops Circle requests for this cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -380,26 +457,46 @@ impl Attester {
             if *rate_limited {
                 break;
             }
-            let note_id = burn.note_id();
-            if let Err(error) = self.withdraw(&burn, rate_limited).await {
-                if error.is_fatal() {
-                    return Err(error);
+            match self.attempt_withdrawal(&burn, rate_limited).await {
+                Ok(()) => {}
+                Err(error) if error.is_fatal() => return Err(error),
+                Err(error) => {
+                    first_error.get_or_insert(error);
                 }
-                let (hold, response, message) = burn_hold(&error);
-                if let Some(reason) = hold {
-                    self.store.hold_burn(note_id, reason, response)?;
-                }
-                warn!(
-                    note_id = %note_id,
-                    error = &error as &dyn std::error::Error,
-                    hold_reason = ?hold,
-                    circle_message = message.as_deref(),
-                    "withdrawal failed before submission"
-                );
-                first_error.get_or_insert(error);
             }
         }
         Ok(first_error.map_or(Ok(()), Err))
+    }
+
+    /// Withdraws one burn in its own `attester.withdraw` span, so its failure lands there and never
+    /// on the submission phase's span. A failure that is not fatal holds the burn when it calls for
+    /// a hold, and is logged; a fatal one is returned for the cycle to stop on.
+    #[instrument(name = "attester.withdraw", skip_all, fields(note.id = %burn.note_id()))]
+    async fn attempt_withdrawal(
+        &mut self,
+        burn: &DiscoveredBurn,
+        rate_limited: &mut bool,
+    ) -> Result<(), SubmitError> {
+        let Err(error) = self.withdraw(burn, rate_limited).await else {
+            return Ok(());
+        };
+        if error.is_fatal() {
+            return Err(error);
+        }
+        let (hold, response, message) = burn_hold(&error);
+        // Logged before the hold is written, so a failed write cannot lose the failure.
+        Span::current().record_error(&error);
+        error!(
+            note_id = %burn.note_id(),
+            error = &error as &dyn std::error::Error,
+            hold_reason = ?hold,
+            circle_message = message.as_deref(),
+            "withdrawal failed before submission"
+        );
+        if let Some(reason) = hold {
+            self.store.hold_burn(burn.note_id(), reason, response)?;
+        }
+        Err(error)
     }
 
     /// Prepares one burn's withdrawal with Circle, verifies the reply, signs it and submits it.
@@ -466,12 +563,54 @@ fn open_existing(
 /// the service.
 fn discovery_outcome(
     discover: Result<BlockNumber, DiscoverError>,
-) -> anyhow::Result<(Option<BlockNumber>, Result<(), DiscoverError>)> {
+) -> Result<(Option<BlockNumber>, Result<(), DiscoverError>), Failure> {
     match discover {
         Ok(proof_lag_block) => Ok((Some(proof_lag_block), Ok(()))),
         Err(error @ DiscoverError::Chain(_)) => Ok((None, Err(error))),
         Err(error @ (DiscoverError::Store(_) | DiscoverError::ChainDiverged)) => {
-            Err(error).context("discovery stopped")
+            Err(Failure::classified(error).context("discovery stopped"))
+        }
+    }
+}
+
+/// Logs how a cycle ended, inside its `attester.cycle` span. That span is marked failed only when
+/// the cycle as a whole could not do its work: discovery failed, the chain diverged or the store
+/// failed. A failure confined to one burn or one withdrawal leaves it alone. Returns the error that
+/// ends the run, which is a diverged chain.
+fn finish_cycle(
+    outcome: Result<CycleReport, Failure>,
+    progress: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Err(error) = &progress {
+        error!(error = %format_args!("{error:#}"), "could not read the cycle's progress");
+    }
+    match outcome {
+        Ok(CycleReport {
+            discover: Ok(()), ..
+        }) => {
+            if progress.is_err() {
+                Span::current().record_failure(Actionable("store"));
+            }
+            Ok(())
+        }
+        Ok(CycleReport {
+            discover: Err(error),
+            ..
+        }) => {
+            Failure::classified(error)
+                .report("discovery failed; new signing paused for this cycle");
+            Ok(())
+        }
+        Err(failure) => {
+            if matches!(
+                failure.error.downcast_ref::<DiscoverError>(),
+                Some(DiscoverError::ChainDiverged)
+            ) {
+                failure.report("chain diverged; stopping the attester");
+                return Err(failure.error);
+            }
+            failure.report("cycle stopped; retrying after the pause between cycles");
+            Ok(())
         }
     }
 }
@@ -581,4 +720,92 @@ fn find_burns_in_block(
     }
 
     Ok((new_burn_notes, new_burns))
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::{Status, TracerProvider as _};
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::*;
+
+    #[test]
+    fn progress_errors_do_not_replace_cycle_errors() {
+        for (discover, progress_fails, expected) in [
+            (
+                Err(DiscoverError::ChainDiverged),
+                true,
+                Some(Integrity("chain_diverged")),
+            ),
+            (
+                Err(DiscoverError::Chain(ChainError::Unavailable)),
+                true,
+                Some(Transient("chain_read")),
+            ),
+            (Ok(()), true, Some(Actionable("store"))),
+            (Ok(()), false, None),
+        ] {
+            let stops = matches!(&discover, Err(DiscoverError::ChainDiverged));
+            let outcome = match discover {
+                Err(error @ DiscoverError::ChainDiverged) => Err(Failure::classified(error)),
+                discover => Ok(CycleReport {
+                    discover,
+                    submit: Ok(()),
+                }),
+            };
+            let progress = if progress_fails {
+                Err(anyhow::anyhow!("could not read the store"))
+            } else {
+                Ok(())
+            };
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            let subscriber = tracing_subscriber::registry()
+                .with(OpenTelemetryLayer::new(provider.tracer("test")));
+            let result = tracing::subscriber::with_default(subscriber, || {
+                info_span!(parent: None, "attester.cycle").in_scope(|| {
+                    info_span!("attester.discover").in_scope(|| {});
+                    finish_cycle(outcome, progress)
+                })
+            });
+            if stops {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<DiscoverError>(),
+                    Some(DiscoverError::ChainDiverged)
+                ));
+            } else {
+                result.unwrap();
+            }
+
+            let spans = exporter.get_finished_spans().unwrap();
+            let cycle = spans
+                .iter()
+                .find(|span| span.name == "attester.cycle")
+                .unwrap();
+            let failures: Vec<_> = cycle
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.key.as_str().starts_with("failure."))
+                .cloned()
+                .collect();
+            if let Some(class) = expected {
+                assert_eq!(cycle.status, Status::error(class.kind()));
+                assert_eq!(
+                    failures,
+                    [
+                        KeyValue::new("failure.class", <&'static str>::from(class)),
+                        KeyValue::new("failure.kind", class.kind()),
+                    ]
+                );
+            } else {
+                assert_eq!(cycle.status, Status::Unset);
+                assert!(failures.is_empty());
+            }
+        }
+    }
 }

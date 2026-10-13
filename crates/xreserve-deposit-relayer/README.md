@@ -22,9 +22,9 @@ The relayer is a courier. It does not decide whether a deposit gets minted: the 
 it decides on the note's contents alone. The relayer's job is to get every attested deposit in
 front of the faucet exactly as Circle signed it, and to keep doing so across failures and restarts.
 
-The service is one synchronous loop: poll Circle, build notes, drop the already-minted ones,
-submit, wait for inclusion, record progress, sleep. The Miden client's asynchronous API is driven to completion on a single-threaded
-runtime, so there is never more than one page in flight.
+The service is one sequential loop: poll Circle, build notes, drop the already-minted ones,
+submit, wait for inclusion, record progress, sleep. Each step is awaited before the next starts, so
+there is never more than one page in flight.
 
 ## Authorization and trust
 
@@ -126,13 +126,17 @@ a smaller one notices a lost transaction sooner.
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
 duplicate that slipped past the used-nonce check, an attester key Circle did not sign with, a paused
-faucet — simply stays unconsumed. The relayer does not watch for that.
+faucet — simply stays unconsumed. The relayer keeps the deposits it put on chain in memory and
+checks the faucet's used-nonce map for them on every page, under the same sync as the page's own
+deposits, until the faucet mints them. Each page span reports how many are still waiting and for
+how long (see [Tracing](#tracing)). The list is lost on restart, and a deposit the faucet will never
+mint stays on it until then, so restarting is how an operator clears it after looking into it.
 
 ## Malformed attestations
 
 An attestation that cannot become a mint note — its payload is not a DepositIntent, or the intent
-is addressed to a different faucet or domain — is logged at `error` and skipped, and the rest of
-the page still mints. Such a failure depends only on the attestation and the configuration, so
+is addressed to a different faucet or domain — is logged at `error` with its message hash and the
+reason, and skipped, and the rest of the page still mints. Such a failure depends only on the attestation and the configuration, so
 retrying would never help, and holding up the page would stall every deposit behind it.
 
 A skipped deposit is not revisited: the scan moves past it like any other. If it was skipped
@@ -170,8 +174,8 @@ request. A malformed or unwritable progress file fails startup. Key possession i
 transaction authentication, so successful startup does not replace the operator's key setup or
 guarantee a transaction will succeed.
 
-Logs are a tree per page — the page, its Circle request, the notes it built and the transaction
-that carried them — filtered by `RUST_LOG` (default `info`).
+Each page is a span, with its Circle request, the notes it built and the transaction that carried
+them nested under it. See [Tracing](#tracing) for the spans and where they go.
 
 `--miden-data-dir` holds the Miden client's own state:
 
@@ -190,6 +194,55 @@ carried over from an earlier run only syncs what changed since.
 Nothing in the data directory is read back to resume work: a restart picks up from the page
 recorded in the state file below and fetches that page again. The deposits on it that already
 minted are dropped by the used-nonce check rather than proven a second time.
+
+SIGTERM or SIGINT stops the relayer once the page in flight is on chain and recorded, with a
+five-minute limit, so keep a host's stop timeout above five minutes. If the page is still waiting
+for its transaction when the limit passes, for example because the chain stopped producing blocks,
+the process exits with an error and the next start fetches that page again. A signal during startup
+lets it finish under the same limit, and the relayer then stops before its first page.
+
+## Tracing
+
+Logs go to stdout, filtered by `RUST_LOG` (default `info`). Setting an OTLP endpoint also exports
+the relayer's spans over OpenTelemetry, using gRPC with the system's root certificates for TLS:
+
+| Option / variable | Meaning |
+| --- | --- |
+| `--otel-exporter-otlp-endpoint` / `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send the spans, for example `https://api.honeycomb.io:443`. Export is off when it is unset or blank. `--otel-exporter-otlp-traces-endpoint` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` takes precedence when both are set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with each export, for example `x-honeycomb-team=<API_KEY>`. |
+| `--otel-service-name` / `OTEL_SERVICE_NAME` | The exported `service.name`; defaults to `xreserve-deposit-relayer`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, for example `deployment.environment=testnet`. |
+| `--export-filter` / `USDCX_EXPORT_FILTER` | Which spans and events are exported, in `RUST_LOG` syntax, for example `warn,usdcx_bridge=info,xreserve_deposit_relayer=info,xusdc_attester=info,miden_client=debug` to add the node client's spans. Defaults to the services' own at `info` and above and only warnings from their dependencies. An invalid value stops startup. |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables, such as the timeout and compression, apply as
+well. `RUST_LOG` does not filter the export, so lowering the log level never removes the spans the
+alerts are built on.
+
+Startup is a `relayer.startup` span. Each scan is a `relayer.scan` root span, and each page it walks
+is a `relayer.page` span under it, with `relayer.fetch_page`, `relayer.build_notes`,
+`relayer.retain_unminted` and `relayer.transaction` under that. A backlog keeps one scan open for
+as long as it takes, while a page closes once its notes are on chain, so the page is the span to
+watch for liveness. A page fails when anything stops it being recorded as done, and the scan it
+stopped fails with it. An attestation that will not build fails only the `relayer.build_notes` span
+that skipped it, and the page counts it in `attestations.skipped.count` and names it in
+`attestations.skipped.message_hashes`.
+
+Every page also carries `deposits.unminted.count`, the deposits put on chain that the faucet has not
+minted yet, and `deposits.unminted.oldest_age_secs`, how long the oldest of them has been on chain;
+both are 0 when none is waiting. They are recorded when the page ends, so they include the deposits
+the page itself put on chain, and a page that fails still records the deposits already waiting. The
+list is kept in memory, so a restart clears it. Every failed span carries `failure.class` and
+`failure.kind`:
+
+| `failure.class` | Meaning | `failure.kind` |
+| --- | --- | --- |
+| `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request` |
+| `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
+
+`node_sync` and `transaction_submit` are `transient` only when the node could not be reached or
+answered with an error. The same calls also use the Miden client's store and keystore and execute
+and prove the transaction. A failure there, such as a signing key missing from the keystore, keeps
+the kind and is `actionable`.
 
 ## Progress
 

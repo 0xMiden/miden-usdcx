@@ -185,6 +185,37 @@ async fn stopping_after_a_page_saves_the_resume_cursor() {
     assert_eq!(scan.resume.as_str(), "older");
 }
 
+/// An entry that does not decode does not hold up its page: the page is recorded as done, and the
+/// entry's message hash, which could still be read, becomes the watermark like any other.
+#[tokio::test]
+async fn a_page_with_an_undecodable_entry_is_recorded_as_done() {
+    let directory = TempDir::new().unwrap();
+    let body = serde_json::json!({"attestations": [{
+        "payload": "not hex", "messageHash": format!("0x{}", "01".repeat(32)),
+        "attestation": "0x00",
+    }]})
+    .to_string();
+    let (url, server) = page_server(body, false);
+    let config = config(&directory, &url);
+    let path = config.state_file.clone();
+    let mut relayer = Relayer::new(
+        config,
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        relayer.scan(&CancellationToken::new()).await.unwrap(),
+        ScanOutcome::Complete
+    );
+    drop(relayer);
+    server.join().unwrap();
+    let saved = Store::new(path).state().unwrap();
+    assert_eq!(saved.watermark, Some(MessageHash::new([1; 32])));
+    assert!(saved.scan.is_none());
+}
+
 #[tokio::test]
 async fn shutdown_wakes_the_poll_wait() {
     let directory = TempDir::new().unwrap();

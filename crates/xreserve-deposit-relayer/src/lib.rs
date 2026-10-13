@@ -13,8 +13,9 @@
 //!
 //! Each scan is a `relayer.scan` root span, and each page it walks is a `relayer.page` span under
 //! it. A page fails when anything stops it being recorded as done; the scan it stopped fails with
-//! it. An attestation that will not build fails only the `relayer.build_notes` span that skipped
-//! it, and the page counts it in `attestations.skipped.count`. Every page also reports the
+//! it. An entry that does not decode, or an attestation that will not build, fails only the
+//! `relayer.build_notes` span that skipped it, and the page counts it in
+//! `attestations.skipped.count`. Every page also reports the
 //! deposits earlier pages put on chain that the faucet has not minted yet (see [`unminted`]).
 
 use std::time::Instant;
@@ -35,7 +36,7 @@ pub mod mint;
 pub mod store;
 mod unminted;
 
-use circle::{Attestation, CircleClient, CircleCursor, MessageHash};
+use circle::{CircleClient, CircleCursor, Entry, MessageHash};
 use config::Config;
 use miden::{MidenClient, NodeClient};
 use mint::{BuiltNotes, Minter};
@@ -60,9 +61,15 @@ fn identifiers(ids: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", ids.into_iter().collect::<Vec<_>>().join(", "))
 }
 
+/// How an entry is named in a trace: by its message hash, when it has a readable one.
+fn hash_or_unreadable(hash: Option<MessageHash>) -> String {
+    hash.map_or_else(|| "unreadable".to_owned(), |hash| hash.to_string())
+}
+
 /// What one page left for the scan to do next, once that page is on chain.
 struct PageOutcome {
-    /// The newest attestation on this page, or `None` when the page held none.
+    /// The newest entry on this page with a readable message hash, or `None` when the page held
+    /// none.
     ///
     /// The scan uses it from the head page only — the one it fetches without a cursor — where it
     /// becomes the watermark once the walk finishes. `None` there means the feed is empty.
@@ -270,7 +277,7 @@ impl<M: MidenClient> Relayer<M> {
     ///
     /// It records what it finds on the current span, which is the `relayer.page` span.
     ///
-    /// Malformed attestations are skipped inside [`Minter::build_notes`], and deposits the faucet
+    /// Entries that do not decode or will not build are skipped inside [`Minter::build_notes`], and deposits the faucet
     /// has already minted are dropped by [`MidenClient::retain_unminted`], so no proof is spent on a note
     /// the faucet would refuse. The same check, under the same sync, drops the deposits of earlier
     /// pages that the faucet has minted since. Every remaining note goes into one transaction, and the page is
@@ -296,33 +303,32 @@ impl<M: MidenClient> Relayer<M> {
             .circle
             .fetch_page(self.config.remote_domain, resume)
             .await?;
-        span.record("attestations.count", page.attestations.len());
+        span.record("attestations.count", page.entries.len());
         span.record(
             "attestations.message_hashes",
             identifiers(
-                page.attestations
+                page.entries
                     .iter()
-                    .map(|attestation| attestation.message_hash.to_string()),
+                    .map(|entry| hash_or_unreadable(entry.message_hash())),
             )
             .as_str(),
         );
 
         // The page runs newest to oldest, so the watermark — if it is on this page at all — ends
-        // the scan, and everything above it arrived since the last scan.
-        let reached = page
-            .attestations
-            .iter()
-            .position(|attestation| Some(&attestation.message_hash) == watermark);
-        let fresh: Vec<&Attestation> = page.attestations
-            [..reached.unwrap_or(page.attestations.len())]
-            .iter()
-            .collect();
+        // the scan, and everything above it arrived since the last scan. An entry without a
+        // readable message hash is never the watermark.
+        let reached = page.entries.iter().position(|entry| {
+            entry
+                .message_hash()
+                .is_some_and(|hash| Some(&hash) == watermark)
+        });
+        let fresh = &page.entries[..reached.unwrap_or(page.entries.len())];
 
-        let BuiltNotes { notes, skipped } = self.minter.build_notes(&fresh);
+        let BuiltNotes { notes, skipped } = self.minter.build_notes(fresh);
         span.record("attestations.skipped.count", skipped.len());
         span.record(
             "attestations.skipped.message_hashes",
-            identifiers(skipped.iter().map(ToString::to_string)).as_str(),
+            identifiers(skipped.iter().copied().map(hash_or_unreadable)).as_str(),
         );
         let built = notes.len();
 
@@ -370,7 +376,7 @@ impl<M: MidenClient> Relayer<M> {
         }
 
         Ok(PageOutcome {
-            newest: page.attestations.first().map(|first| first.message_hash),
+            newest: page.entries.iter().find_map(Entry::message_hash),
             // Reaching the watermark ends the scan even though the feed continues below it:
             // everything below was handled by an earlier scan.
             next: match reached {

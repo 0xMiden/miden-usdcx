@@ -134,9 +134,11 @@ mint stays on it until then, so restarting is how an operator clears it after lo
 
 ## Malformed attestations
 
-An attestation that cannot become a mint note — its payload is not a DepositIntent, or the intent
-is addressed to a different faucet or domain — is logged at `error` with its message hash and the
-reason, and skipped, and the rest of the page still mints. Such a failure depends only on the attestation and the configuration, so
+An attestation that cannot become a mint note — a field of its feed entry does not decode, its
+payload is not a DepositIntent, or the intent is addressed to a different faucet or domain — is
+logged at `error` with its message hash and the reason, and skipped, and the rest of the page still
+mints. An entry whose message hash cannot be read either is named `unreadable`; while it is the
+newest entry in the feed it is reported again on every scan, since the scan has no hash to stop at. Such a failure depends only on the attestation and the configuration, so
 retrying would never help, and holding up the page would stall every deposit behind it.
 
 A skipped deposit is not revisited: the scan moves past it like any other. If it was skipped

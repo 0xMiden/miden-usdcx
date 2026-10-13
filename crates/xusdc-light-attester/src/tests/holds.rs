@@ -489,7 +489,7 @@ async fn burn_hold_and_release_record_the_reason() {
         recorded::<Option<i64>>(&ledger, order[0], "BURN_HELD", "http_status"),
         [Some(400)]
     );
-    attester.release_burn_hold(note_id).unwrap();
+    assert_eq!(attester.store.release_holds(&[note_id]).unwrap(), (1, 0));
     for kind in ["BURN_HELD", "BURN_RELEASED"] {
         assert_eq!(
             recorded::<i64>(&ledger, order[0], kind, "burn_hold_reason"),

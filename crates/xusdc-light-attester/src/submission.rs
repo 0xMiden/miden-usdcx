@@ -153,19 +153,6 @@ impl Attester {
         Ok(())
     }
 
-    /// After reviewing an HTTP rejection, queue the unchanged request for another attempt.
-    /// This does not retry failed or expired Circle withdrawals.
-    pub fn retry_held_submission(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
-        self.store
-            .retry_held_submission(note_id)
-            .map_err(Into::into)
-    }
-
-    /// Remove this burn's hold so the next cycle can prepare it again.
-    pub fn release_burn_hold(&mut self, note_id: NoteId) -> Result<(), SubmitError> {
-        self.store.release_burn_hold(note_id).map_err(Into::into)
-    }
-
     pub(crate) async fn advance_submission(
         &mut self,
         mut saved: SavedSubmission,

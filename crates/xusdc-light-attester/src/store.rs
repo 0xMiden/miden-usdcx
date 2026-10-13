@@ -90,9 +90,6 @@ enum EventKind {
     /// Circle's answer, or a lost reply, when it changes the request's recorded state.
     #[strum(serialize = "OUTCOME")]
     Outcome,
-    /// An operator queued a held request to be sent again.
-    #[strum(serialize = "OPERATOR_RETRY")]
-    OperatorRetry,
     /// The burn was put on hold, for example because Circle refused to prepare it, and now waits
     /// for an operator.
     #[strum(serialize = "BURN_HELD")]
@@ -443,21 +440,6 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    pub(crate) fn release_burn_hold(&mut self, note_id: NoteId) -> anyhow::Result<()> {
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        // Recorded before the hold is cleared, so the history keeps its reason.
-        record_event(&transaction, note_id, EventKind::BurnReleased, None)?;
-        let updated = transaction
-            .execute(
-                "UPDATE burns SET hold_reason = NULL
-                 WHERE note_id = ?1 AND hold_reason IS NOT NULL",
-                [note_id.to_bytes()],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        transaction.commit().map_err(classify_error)
-    }
-
     /// The saved submission for `note_id`, if there is one.
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
         Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
@@ -507,28 +489,6 @@ impl Store {
                 circle_status.as_deref(),
             )?;
         }
-        transaction.commit().map_err(classify_error)
-    }
-
-    /// Puts a held withdrawal back to be sent, and records that in the burn's history. Its saved
-    /// request and any known withdrawal ID stay, so recovery asks Circle for its status instead of
-    /// posting it again once the ID is known.
-    pub(crate) fn retry_held_submission(&mut self, note_id: NoteId) -> anyhow::Result<()> {
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        let updated = transaction
-            .execute(
-                "UPDATE submissions SET status = ?2, hold_reason = NULL
-             WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
-                params![
-                    note_id.to_bytes(),
-                    SubmissionStatus::Submitting.as_ref(),
-                    SubmissionStatus::Held.as_ref(),
-                    HoldReason::HttpRejected.as_ref()
-                ],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        record_event(&transaction, note_id, EventKind::OperatorRetry, None)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -767,9 +727,9 @@ fn record_event(
     Ok(())
 }
 
-/// Return true if the latest outcome since authorization or operator retry matches the status,
-/// withdrawal ID, HTTP status, error, and the status Circle reports. Record the first reply after
-/// an operator retry. Ignore other response body changes when those fields stay the same.
+/// Return true if the latest outcome since authorization matches the status, withdrawal ID, HTTP
+/// status, error, and the status Circle reports. Ignore other response body changes when those
+/// fields stay the same.
 fn repeats_latest_outcome(
     connection: &rusqlite::Connection,
     outcome: &SavedSubmission,
@@ -780,14 +740,13 @@ fn repeats_latest_outcome(
         "SELECT EXISTS (SELECT 1 FROM submission_events
          WHERE seq = (SELECT MAX(seq) FROM submission_events
                 WHERE note_id = ?1 AND kind = ?2 AND seq > (SELECT COALESCE(MAX(seq), 0)
-                    FROM submission_events WHERE note_id = ?1 AND kind IN (?3, ?4)))
-            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8
-            AND circle_status IS ?9)",
+                    FROM submission_events WHERE note_id = ?1 AND kind = ?3))
+            AND status = ?4 AND withdrawal_id IS ?5 AND http_status IS ?6 AND error IS ?7
+            AND circle_status IS ?8)",
         params![
             outcome.note_id.to_bytes(),
             EventKind::Outcome.as_ref(),
             EventKind::Authorized.as_ref(),
-            EventKind::OperatorRetry.as_ref(),
             outcome.status.as_ref(),
             outcome.withdrawal_id,
             outcome.last_http_status,

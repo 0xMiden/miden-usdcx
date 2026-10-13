@@ -541,7 +541,6 @@ async fn submit_sends_checked_request() {
                 Some("Circle returned an unknown withdrawal status")
             );
         }
-        assert!(attester.retry_held_submission(saved.note_id).is_err());
         if matches!(status, "created" | "finalized" | "failed" | "new_status") {
             let history = ledger.history(0);
             let fresh = ledger
@@ -647,8 +646,7 @@ async fn submit_sends_checked_request() {
 }
 
 /// A history row is written with the change it records: when the row cannot be written, the
-/// change is not made either. An operator retry is recorded without a new authorization, and an
-/// answer that changes nothing the history records adds no row.
+/// change is not made either. An answer that changes nothing the history records adds no row.
 #[tokio::test]
 async fn failed_history_write_changes_nothing() {
     use SubmissionStatus::*;
@@ -669,23 +667,14 @@ async fn failed_history_write_changes_nothing() {
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
 
+    // An unexpected status leaves the request queued to be sent again.
     ledger.sql("DROP TRIGGER fail_history;");
     let (mut attester, _) = ledger
-        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .start(vec![reply(503, json!({"message": "unavailable"}))])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    drop(attester);
-    ledger.sql(fail_history);
-    let (mut attester, _) = ledger.start(vec![]).await;
-    let held = ledger.record(&attester, 0);
-    assert!(attester.retry_held_submission(held.note_id).is_err());
-    assert_eq!(ledger.record(&attester, 0), held);
-    drop(attester);
-
-    ledger.sql("DROP TRIGGER fail_history;");
-    let (mut attester, _) = ledger.start(vec![]).await;
-    attester.retry_held_submission(held.note_id).unwrap();
-    let retried = ledger.record(&attester, 0);
+    let queued = ledger.record(&attester, 0);
+    assert_eq!(queued.status, Submitting);
     drop(attester);
     ledger.sql(
         "CREATE TRIGGER fail_outcome BEFORE INSERT ON submission_events WHEN NEW.kind = 'OUTCOME'
@@ -695,7 +684,7 @@ async fn failed_history_write_changes_nothing() {
         .start(vec![reply(201, json!([ledger.response(0, "created")]))])
         .await;
     assert!(recover(&mut attester).await.is_err());
-    assert_eq!(ledger.record(&attester, 0), retried);
+    assert_eq!(ledger.record(&attester, 0), queued);
     drop(attester);
 
     ledger.sql("DROP TRIGGER fail_outcome;");
@@ -712,8 +701,7 @@ async fn failed_history_write_changes_nothing() {
         ledger.history(0),
         [
             event("AUTHORIZED", Submitting),
-            event("OUTCOME", Held),
-            event("OPERATOR_RETRY", Submitting),
+            event("OUTCOME", Submitting),
             event("OUTCOME", Submitted),
         ]
     );
@@ -728,26 +716,6 @@ async fn failed_history_write_changes_nothing() {
     assert_eq!(
         ledger.history(0)[recorded..],
         [event("OUTCOME", Submitted), event("OUTCOME", Finalized)]
-    );
-}
-
-/// An operator retry puts a held request back without recording an outcome, so when the request is
-/// sent again and Circle gives the same answer as before the retry, the history records it again.
-#[tokio::test]
-async fn retried_request_records_the_same_answer_again() {
-    let ledger = Ledger::new().await;
-    let rejected = json!({"message": "rejected"});
-    let (mut attester, _) = ledger
-        .start(vec![reply(400, rejected.clone()), reply(400, rejected)])
-        .await;
-    ledger.submit(&mut attester, 0).await.unwrap();
-    let held = ledger.record(&attester, 0);
-    attester.retry_held_submission(held.note_id).unwrap();
-    recover(&mut attester).await.unwrap();
-    assert_eq!(ledger.record(&attester, 0), held);
-    assert_eq!(
-        ledger.history(0).last(),
-        Some(&event("OUTCOME", SubmissionStatus::Held))
     );
 }
 
@@ -780,7 +748,7 @@ async fn history_needs_a_known_burn() {
     assert_eq!(request(), held);
     let error = attester
         .store
-        .retry_held_submission(ledger.burns[0].note_id())
+        .release_holds(&[ledger.burns[0].note_id()])
         .unwrap_err();
     assert_eq!(error.to_string(), CONFLICT);
     assert_eq!(request(), held);
@@ -1136,9 +1104,6 @@ async fn conflicts_are_checked() {
             (Submitting, None, Some(error)),
             "{name}"
         );
-        assert!(attester
-            .retry_held_submission(ledger.burns[0].note_id())
-            .is_err());
     }
     let ledger = Ledger::new().await;
     ledger.sql("CREATE TRIGGER fail_id BEFORE UPDATE ON submissions WHEN NEW.withdrawal_id IS NOT NULL BEGIN SELECT RAISE(FAIL, 'disk full'); END;");

@@ -16,7 +16,7 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         --relayer-account-id 0x111111101111111111111111111111
         --relayer-attester-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
         --relayer-state-file /unused/relayer-progress
-        --signer-provider aws-kms --aws-kms-region eu-west-1
+        --aws-kms-region eu-west-1
         --aws-kms-key-arn arn:aws:kms:eu-west-1:123456789012:key/first
                          arn:aws:kms:eu-west-1:123456789012:key/second
         --aws-kms-operation-timeout 10s

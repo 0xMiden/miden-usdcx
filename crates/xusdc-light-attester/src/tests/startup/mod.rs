@@ -42,8 +42,6 @@ impl TestArgs {
         Self {
             args: [
                 "xusdc-attester".into(),
-                "--signer-provider".into(),
-                "aws-kms".into(),
                 "--aws-kms-region".into(),
                 "eu-north-1".into(),
                 "--aws-kms-key-arn".into(),

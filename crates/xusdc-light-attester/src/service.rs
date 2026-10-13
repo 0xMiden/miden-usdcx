@@ -14,7 +14,7 @@ use crate::chain::MidenChainReader;
 use crate::circle::CircleClient;
 use crate::config::{
     parse_faucet_account_id, parse_note_ids, parse_trusted_anchor_commitment, Command, Config,
-    SignerConfig,
+    KmsConfig,
 };
 use crate::signer::{KmsSigner, Signer, SignerPair};
 use crate::Attester;
@@ -41,11 +41,11 @@ impl AttesterService {
     async fn connect(config: Config) -> Result<Self> {
         let circle =
             CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
-        let SignerConfig::AwsKms {
+        let KmsConfig {
             region,
             key_arns,
             operation_timeout,
-        } = config.signer();
+        } = config.kms();
         let client = KmsSigner::client(region, *operation_timeout).await;
         let first = KmsSigner::connect(client.clone(), &key_arns[0])
             .await

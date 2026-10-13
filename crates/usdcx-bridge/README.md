@@ -98,7 +98,6 @@ docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --relayer-account-id '<RELAYER_ACCOUNT_ID>' \
   --relayer-attester-public-key '<CIRCLE_DEPOSIT_PUBLIC_KEY_HEX>' \
   --relayer-state-file /data/relayer/progress.json \
-  --signer-provider aws-kms \
   --aws-kms-region '<AWS_REGION>' \
   --aws-kms-key-arn '<KMS_KEY_ARN_1>' '<KMS_KEY_ARN_2>' \
   --aws-kms-operation-timeout 10s \
@@ -136,8 +135,8 @@ docker run --rm --network none ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 run --
 
 This is the complete flag reference for the single `usdcx-bridge run` command in v0.17.1.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
-Only the relayer polling interval and expiration delta have defaults. KMS settings are required
-because `aws-kms` is the only supported signer. Durations accept values such as `30s` or `500ms`;
+Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
+in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
 paths below refer to locations inside the container.
 
 Fee amounts use USDC base units: `1000000` = 1 USDC. One basis point = 0.01%.
@@ -168,7 +167,6 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--cctp-forwarding-max-fee` | Required | Positive cap for an additional CCTP transfer, in USDC base units. Size using the fee guide; required but not added for direct routes. |
 | `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc, confirmed for the target Circle environment. |
 | `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc, confirmed for that environment. Must differ from the xReserve address. |
-| `--signer-provider` | Required | `aws-kms`. No other provider is supported. |
 | `--aws-kms-region` | Required | AWS Region containing both keys. |
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |

@@ -7,7 +7,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{parse_note_ids, CctpForwarding, Command, Invocation, SignerConfig};
+use crate::config::{parse_note_ids, CctpForwarding, Command, Invocation, KmsConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -39,7 +39,6 @@ fn cli_surface_is_explicit() {
     assert_eq!(local.load().miden_rpc_url(), &Endpoint::localhost());
 
     for required in [
-        "--signer-provider",
         "--miden-rpc-url",
         "--circle-url",
         "--request-timeout",
@@ -77,7 +76,6 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
-        ("--signer-provider", "aws-kms"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -394,7 +392,7 @@ fn note_ids_file_takes_the_first_word_of_each_line() {
 }
 
 #[test]
-fn signer_mode_validates_only_its_own_settings() {
+fn kms_settings_are_validated() {
     const FIRST: &str =
         "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
     const SECOND: &str =
@@ -403,16 +401,11 @@ fn signer_mode_validates_only_its_own_settings() {
     create_store_parent(&directory);
     let kms = TestArgs::new(&directory, 1);
     assert!(matches!(
-        kms.load().signer(),
-        SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        kms.load().kms(),
+        KmsConfig { region, key_arns, operation_timeout }
         if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
             && *operation_timeout == std::time::Duration::from_secs(10)
     ));
-    for provider in ["development", "fallback"] {
-        let mut unsupported = kms.clone();
-        unsupported.replace("--signer-provider", provider);
-        assert_cli_error(&unsupported, ErrorKind::InvalidValue);
-    }
 
     let options: [(&str, &[&str]); 3] = [
         ("--aws-kms-region", &["eu-north-1"]),

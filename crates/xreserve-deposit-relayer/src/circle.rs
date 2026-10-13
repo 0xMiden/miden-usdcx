@@ -182,11 +182,6 @@ impl Page {
             next: next.map(CircleCursor::new),
         })
     }
-
-    /// Returns the cursor for the next page, or `None` when the feed is caught up.
-    pub fn next_cursor(&self) -> Option<&CircleCursor> {
-        self.next.as_ref()
-    }
 }
 
 /// The Circle-facing HTTP client.
@@ -296,7 +291,7 @@ impl CircleClient {
 
         let page = Page::decode(&body, link.as_deref()).classify(Transient("invalid_response"))?;
         span.record("attestations.count", page.attestations.len());
-        if let Some(next) = page.next_cursor() {
+        if let Some(next) = &page.next {
             span.record("next", next.as_str());
         }
         Ok(page)

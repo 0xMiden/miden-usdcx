@@ -8,7 +8,7 @@
 //!
 //! A scan is a pass rather than a process lifetime. Progress is persisted page by page, so one
 //! interrupted part way through resumes where it stopped instead of starting over.
-//! [`Relayer::run`] begins a scan every polling interval; a relayer that is caught up meets the
+//! [`Relayer::run_until`] begins a scan every polling interval; a relayer that is caught up meets the
 //! watermark at the top of the head page and ends the scan after that one request.
 //!
 //! Each scan is a `relayer.scan` root span, and each page it walks is a `relayer.page` span under
@@ -378,18 +378,9 @@ impl<M: MidenClient> Relayer<M> {
             // everything below was handled by an earlier scan.
             next: match reached {
                 Some(_) => None,
-                None => page.next_cursor().cloned(),
+                None => page.next,
             },
         })
-    }
-
-    /// Scans the feed indefinitely, pausing for the polling interval between scans.
-    ///
-    /// A failed scan leaves the watermark where it was, and the next one resumes at the page the
-    /// failure stopped it on rather than repeating the pages already on chain.
-    pub async fn run(self) -> Result<()> {
-        // A token nothing cancels keeps the standalone relayer running.
-        self.run_until(CancellationToken::new()).await
     }
 
     /// Runs one scan in its `relayer.scan` span. Each scan is a root of its own, so a long-running
@@ -406,7 +397,11 @@ impl<M: MidenClient> Relayer<M> {
         outcome
     }
 
-    /// Runs until `shutdown` is cancelled.
+    /// Scans the feed, pausing for the polling interval between scans, until `shutdown` is
+    /// cancelled.
+    ///
+    /// A failed scan leaves the watermark where it was, and the next one resumes at the page the
+    /// failure stopped it on rather than repeating the pages already on chain.
     ///
     /// The current page finishes and its progress is saved before stopping. Waiting for a mint
     /// transaction can continue indefinitely if the chain stops producing blocks.

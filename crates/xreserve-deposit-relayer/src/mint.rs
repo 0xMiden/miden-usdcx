@@ -1,6 +1,6 @@
 //! Builds xUSDC mint notes from Circle attestations.
 //!
-//! The note encoding is delegated to `xusdc-encoding`. This module supplies the configured
+//! The note encoding is delegated to `miden-usdcx`. This module supplies the configured
 //! attester key required by the note and skips individual attestations that cannot be decoded or
 //! built, allowing the remaining attestations in the page to proceed. A skip is `actionable`: the
 //! scan moves past the attestation, so its deposit is never minted unless an operator steps in.

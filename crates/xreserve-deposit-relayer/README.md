@@ -120,8 +120,10 @@ and the build fails if that ever stops being true.
 Every mint transaction carries an expiration block, `--expiration-delta` blocks past the one it was
 built against. That is what bounds the wait: once the chain reaches the expiration block without
 the transaction in it, no later block can carry it, so the relayer gives up and retries the page. A
-transaction the node discards ends the wait the same way. A larger delta tolerates a slower chain;
-a smaller one notices a lost transaction sooner.
+transaction the node discards ends the wait the same way. The Miden client's own limit on how long
+a transaction may stay pending, 20 blocks by default, is turned off, so nothing shorter than the
+expiration delta ends the wait. A larger delta tolerates a slower chain; a smaller one notices a
+lost transaction sooner.
 
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a

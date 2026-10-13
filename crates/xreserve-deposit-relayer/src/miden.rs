@@ -8,7 +8,8 @@
 //! Every mint transaction is given an expiration block, so the wait always has an answer. A
 //! transaction the chain has reached the expiration block of can no longer be included by anyone:
 //! the wait ends in failure on a fact about the chain rather than on a guess about how long is too
-//! long, and the page is retried.
+//! long, and the page is retried. The client's own limit on how long a transaction may stay pending
+//! is such a guess, so it is turned off.
 //!
 //! One page is one transaction. That is what makes the retry above clean: a page either lands
 //! whole or lands not at all, so a retry never re-mints a deposit an earlier attempt already got on
@@ -207,6 +208,11 @@ impl NodeClient {
             )))
             .sqlite_store(data_dir.join(STORE_FILE))
             .authenticator(Arc::new(keystore))
+            // By default the client gives up on a pending transaction 20 blocks after it was
+            // submitted and reports it discarded. That is the client's guess: the chain can still
+            // include the transaction until its expiration block, and the wait for inclusion must
+            // end on what the chain did.
+            .tx_discard_delta(None)
             .build()
             .await
             .context("building the miden client")?;
@@ -415,7 +421,8 @@ enum Inclusion {
 /// Reads a submitted transaction's status against the chain it is waiting on.
 ///
 /// A discarded transaction can never commit, so it ends the wait as an error rather than something
-/// to keep polling. A chain that has reached the transaction's expiration block ends it the same
+/// to keep polling. The client is built to discard only on what the chain did: the transaction
+/// expired, or the account moved on without it. A chain that has reached the transaction's expiration block ends it the same
 /// way, and for the same reason: no later block can carry the transaction, so waiting on it would
 /// never end. Either way the relay loop retries the page from the cursor, so both are `transient`.
 ///

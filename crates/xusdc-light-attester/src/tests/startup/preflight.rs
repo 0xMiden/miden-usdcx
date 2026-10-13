@@ -191,9 +191,8 @@ async fn unreachable_circle_api_is_rejected() {
     // The real client asks for Circle's info with the configured timeout and nothing else.
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let request = CircleClient::start(&load_config(&tempdir, 1))
+    let request = CircleClient::new(&load_config(&tempdir, 1))
         .unwrap()
-        .0
         .info_request()
         .unwrap();
     assert_eq!(request.method(), Method::GET);
@@ -206,13 +205,13 @@ async fn unreachable_circle_api_is_rejected() {
     assert!(request.body().is_none());
 }
 
-/// Requests go out one gap apart even after the worker falls behind, a queued request whose caller
-/// gave up is skipped, and the worker ends once the client is dropped.
+/// Requests go out one gap apart even after the client falls behind, and a waiting request whose
+/// caller gave up takes no turn.
 #[tokio::test(start_paused = true)]
 async fn circle_requests_are_paced() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let (circle, worker) = CircleClient::start(&load_config(&tempdir, 1)).unwrap();
+    let circle = CircleClient::new(&load_config(&tempdir, 1)).unwrap();
     let client = &circle;
     // Plain HTTP is refused before any network I/O, so every attempt fails at once. A call returns
     // the time its answer arrived.
@@ -228,7 +227,7 @@ async fn circle_requests_are_paced() {
     // The first request sets the earliest time the next one may go out.
     let mut answered = vec![call().await];
 
-    // Polling each call once puts its request in the queue.
+    // Polling each call once makes it wait for its turn.
     let mut queued = [Box::pin(call()), Box::pin(call()), Box::pin(call())];
     std::future::poll_fn(|context| {
         for pending in &mut queued {
@@ -237,8 +236,8 @@ async fn circle_requests_are_paced() {
         std::task::Poll::Ready(())
     })
     .await;
-    // The worker falls behind: before it runs again, the clock passes every slot the queued
-    // requests could have been given up front.
+    // The client falls behind: before a waiting request runs again, the clock passes every slot
+    // the waiting requests could have been given up front.
     tokio::time::advance(3 * REQUEST_GAP).await;
     for pending in queued {
         answered.push(pending.await);
@@ -254,9 +253,6 @@ async fn circle_requests_are_paced() {
         call().await - asked < REQUEST_GAP,
         "the skipped request took no turn"
     );
-
-    drop(circle);
-    worker.await.unwrap();
 }
 
 /// Circle's reply is read in full up to 1 MiB and refused one byte past it. A 429 comes back as an

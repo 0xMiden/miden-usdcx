@@ -4,7 +4,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use miden_protocol::block::BlockNumber;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use usdcx_telemetry::Classify as _;
@@ -23,7 +22,6 @@ use crate::Attester;
 /// An initialized attester that has not started its withdrawal loop yet.
 pub struct AttesterService {
     attester: Attester,
-    circle_worker: JoinHandle<()>,
 }
 
 impl AttesterService {
@@ -41,8 +39,8 @@ impl AttesterService {
     }
 
     async fn connect(config: Config) -> Result<Self> {
-        let (circle, circle_worker) =
-            CircleClient::start(&config).context("failed to initialize Circle HTTP client")?;
+        let circle =
+            CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
         let SignerConfig::AwsKms {
             region,
             key_arns,
@@ -63,25 +61,12 @@ impl AttesterService {
         let attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
             .await
             .context("startup failed")?;
-        Ok(Self {
-            attester,
-            circle_worker,
-        })
+        Ok(Self { attester })
     }
 
-    /// Runs the attester, then waits for its Circle worker to finish outstanding requests.
-    pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
-        let Self {
-            mut attester,
-            circle_worker,
-        } = self;
-        let result = attester.run(shutdown).await;
-        // Closing the request queue lets the worker finish its current request and stop.
-        drop(attester);
-        circle_worker
-            .await
-            .context("Circle request worker failed")?;
-        result
+    /// Runs the attester until `shutdown` is cancelled.
+    pub async fn run(mut self, shutdown: CancellationToken) -> Result<()> {
+        self.attester.run(shutdown).await
     }
 }
 

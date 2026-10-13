@@ -12,8 +12,7 @@ use miden_usdcx::xreserve::encoding::CircleDomain;
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classified, FailureClass};
@@ -100,8 +99,6 @@ const MAX_LOGGED_MESSAGE_CHARS: usize = 200;
 /// Circle allows five requests per second from one IP address; a quarter of a second between two
 /// requests stays below that.
 pub(crate) const REQUEST_GAP: Duration = Duration::from_millis(250);
-/// Requests wait in a short queue for the worker; a caller waits for room when it is full.
-const REQUEST_QUEUE: usize = 16;
 
 /// The calls the attester makes to Circle's xReserve API. [`CircleClient`] makes them over HTTPS;
 /// this is a trait so that the attester can be tested without Circle.
@@ -135,25 +132,18 @@ pub trait CircleApi: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<RawResponse, CircleError>> + Send + 'a>>;
 }
 
-/// Circle's xReserve API over HTTPS. Every request goes through one worker, which sends them one
-/// at a time, at least [`REQUEST_GAP`] apart.
+/// Circle's xReserve API over HTTPS. Requests are sent one at a time, at least [`REQUEST_GAP`]
+/// apart.
 pub struct CircleClient {
     base_url: Url,
     request_timeout: Duration,
-    requests: mpsc::Sender<Job>,
-}
-
-/// A request queued for the worker, and where its answer goes.
-struct Job {
-    request: reqwest::Request,
-    reply: oneshot::Sender<Result<RawResponse, CircleError>>,
+    client: reqwest::Client,
+    /// The earliest time the next request may go out. Holding the lock is a caller's turn to send.
+    next_dispatch: Mutex<Instant>,
 }
 
 impl CircleClient {
-    /// Builds the client and starts its worker, which ends once the client is dropped and the
-    /// queued requests are done: await the returned handle to let them finish. Call this inside
-    /// the Tokio runtime.
-    pub fn start(config: &Config) -> Result<(Self, JoinHandle<()>), CircleError> {
+    pub fn new(config: &Config) -> Result<Self, CircleError> {
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(concat!("xusdc-attester/", env!("CARGO_PKG_VERSION")))
@@ -163,14 +153,12 @@ impl CircleClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(CircleError::Transport)?;
-        let (requests, jobs) = mpsc::channel(REQUEST_QUEUE);
-        let worker = tokio::spawn(request_worker(client, jobs));
-        let circle = Self {
+        Ok(Self {
             base_url: config.circle_api_base_url().clone(),
             request_timeout: config.circle_request_timeout(),
-            requests,
-        };
-        Ok((circle, worker))
+            client,
+            next_dispatch: Mutex::new(Instant::now()),
+        })
     }
 
     pub(crate) fn info_request(&self) -> Result<reqwest::Request, CircleError> {
@@ -183,14 +171,21 @@ impl CircleClient {
         Ok(request)
     }
 
-    /// Queues one request for the worker and waits for its answer.
+    /// Sends one request once it is this caller's turn and at least [`REQUEST_GAP`] has passed
+    /// since the previous attempt ended, failed or not. A caller that stops waiting before its
+    /// request goes out takes no turn.
     pub(crate) async fn send(&self, request: reqwest::Request) -> Result<RawResponse, CircleError> {
-        let (reply, response) = oneshot::channel();
-        self.requests
-            .send(Job { request, reply })
-            .await
-            .map_err(|_| CircleError::Unavailable)?;
-        response.await.map_err(|_| CircleError::Unavailable)?
+        let mut next_dispatch = self.next_dispatch.lock().await;
+        tokio::time::sleep_until(*next_dispatch).await;
+        // Counted from the start too, so a caller that stops waiting for the answer still keeps
+        // the next request a gap away.
+        *next_dispatch = Instant::now() + REQUEST_GAP;
+        let result = match self.client.execute(request).await {
+            Ok(response) => read_reply(response).await,
+            Err(error) => Err(CircleError::Transport(error)),
+        };
+        *next_dispatch = Instant::now() + REQUEST_GAP;
+        result
     }
 
     pub(crate) fn prepare_request(
@@ -244,29 +239,6 @@ impl CircleClient {
         let mut request = reqwest::Request::new(reqwest::Method::GET, url);
         *request.timeout_mut() = Some(self.request_timeout);
         Ok(request)
-    }
-}
-
-/// Sends the queued requests one at a time, each at least [`REQUEST_GAP`] after the previous
-/// attempt ended, failed or not. A request whose caller stopped waiting is skipped; one already
-/// sent is finished.
-async fn request_worker(client: reqwest::Client, mut jobs: mpsc::Receiver<Job>) {
-    let mut next_dispatch = Instant::now();
-    while let Some(job) = jobs.recv().await {
-        if job.reply.is_closed() {
-            continue;
-        }
-        tokio::time::sleep_until(next_dispatch).await;
-        if job.reply.is_closed() {
-            continue;
-        }
-        let result = match client.execute(job.request).await {
-            Ok(response) => read_reply(response).await,
-            Err(error) => Err(CircleError::Transport(error)),
-        };
-        // The gap counts from when this attempt ended, so two dispatches are always further apart.
-        next_dispatch = Instant::now() + REQUEST_GAP;
-        let _ = job.reply.send(result);
     }
 }
 

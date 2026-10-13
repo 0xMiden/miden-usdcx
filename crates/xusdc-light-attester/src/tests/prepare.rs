@@ -13,13 +13,11 @@ use super::startup::{create_store_parent, TestArgs};
 use super::validation::discovered_burn;
 use super::verify::serial;
 
-/// A client for building requests. Its request worker runs on Tokio, so a test using it is async.
+/// A client for building requests.
 fn client() -> CircleClient {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    CircleClient::start(&TestArgs::new(&tempdir, 1).load())
-        .unwrap()
-        .0
+    CircleClient::new(&TestArgs::new(&tempdir, 1).load()).unwrap()
 }
 
 /// Every wire field comes from the right burn value, and the salt is the burn's note ID, so burns

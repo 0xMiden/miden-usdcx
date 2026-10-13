@@ -1249,7 +1249,7 @@ async fn submission_requests_use_the_saved_request() {
         .submission("https://saved.example.invalid/v1/withdraw".parse().unwrap())
         .unwrap();
     let config = ledger.config.lock().unwrap().load();
-    let client = CircleClient::start(&config).unwrap().0;
+    let client = CircleClient::new(&config).unwrap();
 
     let post = client.submission_request(&saved).unwrap();
     assert_eq!(post.method(), Method::POST);

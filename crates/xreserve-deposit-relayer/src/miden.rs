@@ -24,7 +24,9 @@
 //! earlier pages until the faucet mints them.
 //!
 //! A failed node request, or a transaction that expired or was discarded, is `transient`: the page is
-//! retried on the next scan. A failure of the client's own store, or a transaction request the client
+//! retried on the next scan. While a submitted transaction is being waited for, a failed sync is
+//! first tried again a few times, since giving up on a transaction that may still land has the
+//! page submitted a second time. A failure of the client's own store, or a transaction request the client
 //! will not build, is `actionable`, since retrying the page meets it again.
 
 use std::fmt;
@@ -49,7 +51,7 @@ use miden_protocol::note::Note;
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{EMPTY_WORD, MAX_OUTPUT_NOTES_PER_TX};
 use tracing::field::{display, Empty};
-use tracing::{instrument, Span};
+use tracing::{instrument, warn, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classify, Failure, FailureClass, FailureContext as _};
 
@@ -66,6 +68,11 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long to wait between asking the node whether a submitted transaction made it into a block.
 /// Blocks are produced far more slowly than this, so a shorter interval only adds traffic.
 const INCLUSION_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How many syncs in a row may fail while waiting for a transaction before the wait gives up. One
+/// dropped request should not abandon a transaction the node may still include, while a node that
+/// stays unreachable has to end the wait, so the scan fails where an operator can see it.
+const FAILED_SYNCS_BEFORE_GIVING_UP: u32 = 3;
 
 /// The file the Miden client keeps its store in, inside the configured data directory.
 const STORE_FILE: &str = "store.sqlite3";
@@ -350,14 +357,31 @@ impl MidenClient for NodeClient {
             .context("submitting the mint transaction")?;
         span.record("transaction.id", display(transaction));
 
+        let mut failed_syncs = 0;
         loop {
             // Only a sync moves a submitted transaction out of `Pending`: it is how the node reports
             // which transactions reached a block.
-            client
+            let synced = client
                 .sync_state()
                 .await
                 .classify_with(|error| client_class(error, "node_sync"))
-                .context("syncing while waiting for the mint transaction")?;
+                .context("syncing while waiting for the mint transaction");
+            if let Err(failure) = synced {
+                failed_syncs += 1;
+                if !retry_sync(&failure, failed_syncs) {
+                    return Err(failure);
+                }
+                // A failed sync says nothing about the transaction, which the node may still
+                // include. Giving up here would have the page proven and submitted again beside it.
+                warn!(
+                    error = %format_args!("{:#}", failure.error),
+                    failed_syncs,
+                    "the sync failed while waiting for the mint transaction; trying again"
+                );
+                tokio::time::sleep(INCLUSION_POLL_INTERVAL).await;
+                continue;
+            }
+            failed_syncs = 0;
 
             let record = client
                 .get_transactions(TransactionFilter::Ids(vec![transaction]))
@@ -407,6 +431,15 @@ fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
         ClientError::RpcError(_) => Transient(kind),
         _ => Actionable(kind),
     }
+}
+
+/// Whether the wait for a transaction tries again after a sync failed, given how many have failed
+/// in a row, this one included.
+///
+/// Only a failed exchange with the node is worth another try, and only so many times in a row:
+/// past that the node is treated as unreachable and the wait ends with the failure.
+fn retry_sync(failure: &Failure, failed_syncs: u32) -> bool {
+    matches!(failure.class, Transient(_)) && failed_syncs < FAILED_SYNCS_BEFORE_GIVING_UP
 }
 
 /// What a submitted transaction's latest status means to the caller waiting on it.
@@ -545,6 +578,22 @@ mod tests {
         #[case] class: FailureClass,
     ) {
         assert_eq!(client_class(&error, "node_sync"), class);
+    }
+
+    /// While waiting for a transaction, a failed exchange with the node is tried again until three
+    /// have failed in a row. A failure of the client itself ends the wait at once.
+    #[rstest]
+    #[case::first_failure(Transient("node_sync"), 1, true)]
+    #[case::second_failure(Transient("node_sync"), 2, true)]
+    #[case::third_failure(Transient("node_sync"), 3, false)]
+    #[case::client_failure(Actionable("node_sync"), 1, false)]
+    fn a_failed_sync_is_retried_a_bounded_number_of_times(
+        #[case] class: FailureClass,
+        #[case] failed_syncs: u32,
+        #[case] retried: bool,
+    ) {
+        let failure = Failure::new(class, anyhow!("the sync failed"));
+        assert_eq!(retry_sync(&failure, failed_syncs), retried);
     }
 
     /// An expiration delta of at least one block leaves the transaction a block to land in.

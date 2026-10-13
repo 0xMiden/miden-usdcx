@@ -125,6 +125,11 @@ a transaction may stay pending, 20 blocks by default, is turned off, so nothing 
 expiration delta ends the wait. A larger delta tolerates a slower chain; a smaller one notices a
 lost transaction sooner.
 
+While it waits, the relayer asks the node every second whether the transaction is in a block. One
+failed request does not end the wait: the transaction may still land, and giving up on it would
+have the page submitted a second time. After three failed requests in a row the node is treated as
+unreachable and the page fails, to be retried on the next scan.
+
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
 duplicate that slipped past the used-nonce check, an attester key Circle did not sign with, a paused

@@ -5,6 +5,8 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument::WithSubscriber as _;
+use tracing::Instrument as _;
 
 use crate::admin::{
     AdminConfig, Command, HoldsPage, Operation, ReleaseError, ReleaseSelection, Server,
@@ -484,6 +486,11 @@ async fn selected_release_leaves_other_holds_and_cannot_release_a_new_hold() {
 
 #[tokio::test]
 async fn checked_history_write_failure_preserves_the_hold() {
+    use opentelemetry::trace::{SpanId, Status, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![]).await;
     for index in [0, 1] {
@@ -520,6 +527,10 @@ async fn checked_history_write_failure_preserves_the_hold() {
         .unwrap_or_else(|_| panic!());
     let receive = Arc::new(std::sync::Mutex::new(Some(receive)));
     let output = tempfile::NamedTempFile::new().unwrap();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
@@ -531,12 +542,16 @@ async fn checked_history_write_failure_preserves_the_hold() {
                 file.try_clone().unwrap()
             }
         })
-        .finish();
-    use tracing::instrument::WithSubscriber as _;
-    attester
-        .admin_checkpoint()
-        .with_subscriber(subscriber)
-        .await;
+        .finish()
+        .with(OpenTelemetryLayer::new(provider.tracer("test")));
+    async {
+        attester
+            .admin_checkpoint()
+            .instrument(tracing::info_span!("attester.discover"))
+            .await;
+    }
+    .with_subscriber(subscriber)
+    .await;
     assert!(
         receive.lock().unwrap().is_none(),
         "reply was dropped before the send"
@@ -547,6 +562,19 @@ async fn checked_history_write_failure_preserves_the_hold() {
         logged.contains("disk full"),
         "underlying store error must survive: {logged}"
     );
+    assert!(!logged.contains("operator released a hold"));
+    let spans = exporter.get_finished_spans().unwrap();
+    let admin = spans
+        .iter()
+        .find(|span| span.name == "attester.admin")
+        .unwrap();
+    assert_eq!(admin.parent_span_id, SpanId::INVALID);
+    assert_eq!(admin.status, Status::error("store"));
+    let discover = spans
+        .iter()
+        .find(|span| span.name == "attester.discover")
+        .unwrap();
+    assert_eq!(discover.status, Status::Unset);
     assert_eq!(attester.store.holds_page(None).unwrap().len(), 2);
 }
 
@@ -594,8 +622,22 @@ async fn owner_skips_abandoned_commands_and_lost_success_does_not_repeat() {
             deadline: Instant::now() + Duration::from_secs(60),
         })
         .unwrap_or_else(|_| panic!());
-    attester.admin_checkpoint().await;
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(output.reopen().unwrap())
+        .finish();
+    attester
+        .admin_checkpoint()
+        .with_subscriber(subscriber)
+        .await;
     drop(receive); // The transaction committed even though its successful reply was lost.
+    let logged = std::fs::read_to_string(output.path()).unwrap();
+    assert_eq!(logged.matches("operator released a hold").count(), 1);
+    assert!(logged.contains(&format!("note_id={}", selected.note_id)));
+    assert!(logged.contains(&format!("event_seq={}", selected.expected_event_seq)));
+    assert!(logged.contains("burns=1 withdrawals=0"));
     assert!(matches!(
         attester.store.release_checked(&selected),
         Err(ReleaseError::Conflict)

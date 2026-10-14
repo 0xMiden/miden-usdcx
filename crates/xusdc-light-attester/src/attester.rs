@@ -12,7 +12,7 @@ use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info_span, instrument, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
@@ -191,6 +191,7 @@ impl Attester {
         if self.admin_shutdown.is_cancelled() || command.abandoned() {
             return;
         }
+        let _span = info_span!(parent: None, "attester.admin").entered();
         let report = |error| {
             if let ReleaseError::Store(detail) = error {
                 let failure = Failure::new(Actionable("store"), detail);
@@ -231,7 +232,16 @@ impl Attester {
                 let result = self
                     .store
                     .release_checked(&selection)
-                    .map(|(burns, withdrawals)| Released { burns, withdrawals })
+                    .map(|(burns, withdrawals)| {
+                        info!(
+                            note_id = %selection.note_id,
+                            event_seq = selection.expected_event_seq,
+                            burns,
+                            withdrawals,
+                            "operator released a hold"
+                        );
+                        Released { burns, withdrawals }
+                    })
                     .map_err(report);
                 let _ = reply.send(result);
             }

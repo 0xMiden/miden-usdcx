@@ -1,7 +1,7 @@
 //! List and release holds in the running attester.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 pub(crate) mod client;
 pub use client::{AdminArgs, AdminOperation};
@@ -215,7 +216,21 @@ impl Server {
                 () = shutdown.cancelled() => break Ok(()),
                 Some(_) = connections.join_next(), if !connections.is_empty() => {},
                 accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
-                    let (stream, _) = match accepted { Ok(value) => value, Err(error) => break Err(error.into()) };
+                    let (stream, _) = match accepted {
+                        Ok(value) => value,
+                        Err(error) if matches!(error.kind(),
+                            ErrorKind::ConnectionRefused | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset
+                        ) => continue,
+                        Err(error) => {
+                            warn!(%error, "admin listener accept failed");
+                            tokio::select! {
+                                biased;
+                                () = shutdown.cancelled() => break Ok(()),
+                                () = tokio::time::sleep(Duration::from_secs(1)) => {},
+                            }
+                            continue;
+                        }
+                    };
                     let service = TowerToHyperService::new(router.clone());
                     let stop_connection = stop.clone();
                     connections.spawn(async move {

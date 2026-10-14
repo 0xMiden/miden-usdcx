@@ -71,7 +71,7 @@ sudo install -d -m 0700 -o 10001 -g 10001 \
   "$USDCX_DATA_DIR/attester"
 ```
 
-Obtain the relayer account ID and its complete Miden SDK 0.17.2 keystore directory securely from
+Obtain the relayer account ID and its complete Miden SDK 0.17.3 keystore directory securely from
 whoever provisions the account. Copy the directory's contents into
 `$USDCX_DATA_DIR/relayer/miden/keystore`, preserving filenames. Set ownership to `10001:10001`,
 directory permissions to `0700` and key-file permissions to `0600`. This is separate from the
@@ -192,7 +192,7 @@ exits unexpectedly, both stop with an error. Restart with the same volume and co
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
 Use an image version compatible with the deployed faucet; updating the service does not update
-the faucet. Client 0.17.2 upgrades its store version, which older clients cannot open. Keep a
+the faucet. SDK store upgrades can prevent older clients from opening the store. Keep a
 backup from before the upgrade if rollback is needed.
 
 ## Tracing

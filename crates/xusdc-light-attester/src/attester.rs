@@ -21,7 +21,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{BurnHoldReason, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
@@ -187,7 +187,7 @@ impl Attester {
     }
 
     fn handle_admin(&mut self, command: crate::admin::Command) {
-        use crate::admin::{HoldsPage, Operation, ReleaseError, Released};
+        use crate::admin::{HoldsPage, Operation, Released};
         if self.admin_shutdown.is_cancelled() || command.abandoned() {
             return;
         }

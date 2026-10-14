@@ -6,7 +6,7 @@ use anyhow::{bail, ensure, Context};
 use clap::{Args, Subcommand};
 use reqwest::{Client, Url};
 
-use super::{load_token, parse_note_id, ErrorBody, HoldsPage, ReleaseSelection, Released};
+use super::{load_token, parse_note_id, ErrorBody, HoldsPage, ReleaseRequest, Released};
 
 #[derive(Debug, Args)]
 pub struct AdminArgs {
@@ -103,7 +103,7 @@ pub(crate) async fn run(args: AdminArgs) -> anyhow::Result<()> {
             circle_not_accepted,
         } => client
             .post(args.url.join("admin/attester/holds/release")?)
-            .json(&ReleaseSelection {
+            .json(&ReleaseRequest {
                 note_id,
                 expected_event_seq,
                 circle_not_accepted,

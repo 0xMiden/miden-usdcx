@@ -17,9 +17,9 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
 use rusqlite::{params, OpenFlags, Params, Transaction};
+use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
-use crate::admin::{HoldEntry, ReleaseError, ReleaseSelection};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
@@ -69,6 +69,35 @@ impl fmt::Display for Hold {
             self.circle_message.as_deref().unwrap_or("-")
         )
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct HoldEntry {
+    pub(crate) note_id: String,
+    pub(crate) kind: String,
+    pub(crate) reason: String,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) circle_message: Option<String>,
+    pub(crate) event_seq: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseSelection {
+    pub(crate) note_id: NoteId,
+    pub(crate) expected_event_seq: i64,
+    pub(crate) circle_not_accepted: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReleaseError {
+    #[error("invalid selection")]
+    Invalid,
+    #[error("hold changed or is no longer releasable")]
+    Conflict,
+    #[error("check Circle before releasing a signed withdrawal")]
+    CircleCheck,
+    #[error(transparent)]
+    Store(#[from] anyhow::Error),
 }
 
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
@@ -277,7 +306,8 @@ impl Store {
         let (mut burns, mut withdrawals) = (0, 0);
         // A burn named twice is released once.
         for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
-            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, None)?;
+            // Naming a withdrawal in the offline command confirms Circle did not accept it.
+            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?;
             burns += burn;
             withdrawals += withdrawal;
         }
@@ -289,8 +319,7 @@ impl Store {
         &mut self,
         selection: &ReleaseSelection,
     ) -> Result<(usize, usize), ReleaseError> {
-        let note_id =
-            crate::admin::parse_note_id(&selection.note_id).map_err(|_| ReleaseError::Invalid)?;
+        let note_id = selection.note_id;
         if selection.expected_event_seq <= 0 {
             return Err(ReleaseError::Invalid);
         }
@@ -323,8 +352,7 @@ impl Store {
         if revision != selection.expected_event_seq {
             return Err(ReleaseError::Conflict);
         }
-        let released =
-            Self::release_hold(&transaction, note_id, Some(selection.circle_not_accepted))?;
+        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?;
         transaction.commit().map_err(classify_error)?;
         Ok(released)
     }
@@ -332,7 +360,7 @@ impl Store {
     fn release_hold(
         transaction: &Transaction<'_>,
         note_id: NoteId,
-        circle_not_accepted: Option<bool>,
+        circle_not_accepted: bool,
     ) -> Result<(usize, usize), ReleaseError> {
         let note = note_id.to_bytes();
         let held = params![
@@ -360,7 +388,7 @@ impl Store {
                     AND hold_reason = ?3 AND withdrawal_id IS NULL)",
             held,
         )? {
-            if circle_not_accepted == Some(false) {
+            if !circle_not_accepted {
                 return Err(ReleaseError::CircleCheck);
             }
             // Release only after checking this withdrawal with Circle. Remove the saved

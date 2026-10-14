@@ -8,11 +8,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber as _;
 use tracing::Instrument as _;
 
-use crate::admin::{
-    AdminConfig, Command, HoldsPage, Operation, ReleaseError, ReleaseSelection, Server,
-};
+use crate::admin::{AdminConfig, Command, HoldsPage, Operation, ReleaseRequest, Server};
 use crate::circle::{CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse};
-use crate::store::BurnHoldReason;
+use crate::store::{BurnHoldReason, HoldEntry, ReleaseError, ReleaseSelection};
 use crate::{DiscoveredBurn, SavedSubmission};
 
 use super::submit::{reply, Ledger};
@@ -86,7 +84,7 @@ async fn admin_waits_for_the_post_and_its_persisted_outcome() {
             .try_send(Command {
                 operation: Operation::Release(
                     ReleaseSelection {
-                        note_id: ledger.burns[0].note_id().to_string(),
+                        note_id: ledger.burns[0].note_id(),
                         expected_event_seq: revision,
                         circle_not_accepted: true,
                     },
@@ -210,16 +208,7 @@ async fn pagination_is_bounded_and_uses_stored_note_bytes() {
 async fn listing_does_not_change_signing_submission_polling_or_restart_recovery() {
     let ledger = Ledger::new().await;
     let (signers, calls) = super::service_map::signers(None).await;
-    let replies = ledger
-        .fresh_indices
-        .iter()
-        .flat_map(|&index| {
-            [
-                reply(200, ledger.prepared_response(index)),
-                reply(201, json!([ledger.response(index, "created")])),
-            ]
-        })
-        .collect();
+    let replies = super::service_map::fresh_replies(&ledger, &ledger.fresh_indices);
     let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
     let (sender, receiver) = mpsc::channel(16);
     attester.attach_admin(receiver, CancellationToken::new());
@@ -359,9 +348,9 @@ async fn invalid_token_fails_before_external_service_initialization() {
         .contains("cannot open admin token file"));
 }
 
-fn selection(hold: &crate::admin::HoldEntry, checked: bool) -> ReleaseSelection {
+fn selection(hold: &HoldEntry, checked: bool) -> ReleaseSelection {
     ReleaseSelection {
-        note_id: hold.note_id.clone(),
+        note_id: crate::admin::parse_note_id(&hold.note_id).unwrap(),
         expected_event_seq: hold.event_seq,
         circle_not_accepted: checked,
     }
@@ -474,7 +463,7 @@ async fn selected_release_leaves_other_holds_and_cannot_release_a_new_hold() {
             > burn.event_seq
     );
     let unknown = ReleaseSelection {
-        note_id: format!("0x{}", "11".repeat(32)),
+        note_id: crate::admin::parse_note_id(&format!("0x{}", "11".repeat(32))).unwrap(),
         expected_event_seq: 1,
         circle_not_accepted: true,
     };
@@ -713,24 +702,25 @@ async fn authenticated_transport_and_client_release_selected_holds() {
             .unwrap();
         assert_eq!(next.holds.len(), 2);
         let release = format!("{url}/release");
-        let body = json!(selection(&page.holds[0], false));
+        let body = json!(ReleaseRequest {
+            note_id: page.holds[0].note_id.clone(),
+            expected_event_seq: page.holds[0].event_seq,
+            circle_not_accepted: false,
+        });
         let mut extra_field = body.clone();
         extra_field["extra"] = json!(true);
-        for (body, expected) in [
-            (json!({"holds": []}), StatusCode::BAD_REQUEST),
-            (json!({"holds": [body.clone()]}), StatusCode::BAD_REQUEST),
-            (extra_field, StatusCode::BAD_REQUEST),
-        ] {
+        for body in [json!({"holds": []}), extra_field] {
+            let response = client
+                .post(&release)
+                .bearer_auth("ab".repeat(32))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert_eq!(
-                client
-                    .post(&release)
-                    .bearer_auth("ab".repeat(32))
-                    .json(&body)
-                    .send()
-                    .await
-                    .unwrap()
-                    .status(),
-                expected
+                response.json::<serde_json::Value>().await.unwrap(),
+                json!({"code": "invalid_input", "message": "invalid release body"})
             );
         }
         assert_eq!(

@@ -27,7 +27,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 pub(crate) mod client;
-pub use client::{AdminArgs, AdminOperation};
+pub use client::AdminArgs;
+
+use crate::store::{HoldEntry, ReleaseError, ReleaseSelection};
 
 const COMMAND_WAIT: Duration = Duration::from_secs(60);
 const HEADER_WAIT: Duration = Duration::from_secs(10);
@@ -82,23 +84,13 @@ pub(crate) fn parse_note_id(value: &str) -> anyhow::Result<NoteId> {
     Ok(id)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ReleaseSelection {
+pub(crate) struct ReleaseRequest {
     pub(crate) note_id: String,
     pub(crate) expected_event_seq: i64,
     #[serde(default)]
     pub(crate) circle_not_accepted: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct HoldEntry {
-    pub(crate) note_id: String,
-    pub(crate) kind: String,
-    pub(crate) reason: String,
-    pub(crate) http_status: Option<u16>,
-    pub(crate) circle_message: Option<String>,
-    pub(crate) event_seq: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,18 +106,6 @@ pub(crate) struct HoldsPage {
 pub(crate) struct Released {
     pub(crate) burns: usize,
     pub(crate) withdrawals: usize,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ReleaseError {
-    #[error("invalid selection")]
-    Invalid,
-    #[error("hold changed or is no longer releasable")]
-    Conflict,
-    #[error("check Circle before releasing a signed withdrawal")]
-    CircleCheck,
-    #[error(transparent)]
-    Store(#[from] anyhow::Error),
 }
 
 pub(crate) enum Operation {
@@ -210,10 +190,10 @@ impl Server {
             .layer(middleware::from_fn_with_state(state.clone(), authenticate))
             .with_state(state);
         let mut connections = JoinSet::new();
-        let result = loop {
+        loop {
             tokio::select! {
                 biased;
-                () = shutdown.cancelled() => break Ok(()),
+                () = shutdown.cancelled() => break,
                 Some(_) = connections.join_next(), if !connections.is_empty() => {},
                 accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
                     let (stream, _) = match accepted {
@@ -225,7 +205,7 @@ impl Server {
                             warn!(%error, "admin listener accept failed");
                             tokio::select! {
                                 biased;
-                                () = shutdown.cancelled() => break Ok(()),
+                                () = shutdown.cancelled() => break,
                                 () = tokio::time::sleep(Duration::from_secs(1)) => {},
                             }
                             continue;
@@ -252,7 +232,7 @@ impl Server {
                     on_accept.notify_one();
                 }
             }
-        };
+        }
         drop(listener);
         stop.cancel();
         let _ = tokio::time::timeout(CLEANUP_WAIT, async {
@@ -260,7 +240,7 @@ impl Server {
         })
         .await;
         connections.shutdown().await;
-        result
+        Ok(())
     }
 }
 
@@ -270,15 +250,82 @@ struct ErrorBody {
     message: String,
 }
 
-fn error(status: StatusCode, code: &str, message: &str) -> Response {
-    (
-        status,
-        Json(ErrorBody {
-            code: code.into(),
-            message: message.into(),
-        }),
-    )
-        .into_response()
+#[derive(Debug)]
+enum AdminError {
+    Unauthorized,
+    InvalidInput(&'static str),
+    BodyTooLarge,
+    Stopping,
+    QueueFull,
+    Unavailable,
+    ReplyTimeout,
+    Release(ReleaseError),
+}
+
+impl IntoResponse for AdminError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "invalid admin credentials",
+            ),
+            Self::InvalidInput(message) => (StatusCode::BAD_REQUEST, "invalid_input", message),
+            Self::BodyTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
+                "release body exceeds 16 KiB",
+            ),
+            Self::Stopping => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "stopping",
+                "attester is stopping",
+            ),
+            Self::QueueFull => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "queue_full",
+                "command was not admitted",
+            ),
+            Self::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "attester is unavailable",
+            ),
+            Self::ReplyTimeout => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "reply_timeout",
+                "outcome may be unknown; list holds again before selecting another release",
+            ),
+            Self::Release(ReleaseError::Invalid) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+                "invalid hold selection",
+            ),
+            Self::Release(ReleaseError::Conflict) => (
+                StatusCode::CONFLICT,
+                "hold_changed",
+                "list holds again before selecting a release",
+            ),
+            Self::Release(ReleaseError::CircleCheck) => (
+                StatusCode::BAD_REQUEST,
+                "circle_check_required",
+                "check Circle and assert non-acceptance for the held withdrawal",
+            ),
+            Self::Release(ReleaseError::Store(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_failed",
+                "attester store failed",
+            ),
+        };
+        (
+            status,
+            Json(ErrorBody {
+                code: code.into(),
+                message: message.into(),
+            }),
+        )
+            .into_response()
+    }
 }
 
 async fn authenticate(
@@ -298,11 +345,7 @@ async fn authenticate(
     let mut response = if authenticated {
         next.run(request).await
     } else {
-        error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "invalid admin credentials",
-        )
+        AdminError::Unauthorized.into_response()
     };
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -320,122 +363,66 @@ struct ListQuery {
 async fn list(
     State(state): State<ServerState>,
     query: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
-) -> Response {
-    let after = match query {
-        Ok(Query(query)) => match query.after.map(|id| parse_note_id(&id)).transpose() {
-            Ok(after) => after,
-            Err(_) => {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_input",
-                    "invalid page cursor",
-                )
-            }
-        },
-        Err(_) => return error(StatusCode::BAD_REQUEST, "invalid_input", "invalid query"),
-    };
+) -> Result<Json<HoldsPage>, AdminError> {
+    let Query(query) = query.map_err(|_| AdminError::InvalidInput("invalid query"))?;
+    let after = query
+        .after
+        .map(|id| parse_note_id(&id))
+        .transpose()
+        .map_err(|_| AdminError::InvalidInput("invalid page cursor"))?;
     let (reply, receive) = oneshot::channel();
     dispatch(&state, Operation::List(after, reply), receive).await
 }
 
 async fn release(
     State(state): State<ServerState>,
-    body: Result<Json<ReleaseSelection>, axum::extract::rejection::JsonRejection>,
-) -> Response {
-    let request = match body {
-        Ok(Json(request)) => request,
-        Err(rejection) => {
-            return if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "body_too_large",
-                    "release body exceeds 16 KiB",
-                )
-            } else {
-                error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_input",
-                    "invalid release body",
-                )
-            }
+    body: Result<Json<ReleaseRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Released>, AdminError> {
+    let Json(request) = body.map_err(|rejection| {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            AdminError::BodyTooLarge
+        } else {
+            AdminError::InvalidInput("invalid release body")
         }
-    };
-    if request.expected_event_seq <= 0 || parse_note_id(&request.note_id).is_err() {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "invalid_input",
-            "invalid hold selection",
-        );
+    })?;
+    if request.expected_event_seq <= 0 {
+        return Err(AdminError::InvalidInput("invalid hold selection"));
     }
+    let selection = ReleaseSelection {
+        note_id: parse_note_id(&request.note_id)
+            .map_err(|_| AdminError::InvalidInput("invalid hold selection"))?,
+        expected_event_seq: request.expected_event_seq,
+        circle_not_accepted: request.circle_not_accepted,
+    };
     let (reply, receive) = oneshot::channel();
-    dispatch(&state, Operation::Release(request, reply), receive).await
+    dispatch(&state, Operation::Release(selection, reply), receive).await
 }
 
 async fn dispatch<T: Serialize>(
     state: &ServerState,
     operation: Operation,
     receive: oneshot::Receiver<Result<T, ReleaseError>>,
-) -> Response {
+) -> Result<Json<T>, AdminError> {
     if state.shutdown.is_cancelled() {
-        return error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "stopping",
-            "attester is stopping",
-        );
+        return Err(AdminError::Stopping);
     }
     let deadline = Instant::now() + COMMAND_WAIT;
-    if let Err(failure) = state.commands.try_send(Command {
-        operation,
-        deadline,
-    }) {
-        return match failure {
-            mpsc::error::TrySendError::Full(_) => error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue_full",
-                "command was not admitted",
-            ),
-            mpsc::error::TrySendError::Closed(_) => error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "attester is unavailable",
-            ),
-        };
-    }
-    match tokio::time::timeout_at(deadline, receive).await {
-        Ok(Ok(Ok(response))) => Json(response).into_response(),
-        Ok(Ok(Err(failure))) => match failure {
-            ReleaseError::Invalid => error(
-                StatusCode::BAD_REQUEST,
-                "invalid_input",
-                "invalid hold selection",
-            ),
-            ReleaseError::Conflict => error(
-                StatusCode::CONFLICT,
-                "hold_changed",
-                "list holds again before selecting a release",
-            ),
-            ReleaseError::CircleCheck => error(
-                StatusCode::BAD_REQUEST,
-                "circle_check_required",
-                "check Circle and assert non-acceptance for the held withdrawal",
-            ),
-            ReleaseError::Store(_) => error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_failed",
-                "attester store failed",
-            ),
-        },
-        Ok(Err(_)) => error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "attester is unavailable",
-        ),
-        Err(_) => error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "reply_timeout",
-            "outcome may be unknown; list holds again before selecting another release",
-        ),
-    }
+    state
+        .commands
+        .try_send(Command {
+            operation,
+            deadline,
+        })
+        .map_err(|failure| match failure {
+            mpsc::error::TrySendError::Full(_) => AdminError::QueueFull,
+            mpsc::error::TrySendError::Closed(_) => AdminError::Unavailable,
+        })?;
+    tokio::time::timeout_at(deadline, receive)
+        .await
+        .map_err(|_| AdminError::ReplyTimeout)?
+        .map_err(|_| AdminError::Unavailable)?
+        .map(Json)
+        .map_err(AdminError::Release)
 }
 
 #[cfg(test)]
@@ -473,13 +460,42 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn queue_full_timeout_and_closed_are_distinct() {
+    async fn invalid_selections_are_not_queued_and_queue_failures_are_distinct() {
         let (commands, mut inbox) = mpsc::channel(1);
         let state = ServerState {
             token: [0; 32],
             commands,
             shutdown: CancellationToken::new(),
         };
+        let canonical = format!("0x{}", "ab".repeat(32));
+        for (note_id, expected_event_seq) in [
+            (canonical.clone(), 0),
+            (canonical, -1),
+            (format!("0x{}", "AB".repeat(32)), 1),
+            ("invalid".into(), 1),
+        ] {
+            let response = release(
+                State(state.clone()),
+                Ok(Json(ReleaseRequest {
+                    note_id,
+                    expected_event_seq,
+                    circle_not_accepted: false,
+                })),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, "invalid_input");
+            assert_eq!(error.message, "invalid hold selection");
+            assert!(matches!(
+                inbox.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
         let (reply, _receive) = oneshot::channel();
         state
             .commands
@@ -489,7 +505,9 @@ mod tests {
             })
             .unwrap_or_else(|_| panic!());
         let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive).await;
+        let response = dispatch(&state, Operation::List(None, reply), receive)
+            .await
+            .into_response();
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -499,7 +517,9 @@ mod tests {
         );
         inbox.recv().await.unwrap();
         let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive).await;
+        let response = dispatch(&state, Operation::List(None, reply), receive)
+            .await
+            .into_response();
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -510,7 +530,9 @@ mod tests {
         assert!(inbox.recv().await.unwrap().abandoned());
         drop(inbox);
         let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive).await;
+        let response = dispatch(&state, Operation::List(None, reply), receive)
+            .await
+            .into_response();
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();

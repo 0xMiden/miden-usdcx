@@ -72,6 +72,8 @@ pub struct Attester {
     signers: SignerPair,
     /// The node's latest committed block, as this cycle's discovery read it.
     node_tip: Option<BlockNumber>,
+    admin: Option<tokio::sync::mpsc::Receiver<crate::admin::Command>>,
+    admin_shutdown: CancellationToken,
 }
 
 impl Attester {
@@ -135,6 +137,8 @@ impl Attester {
             circle,
             signers,
             node_tip: None,
+            admin: None,
+            admin_shutdown: CancellationToken::new(),
         };
         match &checkpoint {
             // After a divergence, a restart must not send saved withdrawals while the node still
@@ -151,6 +155,89 @@ impl Attester {
         Ok(attester)
     }
 
+    pub(crate) fn attach_admin(
+        &mut self,
+        receiver: tokio::sync::mpsc::Receiver<crate::admin::Command>,
+        shutdown: CancellationToken,
+    ) {
+        self.admin = Some(receiver);
+        self.admin_shutdown = shutdown;
+    }
+
+    pub(crate) async fn admin_checkpoint(&mut self) {
+        if self.admin.is_none() || self.admin_shutdown.is_cancelled() {
+            return;
+        }
+        // Ready chain futures must still give HTTP handlers a chance to enqueue work.
+        tokio::task::yield_now().await;
+        for _ in 0..8 {
+            if self.admin_shutdown.is_cancelled() {
+                break;
+            }
+            let command = match self.admin.as_mut().expect("enabled inbox").try_recv() {
+                Ok(command) => command,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.admin = None;
+                    break;
+                }
+            };
+            self.handle_admin(command);
+        }
+    }
+
+    fn handle_admin(&mut self, command: crate::admin::Command) {
+        use crate::admin::{HoldsPage, Operation, ReleaseError, Released};
+        if self.admin_shutdown.is_cancelled() || command.abandoned() {
+            return;
+        }
+        let report = |error| {
+            if let ReleaseError::Store(detail) = error {
+                let failure = Failure::new(Actionable("store"), detail);
+                failure.report("admin store operation failed");
+                ReleaseError::Store(failure.error)
+            } else {
+                error
+            }
+        };
+        match command.operation {
+            Operation::List(after, reply) => {
+                let result = self
+                    .store
+                    .holds_page(after)
+                    .map(|mut holds| {
+                        let next_after = if holds.len() > 100 {
+                            holds.truncate(100);
+                            holds.last().map(|hold| hold.note_id.clone())
+                        } else {
+                            None
+                        };
+                        HoldsPage {
+                            faucet_account_id: self.config.faucet_account_id().to_hex(),
+                            trusted_anchor_block: self.config.trusted_anchor_block().as_u32(),
+                            trusted_anchor_commitment: self
+                                .config
+                                .trusted_anchor_commitment()
+                                .to_hex(),
+                            holds,
+                            next_after,
+                        }
+                    })
+                    .map_err(ReleaseError::from)
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+            Operation::Release(selection, reply) => {
+                let result = self
+                    .store
+                    .release_checked(&selection)
+                    .map(|(burns, withdrawals)| Released { burns, withdrawals })
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+        }
+    }
+
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
     /// A store failure aborts only this cycle; the next one runs after the usual pause. After
@@ -161,6 +248,7 @@ impl Attester {
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
+            self.admin_checkpoint().await;
             let mut rate_limited = false;
             self.traced_cycle(&mut rate_limited).await?;
             pause = if rate_limited {
@@ -171,11 +259,21 @@ impl Attester {
             } else {
                 self.config.poll_interval()
             };
-            tokio::select! {
-                () = shutdown.cancelled() => {}
-                () = tokio::time::sleep(pause) => {}
+            let wake_at = tokio::time::Instant::now() + pause;
+            loop {
+                let command = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => break,
+                    () = tokio::time::sleep_until(wake_at) => break,
+                    command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
+                };
+                match command {
+                    Some(command) => self.handle_admin(command),
+                    None => self.admin = None,
+                }
             }
         }
+        self.admin = None;
         Ok(())
     }
 
@@ -329,6 +427,7 @@ impl Attester {
         // Every available block is authenticated. Withdrawal readiness separately requires
         // verified depth.
         for block_num in block_range(last_verified_header.block_num().child(), tip) {
+            self.admin_checkpoint().await;
             let block = self
                 .fetch_and_verify_block(block_num, &last_verified_header)
                 .await?;
@@ -390,6 +489,7 @@ impl Attester {
     ) -> Result<Result<(), SubmitError>, SubmitError> {
         let mut first_error = None;
         for burn in burns {
+            self.admin_checkpoint().await;
             if *rate_limited {
                 break;
             }

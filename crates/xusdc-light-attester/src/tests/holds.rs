@@ -362,6 +362,18 @@ async fn holds_are_listed() {
         .iter()
         .map(ToString::to_string)
         .collect();
+    let live = store.holds_page(None).unwrap();
+    let old_snapshot = live
+        .iter()
+        .find(|hold| hold.note_id == unreadable.to_string())
+        .unwrap();
+    assert_eq!(
+        (
+            old_snapshot.http_status,
+            old_snapshot.circle_message.as_deref()
+        ),
+        (None, None)
+    );
     let mut burn_lines = [
         format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
         format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),

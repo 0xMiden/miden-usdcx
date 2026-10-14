@@ -22,9 +22,24 @@ use crate::Attester;
 /// An initialized attester that has not started its withdrawal loop yet.
 pub struct AttesterService {
     attester: Attester,
+    admin: Option<(
+        crate::admin::Server,
+        tokio::sync::mpsc::Receiver<crate::admin::Command>,
+    )>,
 }
 
 impl AttesterService {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        attester: Attester,
+        admin: crate::admin::Server,
+        admin_receiver: tokio::sync::mpsc::Receiver<crate::admin::Command>,
+    ) -> Self {
+        Self {
+            attester,
+            admin: Some((admin, admin_receiver)),
+        }
+    }
     /// Connects the attester's dependencies and runs its startup checks, in the `attester.startup`
     /// span. A failure marks that span failed as `actionable`.
     #[instrument(name = "attester.startup", skip_all)]
@@ -39,6 +54,10 @@ impl AttesterService {
     }
 
     async fn connect(config: Config) -> Result<Self> {
+        let admin = match config.admin() {
+            Some(config) => Some(crate::admin::Server::bind(config).await?),
+            None => None,
+        };
         let circle =
             CircleClient::new(&config).context("failed to initialize Circle HTTP client")?;
         let KmsConfig {
@@ -61,56 +80,84 @@ impl AttesterService {
         let attester = Attester::start(config, Box::new(chain), Box::new(circle), signers)
             .await
             .context("startup failed")?;
-        Ok(Self { attester })
+        Ok(Self { attester, admin })
     }
 
-    /// Runs the attester until `shutdown` is cancelled.
-    pub async fn run(mut self, shutdown: CancellationToken) -> Result<()> {
-        self.attester.run(shutdown).await
+    /// Runs the attester and its optional admin listener until `shutdown` is cancelled.
+    pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
+        let Self {
+            mut attester,
+            admin,
+        } = self;
+        if let Some((server, receiver)) = admin {
+            attester.attach_admin(receiver, shutdown.clone());
+            let run = attester.run(shutdown.clone());
+            let serve = server.run(shutdown.clone());
+            tokio::pin!(run, serve);
+            tokio::select! {
+                result = &mut run => {
+                    shutdown.cancel();
+                    let cleanup = serve.await;
+                    result.and(cleanup)
+                }
+                result = &mut serve => {
+                    shutdown.cancel();
+                    let stopped = run.await;
+                    result.and(stopped)
+                }
+            }
+        } else {
+            attester.run(shutdown).await
+        }
     }
 }
 
-/// Runs a one-off maintenance command against a stopped attester's store.
+/// Runs offline maintenance against a stopped store, or a request to the live admin listener.
 ///
 /// # Errors
 ///
 /// - The command's arguments are malformed.
 /// - The store cannot be opened, or was created for a different faucet or anchor.
-pub fn run_command(command: Command) -> Result<()> {
-    let Command::ReleaseHolds {
-        store_path,
-        faucet_account_id,
-        trusted_anchor_block,
-        trusted_anchor_commitment,
-        note_id,
-        note_ids_file,
-    } = command;
-    let faucet_account_id = parse_faucet_account_id(&faucet_account_id)?;
-    let trusted_anchor_commitment = parse_trusted_anchor_commitment(&trusted_anchor_commitment)?;
-    let store_path = Path::new(&store_path);
-    let anchor_block = BlockNumber::from(trusted_anchor_block);
-    if note_id.is_empty() && note_ids_file.is_none() {
-        let holds = list_holds(
+pub async fn run_command(command: Command) -> Result<()> {
+    match command {
+        Command::Admin(args) => crate::admin::client::run(args).await,
+        Command::ReleaseHolds {
             store_path,
             faucet_account_id,
-            anchor_block,
+            trusted_anchor_block,
             trusted_anchor_commitment,
-        )
-        .context("failed to list held burns and withdrawals")?;
-        for hold in holds {
-            println!("{hold}");
+            note_id,
+            note_ids_file,
+        } => {
+            let faucet_account_id = parse_faucet_account_id(&faucet_account_id)?;
+            let trusted_anchor_commitment =
+                parse_trusted_anchor_commitment(&trusted_anchor_commitment)?;
+            let store_path = Path::new(&store_path);
+            let anchor_block = BlockNumber::from(trusted_anchor_block);
+            if note_id.is_empty() && note_ids_file.is_none() {
+                let holds = list_holds(
+                    store_path,
+                    faucet_account_id,
+                    anchor_block,
+                    trusted_anchor_commitment,
+                )
+                .context("failed to list held burns and withdrawals")?;
+                for hold in holds {
+                    println!("{hold}");
+                }
+                return Ok(());
+            }
+            let note_ids = parse_note_ids(&note_id, note_ids_file.as_deref())?;
+            let (burns, withdrawals) = release_holds(
+                store_path,
+                faucet_account_id,
+                anchor_block,
+                trusted_anchor_commitment,
+                &note_ids,
+            )
+            .context("failed to release held burns and withdrawals")?;
+            info!(burns, withdrawals, "released held burns and withdrawals");
+            Ok(())
         }
-        return Ok(());
     }
-    let note_ids = parse_note_ids(&note_id, note_ids_file.as_deref())?;
-    let (burns, withdrawals) = release_holds(
-        store_path,
-        faucet_account_id,
-        anchor_block,
-        trusted_anchor_commitment,
-        &note_ids,
-    )
-    .context("failed to release held burns and withdrawals")?;
-    info!(burns, withdrawals, "released held burns and withdrawals");
-    Ok(())
 }

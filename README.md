@@ -111,7 +111,7 @@ mint/burn/admin acceptance matrix (rows `A`–`L`). The crate is currently **par
 workspace** (`exclude` in the root `Cargo.toml`): it still carries the v16-alpha
 `miden-client` pins (`=0.16.0-alpha.1`, which itself pins protocol `=0.16.0-alpha.4`) and
 predates the current encoding API, so it does not build against this tree. Re-enabling it requires
-a separate migration to the workspace's protocol `=0.17.1` and client/SQLite store `=0.17.2`
+a separate migration to the workspace's protocol `=0.17.1` and client/SQLite store `=0.17.3`
 releases, including the current encoding API.
 
 The **live-node** rows — the real four-service-stack deploy/drive that needs the node binaries on

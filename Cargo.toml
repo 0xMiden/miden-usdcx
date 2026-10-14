@@ -8,7 +8,7 @@ members = [
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The members above use
 # published protocol-family crates at `=0.17.1`, and client and SQLite store crates at
-# `=0.17.2`. The validation crate still uses v0.16-alpha dependencies and the old encoding
+# `=0.17.3`. The validation crate still uses v0.16-alpha dependencies and the old encoding
 # API; updating the workspace does not migrate that harness.
 exclude = [
   "crates/xusdc-validation",
@@ -25,8 +25,8 @@ miden-protocol              = "=0.17.1"
 miden-usdcx                 = "=0.17.1"
 miden-standards             = "=0.17.1"
 miden-objects               = "=0.17.1"
-miden-client                = { version = "=0.17.2", default-features = false }
-miden-client-sqlite-store   = "=0.17.2"
+miden-client                = { version = "=0.17.3", default-features = false }
+miden-client-sqlite-store   = "=0.17.3"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

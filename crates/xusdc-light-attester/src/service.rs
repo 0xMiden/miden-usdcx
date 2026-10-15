@@ -90,6 +90,9 @@ impl AttesterService {
             admin,
         } = self;
         if let Some((server, receiver)) = admin {
+            // Either one stopping stops the other, without cancelling the caller's token: a
+            // supervisor reads that token to tell a requested stop from an unexpected one.
+            let shutdown = shutdown.child_token();
             attester.attach_admin(receiver, shutdown.clone());
             let run = attester.run(shutdown.clone());
             let serve = server.run(shutdown.clone());

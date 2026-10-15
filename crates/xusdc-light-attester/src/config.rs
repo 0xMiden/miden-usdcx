@@ -237,13 +237,11 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
-        let admin = match (cli.admin_listen, cli.admin_token_file) {
-            (Some(listen), Some(token_file)) => {
-                Some(crate::admin::AdminConfig { listen, token_file })
-            }
-            (None, None) => None,
-            _ => bail!("admin listener and token file must be configured together"),
-        };
+        // clap rejects one admin flag without the other.
+        let admin = cli
+            .admin_listen
+            .zip(cli.admin_token_file)
+            .map(|(listen, token_file)| crate::admin::AdminConfig { listen, token_file });
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;

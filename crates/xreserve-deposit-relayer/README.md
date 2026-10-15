@@ -120,8 +120,15 @@ and the build fails if that ever stops being true.
 Every mint transaction carries an expiration block, `--expiration-delta` blocks past the one it was
 built against. That is what bounds the wait: once the chain reaches the expiration block without
 the transaction in it, no later block can carry it, so the relayer gives up and retries the page. A
-transaction the node discards ends the wait the same way. A larger delta tolerates a slower chain;
-a smaller one notices a lost transaction sooner.
+transaction the node discards ends the wait the same way. The Miden client's own limit on how long
+a transaction may stay pending, 20 blocks by default, is turned off, so nothing shorter than the
+expiration delta ends the wait. A larger delta tolerates a slower chain; a smaller one notices a
+lost transaction sooner.
+
+While it waits, the relayer asks the node every second whether the transaction is in a block. One
+failed request does not end the wait: the transaction may still land, and giving up on it would
+have the page submitted a second time. After three failed requests in a row the node is treated as
+unreachable and the page fails, to be retried on the next scan.
 
 Landing on chain is not the same as minting. The relayer is done with a page once its notes exist;
 the faucet consumes them afterwards in network transactions of its own, and a note it refuses — a
@@ -134,9 +141,11 @@ mint stays on it until then, so restarting is how an operator clears it after lo
 
 ## Malformed attestations
 
-An attestation that cannot become a mint note — its payload is not a DepositIntent, or the intent
-is addressed to a different faucet or domain — is logged at `error` with its message hash and the
-reason, and skipped, and the rest of the page still mints. Such a failure depends only on the attestation and the configuration, so
+An attestation that cannot become a mint note — a field of its feed entry does not decode, its
+payload is not a DepositIntent, or the intent is addressed to a different faucet or domain — is
+logged at `error` with its message hash and the reason, and skipped, and the rest of the page still
+mints. An entry whose message hash cannot be read either is named `unreadable`; while it is the
+newest entry in the feed it is reported again on every scan, since the scan has no hash to stop at. Such a failure depends only on the attestation and the configuration, so
 retrying would never help, and holding up the page would stall every deposit behind it.
 
 A skipped deposit is not revisited: the scan moves past it like any other. If it was skipped
@@ -263,7 +272,10 @@ until it reaches `watermark` — the newest attestation the last completed scan 
 present only while a scan is unfinished, and it records the head that scan started at along with
 Circle's cursor for the page it stopped on. The next poll then resumes at that page instead of
 re-minting the ones already on chain, and both fields are dropped once `watermark` moves up to
-`head`. A backlog therefore costs one pass per outage rather than one per restart.
+`head`. A backlog therefore costs one pass per outage rather than one per restart. The head is the
+newest entry whose message hash can be read; when none on the head page can, the scan carries on
+to the pages below without recording progress until one gives it a head, so an interruption before
+then starts it over.
 
 The watermark is a stop condition rather than a cursor sent to Circle, because Circle's
 `pageAfter` only walks towards older entries — the wrong way for a feed that grows at its head. A

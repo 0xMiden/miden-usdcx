@@ -2,9 +2,9 @@
 //! `GET /v1/remote-domains/{d}/attestations?pageSize=&pageAfter=`.
 //!
 //! Pagination travels in the RFC 8288 `Link` header, not the body. An absent header is the
-//! documented final page, while a present but unparseable header is an error. Treating the second
-//! as the first would make a corrupted header look like the end of the feed and silently end the
-//! scan early.
+//! documented final page, while a header that cannot be parsed, or whose `next` relation carries
+//! no token, is an error. Treating either as the final page would make a corrupted header look
+//! like the end of the feed and silently end the scan early.
 //!
 //! The feed is ordered newest first, so the first page holds the most recent deposits and the
 //! `next` relation leads into the past. Circle publishes no way to ask for the opposite order.
@@ -135,25 +135,95 @@ impl Serialize for MessageHash {
 #[serde(rename_all = "camelCase")]
 pub struct Attestation {
     /// The encoded DepositIntent.
-    #[serde(deserialize_with = "hex_bytes")]
+    #[serde(deserialize_with = "payload_field")]
     pub payload: Vec<u8>,
     /// The digest naming this deposit.
+    #[serde(deserialize_with = "message_hash_field")]
     pub message_hash: MessageHash,
     /// The attester's signature over the payload, published under the `attestation` key.
-    #[serde(rename = "attestation", deserialize_with = "hex_signature")]
+    #[serde(rename = "attestation", deserialize_with = "signature_field")]
     pub signature: Signature,
 }
 
-/// The list response body. Pagination is in the `Link` header rather than this body.
+/// One entry of a page, in the place Circle served it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Attestation(Attestation),
+    /// An entry that is not a readable attestation: a field is missing, is not hex, or has the
+    /// wrong length. It keeps its place, so the scan can tell whether it sits above the watermark,
+    /// and its message hash when that much could be read.
+    Undecodable {
+        /// Where the entry sits on its page, counting from 1, so it can be found in the feed
+        /// again when it has no readable message hash to look for.
+        position: usize,
+        message_hash: Option<MessageHash>,
+        /// Which field did not decode and why, and the entry's `messageHash` as Circle sent it
+        /// when that is not a hash.
+        reason: String,
+    },
+}
+
+impl Entry {
+    /// How much of a `messageHash` that is not a hash is reported. A hash is 66 characters, and
+    /// the text comes from outside, so a longer one is cut rather than written out in full.
+    const MAX_REPORTED_HASH_CHARS: usize = 80;
+
+    /// Decodes the element at `position` of the list response, counting from 1. One that does
+    /// not decode is kept as [`Entry::Undecodable`] rather than failing the page: the page would
+    /// fail the same way on every retry, and every deposit behind it would wait.
+    fn decode(position: usize, value: &serde_json::Value) -> Self {
+        let error = match Attestation::deserialize(value) {
+            Ok(attestation) => return Self::Attestation(attestation),
+            Err(error) => error,
+        };
+        let sent_hash = value.get("messageHash");
+        let message_hash = sent_hash.and_then(|hash| MessageHash::deserialize(hash).ok());
+        let reason = match (message_hash, sent_hash) {
+            // Without a readable hash the text Circle sent is the closest thing to a name.
+            (None, Some(sent)) => {
+                let sent: String = sent
+                    .to_string()
+                    .chars()
+                    .take(Self::MAX_REPORTED_HASH_CHARS)
+                    .collect();
+                format!("{error} (its messageHash is {sent})")
+            }
+            _ => error.to_string(),
+        };
+        Self::Undecodable {
+            position,
+            message_hash,
+            reason,
+        }
+    }
+
+    /// The digest naming this entry, when it could be read.
+    pub fn message_hash(&self) -> Option<MessageHash> {
+        match self {
+            Self::Attestation(attestation) => Some(attestation.message_hash),
+            Self::Undecodable { message_hash, .. } => *message_hash,
+        }
+    }
+}
+
+impl From<Attestation> for Entry {
+    fn from(attestation: Attestation) -> Self {
+        Self::Attestation(attestation)
+    }
+}
+
+/// The list response body. Pagination is in the `Link` header rather than this body. The entries
+/// are decoded one by one, so one that does not decode does not take the page with it.
 #[derive(Debug, Deserialize)]
 struct ListResponse {
-    attestations: Vec<Attestation>,
+    attestations: Vec<serde_json::Value>,
 }
 
 /// One page of the feed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    pub attestations: Vec<Attestation>,
+    /// The page's entries, newest first.
+    pub entries: Vec<Entry>,
     /// The cursor for the next page, or `None` at the end of the feed.
     pub next: Option<CircleCursor>,
 }
@@ -166,7 +236,8 @@ impl Page {
     ///
     /// # Errors
     ///
-    /// - The body does not match Circle's attestation schema.
+    /// - The body is not Circle's list response. An entry of the list that does not decode is not
+    ///   an error: it becomes an [`Entry::Undecodable`].
     /// - A present `Link` header is malformed.
     pub fn decode(body: &[u8], link: Option<&str>) -> Result<Self> {
         let list: ListResponse =
@@ -178,14 +249,14 @@ impl Page {
         };
 
         Ok(Self {
-            attestations: list.attestations,
+            entries: list
+                .attestations
+                .iter()
+                .enumerate()
+                .map(|(index, value)| Entry::decode(index + 1, value))
+                .collect(),
             next: next.map(CircleCursor::new),
         })
-    }
-
-    /// Returns the cursor for the next page, or `None` when the feed is caught up.
-    pub fn next_cursor(&self) -> Option<&CircleCursor> {
-        self.next.as_ref()
     }
 }
 
@@ -295,8 +366,8 @@ impl CircleClient {
         }
 
         let page = Page::decode(&body, link.as_deref()).classify(Transient("invalid_response"))?;
-        span.record("attestations.count", page.attestations.len());
-        if let Some(next) = page.next_cursor() {
+        span.record("attestations.count", page.entries.len());
+        if let Some(next) = &page.next {
             span.record("next", next.as_str());
         }
         Ok(page)
@@ -326,21 +397,32 @@ impl CircleClient {
     }
 }
 
-/// Extracts the `pageAfter` token of the `rel="next"` relation from a `Link` header.
+/// Extracts the `pageAfter` token of the `rel="next"` relation from a `Link` header, or `None`
+/// when the header has no such relation.
 ///
 /// # Errors
 ///
 /// - The header is not a valid RFC 8288 `Link` header with relation parameters.
+/// - The `next` relation carries no `pageAfter` token, or an empty one.
 fn parse_next_link(header: &str) -> Result<Option<String>> {
     let links =
         parse_link_header::parse_with_rel(header).context("parsing the circle Link header")?;
+    let Some(next) = links.get("next") else {
+        return Ok(None);
+    };
 
-    Ok(links.get("next").and_then(|link| {
-        link.uri
-            .query_pairs()
-            .find(|(key, _)| key == "pageAfter")
-            .map(|(_, value)| value.into_owned())
-    }))
+    // A `next` relation says the feed continues. Without a token there is no page to ask for, and
+    // reading that as the final page would end the scan and move the watermark past the entries
+    // it never reached.
+    let token = next
+        .uri
+        .query_pairs()
+        .find(|(key, _)| key == "pageAfter")
+        .map(|(_, value)| value.into_owned())
+        .filter(|token| !token.is_empty());
+    token
+        .map(Some)
+        .context("the circle Link header's next relation carries no pageAfter token")
 }
 
 /// Deserializes Circle wire hex, tolerating the optional `0x` prefix the API emits.
@@ -360,17 +442,35 @@ fn hex_array<'de, D: Deserializer<'de>, const N: usize>(
         .map_err(|_| de::Error::invalid_length(bytes.len(), &format!("{N} bytes of hex").as_str()))
 }
 
-/// Deserializes Circle wire hex into the signature type the mint note is built from.
-fn hex_signature<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature, D::Error> {
-    hex_array(deserializer).map(Signature::new)
+/// Names the field in a decoding error, so a skipped entry says which of its fields was at fault.
+fn named<T, E: de::Error>(field: &str, decoded: Result<T, E>) -> Result<T, E> {
+    decoded.map_err(|error| E::custom(format!("`{field}`: {error}")))
+}
+
+/// Deserializes an attestation's `payload`.
+fn payload_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    named("payload", hex_bytes(deserializer))
+}
+
+/// Deserializes an attestation's `messageHash`.
+fn message_hash_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<MessageHash, D::Error> {
+    named("messageHash", MessageHash::deserialize(deserializer))
+}
+
+/// Deserializes an attestation's `attestation` into the signature type the mint note is built
+/// from.
+fn signature_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Signature, D::Error> {
+    named("attestation", hex_array(deserializer).map(Signature::new))
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
+    use rstest::rstest;
+
     use super::{
-        Attestation, CircleClient, CircleCursor, CircleDomain, MessageHash, Page, PageSize,
+        Attestation, CircleClient, CircleCursor, CircleDomain, Entry, MessageHash, Page, PageSize,
         Signature,
     };
 
@@ -489,17 +589,86 @@ mod tests {
         let body = page_body(&[attestation(1)]);
         let page = Page::decode(&body, None).unwrap();
 
-        assert_eq!(page.attestations, vec![attestation(1)]);
+        assert_eq!(page.entries, vec![attestation(1).into()]);
     }
 
-    /// A fixed-size field of the wrong length is a decode error, not a truncation.
+    /// An entry that does not decode keeps its place and does not take the page with it. It says
+    /// where on the page it sits and which field was at fault, and keeps its message hash when
+    /// that much could be read. When it could not, it reports the text Circle sent in its place.
     #[test]
-    fn a_wrong_length_field_is_a_decode_error() {
-        let body =
-            br#"{"attestations":[{"payload":"0x00","messageHash":"0x00","attestation":"0x00"}]}"#;
-        let error = Page::decode(body, None).unwrap_err().to_string();
+    fn an_entry_that_does_not_decode_keeps_its_place() {
+        let readable = |seed: u8| {
+            serde_json::json!({
+                "payload": format!("0x{}", hex::encode([seed; 8])),
+                "messageHash": MessageHash::new([seed; 32]).to_string(),
+                "attestation": format!("0x{}", hex::encode([seed; 65])),
+            })
+        };
+        let named = MessageHash::new([2; 32]);
+        let mut short_signature = readable(2);
+        short_signature["attestation"] = "0x00".into();
+        let mut short_hash = readable(9);
+        short_hash["messageHash"] = "0x1234".into();
+        let body = serde_json::json!({ "attestations": [
+            readable(1),
+            short_signature,
+            short_hash,
+            "not an entry",
+            readable(3),
+        ]})
+        .to_string();
 
-        assert!(error.contains("decoding"), "unexpected error: {error}");
+        let page = Page::decode(body.as_bytes(), None).unwrap();
+
+        let undecodable = |position, message_hash, reason: &str| Entry::Undecodable {
+            position,
+            message_hash,
+            reason: reason.into(),
+        };
+        assert_eq!(
+            page.entries,
+            [
+                attestation(1).into(),
+                undecodable(
+                    2,
+                    Some(named),
+                    "`attestation`: invalid length 1, expected 65 bytes of hex"
+                ),
+                undecodable(
+                    3,
+                    None,
+                    "`messageHash`: invalid length 2, expected 32 bytes of hex \
+                     (its messageHash is \"0x1234\")"
+                ),
+                undecodable(
+                    4,
+                    None,
+                    "invalid type: string \"not an entry\", expected struct Attestation"
+                ),
+                attestation(3).into(),
+            ]
+        );
+    }
+
+    /// A `messageHash` that is not a hash comes from outside, so only its start is reported.
+    #[test]
+    fn a_long_unreadable_message_hash_is_cut_when_reported() {
+        let body = serde_json::json!({ "attestations": [{
+            "payload": "0x00",
+            "messageHash": "z".repeat(500),
+            "attestation": format!("0x{}", "00".repeat(65)),
+        }]})
+        .to_string();
+
+        let page = Page::decode(body.as_bytes(), None).unwrap();
+
+        let Entry::Undecodable { reason, .. } = &page.entries[0] else {
+            panic!("the entry must not decode");
+        };
+        assert!(
+            reason.ends_with(&format!("(its messageHash is \"{})", "z".repeat(79))),
+            "{reason}"
+        );
     }
 
     /// The `next` cursor is read from the `Link` header.
@@ -510,7 +679,7 @@ mod tests {
         let page = Page::decode(&body, Some(&link)).unwrap();
 
         assert_eq!(page.next, Some(CircleCursor::new("page-2")));
-        assert_eq!(page.attestations.len(), 1);
+        assert_eq!(page.entries.len(), 1);
     }
 
     /// An absent `Link` header is the documented final page, not an error.
@@ -520,6 +689,35 @@ mod tests {
         let page = Page::decode(&body, None).unwrap();
 
         assert_eq!(page.next, None);
+    }
+
+    /// A `Link` header without a `next` relation is the final page too.
+    #[test]
+    fn a_link_header_without_a_next_relation_is_the_final_page() {
+        let body = page_body(&[attestation(1)]);
+        let link = "<https://circle.test/v1/remote-domains/1/attestations>; rel=\"first\"";
+        let page = Page::decode(&body, Some(link)).unwrap();
+
+        assert_eq!(page.next, None);
+    }
+
+    /// A `next` relation that cannot be followed is an error rather than the end of the feed, which
+    /// would move the watermark past the pages below it.
+    #[rstest]
+    #[case::no_token(
+        "<https://circle.test/v1/remote-domains/1/attestations?pageSize=100>; rel=\"next\""
+    )]
+    #[case::empty_token(
+        "<https://circle.test/v1/remote-domains/1/attestations?pageSize=100&pageAfter=>; rel=\"next\""
+    )]
+    fn a_next_relation_without_a_token_is_an_error(#[case] link: &str) {
+        let body = page_body(&[attestation(1)]);
+        let error = format!("{:#}", Page::decode(&body, Some(link)).unwrap_err());
+
+        assert!(
+            error.contains("no pageAfter token"),
+            "unexpected error: {error}"
+        );
     }
 
     /// A present but unparseable `Link` header is an error rather than the end of the feed.

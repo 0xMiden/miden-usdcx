@@ -142,6 +142,9 @@ impl EventKind {
     }
 }
 
+/// The most holds one admin listing returns. The store reads one more to tell whether another
+/// page follows.
+pub(crate) const HOLDS_PAGE: usize = 100;
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -422,12 +425,13 @@ impl Store {
                 UNION ALL
                 SELECT note_id, 'withdrawal', NULL, hold_reason, last_http_status, last_response
                 FROM submissions WHERE status = ?2
-             ) holds WHERE (?1 IS NULL OR note_id > ?1) ORDER BY note_id LIMIT 101"
+             ) holds WHERE (?1 IS NULL OR note_id > ?1) ORDER BY note_id LIMIT ?3"
         ).map_err(classify_error)?;
         let mut rows = statement
             .query(params![
                 after.map(|id| id.to_bytes()),
-                SubmissionStatus::Held.as_ref()
+                SubmissionStatus::Held.as_ref(),
+                HOLDS_PAGE as i64 + 1
             ])
             .map_err(classify_error)?;
         let mut holds = Vec::new();

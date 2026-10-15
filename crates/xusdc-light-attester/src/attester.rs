@@ -21,7 +21,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
@@ -207,8 +207,8 @@ impl Attester {
                     .store
                     .holds_page(after)
                     .map(|mut holds| {
-                        let next_after = if holds.len() > 100 {
-                            holds.truncate(100);
+                        let next_after = if holds.len() > HOLDS_PAGE {
+                            holds.truncate(HOLDS_PAGE);
                             holds.last().map(|hold| hold.note_id.clone())
                         } else {
                             None

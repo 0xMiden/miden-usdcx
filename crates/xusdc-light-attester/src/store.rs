@@ -307,7 +307,11 @@ impl Store {
         // A burn named twice is released once.
         for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
             // Naming a withdrawal in the offline command confirms Circle did not accept it.
-            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?;
+            let (burn, withdrawal) =
+                Self::release_hold(&transaction, note_id, true).map_err(|error| match error {
+                    ReleaseError::Conflict => anyhow!("note {note_id} has no releasable hold"),
+                    error => error.into(),
+                })?;
             burns += burn;
             withdrawals += withdrawal;
         }

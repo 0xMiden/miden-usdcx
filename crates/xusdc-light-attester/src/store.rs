@@ -92,8 +92,11 @@ pub(crate) struct ReleaseSelection {
 pub(crate) enum ReleaseError {
     #[error("invalid selection")]
     Invalid,
-    #[error("hold changed or is no longer releasable")]
+    #[error("hold changed since it was listed")]
     Conflict,
+    /// The note has no hold that can be released: the store never held it, or its hold is gone.
+    #[error("note {0} has no releasable hold")]
+    NotHeld(NoteId),
     #[error("check Circle before releasing a signed withdrawal")]
     CircleCheck,
     #[error(transparent)]
@@ -334,6 +337,7 @@ impl Store {
             .map_err(classify_error)?;
         let revision = match revision {
             Some(revision) => revision,
+            // Holding a note writes a history row, so a note without one was never held.
             None => {
                 if exists(
                     &transaction,
@@ -346,17 +350,28 @@ impl Store {
                 )? {
                     return Err(ReleaseError::Store(anyhow!(INVALID)));
                 }
-                return Err(ReleaseError::Conflict);
+                return Err(ReleaseError::NotHeld(note_id));
             }
         };
+        // Only a revision that moved means the hold changed since it was listed.
         if revision != selection.expected_event_seq {
             return Err(ReleaseError::Conflict);
         }
+        // Every change to a hold writes a history row, so at the listed revision a note with
+        // nothing to release never had a releasable hold, and `release_hold` says so.
         let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?;
         transaction.commit().map_err(classify_error)?;
         Ok(released)
     }
 
+    /// Releases the note's hold and returns how many burns and withdrawals it released.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReleaseError::NotHeld`]: the note has nothing to release.
+    /// - [`ReleaseError::CircleCheck`]: the hold is a signed withdrawal and the caller has not
+    ///   confirmed Circle did not accept it.
+    /// - [`ReleaseError::Store`]: the store failed.
     fn release_hold(
         transaction: &Transaction<'_>,
         note_id: NoteId,
@@ -403,7 +418,7 @@ impl Store {
             }
             Ok((0, 1))
         } else {
-            Err(ReleaseError::Conflict)
+            Err(ReleaseError::NotHeld(note_id))
         }
     }
 
@@ -626,6 +641,18 @@ impl Store {
             )?;
         }
         transaction.commit().map_err(classify_error)
+    }
+
+    /// The note's latest history row, which is the revision a release selection names.
+    #[cfg(test)]
+    pub(crate) fn revision(&self, note_id: NoteId) -> anyhow::Result<Option<i64>> {
+        self.connection
+            .query_row(
+                "SELECT MAX(seq) FROM submission_events WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)
     }
 
     #[cfg(test)]

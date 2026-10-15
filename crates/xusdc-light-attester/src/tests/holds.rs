@@ -227,10 +227,14 @@ async fn only_named_holds_are_released() {
         .collect();
     assert_eq!(ready, [first], "only the named burn is released");
     let unknown = NoteId::try_from_hex(&format!("0x{}", "11".repeat(32))).unwrap();
-    for named in [[withdrawal, first], [withdrawal, unknown]] {
-        assert!(
-            store.release_holds(&named).is_err(),
-            "a named burn that is not held, or unknown, fails the whole release"
+    // A named burn that is not held, or unknown, fails the whole release and is named in the error.
+    for (named, failing) in [
+        ([withdrawal, first], first),
+        ([withdrawal, unknown], unknown),
+    ] {
+        assert_eq!(
+            store.release_holds(&named).unwrap_err().to_string(),
+            format!("note {failing} has no releasable hold")
         );
     }
     assert!(

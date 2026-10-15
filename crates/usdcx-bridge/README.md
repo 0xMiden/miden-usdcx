@@ -14,16 +14,19 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-This guide describes this branch. Released images up to v0.17.2 also require
-`--signer-provider aws-kms`, which this branch no longer accepts. Until the next release, build an
-image from this branch and use its name in place of `<BRIDGE_IMAGE>` below:
+Use `ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>` and follow the README at the matching release tag.
+Replace `<BRIDGE_IMAGE>` below with the image you deploy.
+
+To build from source instead, run this command from the repository root and use
+`usdcx-bridge:local` as `<BRIDGE_IMAGE>`:
 
 ```sh
 docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
 ```
 
-Run that build command from the repository root. Published images use
-`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
+Images up to v0.17.2 do not include live hold management and require `--signer-provider aws-kms`.
+That flag is no longer accepted by the CLI documented here.
+
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -62,7 +65,8 @@ credentials are available inside the container, not just on the host. Do not put
 the image or command line.
 
 Allow outbound access to Miden RPC, Circle, AWS KMS and the workload credential provider. The
-service listens on no inbound ports and has no HTTP health endpoint.
+service listens on no inbound ports by default and has no HTTP health endpoint. The optional
+local admin listener is described below.
 
 ## Prepare storage and start
 
@@ -142,7 +146,7 @@ docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 
 ## Configuration flags
 
-This is the complete flag reference for the single `usdcx-bridge run` command in this branch.
+These are the configuration flags for the single `usdcx-bridge run` command.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
 Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
 in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
@@ -180,6 +184,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
+| `--admin-listen` | Optional; disabled | Loopback address for live hold management, for example `127.0.0.1:8090`. Requires `--admin-token-file`. Do not publish the port. |
+| `--admin-token-file` | Optional; disabled | Private token file for the local admin listener. Requires `--admin-listen`; see [Hold management while running](#hold-management-while-running). |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
@@ -256,8 +262,44 @@ Use the logs and exit status to check configuration, AWS permissions, outbound a
 ownership. A locked store may mean another instance is running.
 
 Investigate held withdrawals before releasing them; restarting does not release them. Do not
-automatically release holds, delete state or change the anchor to clear an error. Stop the bridge
-before releasing holds; the image's `release-holds --help` describes that command.
+automatically release holds, delete state or change the anchor to clear an error. Use the optional
+local admin interface below, or stop the bridge before using the offline `release-holds` command.
+
+### Hold management while running
+
+Administration is disabled by default. To enable it, add both
+`--admin-listen 127.0.0.1:8090` and `--admin-token-file /run/secrets/attester-admin-token` to
+`usdcx-bridge run`. The file must contain 32 random bytes encoded as 64 hex characters, optionally
+followed by a newline. Generate it with your secret manager and make it readable only by the
+service's container user and authorised operators. Keep the listener on loopback inside the
+container. Do not publish its port. IPv6 loopback is also supported.
+
+Run these commands inside the running container, using the same token file:
+
+```sh
+usdcx-bridge admin --url http://127.0.0.1:8090 --token-file /run/secrets/attester-admin-token holds
+usdcx-bridge admin --url http://127.0.0.1:8090 --token-file /run/secrets/attester-admin-token holds --after <NOTE_ID>
+usdcx-bridge admin --url http://127.0.0.1:8090 --token-file /run/secrets/attester-admin-token release-holds --hold <NOTE_ID>:<EVENT_SEQ> --circle-not-accepted
+```
+
+Listing shows the faucet and trusted anchor, each hold's `event_seq`, and `next_after` if there is
+another page. Check that this is the intended faucet, then copy one hold's note ID and event sequence
+into `--hold`. The event sequence prevents an old command from releasing a newer hold on the same
+burn. Release holds one at a time; each request succeeds or fails independently.
+
+Before releasing a held signed withdrawal, check with Circle that it was not accepted, then add
+`--circle-not-accepted`. A missing withdrawal ID is not proof. Burn holds do not need that flag.
+Success means the hold was released, not that the withdrawal was paid. If a command times out or
+says the hold changed, list holds again and check the current state before trying another release.
+Commands wait for any active signing or Circle request to finish and do not skip the normal retry
+delay. The client never retries a release automatically.
+
+The standalone `xusdc-attester` accepts the same commands and flags. The existing offline
+`release-holds` command still accepts a list or file, but requires the service to be stopped.
+
+For other local clients, the API is `GET /admin/attester/holds?after=<NOTE_ID>` (the cursor is
+optional) and `POST /admin/attester/holds/release`. Both require `Authorization: Bearer <TOKEN>`.
+The POST body is `{"note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`.
 
 ### Hold maintenance flags
 

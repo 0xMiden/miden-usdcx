@@ -22,6 +22,12 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
+    /// Optional local operator listener; requires --admin-token-file. Disabled by default.
+    #[arg(long, requires = "admin_token_file", value_parser = crate::admin::parse_listen)]
+    admin_listen: Option<std::net::SocketAddr>,
+    /// Private operator-readable token file; requires --admin-listen.
+    #[arg(long, requires = "admin_listen")]
+    admin_token_file: Option<PathBuf>,
     /// AWS region containing both KMS keys.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     aws_kms_region: String,
@@ -139,6 +145,8 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or release selected holds in the running attester through its local admin listener.
+    Admin(crate::admin::AdminArgs),
     /// Stop the attester first. Without note IDs, list the holds. With note IDs, release them and
     /// exit. A released burn can be prepared again. Releasing a withdrawal deletes its saved signed
     /// request.
@@ -206,6 +214,7 @@ pub(crate) struct CctpForwarding {
 
 #[derive(Debug)]
 pub struct Config {
+    admin: Option<crate::admin::AdminConfig>,
     kms: KmsConfig,
     miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
@@ -228,6 +237,13 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
+        let admin = match (cli.admin_listen, cli.admin_token_file) {
+            (Some(listen), Some(token_file)) => {
+                Some(crate::admin::AdminConfig { listen, token_file })
+            }
+            (None, None) => None,
+            _ => bail!("admin listener and token file must be configured together"),
+        };
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
@@ -305,6 +321,7 @@ impl TryFrom<Cli> for Config {
         }
 
         Ok(Self {
+            admin,
             kms,
             miden_rpc_url,
             circle_request_timeout: cli.request_timeout,
@@ -324,6 +341,9 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
+        self.admin.as_ref()
+    }
     pub fn kms(&self) -> &KmsConfig {
         &self.kms
     }

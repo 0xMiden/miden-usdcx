@@ -14,17 +14,19 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-This guide describes this branch, including unreleased hold-management commands. Released images
-up to v0.17.2 also require `--signer-provider aws-kms`, which this branch no longer accepts. Until
-the next release, build an image from this branch and use its name in place of `<BRIDGE_IMAGE>`
-below:
+Use `ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>` and follow the README at the matching release tag.
+Replace `<BRIDGE_IMAGE>` below with the image you deploy.
+
+To build from source instead, run this command from the repository root and use
+`usdcx-bridge:local` as `<BRIDGE_IMAGE>`:
 
 ```sh
 docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
 ```
 
-Run that build command from the repository root. Published images use
-`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
+Images up to v0.17.2 do not include live hold management and require `--signer-provider aws-kms`.
+That flag is no longer accepted by the CLI documented here.
+
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -144,7 +146,7 @@ docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 
 ## Configuration flags
 
-These are the worker settings for the single `usdcx-bridge run` command in this branch.
+These are the configuration flags for the single `usdcx-bridge run` command.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
 Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
 in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;

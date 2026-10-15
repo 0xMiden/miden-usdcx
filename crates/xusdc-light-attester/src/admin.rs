@@ -301,6 +301,11 @@ impl IntoResponse for AdminError {
                 "invalid_input",
                 "invalid hold selection",
             ),
+            Self::Release(ReleaseError::NotHeld(_)) => (
+                StatusCode::NOT_FOUND,
+                "hold_not_found",
+                "no hold for this note; list holds to find it",
+            ),
             Self::Release(ReleaseError::Conflict) => (
                 StatusCode::CONFLICT,
                 "hold_changed",
@@ -428,6 +433,20 @@ async fn dispatch<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A selection naming a note with no hold is answered as a hold that is not there, apart from
+    /// a malformed selection and from a hold that changed.
+    #[tokio::test]
+    async fn a_note_without_a_hold_is_not_found() {
+        let note_id = parse_note_id(&format!("0x{}", "ab".repeat(32))).unwrap();
+        let response = AdminError::Release(ReleaseError::NotHeld(note_id)).into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, "hold_not_found");
+    }
 
     #[test]
     fn token_and_listener_inputs_are_bounded() {

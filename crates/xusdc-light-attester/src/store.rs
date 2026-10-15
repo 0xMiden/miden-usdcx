@@ -94,6 +94,9 @@ pub(crate) enum ReleaseError {
     Invalid,
     #[error("hold changed since it was listed")]
     Conflict,
+    /// The note has no hold that can be released: the store never held it, or its hold is gone.
+    #[error("note {0} has no releasable hold")]
+    NotHeld(NoteId),
     #[error("check Circle before releasing a signed withdrawal")]
     CircleCheck,
     #[error(transparent)]
@@ -307,8 +310,7 @@ impl Store {
         // A burn named twice is released once.
         for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
             // Naming a withdrawal in the offline command confirms Circle did not accept it.
-            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?
-                .with_context(|| format!("note {note_id} has no releasable hold"))?;
+            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?;
             burns += burn;
             withdrawals += withdrawal;
         }
@@ -335,8 +337,7 @@ impl Store {
             .map_err(classify_error)?;
         let revision = match revision {
             Some(revision) => revision,
-            // Holding a note writes a history row, so a note without one was never held: the
-            // selection names no hold, rather than one that changed.
+            // Holding a note writes a history row, so a note without one was never held.
             None => {
                 if exists(
                     &transaction,
@@ -349,7 +350,7 @@ impl Store {
                 )? {
                     return Err(ReleaseError::Store(anyhow!(INVALID)));
                 }
-                return Err(ReleaseError::Invalid);
+                return Err(ReleaseError::NotHeld(note_id));
             }
         };
         // Only a revision that moved means the hold changed since it was listed.
@@ -357,22 +358,25 @@ impl Store {
             return Err(ReleaseError::Conflict);
         }
         // Every change to a hold writes a history row, so at the listed revision a note with
-        // nothing to release never had a releasable hold: the selection is wrong, and listing
-        // again would not show it.
-        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?
-            .ok_or(ReleaseError::Invalid)?;
+        // nothing to release never had a releasable hold, and `release_hold` says so.
+        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?;
         transaction.commit().map_err(classify_error)?;
         Ok(released)
     }
 
-    /// Releases the note's hold and returns how many burns and withdrawals it released, or `None`
-    /// when the note has nothing to release. What that means is the caller's to say: on the live
-    /// path a selection that names no hold, offline a note the operator should not have named.
+    /// Releases the note's hold and returns how many burns and withdrawals it released.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReleaseError::NotHeld`]: the note has nothing to release.
+    /// - [`ReleaseError::CircleCheck`]: the hold is a signed withdrawal and the caller has not
+    ///   confirmed Circle did not accept it.
+    /// - [`ReleaseError::Store`]: the store failed.
     fn release_hold(
         transaction: &Transaction<'_>,
         note_id: NoteId,
         circle_not_accepted: bool,
-    ) -> Result<Option<(usize, usize)>, ReleaseError> {
+    ) -> Result<(usize, usize), ReleaseError> {
         let note = note_id.to_bytes();
         let held = params![
             note,
@@ -392,7 +396,7 @@ impl Store {
                     [&note],
                 )
                 .map_err(classify_error)?;
-            Ok(Some((burns, 0)))
+            Ok((burns, 0))
         } else if exists(
             transaction,
             "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
@@ -412,9 +416,9 @@ impl Store {
             if deleted != 1 {
                 return Err(ReleaseError::Store(anyhow!(CONFLICT)));
             }
-            Ok(Some((0, 1)))
+            Ok((0, 1))
         } else {
-            Ok(None)
+            Err(ReleaseError::NotHeld(note_id))
         }
     }
 

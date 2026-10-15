@@ -1,6 +1,5 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use reqwest::StatusCode;
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::time::Instant;
@@ -8,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber as _;
 use tracing::Instrument as _;
 
-use crate::admin::{AdminConfig, Command, HoldsPage, Operation, ReleaseRequest, Server};
+use crate::admin::{AdminConfig, Command, HoldsPage, Operation, Request, Server};
 use crate::circle::{CircleApi, CircleError, RawResponse, UnverifiedPrepareResponse};
 use crate::store::{BurnHoldReason, HoldEntry, ReleaseError, ReleaseSelection};
 use crate::{DiscoveredBurn, SavedSubmission};
@@ -318,34 +317,42 @@ async fn due_idle_deadline_wins_under_continuous_admin_traffic() {
 }
 
 #[test]
-fn admin_run_flags_are_optional_paired_and_local() {
+fn admin_socket_is_optional() {
     let directory = tempfile::tempdir().unwrap();
     let mut args = super::startup::TestArgs::new(&directory);
     args.replace("--store-path", directory.path().join("state.sqlite3"));
     assert!(args.config().unwrap().admin().is_none());
-    args.append("--admin-listen", "127.0.0.1:8090");
-    assert!(args.parse().is_err());
-    args.append("--admin-token-file", "/private/operator/token");
+    args.append("--admin-socket", directory.path().join("admin.sock"));
     assert!(args.config().unwrap().admin().is_some());
-    args.replace("--admin-listen", "0.0.0.0:8090");
-    assert!(args.parse().is_err());
-    args.remove("--admin-listen");
-    assert!(args.parse().is_err());
 }
 
 #[tokio::test]
-async fn invalid_token_fails_before_external_service_initialization() {
+async fn admin_socket_failure_stops_startup_before_external_services() {
     let directory = tempfile::tempdir().unwrap();
     let mut args = super::startup::TestArgs::new(&directory);
     args.replace("--store-path", directory.path().join("state.sqlite3"));
-    args.append("--admin-listen", "127.0.0.1:0");
-    args.append("--admin-token-file", directory.path().join("missing-token"));
+    args.append(
+        "--admin-socket",
+        directory.path().join("missing/admin.sock"),
+    );
     let result = crate::service::AttesterService::start(args.load()).await;
     assert!(result
         .err()
         .unwrap()
         .to_string()
-        .contains("cannot open admin token file"));
+        .contains("cannot bind admin socket"));
+}
+
+/// Sends one request line on a fresh connection and returns the reply line.
+async fn exchange(path: &std::path::Path, line: &[u8]) -> serde_json::Value {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
+    stream.write_all(line).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).await.unwrap();
+    assert_eq!(reply.last(), Some(&b'\n'), "one reply line");
+    serde_json::from_slice(&reply).unwrap()
 }
 
 fn selection(hold: &HoldEntry, checked: bool) -> ReleaseSelection {
@@ -636,7 +643,7 @@ async fn owner_skips_abandoned_commands_and_lost_success_does_not_repeat() {
 }
 
 #[tokio::test]
-async fn authenticated_transport_and_client_release_selected_holds() {
+async fn socket_transport_and_client_release_selected_holds() {
     let ledger = Ledger::new().await;
     let (mut attester, _) = ledger.start(vec![]).await;
     for index in [0, 1, 2] {
@@ -649,15 +656,12 @@ async fn authenticated_transport_and_client_release_selected_holds() {
             )
             .unwrap();
     }
-    let secret = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(secret.path(), "ab".repeat(32)).unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let (server, receiver) = Server::bind(&AdminConfig {
-        listen: "127.0.0.1:0".parse().unwrap(),
-        token_file: secret.path().into(),
+        socket: directory.path().join("admin.sock"),
     })
-    .await
     .unwrap();
-    let address = server.address();
+    let path = server.path().to_owned();
     let shutdown = CancellationToken::new();
     attester.attach_admin(receiver, shutdown.clone());
     let serve = server.run(shutdown.clone());
@@ -668,20 +672,9 @@ async fn authenticated_transport_and_client_release_selected_holds() {
         }
     };
     let client = async {
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let url = format!("http://{address}/admin/attester/holds");
-        let response = client.get(&url).send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(response.headers()["cache-control"], "no-store");
-        let page: HoldsPage = client
-            .get(&url)
-            .bearer_auth("ab".repeat(32))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+        let page: HoldsPage =
+            serde_json::from_value(exchange(&path, b"{\"op\":\"holds\"}\n").await["ok"].take())
+                .unwrap();
         assert_eq!(page.holds.len(), 3);
         assert!(page.holds.iter().all(|hold| !hold
             .circle_message
@@ -690,82 +683,43 @@ async fn authenticated_transport_and_client_release_selected_holds() {
             .chars()
             .any(char::is_control)));
         assert!(!page.faucet_account_id.is_empty());
-        let next: HoldsPage = client
-            .get(&url)
-            .query(&[("after", &page.holds[0].note_id)])
-            .bearer_auth("ab".repeat(32))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+        let after = json!({"op": "holds", "after": page.holds[0].note_id}).to_string();
+        let next: HoldsPage =
+            serde_json::from_value(exchange(&path, after.as_bytes()).await["ok"].take()).unwrap();
         assert_eq!(next.holds.len(), 2);
-        let release = format!("{url}/release");
-        let body = json!(ReleaseRequest {
+        let release = json!(Request::Release {
             note_id: page.holds[0].note_id.clone(),
             expected_event_seq: page.holds[0].event_seq,
             circle_not_accepted: false,
         });
-        let mut extra_field = body.clone();
+        let mut extra_field = release.clone();
         extra_field["extra"] = json!(true);
-        for body in [json!({"holds": []}), extra_field] {
-            let response = client
-                .post(&release)
-                .bearer_auth("ab".repeat(32))
-                .json(&body)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        for line in [json!({"holds": []}).to_string(), extra_field.to_string()] {
             assert_eq!(
-                response.json::<serde_json::Value>().await.unwrap(),
-                json!({"code": "invalid_input", "message": "invalid release body"})
+                exchange(&path, line.as_bytes()).await,
+                json!({"error": {"code": "invalid_input", "message": "invalid request"}})
             );
         }
         assert_eq!(
-            client
-                .post(&release)
-                .bearer_auth("ab".repeat(32))
-                .header("content-type", "application/json")
-                .body(" ".repeat(16 * 1024 + 1))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::PAYLOAD_TOO_LARGE
+            exchange(&path, " ".repeat(16 * 1024 + 1).as_bytes()).await["error"]["code"],
+            "request_too_large"
         );
-        let response: serde_json::Value = client
-            .post(&release)
-            .bearer_auth("ab".repeat(32))
-            .json(&body)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(response, json!({"burns": 1, "withdrawals": 0}));
+        let release = release.to_string();
         assert_eq!(
-            client
-                .post(&release)
-                .bearer_auth("ab".repeat(32))
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CONFLICT
+            exchange(&path, release.as_bytes()).await,
+            json!({"ok": {"burns": 1, "withdrawals": 0}})
+        );
+        assert_eq!(
+            exchange(&path, release.as_bytes()).await["error"]["code"],
+            "hold_changed"
         );
         use clap::Parser;
-        let base = format!("http://{address}");
+        let socket = path.to_str().unwrap();
         let invocation = crate::config::Invocation::try_parse_from([
             "xusdc-attester",
             "admin",
-            "--url",
-            &base,
-            "--token-file",
-            secret.path().to_str().unwrap(),
+            "--socket",
+            socket,
             "holds",
         ])
         .unwrap();
@@ -776,10 +730,8 @@ async fn authenticated_transport_and_client_release_selected_holds() {
         let invocation = crate::config::Invocation::try_parse_from([
             "xusdc-attester",
             "admin",
-            "--url",
-            &base,
-            "--token-file",
-            secret.path().to_str().unwrap(),
+            "--socket",
+            socket,
             "release-holds",
             "--hold",
             &selected,
@@ -792,7 +744,7 @@ async fn authenticated_transport_and_client_release_selected_holds() {
     };
     let (result, _, _) = tokio::join!(serve, owner, client);
     result.unwrap();
-    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    assert!(!path.exists(), "the socket is removed on shutdown");
     assert_eq!(attester.store.holds_page(None).unwrap().len(), 1);
 }
 
@@ -825,15 +777,12 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
         started: started.clone(),
         finish: finish.clone(),
     });
-    let secret = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(secret.path(), "ab".repeat(32)).unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let (server, receiver) = Server::bind(&AdminConfig {
-        listen: "127.0.0.1:0".parse().unwrap(),
-        token_file: secret.path().into(),
+        socket: directory.path().join("admin.sock"),
     })
-    .await
     .unwrap();
-    let address = server.address();
+    let path = server.path().to_owned();
     let accepted = server.accepted.clone();
     let service = crate::service::AttesterService::for_test(attester, server, receiver);
     let shutdown = CancellationToken::new();
@@ -841,10 +790,8 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
     let operator = async {
         use tokio::io::AsyncWriteExt;
         started.notified().await;
-        let mut slow = tokio::net::TcpStream::connect(address).await.unwrap();
-        slow.write_all(b"GET /admin/attester/holds HTTP/1.1\r\n")
-            .await
-            .unwrap();
+        let mut slow = tokio::net::UnixStream::connect(&path).await.unwrap();
+        slow.write_all(b"{\"op\":").await.unwrap();
         accepted.notified().await;
         shutdown.cancel();
         let stopped_at = Instant::now();
@@ -858,13 +805,13 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
         );
         finish.notify_one();
         use tokio::io::AsyncReadExt;
-        let closed = tokio::time::timeout(Duration::from_secs(6), slow.read(&mut [0]))
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(6), slow.read_to_end(&mut reply))
             .await
-            .expect("accepted connection must close within the cleanup bound");
-        assert!(
-            matches!(closed, Ok(0))
-                || closed.is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset)
-        );
+            .expect("accepted connection must close within the cleanup bound")
+            .unwrap();
+        let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(reply["error"]["code"], "stopping");
         stopped_at
     };
     let (result, stopped_at) = tokio::time::timeout(Duration::from_secs(7), async {
@@ -880,5 +827,5 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
         1
     );
     assert!(ledger.open_store().is_ok());
-    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+    assert!(!path.exists(), "the socket is removed on shutdown");
 }

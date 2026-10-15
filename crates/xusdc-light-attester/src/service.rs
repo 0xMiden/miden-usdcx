@@ -55,7 +55,7 @@ impl AttesterService {
 
     async fn connect(config: Config) -> Result<Self> {
         let admin = match config.admin() {
-            Some(config) => Some(crate::admin::Server::bind(config).await?),
+            Some(config) => Some(crate::admin::Server::bind(config)?),
             None => None,
         };
         let circle =
@@ -83,7 +83,7 @@ impl AttesterService {
         Ok(Self { attester, admin })
     }
 
-    /// Runs the attester and its optional admin listener until `shutdown` is cancelled.
+    /// Runs the attester and its optional admin socket until `shutdown` is cancelled.
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let Self {
             mut attester,
@@ -112,7 +112,7 @@ impl AttesterService {
     }
 }
 
-/// Runs offline maintenance against a stopped store, or a request to the live admin listener.
+/// Runs offline maintenance against a stopped store, or a request to the live admin socket.
 ///
 /// # Errors
 ///

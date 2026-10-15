@@ -92,7 +92,7 @@ pub(crate) struct ReleaseSelection {
 pub(crate) enum ReleaseError {
     #[error("invalid selection")]
     Invalid,
-    #[error("hold changed or is no longer releasable")]
+    #[error("hold changed since it was listed")]
     Conflict,
     #[error("check Circle before releasing a signed withdrawal")]
     CircleCheck,
@@ -307,11 +307,8 @@ impl Store {
         // A burn named twice is released once.
         for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
             // Naming a withdrawal in the offline command confirms Circle did not accept it.
-            let (burn, withdrawal) =
-                Self::release_hold(&transaction, note_id, true).map_err(|error| match error {
-                    ReleaseError::Conflict => anyhow!("note {note_id} has no releasable hold"),
-                    error => error.into(),
-                })?;
+            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?
+                .with_context(|| format!("note {note_id} has no releasable hold"))?;
             burns += burn;
             withdrawals += withdrawal;
         }
@@ -338,6 +335,8 @@ impl Store {
             .map_err(classify_error)?;
         let revision = match revision {
             Some(revision) => revision,
+            // Holding a note writes a history row, so a note without one was never held: the
+            // selection names no hold, rather than one that changed.
             None => {
                 if exists(
                     &transaction,
@@ -350,22 +349,30 @@ impl Store {
                 )? {
                     return Err(ReleaseError::Store(anyhow!(INVALID)));
                 }
-                return Err(ReleaseError::Conflict);
+                return Err(ReleaseError::Invalid);
             }
         };
+        // Only a revision that moved means the hold changed since it was listed.
         if revision != selection.expected_event_seq {
             return Err(ReleaseError::Conflict);
         }
-        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?;
+        // Every change to a hold writes a history row, so at the listed revision a note with
+        // nothing to release never had a releasable hold: the selection is wrong, and listing
+        // again would not show it.
+        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?
+            .ok_or(ReleaseError::Invalid)?;
         transaction.commit().map_err(classify_error)?;
         Ok(released)
     }
 
+    /// Releases the note's hold and returns how many burns and withdrawals it released, or `None`
+    /// when the note has nothing to release. What that means is the caller's to say: on the live
+    /// path a selection that names no hold, offline a note the operator should not have named.
     fn release_hold(
         transaction: &Transaction<'_>,
         note_id: NoteId,
         circle_not_accepted: bool,
-    ) -> Result<(usize, usize), ReleaseError> {
+    ) -> Result<Option<(usize, usize)>, ReleaseError> {
         let note = note_id.to_bytes();
         let held = params![
             note,
@@ -385,7 +392,7 @@ impl Store {
                     [&note],
                 )
                 .map_err(classify_error)?;
-            Ok((burns, 0))
+            Ok(Some((burns, 0)))
         } else if exists(
             transaction,
             "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
@@ -405,9 +412,9 @@ impl Store {
             if deleted != 1 {
                 return Err(ReleaseError::Store(anyhow!(CONFLICT)));
             }
-            Ok((0, 1))
+            Ok(Some((0, 1)))
         } else {
-            Err(ReleaseError::Conflict)
+            Ok(None)
         }
     }
 
@@ -630,6 +637,18 @@ impl Store {
             )?;
         }
         transaction.commit().map_err(classify_error)
+    }
+
+    /// The note's latest history row, which is the revision a release selection names.
+    #[cfg(test)]
+    pub(crate) fn revision(&self, note_id: NoteId) -> anyhow::Result<Option<i64>> {
+        self.connection
+            .query_row(
+                "SELECT MAX(seq) FROM submission_events WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)
     }
 
     #[cfg(test)]

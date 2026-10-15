@@ -289,6 +289,8 @@ Before releasing a held signed withdrawal, check with Circle that it was not acc
 `--circle-not-accepted`. A missing withdrawal ID is not proof. Burn holds do not need that flag.
 Success means the hold was released, not that the withdrawal was paid. If a command times out or
 says the hold changed, list holds again and check the current state before trying another release.
+A note ID that is not a listed hold is an invalid selection: listing again will not show it, so
+check the note ID.
 Commands wait for any active signing or Circle request to finish and do not skip the normal retry
 delay. The client never retries a release automatically.
 

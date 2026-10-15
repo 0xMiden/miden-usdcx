@@ -1,27 +1,28 @@
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context};
 use clap::{Args, Subcommand};
-use reqwest::{Client, Url};
+use serde::de::DeserializeOwned;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::UnixStream;
 
-use super::{load_token, parse_note_id, ErrorBody, HoldsPage, ReleaseRequest, Released};
+use super::{parse_note_id, HoldsPage, Released, Reply, Request};
 
-/// Arguments of the `admin` command, which talks to a running attester's admin listener.
+const REPLY_LIMIT: u64 = 256 * 1024;
+const REPLY_WAIT: Duration = Duration::from_secs(75);
+
+/// Arguments of the `admin` command, which talks to a running attester's admin socket.
 #[derive(Debug, Args)]
 pub struct AdminArgs {
-    /// Literal loopback HTTP URL of the running attester, with no extra path.
-    #[arg(long, value_parser = parse_url)]
-    url: Url,
-    /// Private file containing the 64-hex-character admin bearer token.
+    /// The running attester's admin socket.
     #[arg(long)]
-    token_file: PathBuf,
+    socket: PathBuf,
     #[command(subcommand)]
     operation: AdminOperation,
 }
 
-/// What the `admin` command asks the listener to do.
+/// What the `admin` command asks the attester to do.
 #[derive(Debug, Subcommand)]
 pub enum AdminOperation {
     /// List held burns and withdrawals.
@@ -41,7 +42,7 @@ pub enum AdminOperation {
     },
 }
 
-/// Checks that a page cursor is a canonical note ID, keeping it as text for the query.
+/// Checks that a page cursor is a canonical note ID, keeping it as text for the request.
 fn parse_cursor(value: &str) -> Result<String, String> {
     parse_note_id(value).map_err(|error| error.to_string())?;
     Ok(value.into())
@@ -62,123 +63,79 @@ fn parse_selection(value: &str) -> Result<(String, i64), String> {
     Ok((id, revision))
 }
 
-/// Parses the listener URL, accepting only plain HTTP to a literal loopback address.
-///
-/// A host name could resolve somewhere other than this machine and send the token there.
-fn parse_url(value: &str) -> Result<Url, String> {
-    let url = Url::parse(value).map_err(|_| "invalid admin URL")?;
-    let address: IpAddr = match url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.into(),
-        Some(url::Host::Ipv6(ip)) => ip.into(),
-        _ => return Err("admin URL requires a literal loopback address".into()),
-    };
-    if url.scheme() != "http"
-        || !address.is_loopback()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(
-            "admin URL must be loopback HTTP without credentials, extra path, query or fragment"
-                .into(),
-        );
+/// Sends one request and reads its one reply. A lost reply leaves the outcome unknown, so nothing
+/// is retried.
+async fn exchange<T: DeserializeOwned>(args: &AdminArgs, request: &Request) -> anyhow::Result<T> {
+    let mut stream = UnixStream::connect(&args.socket)
+        .await
+        .context("cannot connect to the admin socket")?;
+    let mut line = serde_json::to_vec(request).context("cannot encode admin request")?;
+    line.push(b'\n');
+    let mut bytes = Vec::new();
+    tokio::time::timeout(REPLY_WAIT, async {
+        stream.write_all(&line).await?;
+        stream.shutdown().await?;
+        (&mut stream)
+            .take(REPLY_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .await
+    })
+    .await
+    .context("admin reply timed out; list holds before selecting another release")?
+    .context("admin reply lost; list holds before selecting another release")?;
+    ensure!(
+        bytes.len() as u64 <= REPLY_LIMIT,
+        "admin reply exceeds limit; list holds before selecting another release"
+    );
+    match serde_json::from_slice(&bytes).context("invalid admin reply")? {
+        Reply::Ok(value) => Ok(value),
+        Reply::Error(error) => bail!("admin request failed ({}): {}", error.code, error.message),
     }
-    Ok(url)
 }
 
-/// Sends one request to the admin listener and prints its answer.
-///
-/// The request is never retried: after a lost reply the operator lists the holds again, since a
-/// release may have committed.
+/// Sends one request to the admin socket and prints its answer.
 pub(crate) async fn run(args: AdminArgs) -> anyhow::Result<()> {
-    let token = hex::encode(load_token(&args.token_file)?);
-    // No proxy or redirect, so the token goes only to the loopback listener. The timeout outlasts
-    // the listener's own wait for the attester, so its answer arrives first.
-    let client = Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .timeout(Duration::from_secs(75))
-        .build()
-        .context("cannot initialize admin client")?;
-    let listing = matches!(args.operation, AdminOperation::Holds { .. });
-    let request = match args.operation {
+    match &args.operation {
         AdminOperation::Holds { after } => {
-            let mut url = args.url.join("admin/attester/holds")?;
-            if let Some(after) = after {
-                url.query_pairs_mut().append_pair("after", &after);
+            let request = Request::Holds {
+                after: after.clone(),
+            };
+            let page: HoldsPage = exchange(&args, &request).await?;
+            println!(
+                "faucet {}\ntrusted anchor {} {}",
+                page.faucet_account_id, page.trusted_anchor_block, page.trusted_anchor_commitment
+            );
+            for hold in page.holds {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\tevent_seq={}",
+                    hold.note_id,
+                    hold.kind,
+                    hold.reason,
+                    hold.http_status
+                        .map_or_else(|| "-".into(), |value| value.to_string()),
+                    hold.circle_message.as_deref().unwrap_or("-"),
+                    hold.event_seq
+                );
             }
-            client.get(url)
+            if let Some(after) = page.next_after {
+                println!("next_after={after}");
+            }
         }
         AdminOperation::ReleaseHolds {
             hold: (note_id, expected_event_seq),
             circle_not_accepted,
-        } => client
-            .post(args.url.join("admin/attester/holds/release")?)
-            .json(&ReleaseRequest {
-                note_id,
-                expected_event_seq,
-                circle_not_accepted,
-            }),
-    };
-    let mut response = request
-        .bearer_auth(token)
-        .send()
-        .await
-        .context("admin request failed; list holds before selecting another release")?;
-    let status = response.status();
-    // Read the body in chunks, so an oversized answer is refused before it is all buffered.
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .context("admin reply lost; list holds before selecting another release")?
-    {
-        ensure!(
-            bytes.len() + chunk.len() <= 256 * 1024,
-            "admin response exceeds limit; list holds before selecting another release"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    if !status.is_success() {
-        let error: ErrorBody =
-            serde_json::from_slice(&bytes).context("invalid admin error response")?;
-        bail!(
-            "admin request failed ({status}, {}): {}",
-            error.code,
-            error.message
-        );
-    }
-    if listing {
-        let page: HoldsPage = serde_json::from_slice(&bytes).context("invalid holds response")?;
-        println!(
-            "faucet {}\ntrusted anchor {} {}",
-            page.faucet_account_id, page.trusted_anchor_block, page.trusted_anchor_commitment
-        );
-        for hold in page.holds {
+        } => {
+            let request = Request::Release {
+                note_id: note_id.clone(),
+                expected_event_seq: *expected_event_seq,
+                circle_not_accepted: *circle_not_accepted,
+            };
+            let released: Released = exchange(&args, &request).await?;
             println!(
-                "{}\t{}\t{}\t{}\t{}\tevent_seq={}",
-                hold.note_id,
-                hold.kind,
-                hold.reason,
-                hold.http_status
-                    .map_or_else(|| "-".into(), |value| value.to_string()),
-                hold.circle_message.as_deref().unwrap_or("-"),
-                hold.event_seq
+                "released burns={} withdrawals={} (release committed; payout is not confirmed)",
+                released.burns, released.withdrawals
             );
         }
-        if let Some(after) = page.next_after {
-            println!("next_after={after}");
-        }
-    } else {
-        let released: Released =
-            serde_json::from_slice(&bytes).context("invalid release response")?;
-        println!(
-            "released burns={} withdrawals={} (release committed; payout is not confirmed)",
-            released.burns, released.withdrawals
-        );
     }
     Ok(())
 }
@@ -190,50 +147,24 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn client_commands_accept_only_local_literal_urls_and_inspected_revisions() {
-        for url in ["http://127.0.0.1:8090", "http://[::1]:8090/"] {
-            assert!(matches!(
-                Invocation::try_parse_from([
-                    "xusdc-attester",
-                    "admin",
-                    "--url",
-                    url,
-                    "--token-file",
-                    "private-token",
-                    "holds"
-                ])
-                .unwrap()
-                .command,
-                Some(Command::Admin(_))
-            ));
-        }
-        for url in [
-            "https://127.0.0.1:8090",
-            "http://localhost:8090",
-            "http://192.0.2.1:8090",
-            "http://user@127.0.0.1:8090",
-            "http://127.0.0.1:8090/path",
-            "http://127.0.0.1:8090/?x=1",
-            "http://127.0.0.1:8090/#x",
-        ] {
-            assert!(parse_url(url).is_err());
-        }
+    fn release_selects_one_inspected_revision() {
         let id = format!("0x{}", "11".repeat(32));
         for seq in ["0", "-1", "9223372036854775808", "1.0", "one"] {
             assert!(parse_selection(&format!("{id}:{seq}")).is_err());
         }
-        let cli = Invocation::try_parse_from([
+        let admin = [
             "xusdc-attester",
             "admin",
-            "--url",
-            "http://127.0.0.1:8090",
-            "--token-file",
-            "private-token",
+            "--socket",
+            "/run/attester/admin.sock",
+        ];
+        let selected = format!("{id}:123");
+        let cli = Invocation::try_parse_from(admin.iter().copied().chain([
             "release-holds",
             "--hold",
-            &format!("{id}:123"),
+            &selected,
             "--circle-not-accepted",
-        ])
+        ]))
         .unwrap();
         let Some(Command::Admin(args)) = cli.command else {
             panic!()
@@ -247,19 +178,14 @@ mod tests {
         };
         assert_eq!(hold, (id.clone(), 123));
         assert!(circle_not_accepted);
-        let repeated = Invocation::try_parse_from([
-            "xusdc-attester",
-            "admin",
-            "--url",
-            "http://127.0.0.1:8090",
-            "--token-file",
-            "private-token",
+        let repeated = format!("{id}:124");
+        let repeated = Invocation::try_parse_from(admin.iter().copied().chain([
             "release-holds",
             "--hold",
-            &format!("{id}:123"),
+            &selected,
             "--hold",
-            &format!("{id}:124"),
-        ])
+            &repeated,
+        ]))
         .unwrap_err();
         assert_eq!(repeated.kind(), clap::error::ErrorKind::ArgumentConflict);
     }

@@ -1,29 +1,23 @@
 //! List and release holds in the running attester.
 //!
-//! A loopback HTTP listener authenticates each request with a bearer token and queues it for the
-//! attester's own task, which runs it against the store between steps of a cycle and sends back the
-//! result. The listener never opens the store itself.
+//! The attester listens on a Unix socket. File permissions decide who may connect, so there is no
+//! token: the socket is created readable and writable only by the service's user. A client sends
+//! one JSON request on one line and reads one JSON reply on one line, then the connection closes.
+//!
+//! Each request is queued for the attester's own task, which runs it against the store between
+//! steps of a cycle and sends back the result. The listener never opens the store itself.
 
-use std::fs::File;
-use std::io::{ErrorKind, Read};
-use std::net::SocketAddr;
+use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{ensure, Context};
-use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Query, State};
-use axum::http::{header, Request, StatusCode};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use hyper_util::rt::{TokioIo, TokioTimer};
-use hyper_util::service::TowerToHyperService;
 use miden_protocol::note::NoteId;
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -37,55 +31,21 @@ use crate::store::{HoldEntry, ReleaseError, ReleaseSelection};
 
 /// How long a request waits for the attester to run its command.
 const COMMAND_WAIT: Duration = Duration::from_secs(60);
-/// How long a connection may take to send its request headers.
-const HEADER_WAIT: Duration = Duration::from_secs(10);
+/// How long a connection may take to send its request line.
+const REQUEST_WAIT: Duration = Duration::from_secs(10);
 /// The longest a connection stays open, a little over [`COMMAND_WAIT`].
 const CONNECTION_WAIT: Duration = Duration::from_secs(70);
 /// How long shutdown waits for open connections to finish before dropping them.
 const CLEANUP_WAIT: Duration = Duration::from_secs(5);
-/// The largest request body accepted.
-const BODY_LIMIT: usize = 16 * 1024;
+/// The largest request line accepted.
+const REQUEST_LIMIT: usize = 16 * 1024;
 /// The most connections served at once; further ones wait in the listen backlog.
 const MAX_CONNECTIONS: usize = 16;
 
-/// Where the admin listener binds and the file holding its bearer token.
+/// Where the admin socket is created.
 #[derive(Debug, Clone)]
 pub(crate) struct AdminConfig {
-    pub(crate) listen: SocketAddr,
-    pub(crate) token_file: PathBuf,
-}
-
-/// Parses the listener address, accepting only a loopback address.
-pub(crate) fn parse_listen(value: &str) -> Result<SocketAddr, String> {
-    let address: SocketAddr = value
-        .parse()
-        .map_err(|_| "admin address must be a literal socket address")?;
-    if !address.ip().is_loopback() {
-        return Err("admin address must be loopback".into());
-    }
-    Ok(address)
-}
-
-/// Reads the 32-byte admin token, stored as 64 hex characters and an optional newline.
-// Read at most one byte beyond the accepted representation, including its optional newline.
-fn load_token(path: &Path) -> anyhow::Result<[u8; 32]> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .context("cannot open admin token file")?
-        .take(66)
-        .read_to_end(&mut bytes)
-        .context("cannot read admin token file")?;
-    if bytes.last() == Some(&b'\n') {
-        bytes.pop();
-    }
-    ensure!(
-        bytes.len() == 64,
-        "admin token must contain 64 hex characters and an optional newline"
-    );
-    let mut token = [0; 32];
-    hex::decode_to_slice(bytes, &mut token)
-        .context("admin token must contain 64 hex characters")?;
-    Ok(token)
+    pub(crate) socket: PathBuf,
 }
 
 /// Parses a note ID in the canonical form the holds list prints.
@@ -100,17 +60,42 @@ pub(crate) fn parse_note_id(value: &str) -> anyhow::Result<NoteId> {
     Ok(id)
 }
 
-/// The body of a release request: one hold, as the holds list showed it.
+/// One line a client sends.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ReleaseRequest {
-    pub(crate) note_id: String,
-    /// The hold's `event_seq` from the list. The release is refused if the hold has changed since.
-    pub(crate) expected_event_seq: i64,
-    /// The operator confirms Circle did not accept the withdrawal. Required to release a held
-    /// withdrawal.
-    #[serde(default)]
-    pub(crate) circle_not_accepted: bool,
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Request {
+    /// Lists one page of holds.
+    Holds {
+        /// The last note ID of the previous page.
+        #[serde(default)]
+        after: Option<String>,
+    },
+    /// Releases one hold, as the holds list showed it.
+    Release {
+        note_id: String,
+        /// The hold's `event_seq` from the list. The release is refused if the hold has changed
+        /// since.
+        expected_event_seq: i64,
+        /// The operator confirms Circle did not accept the withdrawal. Required to release a held
+        /// withdrawal.
+        #[serde(default)]
+        circle_not_accepted: bool,
+    },
+}
+
+/// One line the attester answers with: `{"ok": …}` or `{"error": {"code": …, "message": …}}`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reply<T> {
+    Ok(T),
+    Error(ErrorBody),
+}
+
+/// The body of every error answer: a stable code for scripts and a message for the operator.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ErrorBody {
+    pub(crate) code: String,
+    pub(crate) message: String,
 }
 
 /// One page of holds, in note order.
@@ -165,10 +150,9 @@ impl Command {
     }
 }
 
-/// What every request handler shares.
+/// What every connection handler shares.
 #[derive(Clone)]
 struct ServerState {
-    token: [u8; 32],
     /// The attester's inbox.
     commands: mpsc::Sender<Command>,
     /// Cancelled when the listener stops, so new requests are refused and open connections close.
@@ -177,7 +161,8 @@ struct ServerState {
 
 /// The admin listener, bound but not yet serving.
 pub(crate) struct Server {
-    listener: TcpListener,
+    listener: UnixListener,
+    path: PathBuf,
     state: ServerState,
     #[cfg(test)]
     pub(crate) accepted: std::sync::Arc<tokio::sync::Notify>,
@@ -185,27 +170,29 @@ pub(crate) struct Server {
 
 impl Server {
     #[cfg(test)]
-    pub(crate) fn address(&self) -> SocketAddr {
-        self.listener.local_addr().unwrap()
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
-    /// Loads the token and binds the listener, returning it with the inbox the attester reads.
+
+    /// Creates the socket, returning the listener with the inbox the attester reads.
     ///
     /// The inbox is bounded, so a request that finds it full is refused rather than queued.
-    pub(crate) async fn bind(
-        config: &AdminConfig,
-    ) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
-        let token = load_token(&config.token_file)?;
-        let listener = TcpListener::bind(config.listen)
-            .await
-            .context("cannot bind admin listener")?;
+    pub(crate) fn bind(config: &AdminConfig) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
+        let path = config.socket.clone();
+        remove_stale_socket(&path)?;
+        let listener = UnixListener::bind(&path).context("cannot bind admin socket")?;
+        // The socket is reachable from its directory for the moment between the bind and this
+        // call, so the directory itself should be private to the service.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .context("cannot restrict admin socket permissions")?;
         let (commands, receiver) = mpsc::channel(16);
         Ok((
             Self {
                 listener,
+                path,
                 #[cfg(test)]
                 accepted: std::sync::Arc::new(tokio::sync::Notify::new()),
                 state: ServerState {
-                    token,
                     commands,
                     shutdown: CancellationToken::new(),
                 },
@@ -214,8 +201,8 @@ impl Server {
         ))
     }
 
-    /// Serves requests until `shutdown` is cancelled, then gives open connections
-    /// [`CLEANUP_WAIT`] to finish.
+    /// Serves requests until `shutdown` is cancelled, then removes the socket and gives open
+    /// connections [`CLEANUP_WAIT`] to finish.
     ///
     /// Each connection carries one request and is capped at [`CONNECTION_WAIT`], so a slow or idle
     /// client cannot hold one of the [`MAX_CONNECTIONS`] slots.
@@ -223,15 +210,12 @@ impl Server {
         #[cfg(test)]
         let on_accept = self.accepted;
         let Self {
-            listener, state, ..
+            listener,
+            path,
+            state,
+            ..
         } = self;
         let stop = state.shutdown.clone();
-        let router = Router::new()
-            .route("/admin/attester/holds", get(list))
-            .route("/admin/attester/holds/release", post(release))
-            .layer(DefaultBodyLimit::max(BODY_LIMIT))
-            .layer(middleware::from_fn_with_state(state.clone(), authenticate))
-            .with_state(state);
         let mut connections = JoinSet::new();
         loop {
             tokio::select! {
@@ -240,16 +224,12 @@ impl Server {
                 // Reaping finished connections frees their slots.
                 Some(_) = connections.join_next(), if !connections.is_empty() => {},
                 accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
-                    let (stream, _) = match accepted {
-                        Ok(value) => value,
-                        // The client went away before it was accepted.
-                        Err(error) if matches!(error.kind(),
-                            ErrorKind::ConnectionRefused | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset
-                        ) => continue,
-                        // Other failures, such as running out of file descriptors, can persist,
-                        // so pause before accepting again.
+                    let stream = match accepted {
+                        Ok((stream, _)) => stream,
+                        // Failures such as running out of file descriptors can persist, so pause
+                        // before accepting again.
                         Err(error) => {
-                            warn!(%error, "admin listener accept failed");
+                            warn!(%error, "admin socket accept failed");
                             tokio::select! {
                                 biased;
                                 () = shutdown.cancelled() => break,
@@ -258,22 +238,9 @@ impl Server {
                             continue;
                         }
                     };
-                    let service = TowerToHyperService::new(router.clone());
-                    let stop_connection = stop.clone();
+                    let state = state.clone();
                     connections.spawn(async move {
-                        let mut builder = hyper::server::conn::http1::Builder::new();
-                        builder.keep_alive(false).max_buf_size(16 * 1024)
-                            .timer(TokioTimer::new()).header_read_timeout(HEADER_WAIT);
-                        let connection = builder.serve_connection(TokioIo::new(stream), service);
-                        tokio::pin!(connection);
-                        tokio::select! {
-                            _ = tokio::time::sleep(CONNECTION_WAIT) => {},
-                            _ = &mut connection => {},
-                            () = stop_connection.cancelled() => {
-                                connection.as_mut().graceful_shutdown();
-                                let _ = connection.await;
-                            }
-                        }
+                        let _ = tokio::time::timeout(CONNECTION_WAIT, serve(state, stream)).await;
                     });
                     #[cfg(test)]
                     on_accept.notify_one();
@@ -282,6 +249,7 @@ impl Server {
         }
         // Stop accepting, ask open connections to finish, then drop whatever is left.
         drop(listener);
+        let _ = fs::remove_file(&path);
         stop.cancel();
         let _ = tokio::time::timeout(CLEANUP_WAIT, async {
             while connections.join_next().await.is_some() {}
@@ -292,20 +260,32 @@ impl Server {
     }
 }
 
-/// The JSON body of every error answer: a stable code for scripts and a message for the operator.
-#[derive(Serialize, Deserialize, Debug)]
-struct ErrorBody {
-    code: String,
-    message: String,
+/// Removes a socket file left by an attester that is no longer running. Refuses to remove anything
+/// that is not a socket, or a socket that still accepts connections.
+fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("cannot inspect admin socket path"),
+    };
+    ensure!(
+        metadata.file_type().is_socket(),
+        "admin socket path exists and is not a socket"
+    );
+    match std::os::unix::net::UnixStream::connect(path) {
+        Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+            fs::remove_file(path).context("cannot remove stale admin socket")
+        }
+        Ok(_) => anyhow::bail!("another attester is serving the admin socket"),
+        Err(error) => Err(error).context("cannot check the existing admin socket"),
+    }
 }
 
-/// Why a request failed, each mapped to one HTTP status and error code.
+/// Why a request failed, each mapped to one error code.
 #[derive(Debug)]
 enum AdminError {
-    /// The bearer token is missing or wrong.
-    Unauthorized,
     InvalidInput(&'static str),
-    BodyTooLarge,
+    RequestTooLarge,
     /// The listener is shutting down.
     Stopping,
     /// The attester's inbox is full.
@@ -318,154 +298,117 @@ enum AdminError {
     Release(ReleaseError),
 }
 
-impl IntoResponse for AdminError {
-    fn into_response(self) -> Response {
-        let (status, code, message): (_, _, String) = match self {
-            Self::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "invalid admin credentials".into(),
-            ),
-            Self::InvalidInput(message) => {
-                (StatusCode::BAD_REQUEST, "invalid_input", message.into())
-            }
-            Self::BodyTooLarge => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "body_too_large",
-                "release body exceeds 16 KiB".into(),
-            ),
-            Self::Stopping => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "stopping",
-                "attester is stopping".into(),
-            ),
-            Self::QueueFull => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue_full",
-                "command was not admitted".into(),
-            ),
-            Self::Unavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "attester is unavailable".into(),
-            ),
+impl AdminError {
+    fn body(&self) -> ErrorBody {
+        let (code, message): (_, String) = match self {
+            Self::InvalidInput(message) => ("invalid_input", (*message).into()),
+            Self::RequestTooLarge => ("request_too_large", "request exceeds 16 KiB".into()),
+            Self::Stopping => ("stopping", "attester is stopping".into()),
+            Self::QueueFull => ("queue_full", "command was not admitted".into()),
+            Self::Unavailable => ("unavailable", "attester is unavailable".into()),
             Self::ReplyTimeout => (
-                StatusCode::SERVICE_UNAVAILABLE,
                 "reply_timeout",
                 "outcome may be unknown; list holds again before selecting another release".into(),
             ),
-            Self::Release(ReleaseError::Invalid) => (
-                StatusCode::BAD_REQUEST,
-                "invalid_input",
-                "invalid hold selection".into(),
-            ),
+            Self::Release(ReleaseError::Invalid) => {
+                ("invalid_input", "invalid hold selection".into())
+            }
             Self::Release(ReleaseError::NotHeld(note_id)) => (
-                StatusCode::NOT_FOUND,
                 "hold_not_found",
                 format!("no hold for note {note_id}; list holds to find it"),
             ),
             Self::Release(ReleaseError::Conflict) => (
-                StatusCode::CONFLICT,
                 "hold_changed",
                 "list holds again before selecting a release".into(),
             ),
             Self::Release(ReleaseError::CircleCheck) => (
-                StatusCode::BAD_REQUEST,
                 "circle_check_required",
                 "check Circle and assert non-acceptance for the held withdrawal".into(),
             ),
-            Self::Release(ReleaseError::Store(_)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_failed",
-                "attester store failed".into(),
-            ),
+            Self::Release(ReleaseError::Store(_)) => {
+                ("store_failed", "attester store failed".into())
+            }
         };
-        (
-            status,
-            Json(ErrorBody {
-                code: code.into(),
-                message,
-            }),
-        )
-            .into_response()
-    }
-}
-
-/// Lets a request through only with the admin bearer token, compared in constant time.
-///
-/// Every answer, refused or not, is marked `no-store` so no hold listing is cached.
-async fn authenticate(
-    State(state): State<ServerState>,
-    request: Request<Body>,
-    next: Next,
-) -> Response {
-    let mut candidate = [0; 32];
-    let authenticated = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| value.len() == 64)
-        .is_some_and(|value| hex::decode_to_slice(value, &mut candidate).is_ok())
-        && bool::from(candidate.ct_eq(&state.token));
-    let mut response = if authenticated {
-        next.run(request).await
-    } else {
-        AdminError::Unauthorized.into_response()
-    };
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        "no-store".parse().expect("fixed header"),
-    );
-    response
-}
-
-/// The query of a holds listing.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListQuery {
-    /// The last note ID of the previous page.
-    after: Option<String>,
-}
-
-/// `GET /admin/attester/holds`: one page of holds.
-async fn list(
-    State(state): State<ServerState>,
-    query: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<HoldsPage>, AdminError> {
-    let Query(query) = query.map_err(|_| AdminError::InvalidInput("invalid query"))?;
-    let after = query
-        .after
-        .map(|id| parse_note_id(&id))
-        .transpose()
-        .map_err(|_| AdminError::InvalidInput("invalid page cursor"))?;
-    let (reply, receive) = oneshot::channel();
-    dispatch(&state, Operation::List(after, reply), receive).await
-}
-
-/// `POST /admin/attester/holds/release`: releases one hold selected from the list.
-async fn release(
-    State(state): State<ServerState>,
-    body: Result<Json<ReleaseRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Released>, AdminError> {
-    let Json(request) = body.map_err(|rejection| {
-        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            AdminError::BodyTooLarge
-        } else {
-            AdminError::InvalidInput("invalid release body")
+        ErrorBody {
+            code: code.into(),
+            message,
         }
-    })?;
-    if request.expected_event_seq <= 0 {
-        return Err(AdminError::InvalidInput("invalid hold selection"));
     }
-    let selection = ReleaseSelection {
-        note_id: parse_note_id(&request.note_id)
-            .map_err(|_| AdminError::InvalidInput("invalid hold selection"))?,
-        expected_event_seq: request.expected_event_seq,
-        circle_not_accepted: request.circle_not_accepted,
+}
+
+/// Answers one connection: read its request line, run it, write the reply line.
+async fn serve(state: ServerState, stream: UnixStream) {
+    let (read, mut write) = stream.into_split();
+    let reply = match read_request(&state, read).await {
+        Ok(request) => handle(&state, request).await,
+        Err(error) => encode::<()>(Err(error)),
     };
-    let (reply, receive) = oneshot::channel();
-    dispatch(&state, Operation::Release(selection, reply), receive).await
+    let _ = write.write_all(&reply).await;
+    let _ = write.shutdown().await;
+}
+
+/// Reads one request line, refusing one that is too long or slow to arrive.
+async fn read_request(
+    state: &ServerState,
+    read: tokio::net::unix::OwnedReadHalf,
+) -> Result<Request, AdminError> {
+    let mut line = Vec::new();
+    let mut reader = BufReader::new(read.take(REQUEST_LIMIT as u64 + 1));
+    tokio::select! {
+        () = state.shutdown.cancelled() => return Err(AdminError::Stopping),
+        read = tokio::time::timeout(REQUEST_WAIT, reader.read_until(b'\n', &mut line)) => {
+            read.map_err(|_| AdminError::InvalidInput("request not received in time"))?
+                .map_err(|_| AdminError::InvalidInput("invalid request"))?;
+        }
+    }
+    if line.len() > REQUEST_LIMIT {
+        return Err(AdminError::RequestTooLarge);
+    }
+    serde_json::from_slice(&line).map_err(|_| AdminError::InvalidInput("invalid request"))
+}
+
+/// Validates a request and runs it through the attester.
+async fn handle(state: &ServerState, request: Request) -> Vec<u8> {
+    match request {
+        Request::Holds { after } => {
+            let after = match after.map(|id| parse_note_id(&id)).transpose() {
+                Ok(after) => after,
+                Err(_) => {
+                    return encode::<()>(Err(AdminError::InvalidInput("invalid page cursor")))
+                }
+            };
+            let (reply, receive) = oneshot::channel();
+            encode(dispatch(state, Operation::List(after, reply), receive).await)
+        }
+        Request::Release {
+            note_id,
+            expected_event_seq,
+            circle_not_accepted,
+        } => {
+            let note_id = match parse_note_id(&note_id) {
+                Ok(note_id) if expected_event_seq > 0 => note_id,
+                _ => return encode::<()>(Err(AdminError::InvalidInput("invalid hold selection"))),
+            };
+            let selection = ReleaseSelection {
+                note_id,
+                expected_event_seq,
+                circle_not_accepted,
+            };
+            let (reply, receive) = oneshot::channel();
+            encode(dispatch(state, Operation::Release(selection, reply), receive).await)
+        }
+    }
+}
+
+/// Encodes a result as one reply line.
+fn encode<T: Serialize>(result: Result<T, AdminError>) -> Vec<u8> {
+    let reply = match result {
+        Ok(value) => Reply::Ok(value),
+        Err(error) => Reply::Error(error.body()),
+    };
+    let mut line = serde_json::to_vec(&reply).expect("admin replies serialize");
+    line.push(b'\n');
+    line
 }
 
 /// Queues an operation for the attester and waits up to [`COMMAND_WAIT`] for its result.
@@ -473,11 +416,11 @@ async fn release(
 /// A full inbox is refused at once rather than waited on. A timeout leaves the outcome unknown:
 /// the attester drops a command whose deadline has passed, but one it has already started still
 /// commits.
-async fn dispatch<T: Serialize>(
+async fn dispatch<T>(
     state: &ServerState,
     operation: Operation,
     receive: oneshot::Receiver<Result<T, ReleaseError>>,
-) -> Result<Json<T>, AdminError> {
+) -> Result<T, AdminError> {
     if state.shutdown.is_cancelled() {
         return Err(AdminError::Stopping);
     }
@@ -498,7 +441,6 @@ async fn dispatch<T: Serialize>(
         .await
         .map_err(|_| AdminError::ReplyTimeout)?
         .map_err(|_| AdminError::Unavailable)?
-        .map(Json)
         .map_err(AdminError::Release)
 }
 
@@ -506,17 +448,19 @@ async fn dispatch<T: Serialize>(
 mod tests {
     use super::*;
 
+    fn error_code(line: &[u8]) -> String {
+        match serde_json::from_slice::<Reply<serde_json::Value>>(line).unwrap() {
+            Reply::Error(error) => error.code,
+            Reply::Ok(value) => panic!("expected an error, got {value}"),
+        }
+    }
+
     /// A selection naming a note with no hold is answered as a hold that is not there, apart from
     /// a malformed selection and from a hold that changed.
-    #[tokio::test]
-    async fn a_note_without_a_hold_is_not_found() {
+    #[test]
+    fn a_note_without_a_hold_is_not_found() {
         let note_id = parse_note_id(&format!("0x{}", "ab".repeat(32))).unwrap();
-        let response = AdminError::Release(ReleaseError::NotHeld(note_id)).into_response();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+        let error = AdminError::Release(ReleaseError::NotHeld(note_id)).body();
         assert_eq!(error.code, "hold_not_found");
         assert_eq!(
             error.message,
@@ -525,40 +469,51 @@ mod tests {
     }
 
     #[test]
-    fn token_and_listener_inputs_are_bounded() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        for value in ["ab".repeat(32), format!("{}\n", "AB".repeat(32))] {
-            std::fs::write(file.path(), value).unwrap();
-            assert_eq!(load_token(file.path()).unwrap(), [0xab; 32]);
-        }
-        for value in [
-            String::new(),
-            "ab".repeat(31),
-            "gh".repeat(32),
-            format!("{}\r\n", "ab".repeat(32)),
-            "ab".repeat(1000),
+    fn requests_are_tagged_and_closed() {
+        for line in [
+            r#"{"op":"holds"}"#,
+            r#"{"op":"holds","after":null}"#,
+            r#"{"op":"release","note_id":"0x00","expected_event_seq":1}"#,
         ] {
-            std::fs::write(file.path(), value).unwrap();
-            assert!(load_token(file.path()).is_err());
+            assert!(serde_json::from_str::<Request>(line).is_ok(), "{line}");
         }
-        for value in ["127.0.0.1:8090", "[::1]:8090"] {
-            assert!(parse_listen(value).is_ok());
-        }
-        for value in [
-            "0.0.0.0:8090",
-            "localhost:8090",
-            "[::]:8090",
-            "192.0.2.1:8090",
+        for line in [
+            r#"{"op":"delete"}"#,
+            r#"{"holds":[]}"#,
+            r#"{"op":"holds","extra":true}"#,
+            r#"{"op":"release","note_id":"0x00","expected_event_seq":1,"extra":true}"#,
         ] {
-            assert!(parse_listen(value).is_err());
+            assert!(serde_json::from_str::<Request>(line).is_err(), "{line}");
         }
+    }
+
+    #[tokio::test]
+    async fn only_a_stale_socket_is_replaced_and_the_new_one_is_private() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("admin.sock");
+        let config = AdminConfig {
+            socket: path.clone(),
+        };
+        fs::write(&path, b"not a socket").unwrap();
+        assert!(Server::bind(&config).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"not a socket");
+        fs::remove_file(&path).unwrap();
+
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let (live, _receiver) = Server::bind(&config).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(Server::bind(&config).is_err(), "a live socket is kept");
+        assert!(path.exists());
+        drop(live);
     }
 
     #[tokio::test(start_paused = true)]
     async fn invalid_selections_are_not_queued_and_queue_failures_are_distinct() {
         let (commands, mut inbox) = mpsc::channel(1);
         let state = ServerState {
-            token: [0; 32],
             commands,
             shutdown: CancellationToken::new(),
         };
@@ -569,23 +524,16 @@ mod tests {
             (format!("0x{}", "AB".repeat(32)), 1),
             ("invalid".into(), 1),
         ] {
-            let response = release(
-                State(state.clone()),
-                Ok(Json(ReleaseRequest {
+            let line = handle(
+                &state,
+                Request::Release {
                     note_id,
                     expected_event_seq,
                     circle_not_accepted: false,
-                })),
+                },
             )
-            .await
-            .into_response();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            let body = axum::body::to_bytes(response.into_body(), 1024)
-                .await
-                .unwrap();
-            let error: ErrorBody = serde_json::from_slice(&body).unwrap();
-            assert_eq!(error.code, "invalid_input");
-            assert_eq!(error.message, "invalid hold selection");
+            .await;
+            assert_eq!(error_code(&line), "invalid_input");
             assert!(matches!(
                 inbox.try_recv(),
                 Err(mpsc::error::TryRecvError::Empty)
@@ -599,41 +547,12 @@ mod tests {
                 deadline: Instant::now() + COMMAND_WAIT,
             })
             .unwrap_or_else(|_| panic!());
-        let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive)
-            .await
-            .into_response();
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ErrorBody>(&body).unwrap().code,
-            "queue_full"
-        );
+        let list = || handle(&state, Request::Holds { after: None });
+        assert_eq!(error_code(&list().await), "queue_full");
         inbox.recv().await.unwrap();
-        let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive)
-            .await
-            .into_response();
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ErrorBody>(&body).unwrap().code,
-            "reply_timeout"
-        );
+        assert_eq!(error_code(&list().await), "reply_timeout");
         assert!(inbox.recv().await.unwrap().abandoned());
         drop(inbox);
-        let (reply, receive) = oneshot::channel::<Result<HoldsPage, ReleaseError>>();
-        let response = dispatch(&state, Operation::List(None, reply), receive)
-            .await
-            .into_response();
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ErrorBody>(&body).unwrap().code,
-            "unavailable"
-        );
+        assert_eq!(error_code(&list().await), "unavailable");
     }
 }

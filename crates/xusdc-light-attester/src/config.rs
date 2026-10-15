@@ -8,7 +8,7 @@ use std::time::Duration;
 use alloy_primitives::Address;
 use anyhow::{anyhow, bail, ensure, Context};
 use clap::builder::NonEmptyStringValueParser;
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand};
 use miden_client::rpc::Endpoint;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
@@ -22,37 +22,23 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Signing provider; only aws-kms is supported.
-    #[arg(long, value_enum)]
-    signer_provider: SignerProvider,
+    /// AWS region containing both KMS keys.
+    #[arg(long, value_parser = NonEmptyStringValueParser::new())]
+    aws_kms_region: String,
 
-    /// AWS region containing both KMS keys; required for aws-kms only.
-    #[arg(
-        long,
-        required_if_eq("signer_provider", "aws-kms"),
-        value_parser = NonEmptyStringValueParser::new()
-    )]
-    aws_kms_region: Option<String>,
-
-    /// The two immutable KMS key ARNs, one for each signer, in either order; required for aws-kms
-    /// only.
+    /// The two immutable KMS key ARNs, one for each signer, in either order.
     #[arg(
         long,
         num_args = 2,
         value_names = ["ARN1", "ARN2"],
         action = ArgAction::Set,
-        required_if_eq("signer_provider", "aws-kms")
+        required = true
     )]
     aws_kms_key_arn: Vec<String>,
 
-    /// Deadline for each KMS operation, including retries (for example, "10s"); required for
-    /// aws-kms only.
-    #[arg(
-        long,
-        value_parser = humantime::parse_duration,
-        required_if_eq("signer_provider", "aws-kms")
-    )]
-    aws_kms_operation_timeout: Option<Duration>,
+    /// Deadline for each KMS operation, including retries (for example, "10s").
+    #[arg(long, value_parser = humantime::parse_duration)]
+    aws_kms_operation_timeout: Duration,
 
     /// Miden node RPC URL, for example https://rpc.devnet.miden.io
     #[arg(long)]
@@ -107,12 +93,14 @@ pub struct Cli {
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
 
-    /// Block at which the faucet was deployed, where a new store starts scanning; an existing store
-    /// keeps the scan start it was created with.
+    /// Block at which the faucet was deployed. It is only checked against the trusted anchor: the
+    /// attester refuses to start with an anchor after it, which would miss the burn notes created
+    /// in between.
     #[arg(long)]
     faucet_deployment_block: u32,
 
-    /// Out-of-band verified anchor block, at deployment or shortly before it, never after.
+    /// Out-of-band verified anchor block, where a new store starts scanning: the block the faucet
+    /// was deployed in or one shortly before it, never after.
     #[arg(long)]
     trusted_anchor_block: u32,
 
@@ -178,40 +166,29 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum SignerProvider {
-    AwsKms,
-}
-
-/// Validated provider settings. No credentials or private keys are configuration fields.
+/// The validated AWS KMS settings of the two signers. No credentials or private keys are
+/// configuration fields.
 #[derive(Debug)]
-pub enum SignerConfig {
-    AwsKms {
-        region: String,
-        key_arns: [String; 2],
-        operation_timeout: Duration,
-    },
+pub struct KmsConfig {
+    pub region: String,
+    pub key_arns: [String; 2],
+    pub operation_timeout: Duration,
 }
 
-impl SignerConfig {
+impl KmsConfig {
     fn from_cli(cli: &Cli) -> anyhow::Result<Self> {
-        let SignerProvider::AwsKms = cli.signer_provider;
-        let (Some(region), [first, second], Some(operation_timeout)) = (
-            &cli.aws_kms_region,
-            cli.aws_kms_key_arn.as_slice(),
-            cli.aws_kms_operation_timeout,
-        ) else {
-            bail!("the AWS KMS options are incomplete");
+        let [first, second] = cli.aws_kms_key_arn.as_slice() else {
+            bail!("exactly two KMS key ARNs are required");
         };
         ensure!(first != second, "the two KMS key ARNs must differ");
         ensure!(
-            !operation_timeout.is_zero(),
+            !cli.aws_kms_operation_timeout.is_zero(),
             "AWS KMS operation timeout must be greater than zero"
         );
-        Ok(Self::AwsKms {
-            region: region.clone(),
+        Ok(Self {
+            region: cli.aws_kms_region.clone(),
             key_arns: [first.clone(), second.clone()],
-            operation_timeout,
+            operation_timeout: cli.aws_kms_operation_timeout,
         })
     }
 }
@@ -229,7 +206,7 @@ pub(crate) struct CctpForwarding {
 
 #[derive(Debug)]
 pub struct Config {
-    signer: SignerConfig,
+    kms: KmsConfig,
     miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
@@ -238,7 +215,6 @@ pub struct Config {
     max_withdrawal_fee_bps: u64,
     cctp_forwarding: CctpForwarding,
     poll_interval: Duration,
-    faucet_deployment_block: BlockNumber,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
@@ -251,7 +227,7 @@ impl TryFrom<Cli> for Config {
     type Error = anyhow::Error;
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
-        let signer = SignerConfig::from_cli(&cli)?;
+        let kms = KmsConfig::from_cli(&cli)?;
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
@@ -290,6 +266,13 @@ impl TryFrom<Cli> for Config {
             bail!("exactly two expected signing public keys are required");
         }
 
+        // A store scans from its anchor, so an anchor after the faucet's deployment would never
+        // see the burn notes created before it.
+        ensure!(
+            cli.trusted_anchor_block <= cli.faucet_deployment_block,
+            "trusted anchor must not be after the faucet deployment block"
+        );
+
         let faucet_account_id = parse_faucet_account_id(&cli.faucet_account_id)?;
         let trusted_anchor_commitment =
             parse_trusted_anchor_commitment(&cli.trusted_anchor_commitment)?;
@@ -322,7 +305,7 @@ impl TryFrom<Cli> for Config {
         }
 
         Ok(Self {
-            signer,
+            kms,
             miden_rpc_url,
             circle_request_timeout: cli.request_timeout,
             faucet_account_id,
@@ -331,7 +314,6 @@ impl TryFrom<Cli> for Config {
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             cctp_forwarding,
             poll_interval: cli.poll_interval,
-            faucet_deployment_block: BlockNumber::from(cli.faucet_deployment_block),
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
@@ -342,8 +324,8 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
-    pub fn signer(&self) -> &SignerConfig {
-        &self.signer
+    pub fn kms(&self) -> &KmsConfig {
+        &self.kms
     }
 
     pub fn miden_rpc_url(&self) -> &Endpoint {
@@ -376,10 +358,6 @@ impl Config {
 
     pub(crate) fn poll_interval(&self) -> Duration {
         self.poll_interval
-    }
-
-    pub(crate) fn faucet_deployment_block(&self) -> BlockNumber {
-        self.faucet_deployment_block
     }
 
     pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {

@@ -12,25 +12,29 @@ use crate::attester::{Attester, DiscoverError};
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::ScanLimits;
 use crate::config::Config;
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CONFLICT, INVALID};
+use crate::store::{Store, TrustedAnchor, CONFLICT, INVALID};
 
 use super::startup::{start as start_attester, TestArgs};
 use super::support::{
-    development_pair, faucet_account_id, note, ready_circle, scan_limits, test_note, transaction,
-    BlockFactory, ChainControls, TestChain,
+    development_pair, faucet_account_id, note, ready_circle, saved_checkpoint, scan_limits,
+    test_note, transaction, BlockFactory, ChainControls, TestChain,
 };
 
 const OTHER_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
 pub(super) fn test_args(
     tempdir: &tempfile::TempDir,
-    deployment_block: u32,
     anchor: &SignedBlock,
     finality_depth: u32,
 ) -> TestArgs {
-    let mut args = TestArgs::new(tempdir, deployment_block);
+    let mut args = TestArgs::new(tempdir);
     args.replace("--request-timeout", "100ms");
     args.replace("--poll-interval", "100ms");
     args.replace("--faucet-account-id", faucet_account_id().to_hex());
+    // The tests deploy the faucet at their anchor.
+    args.replace(
+        "--faucet-deployment-block",
+        anchor.header().block_num().as_u32().to_string(),
+    );
     args.replace(
         "--trusted-anchor-block",
         anchor.header().block_num().as_u32().to_string(),
@@ -49,21 +53,19 @@ pub(super) fn test_args(
 
 pub(super) fn test_config(
     tempdir: &tempfile::TempDir,
-    deployment_block: u32,
     anchor: &SignedBlock,
     finality_depth: u32,
 ) -> Config {
-    test_args(tempdir, deployment_block, anchor, finality_depth).load()
+    test_args(tempdir, anchor, finality_depth).load()
 }
 
 pub(super) async fn start(
     tempdir: &tempfile::TempDir,
-    deployment_block: u32,
     blocks: Vec<SignedBlock>,
     scan_limits: ScanLimits,
 ) -> (Attester, ChainControls) {
     let anchor = blocks[0].clone();
-    let config = test_config(tempdir, deployment_block, &anchor, 1);
+    let config = test_config(tempdir, &anchor, 1);
     let (chain, controls) = TestChain::new(blocks, scan_limits);
     let attester = start_attester(config, chain, ready_circle()).await.unwrap();
     (attester, controls)
@@ -76,8 +78,7 @@ async fn burns_are_discovered_safely() {
     let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
 
-    let before_deployment = note(BurnNote::script(), NoteType::Public, 1, 1);
-    factory.push(vec![before_deployment.output], Vec::new());
+    factory.push(Vec::new(), Vec::new());
 
     let burn_one = note(BurnNote::script(), NoteType::Public, 7, 2);
     let burn_two = note(BurnNote::script(), NoteType::Public, 8, 3);
@@ -170,7 +171,6 @@ async fn burns_are_discovered_safely() {
             malformed_payload.nullifier,
         ],
     );
-    let consuming_tx_id = consuming_tx.id();
     factory.push(vec![later_burn.output], vec![consuming_tx]);
     factory.push(
         Vec::new(),
@@ -180,7 +180,7 @@ async fn burns_are_discovered_safely() {
     factory.push(vec![pending.output], Vec::new());
 
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, controls) = start(&tempdir, 2, factory.blocks(), scan_limits(6, 4)).await;
+    let (mut attester, controls) = start(&tempdir, factory.blocks(), scan_limits(6, 4)).await;
     attester.discover_burns().await.unwrap();
 
     assert_eq!(
@@ -188,10 +188,8 @@ async fn burns_are_discovered_safely() {
         (0u32..=6).map(BlockNumber::from).collect::<Vec<_>>()
     );
     assert_eq!(*controls.scan_limit_requests.lock().unwrap(), 1);
-    let state = attester.store.scan_state().unwrap();
-    assert_eq!(state.cursor.next_block, BlockNumber::from(7u32));
     assert_eq!(
-        state.authenticated_parent.unwrap().block_num(),
+        saved_checkpoint(&attester.store).block_num(),
         BlockNumber::from(6u32)
     );
 
@@ -213,8 +211,6 @@ async fn burns_are_discovered_safely() {
         .unwrap();
     burns.sort_by_key(DiscoveredBurn::note_id);
     assert_eq!(burns.len(), 2);
-    assert_eq!(burns[0].burn_tx_id(), consuming_tx_id);
-    assert_eq!(burns[1].burn_tx_id(), consuming_tx_id);
     assert_eq!(
         burns
             .iter()
@@ -236,7 +232,7 @@ async fn burns_are_discovered_safely() {
 
     drop(attester);
     let (mut attester, restart_controls) =
-        start(&tempdir, 2, factory.blocks(), scan_limits(6, 5)).await;
+        start(&tempdir, factory.blocks(), scan_limits(6, 5)).await;
     assert_eq!(
         *restart_controls.requests.lock().unwrap(),
         [BlockNumber::GENESIS, BlockNumber::from(6u32)]
@@ -251,8 +247,8 @@ async fn burns_are_discovered_safely() {
         ]
     );
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(7u32)
+        saved_checkpoint(&attester.store).block_num(),
+        BlockNumber::from(6u32)
     );
     assert_eq!(attester.store.candidates().unwrap().len(), 1);
     let burns = attester
@@ -269,7 +265,7 @@ async fn burns_are_discovered_safely() {
     factory.push(Vec::new(), vec![anchor_consumption]);
     factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 0, factory.blocks(), scan_limits(2, 1)).await;
+    let (mut attester, _) = start(&tempdir, factory.blocks(), scan_limits(2, 1)).await;
     attester.discover_burns().await.unwrap();
     assert_eq!(
         attester
@@ -294,7 +290,7 @@ async fn burns_are_discovered_safely() {
     factory.push(Vec::new(), Vec::new());
     factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = test_config(&tempdir, 1, &factory.blocks()[0], 2);
+    let config = test_config(&tempdir, &factory.blocks()[0], 2);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(3, 3));
     let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
     attester.discover_burns().await.unwrap();
@@ -329,8 +325,8 @@ async fn burns_are_discovered_safely() {
     assert_eq!(ready[0].note_id(), burn.id);
 }
 
-/// Proves candidate insertion, burn promotion, cursor movement, and authenticated-parent updates
-/// share one transaction, including when repeated consumption evidence rolls the batch back.
+/// Proves candidate insertion, burn promotion and the checkpoint share one transaction, including
+/// when repeated consumption evidence rolls the batch back.
 #[test]
 fn burns_and_scan_position_are_saved_together() {
     let mut factory = BlockFactory::new();
@@ -342,15 +338,7 @@ fn burns_and_scan_position_are_saved_together() {
         block_num: BlockNumber::GENESIS,
         commitment: anchor.header().commitment(),
     };
-    let mut store = Store::open_or_create(
-        &path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
-        trusted_anchor,
-    )
-    .unwrap();
+    let mut store = Store::open_or_create(&path, faucet_account_id(), trusted_anchor).unwrap();
 
     let burn_note = note(BurnNote::script(), NoteType::Public, 1, 20);
     let candidate = BurnCandidate::new(
@@ -359,18 +347,8 @@ fn burns_and_scan_position_are_saved_together() {
         faucet_account_id(),
     )
     .unwrap();
-    let after_anchor = ScanState {
-        cursor: ScanCursor {
-            next_block: BlockNumber::from(1u32),
-        },
-        authenticated_parent: Some(anchor.header().clone()),
-    };
-    let after_child = ScanState {
-        cursor: ScanCursor {
-            next_block: BlockNumber::from(2u32),
-        },
-        authenticated_parent: Some(child.header().clone()),
-    };
+    let after_anchor = anchor.header().clone();
+    let after_child = child.header().clone();
     assert!(store
         .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
         .unwrap()
@@ -386,24 +364,16 @@ fn burns_and_scan_position_are_saved_together() {
         faucet_account_id(),
     )
     .unwrap();
-    let tx = transaction(faucet_account_id(), &[candidate.nullifier()]);
-    let burn = candidate
-        .clone()
-        .into_discovered(BlockNumber::from(1u32), tx.id());
+    let burn = candidate.clone().into_discovered(BlockNumber::from(1u32));
     let conflicting_burn = DiscoveredBurn::new(
         burn.note().clone(),
         burn.creation_block(),
         burn.consumption_block(),
-        transaction(
-            faucet_account_id(),
-            &[candidate.nullifier(), second_candidate.nullifier()],
-        )
-        .id(),
         faucet_account_id(),
     )
     .unwrap();
 
-    // The second consumption cannot replace the first one's evidence. The candidate inserted in
+    // A second consumption of the note cannot be recorded beside the first. The candidate inserted in
     // the same batch and the first promotion roll back with it.
     assert_eq!(
         store
@@ -416,30 +386,16 @@ fn burns_and_scan_position_are_saved_together() {
             .to_string(),
         CONFLICT
     );
-    assert_eq!(store.scan_state().unwrap(), after_anchor.clone());
+    assert_eq!(saved_checkpoint(&store), after_anchor.clone());
     assert_eq!(store.candidates().unwrap(), vec![candidate.clone()]);
     assert!(store.discovered_burns().unwrap().is_empty());
 
     store
         .save_scan_progress(&[], std::slice::from_ref(&burn), &after_child)
         .unwrap();
-    assert_eq!(store.scan_state().unwrap(), after_child.clone());
+    assert_eq!(saved_checkpoint(&store), after_child.clone());
     assert!(store.candidates().unwrap().is_empty());
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
-    let invalid_parent = ScanState {
-        cursor: ScanCursor {
-            next_block: BlockNumber::from(3u32),
-        },
-        authenticated_parent: after_child.authenticated_parent.clone(),
-    };
-    assert_eq!(
-        store
-            .save_scan_progress(&[], &[], &invalid_parent)
-            .unwrap_err()
-            .to_string(),
-        INVALID
-    );
-    assert_eq!(store.scan_state().unwrap(), after_child.clone());
 
     assert_eq!(
         store
@@ -452,7 +408,7 @@ fn burns_and_scan_position_are_saved_together() {
             .to_string(),
         CONFLICT
     );
-    assert_eq!(store.scan_state().unwrap(), after_child.clone());
+    assert_eq!(saved_checkpoint(&store), after_child.clone());
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     assert!(store.candidates().unwrap().is_empty());
     assert_eq!(
@@ -463,22 +419,14 @@ fn burns_and_scan_position_are_saved_together() {
     );
 
     drop(store);
-    let store = Store::open_or_create(
-        &path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
-        trusted_anchor,
-    )
-    .unwrap();
+    let store = Store::open_or_create(&path, faucet_account_id(), trusted_anchor).unwrap();
     assert_eq!(store.discovered_burns().unwrap(), vec![burn.clone()]);
     let reopened = &store.discovered_burns().unwrap()[0];
     assert_eq!(reopened.note_id(), burn.note_id());
     assert_eq!(reopened.note(), burn.note());
     assert_eq!(reopened.items(), burn.items());
     assert_eq!(reopened.amount(), burn.amount());
-    assert_eq!(store.scan_state().unwrap(), after_child);
+    assert_eq!(saved_checkpoint(&store), after_child);
     assert_eq!(
         store
             .burns_ready_for_withdrawal(BlockNumber::MAX, 0)
@@ -492,17 +440,10 @@ fn burns_and_scan_position_are_saved_together() {
         ..trusted_anchor
     };
     assert_eq!(
-        Store::open_or_create(
-            &path,
-            faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::GENESIS,
-            },
-            changed_anchor,
-        )
-        .err()
-        .unwrap()
-        .to_string(),
+        Store::open_or_create(&path, faucet_account_id(), changed_anchor,)
+            .err()
+            .unwrap()
+            .to_string(),
         "configured trusted anchor differs from the store"
     );
 
@@ -512,38 +453,24 @@ fn burns_and_scan_position_are_saved_together() {
         .unwrap();
     drop(connection);
     assert_eq!(
-        Store::open_or_create(
-            &path,
-            faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::GENESIS,
-            },
-            trusted_anchor,
-        )
-        .err()
-        .unwrap()
-        .to_string(),
+        Store::open_or_create(&path, faucet_account_id(), trusted_anchor,)
+            .err()
+            .unwrap()
+            .to_string(),
         INVALID
     );
 
     // The saved header is the next run's trust base, so one that does not decode blocks startup.
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
-        .execute("UPDATE attester_state SET authenticated_parent = x''", [])
+        .execute("UPDATE attester_state SET checkpoint = x''", [])
         .unwrap();
     drop(connection);
     assert_eq!(
-        Store::open_or_create(
-            &path,
-            faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::GENESIS,
-            },
-            trusted_anchor,
-        )
-        .err()
-        .unwrap()
-        .to_string(),
+        Store::open_or_create(&path, faucet_account_id(), trusted_anchor,)
+            .err()
+            .unwrap()
+            .to_string(),
         INVALID
     );
 
@@ -552,9 +479,6 @@ fn burns_and_scan_position_are_saved_together() {
         Store::open_or_create(
             &malformed_candidate_path,
             faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::GENESIS,
-            },
             trusted_anchor,
         )
         .unwrap(),
@@ -562,8 +486,8 @@ fn burns_and_scan_position_are_saved_together() {
     let connection = rusqlite::Connection::open(&malformed_candidate_path).unwrap();
     connection
         .execute(
-            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
-             VALUES (X'00', X'01', X'02', 0, 'CANDIDATE')",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block)
+             VALUES (X'00', X'01', X'02', 0)",
             [],
         )
         .unwrap();
@@ -572,9 +496,6 @@ fn burns_and_scan_position_are_saved_together() {
         Store::open_or_create(
             &malformed_candidate_path,
             faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::GENESIS,
-            },
             trusted_anchor,
         )
         .err()
@@ -583,32 +504,21 @@ fn burns_and_scan_position_are_saved_together() {
         INVALID
     );
 
-    let predeployment_path = tempdir.path().join("predeployment.sqlite3");
-    let mut store = Store::open_or_create(
-        &predeployment_path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::from(2u32),
-        },
-        trusted_anchor,
-    )
-    .unwrap();
+    // A note cannot be saved with a block that comes before the one it was created in.
+    let later_note_path = tempdir.path().join("later-note.sqlite3");
+    let mut store =
+        Store::open_or_create(&later_note_path, faucet_account_id(), trusted_anchor).unwrap();
     assert_eq!(
         store
             .save_scan_progress(
                 &[BurnCandidate::new(
                     candidate.note().clone(),
-                    BlockNumber::from(1u32),
+                    BlockNumber::from(3u32),
                     faucet_account_id(),
                 )
                 .unwrap()],
                 &[],
-                &ScanState {
-                    cursor: ScanCursor {
-                        next_block: BlockNumber::from(3u32),
-                    },
-                    authenticated_parent: Some(BlockHeader::mock(2u32, None, None, &[])),
-                },
+                &BlockHeader::mock(2u32, None, None, &[]),
             )
             .unwrap_err()
             .to_string(),
@@ -617,7 +527,7 @@ fn burns_and_scan_position_are_saved_together() {
 }
 
 /// Rejects missing, skipped, body-inconsistent, badly signed, and regressed chains. A bad block
-/// never advances the cursor, while earlier verified blocks remain saved for the next attempt.
+/// never advances the checkpoint, while earlier verified blocks remain saved for the next attempt.
 #[tokio::test]
 async fn bad_blocks_are_rejected() {
     enum Expected {
@@ -630,7 +540,7 @@ async fn bad_blocks_are_rejected() {
     let mut served_factory = BlockFactory::new();
     let served_anchor = served_factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = test_config(&tempdir, 0, &configured_anchor, 1);
+    let config = test_config(&tempdir, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![served_anchor], scan_limits(1, 0));
     assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
@@ -644,18 +554,17 @@ async fn bad_blocks_are_rejected() {
     );
     let tampered_anchor = SignedBlock::new_unchecked(header, tampered_body, signatures);
     let tempdir = tempfile::tempdir().unwrap();
-    let config = test_config(&tempdir, 0, &configured_anchor, 1);
+    let config = test_config(&tempdir, &configured_anchor, 1);
     let (chain, _) = TestChain::new(vec![tampered_anchor], scan_limits(1, 0));
     assert!(start_attester(config, chain, ready_circle()).await.is_err());
 
     let cases = [
-        ("missing", 0u8, 1u32, Expected::ReadFailure),
-        ("skipped", 1u8, 1u32, Expected::Divergence),
-        ("bad body", 2u8, 1u32, Expected::Divergence),
-        ("bad signature", 3u8, 1u32, Expected::Divergence),
-        ("bad bootstrap body", 4u8, 2u32, Expected::Divergence),
+        ("missing", 0u8, Expected::ReadFailure),
+        ("skipped", 1u8, Expected::Divergence),
+        ("bad body", 2u8, Expected::Divergence),
+        ("bad signature", 3u8, Expected::Divergence),
     ];
-    for (name, mutation, deployment_block, expected) in cases {
+    for (name, mutation, expected) in cases {
         let mut factory = BlockFactory::new();
         factory.push(Vec::new(), Vec::new());
         factory.push(Vec::new(), Vec::new());
@@ -665,7 +574,7 @@ async fn bad_blocks_are_rejected() {
         match mutation {
             0 => missing = true,
             1 => blocks[1] = blocks[2].clone(),
-            2 | 4 => {
+            2 => {
                 let (header, _, signatures) = blocks[1].clone().into_parts();
                 let injected = note(BurnNote::script(), NoteType::Public, 1, 30);
                 let body = BlockBody::new_unchecked(
@@ -689,7 +598,7 @@ async fn bad_blocks_are_rejected() {
 
         let tempdir = tempfile::tempdir().unwrap();
         let anchor = blocks[0].clone();
-        let config = test_config(&tempdir, deployment_block, &anchor, 1);
+        let config = test_config(&tempdir, &anchor, 1);
         let (chain, _) = TestChain::new(blocks, scan_limits(3, 2));
         let chain = if missing { chain.missing_at(1) } else { chain };
         let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
@@ -703,13 +612,12 @@ async fn bad_blocks_are_rejected() {
                 assert!(matches!(error, DiscoverError::ChainDiverged), "{name}")
             }
         }
-        let state = attester.store.scan_state().unwrap();
+        // The anchor stays the checkpoint.
         assert_eq!(
-            state.cursor.next_block,
-            BlockNumber::from(deployment_block),
+            &saved_checkpoint(&attester.store),
+            anchor.header(),
             "{name}"
         );
-        assert!(state.authenticated_parent.is_none(), "{name}");
         assert!(attester.store.candidates().unwrap().is_empty(), "{name}");
         assert!(
             attester.store.discovered_burns().unwrap().is_empty(),
@@ -726,19 +634,14 @@ async fn bad_blocks_are_rejected() {
     let (header, body, _) = blocks[2].clone().into_parts();
     blocks[2] = SignedBlock::new_unchecked(header, body, BlockSignatures::new(Vec::new()).unwrap());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, blocks, scan_limits(3, 2)).await;
+    let (mut attester, _) = start(&tempdir, blocks, scan_limits(3, 2)).await;
     assert!(matches!(
         attester.discover_burns().await,
         Err(DiscoverError::ChainDiverged)
     ));
     assert_eq!(
-        attester.store.scan_state().unwrap(),
-        ScanState {
-            cursor: ScanCursor {
-                next_block: BlockNumber::from(2u32),
-            },
-            authenticated_parent: Some(saved_block.header().clone()),
-        }
+        saved_checkpoint(&attester.store),
+        saved_block.header().clone()
     );
     assert_eq!(
         attester.store.candidates().unwrap()[0].note(),
@@ -765,7 +668,7 @@ async fn bad_blocks_are_rejected() {
             ));
         }
         let tempdir = tempfile::tempdir().unwrap();
-        let config = test_config(&tempdir, 1, &blocks[0], 10);
+        let config = test_config(&tempdir, &blocks[0], 10);
         let (chain, _) = TestChain::new(blocks, scan_limits(12, 12));
         let mut attester = start_attester(config, chain, ready_circle()).await.unwrap();
         let error = attester
@@ -777,15 +680,7 @@ async fn bad_blocks_are_rejected() {
         } else {
             assert!(matches!(error, DiscoverError::Chain(_)));
         }
-        assert_eq!(
-            attester.store.scan_state().unwrap(),
-            ScanState {
-                cursor: ScanCursor {
-                    next_block: 3u32.into()
-                },
-                authenticated_parent: Some(consumed.header().clone()),
-            }
-        );
+        assert_eq!(saved_checkpoint(&attester.store), consumed.header().clone());
         assert_eq!(
             attester.store.discovered_burns().unwrap()[0].note_id(),
             burn.id
@@ -808,22 +703,21 @@ async fn bad_blocks_are_rejected() {
     fork_factory.push(vec![fork_note.output], Vec::new());
     fork_factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
+    let (mut attester, controls) = start(&tempdir, factory.blocks(), scan_limits(0, 0)).await;
     let request_count = controls.requests.lock().unwrap().len();
+    // With no block past the anchor, discovery only compares that checkpoint with the node.
     attester.discover_burns().await.unwrap();
-    assert_eq!(controls.requests.lock().unwrap().len(), request_count);
     assert_eq!(
-        attester.store.scan_state().unwrap(),
-        ScanState {
-            cursor: ScanCursor {
-                next_block: BlockNumber::from(1u32),
-            },
-            authenticated_parent: None,
-        }
+        controls.requests.lock().unwrap()[request_count..],
+        [BlockNumber::GENESIS]
+    );
+    assert_eq!(
+        saved_checkpoint(&attester.store),
+        factory.blocks()[0].header().clone()
     );
 
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(3, 3)).await;
+    let (mut attester, controls) = start(&tempdir, factory.blocks(), scan_limits(3, 3)).await;
     attester.discover_burns().await.unwrap();
     controls.requests.lock().unwrap().clear();
     *controls.scan_limits.lock().unwrap() = scan_limits(3, 0);
@@ -833,14 +727,14 @@ async fn bad_blocks_are_rejected() {
         [BlockNumber::from(3u32)]
     );
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(4u32)
+        saved_checkpoint(&attester.store).block_num(),
+        BlockNumber::from(3u32)
     );
 
-    let saved_state = attester.store.scan_state().unwrap();
+    let saved_state = saved_checkpoint(&attester.store);
     drop(attester);
     let blocks = factory.blocks();
-    let config = test_config(&tempdir, 1, &blocks[0], 1);
+    let config = test_config(&tempdir, &blocks[0], 1);
     let (chain, _) = TestChain::new(fork_factory.blocks(), scan_limits(3, 0));
     let error = Attester::start(
         config,
@@ -856,7 +750,7 @@ async fn bad_blocks_are_rejected() {
         Some(DiscoverError::ChainDiverged)
     ));
 
-    let config = test_config(&tempdir, 1, &blocks[0], 1);
+    let config = test_config(&tempdir, &blocks[0], 1);
     let (chain, _) = TestChain::new(blocks.clone(), scan_limits(3, 0));
     let error = Attester::start(
         config,
@@ -872,7 +766,7 @@ async fn bad_blocks_are_rejected() {
         Some(DiscoverError::Chain(_))
     ));
 
-    let config = test_config(&tempdir, 1, &blocks[0], 1);
+    let config = test_config(&tempdir, &blocks[0], 1);
     let (chain, _) = TestChain::new(blocks, scan_limits(3, 0));
     let attester = Attester::start(
         config,
@@ -882,7 +776,7 @@ async fn bad_blocks_are_rejected() {
     )
     .await
     .unwrap();
-    assert_eq!(attester.store.scan_state().unwrap(), saved_state);
+    assert_eq!(saved_checkpoint(&attester.store), saved_state);
     assert!(attester.store.candidates().unwrap().is_empty());
 }
 
@@ -901,13 +795,13 @@ async fn repeated_note_is_skipped() {
     );
     factory.push(vec![burn.output], Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(4, 4)).await;
+    let (mut attester, _) = start(&tempdir, factory.blocks(), scan_limits(4, 4)).await;
 
     attester.discover_burns().await.unwrap();
 
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(5u32)
+        saved_checkpoint(&attester.store).block_num(),
+        BlockNumber::from(4u32)
     );
     assert!(attester.store.candidates().unwrap().is_empty());
     assert_eq!(
@@ -922,70 +816,7 @@ async fn repeated_note_is_skipped() {
     );
 }
 
-/// A store keeps the scan start it was created with: raising the configured deployment block
-/// after a note was saved does not stop that note's burn from being recorded.
-#[tokio::test]
-async fn raised_deployment_block_keeps_the_saved_scan_start() {
-    let mut factory = BlockFactory::new();
-    factory.push(Vec::new(), Vec::new());
-    let burn = note(BurnNote::script(), NoteType::Public, 1, 41);
-    factory.push(vec![burn.output], Vec::new());
-    factory.push(
-        Vec::new(),
-        vec![transaction(faucet_account_id(), &[burn.nullifier])],
-    );
-    let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, _) = start(&tempdir, 1, factory.blocks(), scan_limits(1, 1)).await;
-    attester.discover_burns().await.unwrap();
-    assert_eq!(attester.store.candidates().unwrap().len(), 1);
-    drop(attester);
-
-    let (mut attester, _) = start(&tempdir, 2, factory.blocks(), scan_limits(2, 2)).await;
-    attester.discover_burns().await.unwrap();
-    assert!(attester.store.candidates().unwrap().is_empty());
-    assert_eq!(
-        attester
-            .store
-            .discovered_burns()
-            .unwrap()
-            .iter()
-            .map(DiscoveredBurn::note_id)
-            .collect::<Vec<_>>(),
-        [burn.id]
-    );
-}
-
-/// An anchor after the scan start is refused before a store exists, so the corrected config
-/// starts at the same path.
-#[tokio::test]
-async fn anchor_after_scan_start_leaves_no_store() {
-    let mut factory = BlockFactory::new();
-    factory.push(Vec::new(), Vec::new());
-    let anchor = factory.push(Vec::new(), Vec::new());
-    let tempdir = tempfile::tempdir().unwrap();
-    let config = test_config(&tempdir, 0, &anchor, 1);
-    let store_path = config.store_path().to_path_buf();
-    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    let error = start_attester(config, chain, ready_circle())
-        .await
-        .err()
-        .unwrap();
-    assert!(
-        format!("{error:#}").contains("trusted anchor must not be after the scan start"),
-        "{error:#}"
-    );
-    assert!(!store_path.exists());
-
-    let config = test_config(&tempdir, 1, &anchor, 1);
-    let (chain, _) = TestChain::new(factory.blocks(), scan_limits(2, 1));
-    let attester = start_attester(config, chain, ready_circle()).await.unwrap();
-    assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1u32)
-    );
-}
-
-/// Before any block is authenticated, a node still short of the anchor is not a divergence.
+/// While the anchor is the only checkpoint, a node still short of it is not a divergence.
 #[tokio::test]
 async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     let mut factory = BlockFactory::new();
@@ -993,7 +824,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
     factory.push(Vec::new(), Vec::new());
     let anchor = factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let config = test_config(&tempdir, 2, &anchor, 1);
+    let config = test_config(&tempdir, &anchor, 1);
     let (chain, controls) = TestChain::new(factory.blocks(), scan_limits(1, 1));
     let mut attester = Attester::start(
         config,
@@ -1010,12 +841,7 @@ async fn node_behind_the_anchor_waits_on_a_fresh_store() {
         *controls.requests.lock().unwrap(),
         [BlockNumber::from(2u32)]
     );
-    assert!(attester
-        .store
-        .scan_state()
-        .unwrap()
-        .authenticated_parent
-        .is_none());
+    assert_eq!(&saved_checkpoint(&attester.store), anchor.header());
 }
 
 /// A token cancelled before the first cycle returns before any stage runs or any sleep starts.
@@ -1024,7 +850,7 @@ async fn run_stops_when_shutdown_is_set() {
     let mut factory = BlockFactory::new();
     factory.push(Vec::new(), Vec::new());
     let tempdir = tempfile::tempdir().unwrap();
-    let (mut attester, controls) = start(&tempdir, 1, factory.blocks(), scan_limits(0, 0)).await;
+    let (mut attester, controls) = start(&tempdir, factory.blocks(), scan_limits(0, 0)).await;
 
     let shutdown = CancellationToken::new();
     shutdown.cancel();

@@ -12,7 +12,7 @@ use miden_objects::{proto, DecodeMessageExt};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, Nullifier};
-use miden_protocol::transaction::{PublicOutputNote, TransactionId};
+use miden_protocol::transaction::PublicOutputNote;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
@@ -23,8 +23,6 @@ use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
 use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
 use crate::verify::validate_saved_request;
-
-const DISCOVERED: &str = "DISCOVERED";
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
@@ -74,7 +72,11 @@ impl fmt::Display for Hold {
 
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_scan_from_the_anchor.sql"),
+    include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
+];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
 pub(crate) const STORE_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -90,9 +92,6 @@ enum EventKind {
     /// Circle's answer, or a lost reply, when it changes the request's recorded state.
     #[strum(serialize = "OUTCOME")]
     Outcome,
-    /// An operator queued a held request to be sent again.
-    #[strum(serialize = "OPERATOR_RETRY")]
-    OperatorRetry,
     /// The burn was put on hold, for example because Circle refused to prepare it, and now waits
     /// for an operator.
     #[strum(serialize = "BURN_HELD")]
@@ -117,22 +116,9 @@ pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScanCursor {
-    /// The exact next block included in the next scan.
-    pub(crate) next_block: BlockNumber,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrustedAnchor {
     pub(crate) block_num: BlockNumber,
     pub(crate) commitment: Word,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScanState {
-    /// The cursor and its authenticated parent are one checkpoint: neither may advance alone.
-    pub(crate) cursor: ScanCursor,
-    pub(crate) authenticated_parent: Option<BlockHeader>,
 }
 
 /// The work the attester has not finished, as the alerts count it.
@@ -154,8 +140,6 @@ pub(crate) struct Progress {
 
 pub(crate) struct Store {
     connection: rusqlite::Connection,
-    /// Where this store started scanning, saved when it was created.
-    initial_cursor: ScanCursor,
     faucet_account_id: AccountId,
 }
 
@@ -171,22 +155,15 @@ fn plain_file_name(path: &Path) -> PathBuf {
 }
 
 impl Store {
-    /// Opens the store at `path`, or creates it there starting at `initial_cursor`. An existing
-    /// store keeps the scan start it was created with, so changing the configured deployment block
-    /// later cannot turn notes it already saved into conflicts.
+    /// Opens the store at `path`, or creates it there for this faucet and trusted anchor. A new
+    /// store has no checkpoint until the anchor is saved as its first one.
     pub(crate) fn open_or_create(
         path: &Path,
         faucet_account_id: AccountId,
-        initial_cursor: ScanCursor,
         trusted_anchor: TrustedAnchor,
     ) -> anyhow::Result<Self> {
         let path = plain_file_name(path);
         let exists = path.try_exists().context(INVALID)?;
-        // A new store keeps its anchor and scan start for good, so a bad pair is refused before
-        // anything is created and the corrected config can use the same path.
-        if !exists && trusted_anchor.block_num > initial_cursor.next_block {
-            bail!("trusted anchor must not be after the scan start");
-        }
 
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
@@ -195,21 +172,14 @@ impl Store {
             rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;
 
-        let initial_cursor = if exists {
-            open_existing(&mut connection, faucet_account_id, trusted_anchor)?
+        if exists {
+            open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
         } else {
-            initialize_store(
-                &mut connection,
-                faucet_account_id,
-                initial_cursor,
-                trusted_anchor,
-            )?;
-            initial_cursor
-        };
+            initialize_store(&mut connection, faucet_account_id, trusted_anchor)?;
+        }
 
         Ok(Self {
             connection,
-            initial_cursor,
             faucet_account_id,
         })
     }
@@ -225,17 +195,18 @@ impl Store {
         let mut connection =
             rusqlite::Connection::open_with_flags(path, flags).map_err(classify_error)?;
         lock_exclusively(&connection)?;
-        let initial_cursor = open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
+        open_existing(&mut connection, faucet_account_id, trusted_anchor)?;
 
         Ok(Self {
             connection,
-            initial_cursor,
             faucet_account_id,
         })
     }
 
-    pub(crate) fn scan_state(&self) -> anyhow::Result<ScanState> {
-        load_scan_state(&self.connection, self.initial_cursor)
+    /// The checkpoint: the header of the last authenticated block, which the next block is
+    /// authenticated against. `None` until the trusted anchor is saved as the first one.
+    pub(crate) fn checkpoint(&self) -> anyhow::Result<Option<BlockHeader>> {
+        load_checkpoint(&self.connection)
     }
 
     #[cfg(test)]
@@ -443,21 +414,6 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    pub(crate) fn release_burn_hold(&mut self, note_id: NoteId) -> anyhow::Result<()> {
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        // Recorded before the hold is cleared, so the history keeps its reason.
-        record_event(&transaction, note_id, EventKind::BurnReleased, None)?;
-        let updated = transaction
-            .execute(
-                "UPDATE burns SET hold_reason = NULL
-                 WHERE note_id = ?1 AND hold_reason IS NOT NULL",
-                [note_id.to_bytes()],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        transaction.commit().map_err(classify_error)
-    }
-
     /// The saved submission for `note_id`, if there is one.
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
         Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
@@ -510,28 +466,6 @@ impl Store {
         transaction.commit().map_err(classify_error)
     }
 
-    /// Puts a held withdrawal back to be sent, and records that in the burn's history. Its saved
-    /// request and any known withdrawal ID stay, so recovery asks Circle for its status instead of
-    /// posting it again once the ID is known.
-    pub(crate) fn retry_held_submission(&mut self, note_id: NoteId) -> anyhow::Result<()> {
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        let updated = transaction
-            .execute(
-                "UPDATE submissions SET status = ?2, hold_reason = NULL
-             WHERE note_id = ?1 AND status = ?3 AND hold_reason = ?4",
-                params![
-                    note_id.to_bytes(),
-                    SubmissionStatus::Submitting.as_ref(),
-                    SubmissionStatus::Held.as_ref(),
-                    HoldReason::HttpRejected.as_ref()
-                ],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        record_event(&transaction, note_id, EventKind::OperatorRetry, None)?;
-        transaction.commit().map_err(classify_error)
-    }
-
     #[cfg(test)]
     pub(crate) fn discovered_burns(&self) -> anyhow::Result<Vec<DiscoveredBurn>> {
         load_burns(&self.connection, self.faucet_account_id, true)
@@ -543,10 +477,10 @@ impl Store {
         proof_lag_block: BlockNumber,
         minimum_depth_blocks: u32,
     ) -> anyhow::Result<Vec<DiscoveredBurn>> {
-        let Some(parent) = self.scan_state()?.authenticated_parent else {
+        let Some(checkpoint) = self.checkpoint()? else {
             return Ok(Vec::new());
         };
-        let Some(last_depth_safe_block) = parent.block_num().checked_sub(minimum_depth_blocks)
+        let Some(last_depth_safe_block) = checkpoint.block_num().checked_sub(minimum_depth_blocks)
         else {
             return Ok(Vec::new());
         };
@@ -572,14 +506,13 @@ impl Store {
                     COUNT(*),
                     MIN(burns.consumption_block)
                  FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
-                 WHERE burns.status = ?5 AND burns.hold_reason IS NULL
-                    AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?6))",
+                 WHERE burns.consumption_block IS NOT NULL AND burns.hold_reason IS NULL
+                    AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?5))",
                 params![
                     SubmissionStatus::Held.as_ref(),
                     SubmissionStatus::Failed.as_ref(),
                     SubmissionStatus::Submitting.as_ref(),
                     SubmissionStatus::Submitted.as_ref(),
-                    DISCOVERED,
                     SubmissionStatus::Finalized.as_ref(),
                 ],
                 |row| {
@@ -598,16 +531,17 @@ impl Store {
             .map_err(classify_error)
     }
 
+    /// Saves one authenticated block: the burn candidates and burns found in it, and its header
+    /// as the new checkpoint.
     pub(crate) fn save_scan_progress(
         &mut self,
         candidates: &[BurnCandidate],
         burns: &[DiscoveredBurn],
-        next_state: &ScanState,
+        checkpoint: &BlockHeader,
     ) -> anyhow::Result<()> {
-        validate_scan_state(next_state, self.initial_cursor)?;
-        validate_discovery_records(candidates, burns, next_state.cursor, self.initial_cursor)?;
+        validate_discovery_records(candidates, burns, checkpoint.block_num())?;
 
-        // One block's evidence, cursor, and verified header commit as one unit. A crash therefore
+        // One block's evidence and its verified header commit as one unit. A crash therefore
         // either records that complete block or scans it again from the previous checkpoint.
         let transaction = self.connection.transaction().map_err(classify_error)?;
 
@@ -618,19 +552,10 @@ impl Store {
             insert_burn(&transaction, burn)?;
         }
 
-        let authenticated_parent = next_state
-            .authenticated_parent
-            .as_ref()
-            .map(|header| proto::blockchain::BlockHeader::from(header).encode_to_vec());
         let updated = transaction
             .execute(
-                "UPDATE attester_state
-                 SET next_block = ?1, authenticated_parent = ?2
-                 WHERE singleton = 1",
-                params![
-                    i64::from(next_state.cursor.next_block.as_u32()),
-                    authenticated_parent
-                ],
+                "UPDATE attester_state SET checkpoint = ?1 WHERE singleton = 1",
+                [proto::blockchain::BlockHeader::from(checkpoint).encode_to_vec()],
             )
             .map_err(classify_error)?;
         if updated != 1 {
@@ -662,7 +587,6 @@ fn lock_exclusively(connection: &rusqlite::Connection) -> anyhow::Result<()> {
 fn initialize_store(
     connection: &mut rusqlite::Connection,
     faucet_account_id: AccountId,
-    initial_cursor: ScanCursor,
     trusted_anchor: TrustedAnchor,
 ) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
@@ -674,15 +598,12 @@ fn initialize_store(
                 faucet_account_id,
                 anchor_block,
                 anchor_commitment,
-                scan_start,
-                next_block,
-                authenticated_parent
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?4, NULL)",
+                checkpoint
+             ) VALUES (1, ?1, ?2, ?3, NULL)",
             params![
                 faucet_account_id.to_bytes(),
                 i64::from(trusted_anchor.block_num.as_u32()),
                 trusted_anchor.commitment.to_bytes(),
-                i64::from(initial_cursor.next_block.as_u32()),
             ],
         )
         .map_err(classify_error)?;
@@ -690,13 +611,12 @@ fn initialize_store(
 }
 
 /// Brings an existing store to [`STORE_VERSION`] and checks it in one transaction, so a store that
-/// fails a check, or an upgrade that fails part way, is left as it was. Returns the scan start the
-/// store was created with.
+/// fails a check, or an upgrade that fails part way, is left as it was.
 fn open_existing(
     connection: &mut rusqlite::Connection,
     faucet_account_id: AccountId,
     trusted_anchor: TrustedAnchor,
-) -> anyhow::Result<ScanCursor> {
+) -> anyhow::Result<()> {
     let transaction = connection.transaction().map_err(classify_error)?;
     let version: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -710,9 +630,8 @@ fn open_existing(
         }
         _ => upgrade(&transaction, version)?,
     }
-    let initial_cursor = validate_store(&transaction, faucet_account_id, trusted_anchor)?;
-    transaction.commit().map_err(classify_error)?;
-    Ok(initial_cursor)
+    validate_store(&transaction, faucet_account_id, trusted_anchor)?;
+    transaction.commit().map_err(classify_error)
 }
 
 /// Runs the migrations after `version` in order and records the new version.
@@ -767,9 +686,9 @@ fn record_event(
     Ok(())
 }
 
-/// Return true if the latest outcome since authorization or operator retry matches the status,
-/// withdrawal ID, HTTP status, error, and the status Circle reports. Record the first reply after
-/// an operator retry. Ignore other response body changes when those fields stay the same.
+/// Return true if the latest outcome since authorization matches the status, withdrawal ID, HTTP
+/// status, error, and the status Circle reports. Ignore other response body changes when those
+/// fields stay the same.
 fn repeats_latest_outcome(
     connection: &rusqlite::Connection,
     outcome: &SavedSubmission,
@@ -780,14 +699,13 @@ fn repeats_latest_outcome(
         "SELECT EXISTS (SELECT 1 FROM submission_events
          WHERE seq = (SELECT MAX(seq) FROM submission_events
                 WHERE note_id = ?1 AND kind = ?2 AND seq > (SELECT COALESCE(MAX(seq), 0)
-                    FROM submission_events WHERE note_id = ?1 AND kind IN (?3, ?4)))
-            AND status = ?5 AND withdrawal_id IS ?6 AND http_status IS ?7 AND error IS ?8
-            AND circle_status IS ?9)",
+                    FROM submission_events WHERE note_id = ?1 AND kind = ?3))
+            AND status = ?4 AND withdrawal_id IS ?5 AND http_status IS ?6 AND error IS ?7
+            AND circle_status IS ?8)",
         params![
             outcome.note_id.to_bytes(),
             EventKind::Outcome.as_ref(),
             EventKind::Authorized.as_ref(),
-            EventKind::OperatorRetry.as_ref(),
             outcome.status.as_ref(),
             outcome.withdrawal_id,
             outcome.last_http_status,
@@ -803,12 +721,12 @@ fn set_version(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         .map_err(classify_error)
 }
 
-/// Checks an existing store and returns the scan start it was created with.
+/// Checks an existing store against the configured faucet and trusted anchor.
 fn validate_store(
     connection: &rusqlite::Connection,
     faucet_account_id: AccountId,
     trusted_anchor: TrustedAnchor,
-) -> anyhow::Result<ScanCursor> {
+) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
     // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
@@ -833,9 +751,9 @@ fn validate_store(
         bail!(INVALID);
     }
 
-    let (stored_faucet, anchor_block, anchor_commitment, scan_start) = connection
+    let (stored_faucet, anchor_block, anchor_commitment) = connection
         .query_row(
-            "SELECT faucet_account_id, anchor_block, anchor_commitment, scan_start
+            "SELECT faucet_account_id, anchor_block, anchor_commitment
              FROM attester_state WHERE singleton = 1",
             [],
             |row| {
@@ -843,7 +761,6 @@ fn validate_store(
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, i64>(3)?,
                 ))
             },
         )
@@ -860,24 +777,14 @@ fn validate_store(
     if stored_anchor != trusted_anchor {
         bail!("configured trusted anchor differs from the store");
     }
-    let initial_cursor = ScanCursor {
-        next_block: decode_block_number(scan_start)?,
-    };
-    if trusted_anchor.block_num > initial_cursor.next_block {
-        bail!(INVALID);
-    }
-    let state = load_scan_state(connection, initial_cursor)?;
+    let checkpoint = load_checkpoint(connection)?;
     load_candidates(connection, faucet_account_id, "", [])?;
     load_burns(connection, faucet_account_id, true)?;
-    if state
-        .authenticated_parent
-        .as_ref()
-        .is_some_and(|parent| parent.block_num() < trusted_anchor.block_num)
-    {
+    if checkpoint.is_some_and(|checkpoint| checkpoint.block_num() < trusted_anchor.block_num) {
         bail!(INVALID);
     }
 
-    Ok(initial_cursor)
+    Ok(())
 }
 
 fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -889,10 +796,10 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
         return Err(anyhow!(quick_check).context(INVALID));
     }
     for probe in [
-        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, scan_start,
-            next_block, authenticated_parent FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, burn_tx_id, status,
-            hold_reason FROM burns LIMIT 0",
+        "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
+            FROM attester_state LIMIT 0",
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason
+            FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",
         "SELECT seq, note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
@@ -957,7 +864,7 @@ fn select_submissions(
         if !exists(
             connection,
             "SELECT EXISTS (SELECT 1 FROM burns
-             WHERE note_id = ?1 AND status = 'DISCOVERED')",
+             WHERE note_id = ?1 AND consumption_block IS NOT NULL)",
             [record.note_id.to_bytes()],
         )? {
             bail!(INVALID);
@@ -1001,56 +908,33 @@ fn validate_submission_outcome(outcome: &SavedSubmission) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn load_scan_state(
-    connection: &rusqlite::Connection,
-    initial_cursor: ScanCursor,
-) -> anyhow::Result<ScanState> {
-    let (next_block, authenticated_parent) = connection
+fn load_checkpoint(connection: &rusqlite::Connection) -> anyhow::Result<Option<BlockHeader>> {
+    connection
         .query_row(
-            "SELECT next_block, authenticated_parent
-             FROM attester_state WHERE singleton = 1",
+            "SELECT checkpoint FROM attester_state WHERE singleton = 1",
             [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            |row| row.get::<_, Option<Vec<u8>>>(0),
         )
-        .map_err(classify_error)?;
-
-    let state = ScanState {
-        cursor: ScanCursor {
-            next_block: decode_block_number(next_block)?,
-        },
-        authenticated_parent: authenticated_parent
-            .as_deref()
-            .map(decode_header)
-            .transpose()?,
-    };
-    validate_scan_state(&state, initial_cursor)?;
-    Ok(state)
+        .map_err(classify_error)?
+        .as_deref()
+        .map(decode_header)
+        .transpose()
 }
 
-fn validate_scan_state(state: &ScanState, initial_cursor: ScanCursor) -> anyhow::Result<()> {
-    match &state.authenticated_parent {
-        Some(parent) if state.cursor.next_block.checked_sub(1) != Some(parent.block_num()) => {
-            Err(anyhow!(INVALID))
-        }
-        None if state.cursor != initial_cursor => Err(anyhow!(INVALID)),
-        _ => Ok(()),
-    }
-}
-
+/// Nothing saved with a block can come from a later one, and a burn is consumed after it is
+/// created.
 fn validate_discovery_records(
     candidates: &[BurnCandidate],
     burns: &[DiscoveredBurn],
-    cursor: ScanCursor,
-    initial_cursor: ScanCursor,
+    block: BlockNumber,
 ) -> anyhow::Result<()> {
-    if candidates.iter().any(|candidate| {
-        candidate.creation_block() < initial_cursor.next_block
-            || candidate.creation_block() >= cursor.next_block
-    }) || burns.iter().any(|burn| {
-        burn.creation_block() < initial_cursor.next_block
-            || burn.creation_block() >= burn.consumption_block()
-            || burn.consumption_block() >= cursor.next_block
-    }) {
+    if candidates
+        .iter()
+        .any(|candidate| candidate.creation_block() > block)
+        || burns.iter().any(|burn| {
+            burn.creation_block() >= burn.consumption_block() || burn.consumption_block() > block
+        })
+    {
         bail!(CONFLICT);
     }
     Ok(())
@@ -1065,7 +949,8 @@ fn load_candidates<P: Params>(
     let mut statement = connection
         .prepare(&format!(
             "SELECT note_id, nullifier, note, creation_block
-             FROM burns WHERE status = 'CANDIDATE' {filter} ORDER BY creation_block, note_id"
+             FROM burns WHERE consumption_block IS NULL {filter}
+             ORDER BY creation_block, note_id"
         ))
         .map_err(classify_error)?;
     let rows = statement
@@ -1103,9 +988,8 @@ fn load_burns(
     // Expired work is eligible again; its old request remains saved until a fresh one replaces it.
     let mut statement = connection
         .prepare(
-            "SELECT note_id, nullifier, note, creation_block, consumption_block,
-                    burn_tx_id FROM burns
-             WHERE status = 'DISCOVERED' AND (?1 OR (
+            "SELECT note_id, nullifier, note, creation_block, consumption_block FROM burns
+             WHERE consumption_block IS NOT NULL AND (?1 OR (
                  hold_reason IS NULL AND NOT EXISTS (
                      SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                         AND submissions.status != ?2
@@ -1123,28 +1007,20 @@ fn load_burns(
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
             ))
         })
         .map_err(classify_error)?;
 
     let mut burns = Vec::new();
     for row in rows {
-        let (note_id, nullifier, note, creation_block, consumption_block, burn_tx_id) =
+        let (note_id, nullifier, note, creation_block, consumption_block) =
             row.map_err(classify_error)?;
         let note = decode_note(&note, &note_id, &nullifier)?;
         let creation_block = decode_block_number(creation_block)?;
         let consumption_block = decode_block_number(consumption_block)?;
-        let burn_tx_id = decode_canonical::<TransactionId>(&burn_tx_id)?;
         burns.push(
-            DiscoveredBurn::new(
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                faucet_account_id,
-            )
-            .context(INVALID)?,
+            DiscoveredBurn::new(note, creation_block, consumption_block, faucet_account_id)
+                .context(INVALID)?,
         );
     }
     Ok(burns)
@@ -1162,8 +1038,8 @@ fn insert_candidate(
     // A note already recorded, as a candidate or as a burn, clashes with the table's keys.
     transaction
         .execute(
-            "INSERT INTO burns (note_id, nullifier, note, creation_block, status)
-             VALUES (?1, ?2, ?3, ?4, 'CANDIDATE')",
+            "INSERT INTO burns (note_id, nullifier, note, creation_block)
+             VALUES (?1, ?2, ?3, ?4)",
             params![note_id, nullifier, note, creation_block],
         )
         .map_err(classify_write_error)?;
@@ -1176,14 +1052,13 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     let note = burn.note().to_bytes();
     let creation_block = i64::from(burn.creation_block().as_u32());
     let consumption_block = i64::from(burn.consumption_block().as_u32());
-    let burn_tx_id = burn.burn_tx_id().to_bytes();
 
     // Promotion turns the exact saved candidate into this burn in place, one row per note.
     let promoted = transaction
         .execute(
-            "UPDATE burns SET consumption_block = ?2, burn_tx_id = ?3, status = ?4
-             WHERE note_id = ?1 AND status = 'CANDIDATE'",
-            params![note_id, consumption_block, burn_tx_id, DISCOVERED],
+            "UPDATE burns SET consumption_block = ?2
+             WHERE note_id = ?1 AND consumption_block IS NULL",
+            params![note_id, consumption_block],
         )
         .map_err(classify_write_error)?;
     if promoted == 1 {
@@ -1193,24 +1068,9 @@ fn insert_burn(transaction: &Transaction<'_>, burn: &DiscoveredBurn) -> anyhow::
     // Any other record of this note or its nullifier clashes with the table's keys.
     transaction
         .execute(
-            "INSERT INTO burns (
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                note_id,
-                nullifier,
-                note,
-                creation_block,
-                consumption_block,
-                burn_tx_id,
-                DISCOVERED,
-            ],
+            "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![note_id, nullifier, note, creation_block, consumption_block],
         )
         .map_err(classify_write_error)?;
     Ok(())

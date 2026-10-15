@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::attester::{burn_hold, release_holds};
 use crate::circle::CircleError;
-use crate::store::{BurnHoldReason, Progress, ScanCursor, Store, TrustedAnchor};
+use crate::store::{BurnHoldReason, Progress, Store, TrustedAnchor};
 use crate::submission::{SubmissionStatus, SubmitError};
 use crate::verify::VerifyError;
 
@@ -280,9 +280,6 @@ async fn a_file_uri_store_path_cannot_bypass_the_lock() {
     let result = Store::open_or_create(
         &file_uri,
         faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::GENESIS,
-        },
         TrustedAnchor {
             block_num: BlockNumber::GENESIS,
             commitment: ledger.blocks[0].header().commitment(),
@@ -489,7 +486,7 @@ async fn burn_hold_and_release_record_the_reason() {
         recorded::<Option<i64>>(&ledger, order[0], "BURN_HELD", "http_status"),
         [Some(400)]
     );
-    attester.release_burn_hold(note_id).unwrap();
+    assert_eq!(attester.store.release_holds(&[note_id]).unwrap(), (1, 0));
     for kind in ["BURN_HELD", "BURN_RELEASED"] {
         assert_eq!(
             recorded::<i64>(&ledger, order[0], kind, "burn_hold_reason"),

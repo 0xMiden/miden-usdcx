@@ -11,14 +11,14 @@ use miden_usdcx::note::xreserve_burn::FIXED_XUSDC_BURN_TAG;
 use rusqlite::params;
 
 use crate::attester::release_holds;
-use crate::store::{ScanCursor, ScanState, Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
+use crate::store::{Store, TrustedAnchor, CANNOT_UPGRADE, STORE_VERSION};
 use crate::tests::support::{scan_limits, store_version, BlockFactory};
 
 use super::{
     create_store_parent, faucet_account_id, load_config, ready_circle, start, startup_anchor,
     TestArgs, TestChain,
 };
-use crate::tests::support::{note, test_note, transaction};
+use crate::tests::support::{note, test_note};
 
 const OTHER_FAUCET_ACCOUNT_ID: &str = "0x9b405fd9fe431bd1135a292de098cb";
 const LOCK_CHILD_STORE_PATH: &str = "XUSDC_ATTESTER_LOCK_CHILD_STORE_PATH";
@@ -35,7 +35,7 @@ fn trusted_anchor() -> TrustedAnchor {
 }
 
 #[tokio::test]
-async fn new_store_starts_at_deployment_block() {
+async fn new_store_starts_at_the_anchor() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
     assert!(release_holds(
@@ -51,7 +51,7 @@ async fn new_store_starts_at_deployment_block() {
         "the release command must not create a store"
     );
     let attester = start(
-        load_config(&tempdir, 1_234_567),
+        load_config(&tempdir),
         TestChain::anchor_only(),
         ready_circle(),
     )
@@ -60,8 +60,8 @@ async fn new_store_starts_at_deployment_block() {
 
     assert!(store_path.is_file());
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1_234_567u32)
+        attester.store.checkpoint().unwrap().as_ref(),
+        Some(startup_anchor().header())
     );
     drop(attester);
     assert_eq!(store_version(&store_path), STORE_VERSION);
@@ -72,7 +72,7 @@ async fn new_store_starts_at_deployment_block() {
 async fn bad_anchor_does_not_create_store() {
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let mut args = TestArgs::new(&tempdir, 1);
+    let mut args = TestArgs::new(&tempdir);
     args.replace("--trusted-anchor-commitment", Word::empty().to_hex());
 
     let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
@@ -80,15 +80,15 @@ async fn bad_anchor_does_not_create_store() {
     assert!(!store_path.exists());
 
     let attester = start(
-        load_config(&tempdir, 1),
+        load_config(&tempdir),
         TestChain::anchor_only(),
         ready_circle(),
     )
     .await
     .unwrap();
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        BlockNumber::from(1u32)
+        attester.store.checkpoint().unwrap().as_ref(),
+        Some(startup_anchor().header())
     );
     assert!(store_path.is_file());
 }
@@ -104,31 +104,14 @@ async fn existing_store_resumes_from_saved_block() {
         block_num: BlockNumber::GENESIS,
         commitment: anchor.header().commitment(),
     };
-    let saved_block = BlockNumber::from(2u32);
-    let mut store = Store::open_or_create(
-        &store_path,
-        faucet_account_id(),
-        ScanCursor {
-            next_block: BlockNumber::from(1u32),
-        },
-        trusted_anchor,
-    )
-    .unwrap();
+    let mut store =
+        Store::open_or_create(&store_path, faucet_account_id(), trusted_anchor).unwrap();
     store
-        .save_scan_progress(
-            &[],
-            &[],
-            &ScanState {
-                cursor: ScanCursor {
-                    next_block: saved_block,
-                },
-                authenticated_parent: Some(checkpoint.header().clone()),
-            },
-        )
+        .save_scan_progress(&[], &[], checkpoint.header())
         .unwrap();
     drop(store);
 
-    let mut args = TestArgs::new(&tempdir, 700);
+    let mut args = TestArgs::new(&tempdir);
     args.replace(
         "--trusted-anchor-commitment",
         anchor.header().commitment().to_hex(),
@@ -137,8 +120,8 @@ async fn existing_store_resumes_from_saved_block() {
     let attester = start(args.load(), chain, ready_circle()).await.unwrap();
 
     assert_eq!(
-        attester.store.scan_state().unwrap().cursor.next_block,
-        saved_block
+        attester.store.checkpoint().unwrap().as_ref(),
+        Some(checkpoint.header())
     );
 }
 
@@ -160,17 +143,7 @@ enum InvalidStoreCase {
 }
 
 fn create_valid_store(path: &Path) {
-    drop(
-        Store::open_or_create(
-            path,
-            faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::from(1u32),
-            },
-            trusted_anchor(),
-        )
-        .unwrap(),
-    );
+    drop(Store::open_or_create(path, faucet_account_id(), trusted_anchor()).unwrap());
 }
 
 fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
@@ -223,8 +196,7 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
             connection
                 .execute(
                     "INSERT INTO attester_state
-                     SELECT 2, faucet_account_id, anchor_block, anchor_commitment, scan_start,
-                            next_block, authenticated_parent
+                     SELECT 2, faucet_account_id, anchor_block, anchor_commitment, checkpoint
                      FROM attester_state WHERE singleton = 1",
                     [],
                 )
@@ -238,21 +210,14 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap();
             connection
                 .execute(
-                    "UPDATE attester_state SET next_block = 4294967296 WHERE singleton = 1",
+                    "UPDATE attester_state SET anchor_block = 4294967296 WHERE singleton = 1",
                     [],
                 )
                 .unwrap();
         }
         InvalidStoreCase::WrongFaucet => {
-            let store = Store::open_or_create(
-                path,
-                other_faucet_account_id(),
-                ScanCursor {
-                    next_block: BlockNumber::from(1u32),
-                },
-                trusted_anchor(),
-            )
-            .unwrap();
+            let store =
+                Store::open_or_create(path, other_faucet_account_id(), trusted_anchor()).unwrap();
             drop(store);
         }
         InvalidStoreCase::CorruptParent => {
@@ -261,7 +226,7 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap()
                 .execute(
                     "UPDATE attester_state
-                     SET next_block = 2, authenticated_parent = X'00'
+                     SET checkpoint = X'00'
                      WHERE singleton = 1",
                     [],
                 )
@@ -291,19 +256,16 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 .unwrap(),
             ));
             let note = malformed.public_note.unwrap();
-            let burn_tx_id = transaction(faucet_account_id(), &[note.as_note().nullifier()]).id();
             rusqlite::Connection::open(path)
                 .unwrap()
                 .execute(
                     "INSERT INTO burns (
-                        note_id, nullifier, note, creation_block, consumption_block, burn_tx_id,
-                        status
-                     ) VALUES (?1, ?2, ?3, 0, 1, ?4, 'DISCOVERED')",
+                        note_id, nullifier, note, creation_block, consumption_block
+                     ) VALUES (?1, ?2, ?3, 0, 1)",
                     params![
                         note.id().to_bytes(),
                         note.as_note().nullifier().to_bytes(),
                         note.to_bytes(),
-                        burn_tx_id.to_bytes(),
                     ],
                 )
                 .unwrap();
@@ -349,7 +311,7 @@ async fn invalid_store_is_rejected() {
         let before = std::fs::read(&store_path).unwrap();
 
         let error = start(
-            load_config(&tempdir, 1),
+            load_config(&tempdir),
             TestChain::anchor_only(),
             ready_circle(),
         )
@@ -387,7 +349,7 @@ async fn store_cannot_be_opened_twice() {
     if let Some(store_path) = std::env::var_os(LOCK_CHILD_STORE_PATH) {
         let tempdir = tempfile::tempdir().unwrap();
         create_store_parent(&tempdir);
-        let mut args = TestArgs::new(&tempdir, 1);
+        let mut args = TestArgs::new(&tempdir);
         args.replace("--store-path", store_path);
         let result = start(args.load(), TestChain::anchor_only(), ready_circle()).await;
         let error = result.err().unwrap();
@@ -397,15 +359,9 @@ async fn store_cannot_be_opened_twice() {
 
     let tempdir = tempfile::tempdir().unwrap();
     let store_path = create_store_parent(&tempdir);
-    let cursor = ScanCursor {
-        next_block: BlockNumber::from(1u32),
-    };
     // Reopen the new store, as a restarted attester does: that path must take the lock too.
-    drop(
-        Store::open_or_create(&store_path, faucet_account_id(), cursor, trusted_anchor()).unwrap(),
-    );
-    let store =
-        Store::open_or_create(&store_path, faucet_account_id(), cursor, trusted_anchor()).unwrap();
+    drop(Store::open_or_create(&store_path, faucet_account_id(), trusted_anchor()).unwrap());
+    let store = Store::open_or_create(&store_path, faucet_account_id(), trusted_anchor()).unwrap();
     let error = release_holds(
         &store_path,
         faucet_account_id(),

@@ -21,7 +21,7 @@ use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserv
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 
-use super::support::{faucet_account_id, transaction, word};
+use super::support::{faucet_account_id, word};
 
 fn sender() -> AccountId {
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1.try_into().unwrap()
@@ -104,13 +104,12 @@ impl NoteFixture {
 }
 
 fn discovered(note: Note) -> DiscoveredBurn {
-    let burn_tx_id = transaction(faucet_account_id(), &[note.nullifier()]).id();
     let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap() else {
         panic!("the fixture constructs a public note")
     };
     BurnCandidate::new(note, BlockNumber::from(1u32), faucet_account_id())
         .unwrap()
-        .into_discovered(BlockNumber::from(2u32), burn_tx_id)
+        .into_discovered(BlockNumber::from(2u32))
 }
 
 pub(super) fn discovered_burn(
@@ -396,7 +395,6 @@ fn check_note_content_cases() {
                 (fixture.items.clone(), u64::from(asset.amount()))
             });
             let note = fixture.note(10);
-            let burn_tx_id = transaction(faucet_account_id(), &[note.nullifier()]).id();
             let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap()
             else {
                 panic!("the fixture constructs a public note")
@@ -404,7 +402,6 @@ fn check_note_content_cases() {
             (
                 *name,
                 BurnCandidate::new(note, BlockNumber::from(1u32), faucet_account_id()),
-                burn_tx_id,
                 *expected,
                 accepted,
             )
@@ -424,13 +421,13 @@ fn check_note_content_cases() {
         (&items(), 100),
         "real xUSDC note factory"
     );
-    for (name, candidate, burn_tx_id, expected, accepted) in cases {
+    for (name, candidate, expected, accepted) in cases {
         match expected {
             CandidateRejected => assert!(candidate.is_err(), "{name}"),
             Accepted => {
                 let burn = candidate
                     .expect(name)
-                    .into_discovered(BlockNumber::from(2u32), burn_tx_id);
+                    .into_discovered(BlockNumber::from(2u32));
                 let (expected_items, expected_amount) = accepted.unwrap();
                 assert_eq!(
                     (burn.items(), burn.amount()),

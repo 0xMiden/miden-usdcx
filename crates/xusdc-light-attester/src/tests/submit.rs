@@ -24,7 +24,7 @@ use crate::circle::{
     read_prepared, CircleApi, CircleClient, CircleError, RawResponse, UnverifiedPrepareResponse,
 };
 use crate::signer::{Signer, SignerError, SignerPair, SigningPublicKey};
-use crate::store::{ScanCursor, Store, TrustedAnchor, CONFLICT, INVALID};
+use crate::store::{Store, TrustedAnchor, CONFLICT, INVALID};
 use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus, SubmitError};
 use crate::verify::{rebuild_for_test, SignedWithdrawal};
 
@@ -196,7 +196,7 @@ pub(super) struct Ledger {
 
 impl Ledger {
     pub(super) async fn new() -> Self {
-        let mut burns: Vec<_> = (0..3)
+        let burns: Vec<_> = (0..3)
             .map(|i| discovered_burn(1_000, serial(0x3132_3334_3536_3738 + i), 9))
             .collect();
         let mut factory = BlockFactory::new();
@@ -212,16 +212,6 @@ impl Ledger {
             faucet_account_id(),
             &[burns[0].nullifier(), burns[1].nullifier()],
         );
-        for burn in &mut burns[..2] {
-            *burn = DiscoveredBurn::new(
-                burn.note().clone(),
-                burn.creation_block(),
-                burn.consumption_block(),
-                shared.id(),
-                faucet_account_id(),
-            )
-            .unwrap();
-        }
         let transactions = vec![
             shared,
             transaction(faucet_account_id(), &[burns[2].nullifier()]),
@@ -233,7 +223,7 @@ impl Ledger {
         let directory = tempfile::tempdir().unwrap();
         let blocks = factory.blocks();
         let (mut attester, _) =
-            discovery::start(&directory, 1, blocks.clone(), scan_limits(3, 3)).await;
+            discovery::start(&directory, blocks.clone(), scan_limits(3, 3)).await;
         attester.discover_burns().await.unwrap();
         let fresh_indices = attester
             .store
@@ -247,7 +237,7 @@ impl Ledger {
                     .unwrap()
             })
             .collect();
-        let config = discovery::test_args(&directory, 1, &blocks[0], 1);
+        let config = discovery::test_args(&directory, &blocks[0], 1);
         Self {
             directory,
             blocks,
@@ -367,9 +357,6 @@ impl Ledger {
         Store::open_or_create(
             &self.path(),
             faucet_account_id(),
-            ScanCursor {
-                next_block: BlockNumber::from(1u32),
-            },
             TrustedAnchor {
                 block_num: BlockNumber::GENESIS,
                 commitment: self.blocks[0].header().commitment(),
@@ -387,7 +374,7 @@ impl Ledger {
     pub(super) fn rewind_empty_block(&self) {
         let header = proto::blockchain::BlockHeader::from(self.blocks[2].header()).encode_to_vec();
         self.sql(&format!(
-            "UPDATE attester_state SET next_block = 3, authenticated_parent = x'{}'",
+            "UPDATE attester_state SET checkpoint = x'{}'",
             hex::encode(header),
         ));
     }
@@ -541,7 +528,6 @@ async fn submit_sends_checked_request() {
                 Some("Circle returned an unknown withdrawal status")
             );
         }
-        assert!(attester.retry_held_submission(saved.note_id).is_err());
         if matches!(status, "created" | "finalized" | "failed" | "new_status") {
             let history = ledger.history(0);
             let fresh = ledger
@@ -647,8 +633,7 @@ async fn submit_sends_checked_request() {
 }
 
 /// A history row is written with the change it records: when the row cannot be written, the
-/// change is not made either. An operator retry is recorded without a new authorization, and an
-/// answer that changes nothing the history records adds no row.
+/// change is not made either. An answer that changes nothing the history records adds no row.
 #[tokio::test]
 async fn failed_history_write_changes_nothing() {
     use SubmissionStatus::*;
@@ -669,23 +654,14 @@ async fn failed_history_write_changes_nothing() {
     assert!(requests.lock().unwrap().is_empty());
     drop(attester);
 
+    // An unexpected status leaves the request queued to be sent again.
     ledger.sql("DROP TRIGGER fail_history;");
     let (mut attester, _) = ledger
-        .start(vec![reply(400, json!({"message": "rejected"}))])
+        .start(vec![reply(503, json!({"message": "unavailable"}))])
         .await;
     ledger.submit(&mut attester, 0).await.unwrap();
-    drop(attester);
-    ledger.sql(fail_history);
-    let (mut attester, _) = ledger.start(vec![]).await;
-    let held = ledger.record(&attester, 0);
-    assert!(attester.retry_held_submission(held.note_id).is_err());
-    assert_eq!(ledger.record(&attester, 0), held);
-    drop(attester);
-
-    ledger.sql("DROP TRIGGER fail_history;");
-    let (mut attester, _) = ledger.start(vec![]).await;
-    attester.retry_held_submission(held.note_id).unwrap();
-    let retried = ledger.record(&attester, 0);
+    let queued = ledger.record(&attester, 0);
+    assert_eq!(queued.status, Submitting);
     drop(attester);
     ledger.sql(
         "CREATE TRIGGER fail_outcome BEFORE INSERT ON submission_events WHEN NEW.kind = 'OUTCOME'
@@ -695,7 +671,7 @@ async fn failed_history_write_changes_nothing() {
         .start(vec![reply(201, json!([ledger.response(0, "created")]))])
         .await;
     assert!(recover(&mut attester).await.is_err());
-    assert_eq!(ledger.record(&attester, 0), retried);
+    assert_eq!(ledger.record(&attester, 0), queued);
     drop(attester);
 
     ledger.sql("DROP TRIGGER fail_outcome;");
@@ -712,8 +688,7 @@ async fn failed_history_write_changes_nothing() {
         ledger.history(0),
         [
             event("AUTHORIZED", Submitting),
-            event("OUTCOME", Held),
-            event("OPERATOR_RETRY", Submitting),
+            event("OUTCOME", Submitting),
             event("OUTCOME", Submitted),
         ]
     );
@@ -728,26 +703,6 @@ async fn failed_history_write_changes_nothing() {
     assert_eq!(
         ledger.history(0)[recorded..],
         [event("OUTCOME", Submitted), event("OUTCOME", Finalized)]
-    );
-}
-
-/// An operator retry puts a held request back without recording an outcome, so when the request is
-/// sent again and Circle gives the same answer as before the retry, the history records it again.
-#[tokio::test]
-async fn retried_request_records_the_same_answer_again() {
-    let ledger = Ledger::new().await;
-    let rejected = json!({"message": "rejected"});
-    let (mut attester, _) = ledger
-        .start(vec![reply(400, rejected.clone()), reply(400, rejected)])
-        .await;
-    ledger.submit(&mut attester, 0).await.unwrap();
-    let held = ledger.record(&attester, 0);
-    attester.retry_held_submission(held.note_id).unwrap();
-    recover(&mut attester).await.unwrap();
-    assert_eq!(ledger.record(&attester, 0), held);
-    assert_eq!(
-        ledger.history(0).last(),
-        Some(&event("OUTCOME", SubmissionStatus::Held))
     );
 }
 
@@ -780,7 +735,7 @@ async fn history_needs_a_known_burn() {
     assert_eq!(request(), held);
     let error = attester
         .store
-        .retry_held_submission(ledger.burns[0].note_id())
+        .release_holds(&[ledger.burns[0].note_id()])
         .unwrap_err();
     assert_eq!(error.to_string(), CONFLICT);
     assert_eq!(request(), held);
@@ -1136,9 +1091,6 @@ async fn conflicts_are_checked() {
             (Submitting, None, Some(error)),
             "{name}"
         );
-        assert!(attester
-            .retry_held_submission(ledger.burns[0].note_id())
-            .is_err());
     }
     let ledger = Ledger::new().await;
     ledger.sql("CREATE TRIGGER fail_id BEFORE UPDATE ON submissions WHEN NEW.withdrawal_id IS NOT NULL BEGIN SELECT RAISE(FAIL, 'disk full'); END;");
@@ -1159,7 +1111,6 @@ async fn conflicts_are_checked() {
 #[tokio::test]
 async fn held_submissions_do_not_block_others() {
     let ledger = Ledger::new().await;
-    assert_eq!(ledger.burns[0].burn_tx_id(), ledger.burns[1].burn_tx_id());
     let rejected = json!({"message": "operator must investigate", "code": "unrecognized"});
     let (mut attester, requests) = ledger
         .start(vec![
@@ -1284,7 +1235,7 @@ async fn submission_requests_use_the_saved_request() {
         .submission("https://saved.example.invalid/v1/withdraw".parse().unwrap())
         .unwrap();
     let config = ledger.config.lock().unwrap().load();
-    let client = CircleClient::start(&config).unwrap().0;
+    let client = CircleClient::new(&config).unwrap();
 
     let post = client.submission_request(&saved).unwrap();
     assert_eq!(post.method(), Method::POST);

@@ -42,7 +42,7 @@ pub(super) fn serial(last: u64) -> Word {
 fn config(fee_ceiling: Option<u64>) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let mut args = TestArgs::new(&directory, 1);
+    let mut args = TestArgs::new(&directory);
     if let Some(ceiling) = fee_ceiling {
         args.replace("--max-withdrawal-fee", ceiling.to_string());
         args.replace("--cctp-forwarding-max-fee", "1");
@@ -53,7 +53,7 @@ fn config(fee_ceiling: Option<u64>) -> Config {
 fn forwarding_config(fee_ceiling: u64, cctp_fee: u64) -> Config {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let mut args = TestArgs::new(&directory, 1);
+    let mut args = TestArgs::new(&directory);
     args.replace("--max-withdrawal-fee", fee_ceiling.to_string());
     args.replace("--cctp-forwarding-max-fee", cctp_fee.to_string());
     args.replace("--cctp-forwarder-address", FORWARDER);
@@ -353,7 +353,7 @@ fn circle_response_checks_amount_and_fee() {
     rebuild_for_test(&mut base_fee).unwrap();
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let mut args = TestArgs::new(&directory, 1);
+    let mut args = TestArgs::new(&directory);
     args.replace("--max-withdrawal-fee", "11000");
     args.replace("--max-withdrawal-fee-bps", "1");
     args.replace("--cctp-forwarding-max-fee", "1");

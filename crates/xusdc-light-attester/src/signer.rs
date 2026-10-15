@@ -7,7 +7,7 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
-use alloy_primitives::{Signature, B256};
+use alloy_primitives::{Address, Signature, B256};
 use anyhow::Context;
 #[cfg(test)]
 use k256::ecdsa::SigningKey;
@@ -31,6 +31,14 @@ impl SigningPublicKey {
             SignerError::with_source("public key is not a valid secp256k1 point", source)
         })?;
         Ok(Self(bytes))
+    }
+
+    /// The Ethereum address of this key, which is how Circle's attester contract names a signer.
+    fn address(&self) -> Result<Address, SignerError> {
+        let key = VerifyingKey::from_sec1_bytes(&self.0).map_err(|source| {
+            SignerError::with_source("signer public key is not a valid secp256k1 point", source)
+        })?;
+        Ok(Address::from_public_key(&key))
     }
 }
 
@@ -70,19 +78,22 @@ pub trait Signer: Send + Sync {
     fn sign_digest(&self, digest: B256) -> SignerFuture<'_, Signature>;
 }
 
-/// The two independent signers, with the public keys they reported when the pair was built.
+/// The two independent signers, with the public keys they reported when the pair was built. Both
+/// are kept in ascending order of signer address, the only order Circle's attester contract accepts
+/// signatures in.
 pub struct SignerPair {
     signers: [Box<dyn Signer>; 2],
     public_keys: [SigningPublicKey; 2],
 }
 
 impl SignerPair {
-    /// Reads each signer's public key once; the two keys must differ.
-    pub async fn new(signers: [Box<dyn Signer>; 2]) -> Result<Self, SignerError> {
+    /// Reads each signer's public key once and orders the pair by signer address; the two keys
+    /// must differ.
+    pub async fn new(mut signers: [Box<dyn Signer>; 2]) -> Result<Self, SignerError> {
         let read = |source| {
             SignerError::with_source("could not read a signing provider's public key", source)
         };
-        let public_keys = [
+        let mut public_keys = [
             signers[0].public_key().await.map_err(read)?,
             signers[1].public_key().await.map_err(read)?,
         ];
@@ -90,6 +101,10 @@ impl SignerPair {
             return Err(SignerError::new(
                 "the two signing providers hold the same key",
             ));
+        }
+        if public_keys[1].address()? < public_keys[0].address()? {
+            signers.swap(0, 1);
+            public_keys.swap(0, 1);
         }
         Ok(Self {
             signers,
@@ -118,6 +133,7 @@ impl SignerPair {
         Ok(())
     }
 
+    /// The two signers, in ascending order of signer address.
     pub(crate) fn signers(&self) -> [&dyn Signer; 2] {
         [self.signers[0].as_ref(), self.signers[1].as_ref()]
     }

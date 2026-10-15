@@ -214,7 +214,7 @@ async fn invalid_burns_are_not_signed() {
     );
     blocks.push(vec![], vec![]);
     let directory = tempfile::tempdir().unwrap();
-    let config = test_config(&directory, 0, &blocks.blocks()[0], 1);
+    let config = test_config(&directory, &blocks.blocks()[0], 1);
     let (circle, requests) = ScriptedCircle::new(directory.path().join("state.sqlite3"), vec![]);
     let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 1));
     let (signers, calls) = signers(None).await;
@@ -369,7 +369,7 @@ async fn discovery_failure_still_recovers_and_polls() {
         } else {
             *chain.scan_limits.lock().unwrap() = scan_limits(4, 3);
         }
-        let checkpoint = attester.store.scan_state().unwrap();
+        let checkpoint = attester.store.checkpoint().unwrap();
         let report = attester.run_one_cycle().await.unwrap();
         if invalid_answer {
             assert!(matches!(
@@ -392,7 +392,7 @@ async fn discovery_failure_still_recovers_and_polls() {
             .submission(ledger.burns[2].note_id())
             .unwrap()
             .is_none());
-        assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
+        assert_eq!(attester.store.checkpoint().unwrap(), checkpoint);
     }
 }
 
@@ -562,7 +562,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
     ];
     let (signers, calls) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
-    let checkpoint = attester.store.scan_state().unwrap();
+    let checkpoint = attester.store.checkpoint().unwrap();
     let before = [ledger.record(&attester, 0), ledger.record(&attester, 1)];
     let error = attester.run_one_cycle().await.unwrap_err();
     assert!(matches!(
@@ -575,7 +575,7 @@ async fn discovery_store_failure_stops_work_but_retries() {
         *chain.requests.lock().unwrap(),
         [BlockNumber::GENESIS, 2u32.into(), 3u32.into()]
     );
-    assert_eq!(attester.store.scan_state().unwrap(), checkpoint);
+    assert_eq!(attester.store.checkpoint().unwrap(), checkpoint);
     assert_eq!(ledger.record(&attester, 0), before[0]);
     assert_eq!(ledger.record(&attester, 1), before[1]);
 

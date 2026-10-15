@@ -37,13 +37,11 @@ pub(super) struct TestArgs {
 }
 
 impl TestArgs {
-    pub(super) fn new(tempdir: &TempDir, deployment_block: u32) -> Self {
+    pub(super) fn new(tempdir: &TempDir) -> Self {
         let anchor_commitment = startup_anchor().header().commitment().to_hex();
         Self {
             args: [
                 "xusdc-attester".into(),
-                "--signer-provider".into(),
-                "aws-kms".into(),
                 "--aws-kms-region".into(),
                 "eu-north-1".into(),
                 "--aws-kms-key-arn".into(),
@@ -72,7 +70,7 @@ impl TestArgs {
                 "--poll-interval".into(),
                 "1s".into(),
                 "--faucet-deployment-block".into(),
-                deployment_block.to_string().into(),
+                "0".into(),
                 "--trusted-anchor-block".into(),
                 "0".into(),
                 "--trusted-anchor-commitment".into(),
@@ -143,8 +141,8 @@ impl TestArgs {
     }
 }
 
-fn load_config(tempdir: &TempDir, deployment_block: u32) -> Config {
-    TestArgs::new(tempdir, deployment_block).load()
+fn load_config(tempdir: &TempDir) -> Config {
+    TestArgs::new(tempdir).load()
 }
 
 pub(super) fn create_store_parent(tempdir: &TempDir) -> PathBuf {

@@ -7,7 +7,7 @@ use miden_client::rpc::Endpoint;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::BlockNumber;
 
-use crate::config::{parse_note_ids, CctpForwarding, Command, Invocation, SignerConfig};
+use crate::config::{parse_note_ids, CctpForwarding, Command, Invocation, KmsConfig};
 
 use super::{create_store_parent, startup_anchor, TestArgs, SIGNING_KEY_ONE, SIGNING_KEY_TWO};
 
@@ -31,7 +31,7 @@ fn assert_cli_error(args: &TestArgs, expected_kind: ErrorKind) {
 fn cli_surface_is_explicit() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let valid = TestArgs::new(&tempdir, 1);
+    let valid = TestArgs::new(&tempdir);
 
     assert_eq!(valid.load().miden_rpc_url(), &Endpoint::devnet());
     let mut local = valid.clone();
@@ -39,7 +39,6 @@ fn cli_surface_is_explicit() {
     assert_eq!(local.load().miden_rpc_url(), &Endpoint::localhost());
 
     for required in [
-        "--signer-provider",
         "--miden-rpc-url",
         "--circle-url",
         "--request-timeout",
@@ -77,7 +76,6 @@ fn cli_surface_is_explicit() {
     assert_cli_error(&unknown, ErrorKind::UnknownArgument);
 
     for (flag, duplicate_value) in [
-        ("--signer-provider", "aws-kms"),
         ("--miden-rpc-url", "https://rpc.devnet.miden.io"),
         ("--circle-url", "https://circle.example.invalid"),
         ("--request-timeout", "1s"),
@@ -179,7 +177,7 @@ fn cli_surface_is_explicit() {
 fn invalid_config_is_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);
-    let valid = TestArgs::new(&tempdir, 1);
+    let valid = TestArgs::new(&tempdir);
     let cases = [
         (
             "--request-timeout",
@@ -323,11 +321,10 @@ fn invalid_config_is_rejected() {
     );
 
     let absolute_store = tempdir.path().join("absolute.sqlite3");
-    let mut explicit = TestArgs::new(&tempdir, 0);
+    let mut explicit = TestArgs::new(&tempdir);
     explicit.replace("--store-path", &absolute_store);
     let config = explicit.load();
     assert_eq!(config.store_path(), absolute_store);
-    assert_eq!(config.faucet_deployment_block(), BlockNumber::from(0u32));
     assert_eq!(config.trusted_anchor_block(), BlockNumber::from(0u32));
     assert_eq!(
         config.trusted_anchor_commitment(),
@@ -359,6 +356,20 @@ fn invalid_config_is_rejected() {
         (AssetAmount::MAX.as_u64() + 1).to_string(),
     );
     assert_config_error(&excessive_fee, "maximum withdrawal fee is invalid");
+
+    // A store scans from its anchor, so the anchor may sit at the faucet's deployment block or
+    // before it, never after.
+    let mut at_deployment = valid.clone();
+    at_deployment.replace("--faucet-deployment-block", "7");
+    at_deployment.replace("--trusted-anchor-block", "7");
+    at_deployment.config().unwrap();
+    let mut anchor_after_deployment = valid.clone();
+    anchor_after_deployment.replace("--faucet-deployment-block", "7");
+    anchor_after_deployment.replace("--trusted-anchor-block", "8");
+    assert_config_error(
+        &anchor_after_deployment,
+        "trusted anchor must not be after the faucet deployment block",
+    );
 }
 
 /// A note IDs file takes the first word of each non-empty line, so an edited copy of the
@@ -394,25 +405,20 @@ fn note_ids_file_takes_the_first_word_of_each_line() {
 }
 
 #[test]
-fn signer_mode_validates_only_its_own_settings() {
+fn kms_settings_are_validated() {
     const FIRST: &str =
         "arn:aws:kms:eu-north-1:584968076953:key/1f82bbff-391f-4aec-8995-fe5782e1d559";
     const SECOND: &str =
         "arn:aws:kms:eu-north-1:584968076953:key/5f5e3e2f-8818-48c0-a6e0-54aada5747b5";
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let kms = TestArgs::new(&directory, 1);
+    let kms = TestArgs::new(&directory);
     assert!(matches!(
-        kms.load().signer(),
-        SignerConfig::AwsKms { region, key_arns, operation_timeout }
+        kms.load().kms(),
+        KmsConfig { region, key_arns, operation_timeout }
         if region == "eu-north-1" && key_arns == &[FIRST, SECOND]
             && *operation_timeout == std::time::Duration::from_secs(10)
     ));
-    for provider in ["development", "fallback"] {
-        let mut unsupported = kms.clone();
-        unsupported.replace("--signer-provider", provider);
-        assert_cli_error(&unsupported, ErrorKind::InvalidValue);
-    }
 
     let options: [(&str, &[&str]); 3] = [
         ("--aws-kms-region", &["eu-north-1"]),

@@ -14,7 +14,16 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-Use `ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1`, available for `linux/amd64` and `linux/arm64`.
+This guide describes this branch. Released images up to v0.17.2 also require
+`--signer-provider aws-kms`, which this branch no longer accepts. Until the next release, build an
+image from this branch and use its name in place of `<BRIDGE_IMAGE>` below:
+
+```sh
+docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
+```
+
+Run that build command from the repository root. Published images use
+`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -85,7 +94,7 @@ values are examples.
 docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --mount "type=bind,src=$USDCX_DATA_DIR,dst=/data" \
   --env RUST_LOG=info \
-  ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 \
+  '<BRIDGE_IMAGE>' \
   run \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_HTTPS_URL>' \
@@ -98,7 +107,6 @@ docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --relayer-account-id '<RELAYER_ACCOUNT_ID>' \
   --relayer-attester-public-key '<CIRCLE_DEPOSIT_PUBLIC_KEY_HEX>' \
   --relayer-state-file /data/relayer/progress.json \
-  --signer-provider aws-kms \
   --aws-kms-region '<AWS_REGION>' \
   --aws-kms-key-arn '<KMS_KEY_ARN_1>' '<KMS_KEY_ARN_2>' \
   --aws-kms-operation-timeout 10s \
@@ -129,15 +137,15 @@ not a completed bridge transfer.
 All options:
 
 ```sh
-docker run --rm --network none ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 run --help
+docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 ```
 
 ## Configuration flags
 
-This is the complete flag reference for the single `usdcx-bridge run` command in v0.17.1.
+This is the complete flag reference for the single `usdcx-bridge run` command in this branch.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
-Only the relayer polling interval and expiration delta have defaults. KMS settings are required
-because `aws-kms` is the only supported signer. Durations accept values such as `30s` or `500ms`;
+Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
+in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
 paths below refer to locations inside the container.
 
 Fee amounts use USDC base units: `1000000` = 1 USDC. One basis point = 0.01%.
@@ -159,8 +167,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. The example uses `30s`; allow for network latency. |
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
-| `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. A fresh store starts scanning here; an existing store retains its scan start. |
-| `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. |
+| `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
+| `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
 | `--trusted-anchor-commitment` | Required | That checkpoint's verified 32-byte block commitment, in canonical lowercase `0x` hex. Keep the original anchor for an existing store. |
 | `--minimum-finality-depth-blocks` | Required | Positive number of blocks above a burn before submission. Use the network's agreed withdrawal finality depth. |
 | `--max-withdrawal-fee` | Required | Fixed part of the withdrawal fee allowance, in USDC base units. Size from Circle quotes using the fee guide. |
@@ -168,7 +176,6 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--cctp-forwarding-max-fee` | Required | Positive cap for an additional CCTP transfer, in USDC base units. Size using the fee guide; required but not added for direct routes. |
 | `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc, confirmed for the target Circle environment. |
 | `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc, confirmed for that environment. Must differ from the xReserve address. |
-| `--signer-provider` | Required | `aws-kms`. No other provider is supported. |
 | `--aws-kms-region` | Required | AWS Region containing both keys. |
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
@@ -192,8 +199,9 @@ exits unexpectedly, both stop with an error. Restart with the same volume and co
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
 Use an image version compatible with the deployed faucet; updating the service does not update
-the faucet. SDK store upgrades can prevent older clients from opening the store. Keep a
-backup from before the upgrade if rollback is needed.
+the faucet. When upgrading from v0.17.2 or earlier, remove `--signer-provider` from the `run`
+command; it is no longer accepted. SDK store upgrades can prevent older clients from opening the
+store. Keep a backup from before the upgrade if rollback is needed.
 
 ## Tracing
 
@@ -234,7 +242,7 @@ Every cycle span also carries the attester's progress, zeros included:
 | --- | --- |
 | `block.number` | The last block the attester verified. |
 | `tip.number` | The node's latest committed block. Left out when the node could not be read. |
-| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the faucet's deployment block. |
+| `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the trusted anchor. |
 | `burns.held.count` | Burns held before submission. |
 | `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
 | `withdrawals.failed.count` | Withdrawals Circle reported as failed. |

@@ -264,69 +264,71 @@ enum AdminError {
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match self {
+        let (status, code, message): (_, _, String) = match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
-                "invalid admin credentials",
+                "invalid admin credentials".into(),
             ),
-            Self::InvalidInput(message) => (StatusCode::BAD_REQUEST, "invalid_input", message),
+            Self::InvalidInput(message) => {
+                (StatusCode::BAD_REQUEST, "invalid_input", message.into())
+            }
             Self::BodyTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
-                "release body exceeds 16 KiB",
+                "release body exceeds 16 KiB".into(),
             ),
             Self::Stopping => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "stopping",
-                "attester is stopping",
+                "attester is stopping".into(),
             ),
             Self::QueueFull => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "queue_full",
-                "command was not admitted",
+                "command was not admitted".into(),
             ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable",
-                "attester is unavailable",
+                "attester is unavailable".into(),
             ),
             Self::ReplyTimeout => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "reply_timeout",
-                "outcome may be unknown; list holds again before selecting another release",
+                "outcome may be unknown; list holds again before selecting another release".into(),
             ),
             Self::Release(ReleaseError::Invalid) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_input",
-                "invalid hold selection",
+                "invalid hold selection".into(),
             ),
-            Self::Release(ReleaseError::NotHeld(_)) => (
+            Self::Release(ReleaseError::NotHeld(note_id)) => (
                 StatusCode::NOT_FOUND,
                 "hold_not_found",
-                "no hold for this note; list holds to find it",
+                format!("no hold for note {note_id}; list holds to find it"),
             ),
             Self::Release(ReleaseError::Conflict) => (
                 StatusCode::CONFLICT,
                 "hold_changed",
-                "list holds again before selecting a release",
+                "list holds again before selecting a release".into(),
             ),
             Self::Release(ReleaseError::CircleCheck) => (
                 StatusCode::BAD_REQUEST,
                 "circle_check_required",
-                "check Circle and assert non-acceptance for the held withdrawal",
+                "check Circle and assert non-acceptance for the held withdrawal".into(),
             ),
             Self::Release(ReleaseError::Store(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "store_failed",
-                "attester store failed",
+                "attester store failed".into(),
             ),
         };
         (
             status,
             Json(ErrorBody {
                 code: code.into(),
-                message: message.into(),
+                message,
             }),
         )
             .into_response()
@@ -446,6 +448,10 @@ mod tests {
             .unwrap();
         let error: ErrorBody = serde_json::from_slice(&body).unwrap();
         assert_eq!(error.code, "hold_not_found");
+        assert_eq!(
+            error.message,
+            format!("no hold for note {note_id}; list holds to find it")
+        );
     }
 
     #[test]

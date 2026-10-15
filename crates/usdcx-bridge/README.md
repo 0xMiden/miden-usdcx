@@ -14,7 +14,16 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-Use `ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1`, available for `linux/amd64` and `linux/arm64`.
+This guide describes this branch. Released images up to v0.17.2 also require
+`--signer-provider aws-kms`, which this branch no longer accepts. Until the next release, build an
+image from this branch and use its name in place of `<BRIDGE_IMAGE>` below:
+
+```sh
+docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
+```
+
+Run that build command from the repository root. Published images use
+`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -85,7 +94,7 @@ values are examples.
 docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --mount "type=bind,src=$USDCX_DATA_DIR,dst=/data" \
   --env RUST_LOG=info \
-  ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 \
+  '<BRIDGE_IMAGE>' \
   run \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_HTTPS_URL>' \
@@ -128,12 +137,12 @@ not a completed bridge transfer.
 All options:
 
 ```sh
-docker run --rm --network none ghcr.io/0xmiden/miden-usdcx-bridge:v0.17.1 run --help
+docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 ```
 
 ## Configuration flags
 
-This is the complete flag reference for the single `usdcx-bridge run` command in v0.17.1.
+This is the complete flag reference for the single `usdcx-bridge run` command in this branch.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
 Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
 in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
@@ -190,8 +199,9 @@ exits unexpectedly, both stop with an error. Restart with the same volume and co
 
 Before upgrading, stop and securely back up the entire data directory, including the keystore.
 Use an image version compatible with the deployed faucet; updating the service does not update
-the faucet. SDK store upgrades can prevent older clients from opening the store. Keep a
-backup from before the upgrade if rollback is needed.
+the faucet. When upgrading from v0.17.2 or earlier, remove `--signer-provider` from the `run`
+command; it is no longer accepted. SDK store upgrades can prevent older clients from opening the
+store. Keep a backup from before the upgrade if rollback is needed.
 
 ## Tracing
 

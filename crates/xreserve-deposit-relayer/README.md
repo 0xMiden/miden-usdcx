@@ -265,7 +265,10 @@ until it reaches `watermark` — the newest attestation the last completed scan 
 present only while a scan is unfinished, and it records the head that scan started at along with
 Circle's cursor for the page it stopped on. The next poll then resumes at that page instead of
 re-minting the ones already on chain, and both fields are dropped once `watermark` moves up to
-`head`. A backlog therefore costs one pass per outage rather than one per restart.
+`head`. A backlog therefore costs one pass per outage rather than one per restart. The head is the
+newest entry whose message hash can be read; when none on the head page can, the scan carries on
+to the pages below without recording progress until one gives it a head, so an interruption before
+then starts it over.
 
 The watermark is a stop condition rather than a cursor sent to Circle, because Circle's
 `pageAfter` only walks towards older entries — the wrong way for a feed that grows at its head. A

@@ -71,12 +71,49 @@ struct PageOutcome {
     /// The newest entry on this page with a readable message hash, or `None` when the page held
     /// none.
     ///
-    /// The scan uses it from the head page only — the one it fetches without a cursor — where it
-    /// becomes the watermark once the walk finishes. `None` there means the feed is empty.
+    /// The scan uses it only until it has a head: the first page that has one gives the scan its
+    /// head, which becomes the watermark once the walk finishes.
     newest: Option<MessageHash>,
     /// The cursor to fetch the next page with, which doubles as where to resume after an
     /// interruption. `None` when the scan has everything.
     next: Option<CircleCursor>,
+}
+
+/// Where a scan stands between two of its pages.
+struct Position {
+    /// Where the walk stops.
+    watermark: Option<MessageHash>,
+    /// The newest readable message hash the scan has met, which becomes the watermark once the
+    /// walk finishes. It is `None` while every entry so far has had an unreadable one.
+    head: Option<MessageHash>,
+    /// The cursor of the page to fetch next, or `None` for the head page.
+    resume: Option<CircleCursor>,
+}
+
+impl Position {
+    fn from_state(state: State) -> Self {
+        let (head, resume) = state
+            .scan
+            .map_or((None, None), |scan| (Some(scan.head), Some(scan.resume)));
+        Self {
+            watermark: state.watermark,
+            head,
+            resume,
+        }
+    }
+
+    /// The progress this position saves. Progress names the head the walk will move the watermark
+    /// to, so a walk that has not met a readable message hash yet has none to save, and an
+    /// interruption before then starts it over at the head page.
+    fn state(&self) -> State {
+        State {
+            watermark: self.watermark,
+            scan: self
+                .head
+                .zip(self.resume.clone())
+                .map(|(head, resume)| ScanProgress { head, resume }),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -165,8 +202,8 @@ impl<M: MidenClient> Relayer<M> {
     /// - Fetching a Circle page fails.
     /// - Submitting the mint notes fails.
     async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
-        let mut state = match self.store.state().classify(Actionable("progress_file")) {
-            Ok(state) => state,
+        let mut position = match self.store.state().classify(Actionable("progress_file")) {
+            Ok(state) => Position::from_state(state),
             Err(failure) => {
                 failure.report("could not read the relayer's progress");
                 return Err(failure);
@@ -177,22 +214,19 @@ impl<M: MidenClient> Relayer<M> {
             if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
-            let Some(next) = self.run_page(&state).await? else {
-                // The feed is empty, so there is nothing for the next scan to stop at.
-                return Ok(ScanOutcome::Complete);
-            };
+            let next = self.run_page(&position).await?;
             if shutdown.is_cancelled() {
                 return Ok(ScanOutcome::Stopped);
             }
-            if next.scan.is_none() {
+            let Some(next) = next else {
                 return Ok(ScanOutcome::Complete);
-            }
-            state = next;
+            };
+            position = next;
         }
     }
 
     /// Runs one page of the scan in its `relayer.page` span: mints it, then records it as done.
-    /// Returns the state the scan continues from, or `None` when the feed is empty.
+    /// Returns where the scan continues from, or `None` when the walk is over.
     ///
     /// A failure marks the page span failed and is logged inside it, so the span says why the page
     /// was not recorded as done.
@@ -218,10 +252,10 @@ impl<M: MidenClient> Relayer<M> {
             transaction.id = Empty,
         )
     )]
-    async fn run_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
+    async fn run_page(&mut self, position: &Position) -> Result<Option<Position>, Failure> {
         // Boxed because the page's future, which holds the Miden client's, is deep enough that
         // nesting it in the scan's future exceeds the compiler's recursion limit.
-        let result = Box::pin(self.finish_page(state)).await;
+        let result = Box::pin(self.finish_page(position)).await;
         let span = Span::current();
         span.record("deposits.unminted.count", self.unminted.count());
         span.record(
@@ -234,40 +268,47 @@ impl<M: MidenClient> Relayer<M> {
         result
     }
 
-    /// Processes the page `state` resumes at and saves the state that follows it.
-    async fn finish_page(&mut self, state: &State) -> Result<Option<State>, Failure> {
+    /// Processes the page `position` resumes at and saves the progress that follows it. Returns
+    /// where the scan continues from, or `None` when the walk is over.
+    async fn finish_page(&mut self, position: &Position) -> Result<Option<Position>, Failure> {
         let outcome = self
-            .process_page(
-                state.scan.as_ref().map(|scan| &scan.resume),
-                state.watermark.as_ref(),
-            )
+            .process_page(position.resume.as_ref(), position.watermark.as_ref())
             .await?;
 
-        // A scan that has progress keeps the head it started at, so a fresh scan reads the page's
-        // newest attestation only on its first page — by the second it has written progress of
-        // its own and the stored head wins.
-        let Some(head) = state.scan.as_ref().map(|scan| scan.head).or(outcome.newest) else {
-            return Ok(None);
-        };
+        // A scan keeps the first head it finds. That is on the head page unless every entry there
+        // had an unreadable message hash, in which case the walk goes on and a later page gives
+        // it one; one that never finds any leaves the watermark where it was.
+        let head = position.head.or(outcome.newest);
 
         // The watermark moves only when the walk reaches its end, and the progress it replaces is
         // dropped in the same write, so the file never claims both.
-        let next = State {
-            watermark: match outcome.next {
-                Some(_) => state.watermark,
-                None => Some(head),
-            },
-            scan: outcome.next.map(|resume| ScanProgress { head, resume }),
+        let (next, saved) = match outcome.next {
+            Some(resume) => {
+                let next = Position {
+                    watermark: position.watermark,
+                    head,
+                    resume: Some(resume),
+                };
+                let saved = next.state();
+                (Some(next), saved)
+            }
+            None => (
+                None,
+                State {
+                    watermark: head.or(position.watermark),
+                    scan: None,
+                },
+            ),
         };
 
         // A caught-up poll finds the watermark at the top of the first page and leaves the state
         // exactly as it was, which is not worth an fsync every polling interval.
-        if next != *state {
+        if saved != position.state() {
             self.store
-                .set_state(&next)
+                .set_state(&saved)
                 .classify(Actionable("progress_file"))?;
         }
-        Ok(Some(next))
+        Ok(next)
     }
 
     /// Fetches one page and mints the attestations on it above the watermark.

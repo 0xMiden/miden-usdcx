@@ -67,21 +67,35 @@ fn config(directory: &TempDir, url: &str) -> Config {
 }
 
 fn page_server(body: String, next: bool) -> (String, thread::JoinHandle<()>) {
+    let (url, server) = pages_server(vec![(body, next)]);
+    (url, thread::spawn(move || drop(server.join().unwrap())))
+}
+
+/// Serves `pages` in order, one per request, and returns the request lines it was sent. A page
+/// with `next` links to the `older` cursor.
+fn pages_server(pages: Vec<(String, bool)>) -> (String, thread::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut request = [0; 4096];
-        assert!(stream.read(&mut request).unwrap() > 0);
-        let link = if next {
-            "Link: <https://circle.invalid/feed?pageAfter=older>; rel=\"next\"\r\n"
-        } else {
-            ""
-        };
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{link}Connection: close\r\n\r\n{body}", body.len()).unwrap();
+        let mut requests = Vec::new();
+        for (body, next) in pages {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let read = stream.read(&mut request).unwrap();
+            assert!(read > 0);
+            let request = String::from_utf8_lossy(&request[..read]);
+            requests.push(request.lines().next().unwrap_or_default().to_owned());
+            let link = if next {
+                "Link: <https://circle.invalid/feed?pageAfter=older>; rel=\"next\"\r\n"
+            } else {
+                ""
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{link}Connection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        requests
     });
     (url, server)
 }
@@ -214,6 +228,45 @@ async fn a_page_with_an_undecodable_entry_is_recorded_as_done() {
     let saved = Store::new(path).state().unwrap();
     assert_eq!(saved.watermark, Some(MessageHash::new([1; 32])));
     assert!(saved.scan.is_none());
+}
+
+/// A head page where no message hash can be read does not end the scan: the walk follows its next
+/// link, and the first readable hash it meets becomes the watermark.
+#[tokio::test]
+async fn a_head_page_without_a_readable_hash_still_walks_to_the_next_page() {
+    let directory = TempDir::new().unwrap();
+    let unreadable = serde_json::json!({"attestations": [{
+        "payload": "0x", "messageHash": "not hex",
+        "attestation": format!("0x{}", "00".repeat(65)),
+    }]})
+    .to_string();
+    let readable = serde_json::json!({"attestations": [{
+        "payload": "not hex", "messageHash": format!("0x{}", "02".repeat(32)),
+        "attestation": "0x00",
+    }]})
+    .to_string();
+    let (url, server) = pages_server(vec![(unreadable, true), (readable, false)]);
+    let config = config(&directory, &url);
+    let path = config.state_file.clone();
+    let mut relayer = Relayer::new(
+        config,
+        TestMiden {
+            reached_page: CancellationToken::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        relayer.scan(&CancellationToken::new()).await.unwrap(),
+        ScanOutcome::Complete
+    );
+    drop(relayer);
+    // Checked before joining the server, which would otherwise wait for a page never asked for.
+    let saved = Store::new(path).state().unwrap();
+    assert_eq!(saved.watermark, Some(MessageHash::new([2; 32])));
+    assert!(saved.scan.is_none());
+    let requests = server.join().unwrap();
+    assert!(!requests[0].contains("pageAfter"), "{}", requests[0]);
+    assert!(requests[1].contains("pageAfter=older"), "{}", requests[1]);
 }
 
 #[tokio::test]

@@ -22,10 +22,12 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Optional local operator listener; requires --admin-token-file. Disabled by default.
+    /// Loopback address for the admin listener, which lists and releases holds while the attester
+    /// runs. Off unless set; requires --admin-token-file.
     #[arg(long, requires = "admin_token_file", value_parser = crate::admin::parse_listen)]
     admin_listen: Option<std::net::SocketAddr>,
-    /// Private operator-readable token file; requires --admin-listen.
+    /// File holding the admin bearer token as 64 hex characters, readable only by operators;
+    /// requires --admin-listen.
     #[arg(long, requires = "admin_listen")]
     admin_token_file: Option<PathBuf>,
     /// AWS region containing both KMS keys.
@@ -339,6 +341,7 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    /// The admin listener's settings, or `None` when it is off.
     pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
         self.admin.as_ref()
     }

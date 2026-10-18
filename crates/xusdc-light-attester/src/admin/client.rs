@@ -8,6 +8,7 @@ use reqwest::{Client, Url};
 
 use super::{load_token, parse_note_id, ErrorBody, HoldsPage, ReleaseRequest, Released};
 
+/// Arguments of the `admin` command, which talks to a running attester's admin listener.
 #[derive(Debug, Args)]
 pub struct AdminArgs {
     /// Literal loopback HTTP URL of the running attester, with no extra path.
@@ -20,10 +21,12 @@ pub struct AdminArgs {
     operation: AdminOperation,
 }
 
+/// What the `admin` command asks the listener to do.
 #[derive(Debug, Subcommand)]
 pub enum AdminOperation {
     /// List held burns and withdrawals.
     Holds {
+        /// The `next_after` value printed by the previous page.
         #[arg(long, value_parser = parse_cursor)]
         after: Option<String>,
     },
@@ -38,11 +41,13 @@ pub enum AdminOperation {
     },
 }
 
+/// Checks that a page cursor is a canonical note ID, keeping it as text for the query.
 fn parse_cursor(value: &str) -> Result<String, String> {
     parse_note_id(value).map_err(|error| error.to_string())?;
     Ok(value.into())
 }
 
+/// Parses a `NOTE_ID:EVENT_SEQ` hold selection, as the holds list prints it.
 fn parse_selection(value: &str) -> Result<(String, i64), String> {
     let (id, seq) = value
         .rsplit_once(':')
@@ -57,6 +62,9 @@ fn parse_selection(value: &str) -> Result<(String, i64), String> {
     Ok((id, revision))
 }
 
+/// Parses the listener URL, accepting only plain HTTP to a literal loopback address.
+///
+/// A host name could resolve somewhere other than this machine and send the token there.
 fn parse_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "invalid admin URL")?;
     let address: IpAddr = match url.host() {
@@ -80,8 +88,14 @@ fn parse_url(value: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+/// Sends one request to the admin listener and prints its answer.
+///
+/// The request is never retried: after a lost reply the operator lists the holds again, since a
+/// release may have committed.
 pub(crate) async fn run(args: AdminArgs) -> anyhow::Result<()> {
     let token = hex::encode(load_token(&args.token_file)?);
+    // No proxy or redirect, so the token goes only to the loopback listener. The timeout outlasts
+    // the listener's own wait for the attester, so its answer arrives first.
     let client = Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -115,6 +129,7 @@ pub(crate) async fn run(args: AdminArgs) -> anyhow::Result<()> {
         .await
         .context("admin request failed; list holds before selecting another release")?;
     let status = response.status();
+    // Read the body in chunks, so an oversized answer is refused before it is all buffered.
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()

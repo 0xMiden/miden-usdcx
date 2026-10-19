@@ -199,9 +199,13 @@ The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 With both withdrawal-limit flags set, a matching prepare or submission rejection waits and retries
 automatically. Without them, prepare and submission 400 responses keep the existing manual-hold
 behavior. Existing holds are not converted automatically; inspect them before using hold release.
-An uncertain submission keeps its original signed request; a confirmed rejection can prepare again.
+An uncertain submission keeps its original signed request until Circle confirms the outcome. A
+verified expired outcome can be prepared again when due. Other submission 400s still require a
+manual hold.
 
-Withdrawals stay in burn order. A large withdrawal can delay smaller ones for much of Circle's
+A blocked burn stops new prepares and new POSTs behind it, including uncertain resends. Recovery
+runs before fresh withdrawals; after a wait clears, these two phases are not globally ordered by
+burn age. A large withdrawal can delay smaller ones for much of Circle's
 rolling window; one above the entire limit may never fit and needs investigation. The service does
 not calculate available capacity or let smaller withdrawals pass. Accepted withdrawals continue
 status checks, and live hold management remains available. Waiting for the limit is not a manual
@@ -279,6 +283,9 @@ Every cycle span also carries the attester's progress, zeros included:
 | `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
 | `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
 | `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
+| `withdrawals.limit.count` | Burns waiting for Circle's withdrawal limit; 0 when none wait. |
+| `withdrawals.limit.note_id` | The earliest waiting burn. Left out when none wait. |
+| `withdrawals.limit.retry_at` | Its next retry time in Unix seconds. Left out when none wait. |
 
 ## Troubleshooting
 

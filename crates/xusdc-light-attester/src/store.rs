@@ -211,29 +211,16 @@ fn plain_file_name(path: &Path) -> PathBuf {
 }
 
 impl Store {
-    /// Burn order is creation block, then the stored note-ID bytes, not `NoteId::Ord`.
-    pub(crate) fn outbound_order(&self) -> anyhow::Result<Vec<(NoteId, u32)>> {
-        let mut statement = self.connection.prepare(
-            "SELECT burns.note_id, creation_block FROM burns LEFT JOIN submissions USING (note_id)
-                WHERE consumption_block IS NOT NULL AND burns.hold_reason IS NULL
-                AND (submissions.status IS NULL OR submissions.status = ?1
-                    OR (submissions.status = ?2 AND withdrawal_id IS NULL))
-                ORDER BY creation_block, burns.note_id"
-        ).map_err(classify_error)?;
-        let rows = statement
-            .query_map(
-                params![
-                    SubmissionStatus::Expired.as_ref(),
-                    SubmissionStatus::Submitting.as_ref()
-                ],
-                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?)),
+    pub(crate) fn burn_creation_block(&self, note_id: NoteId) -> anyhow::Result<BlockNumber> {
+        let block = self
+            .connection
+            .query_row(
+                "SELECT creation_block FROM burns WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
             )
             .map_err(classify_error)?;
-        rows.map(|row| {
-            let (id, block) = row.map_err(classify_error)?;
-            Ok((decode_canonical(&id)?, block))
-        })
-        .collect()
+        decode_block_number(block)
     }
 
     pub(crate) fn first_limit_wait(&self) -> anyhow::Result<Option<LimitWait>> {

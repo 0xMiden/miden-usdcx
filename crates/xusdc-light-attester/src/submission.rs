@@ -153,6 +153,12 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         for saved in submissions {
             self.admin_checkpoint().await;
+            if *rate_limited {
+                break;
+            }
+            if saved.withdrawal_id.is_none() && !self.limit_allows(saved.note_id)? {
+                continue;
+            }
             let span = info_span!("attester.withdraw", note.id = %saved.note_id);
             self.advance_submission(saved, rate_limited)
                 .instrument(span)

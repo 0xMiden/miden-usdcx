@@ -21,7 +21,7 @@ struct PendingPost {
 }
 
 #[tokio::test]
-async fn a_live_release_rejoins_fifo_without_stopping_status_checks() {
+async fn a_live_release_waits_for_the_next_snapshot_without_stopping_status_checks() {
     use super::support::ObservedRequest;
     use miden_protocol::utils::serde::Serializable;
     let ledger = Ledger::new().await;
@@ -49,8 +49,8 @@ async fn a_live_release_rejoins_fifo_without_stopping_status_checks() {
         vec![
             reply(200, ledger.prepared_response(b)),
             reply(400, json!({"message":"Limit reached"})),
-            reply(400, json!({"message":"Limit reached"})),
             reply(200, ledger.response(c, "finalized")),
+            reply(400, json!({"message":"Limit reached"})),
         ],
     );
     let started = Arc::new(Notify::new());
@@ -89,9 +89,18 @@ async fn a_live_release_rejoins_fifo_without_stopping_status_checks() {
         [
             ObservedRequest::Prepare,
             ObservedRequest::Submit { .. },
-            ObservedRequest::Prepare,
             ObservedRequest::Lookup { .. }
         ]
+    ));
+    assert_eq!(
+        attester.store.first_limit_wait().unwrap().unwrap().note_id,
+        ledger.burns[b].note_id()
+    );
+    assert!(attester.store.holds().unwrap().is_empty());
+    attester.run_one_cycle().await.unwrap();
+    assert!(matches!(
+        requests.lock().unwrap().as_slice(),
+        [_, _, _, ObservedRequest::Prepare]
     ));
     assert_eq!(
         attester.store.first_limit_wait().unwrap().unwrap().note_id,
@@ -101,7 +110,6 @@ async fn a_live_release_rejoins_fifo_without_stopping_status_checks() {
         attester.store.progress().unwrap().withdrawal_limit_waiting,
         2
     );
-    assert!(attester.store.holds().unwrap().is_empty());
     let revision = ledger.stored(&format!(
         "SELECT MAX(seq) FROM submission_events WHERE note_id = x'{}'",
         hex::encode(ledger.burns[a].note_id().to_bytes())

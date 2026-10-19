@@ -22,6 +22,7 @@ use crate::Attester;
 /// An initialized attester that has not started its withdrawal loop yet.
 pub struct AttesterService {
     attester: Attester,
+    /// The bound admin listener and the inbox its commands arrive in, when the listener is on.
     admin: Option<(
         crate::admin::Server,
         tokio::sync::mpsc::Receiver<crate::admin::Command>,
@@ -54,6 +55,8 @@ impl AttesterService {
     }
 
     async fn connect(config: Config) -> Result<Self> {
+        // Bind first, so a taken port or a bad token file fails before any dependency is
+        // contacted.
         let admin = match config.admin() {
             Some(config) => Some(crate::admin::Server::bind(config).await?),
             None => None,
@@ -90,6 +93,9 @@ impl AttesterService {
             admin,
         } = self;
         if let Some((server, receiver)) = admin {
+            // Either one stopping stops the other, without cancelling the caller's token: a
+            // supervisor reads that token to tell a requested stop from an unexpected one.
+            let shutdown = shutdown.child_token();
             attester.attach_admin(receiver, shutdown.clone());
             let run = attester.run(shutdown.clone());
             let serve = server.run(shutdown.clone());

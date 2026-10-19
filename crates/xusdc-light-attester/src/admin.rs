@@ -1,4 +1,8 @@
 //! List and release holds in the running attester.
+//!
+//! A loopback HTTP listener authenticates each request with a bearer token and queues it for the
+//! attester's own task, which runs it against the store between steps of a cycle and sends back the
+//! result. The listener never opens the store itself.
 
 use std::fs::File;
 use std::io::{ErrorKind, Read};
@@ -31,19 +35,27 @@ pub use client::AdminArgs;
 
 use crate::store::{HoldEntry, ReleaseError, ReleaseSelection};
 
+/// How long a request waits for the attester to run its command.
 const COMMAND_WAIT: Duration = Duration::from_secs(60);
+/// How long a connection may take to send its request headers.
 const HEADER_WAIT: Duration = Duration::from_secs(10);
+/// The longest a connection stays open, a little over [`COMMAND_WAIT`].
 const CONNECTION_WAIT: Duration = Duration::from_secs(70);
+/// How long shutdown waits for open connections to finish before dropping them.
 const CLEANUP_WAIT: Duration = Duration::from_secs(5);
+/// The largest request body accepted.
 const BODY_LIMIT: usize = 16 * 1024;
+/// The most connections served at once; further ones wait in the listen backlog.
 const MAX_CONNECTIONS: usize = 16;
 
+/// Where the admin listener binds and the file holding its bearer token.
 #[derive(Debug, Clone)]
 pub(crate) struct AdminConfig {
     pub(crate) listen: SocketAddr,
     pub(crate) token_file: PathBuf,
 }
 
+/// Parses the listener address, accepting only a loopback address.
 pub(crate) fn parse_listen(value: &str) -> Result<SocketAddr, String> {
     let address: SocketAddr = value
         .parse()
@@ -54,6 +66,7 @@ pub(crate) fn parse_listen(value: &str) -> Result<SocketAddr, String> {
     Ok(address)
 }
 
+/// Reads the 32-byte admin token, stored as 64 hex characters and an optional newline.
 // Read at most one byte beyond the accepted representation, including its optional newline.
 fn load_token(path: &Path) -> anyhow::Result<[u8; 32]> {
     let mut bytes = Vec::new();
@@ -75,6 +88,9 @@ fn load_token(path: &Path) -> anyhow::Result<[u8; 32]> {
     Ok(token)
 }
 
+/// Parses a note ID in the canonical form the holds list prints.
+///
+/// One spelling per note means a note ID from the list can be compared and paged on as text.
 pub(crate) fn parse_note_id(value: &str) -> anyhow::Result<NoteId> {
     let id = NoteId::try_from_hex(value).context("invalid note ID")?;
     ensure!(
@@ -84,47 +100,62 @@ pub(crate) fn parse_note_id(value: &str) -> anyhow::Result<NoteId> {
     Ok(id)
 }
 
+/// The body of a release request: one hold, as the holds list showed it.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReleaseRequest {
     pub(crate) note_id: String,
+    /// The hold's `event_seq` from the list. The release is refused if the hold has changed since.
     pub(crate) expected_event_seq: i64,
+    /// The operator confirms Circle did not accept the withdrawal. Required to release a held
+    /// withdrawal.
     #[serde(default)]
     pub(crate) circle_not_accepted: bool,
 }
 
+/// One page of holds, in note order.
+///
+/// The faucet and trusted anchor let the operator confirm which attester answered.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HoldsPage {
     pub(crate) faucet_account_id: String,
     pub(crate) trusted_anchor_block: u32,
     pub(crate) trusted_anchor_commitment: String,
     pub(crate) holds: Vec<HoldEntry>,
+    /// The cursor for the next page, or `None` on the last page.
     pub(crate) next_after: Option<String>,
 }
 
+/// How many burns and withdrawals a release made eligible again.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Released {
     pub(crate) burns: usize,
     pub(crate) withdrawals: usize,
 }
 
+/// A store operation the attester runs for the listener, with the channel for its result.
 pub(crate) enum Operation {
+    /// Lists the holds after the given note ID, or from the start.
     List(
         Option<NoteId>,
         oneshot::Sender<Result<HoldsPage, ReleaseError>>,
     ),
+    /// Releases the selected hold.
     Release(
         ReleaseSelection,
         oneshot::Sender<Result<Released, ReleaseError>>,
     ),
 }
 
+/// An operation queued for the attester, with the time its request stops waiting.
 pub(crate) struct Command {
     pub(crate) operation: Operation,
     pub(crate) deadline: Instant,
 }
 
 impl Command {
+    /// Whether the request has stopped waiting, by timing out or disconnecting, so the command
+    /// should not run.
     pub(crate) fn abandoned(&self) -> bool {
         self.deadline <= Instant::now()
             || match &self.operation {
@@ -134,13 +165,17 @@ impl Command {
     }
 }
 
+/// What every request handler shares.
 #[derive(Clone)]
 struct ServerState {
     token: [u8; 32],
+    /// The attester's inbox.
     commands: mpsc::Sender<Command>,
+    /// Cancelled when the listener stops, so new requests are refused and open connections close.
     shutdown: CancellationToken,
 }
 
+/// The admin listener, bound but not yet serving.
 pub(crate) struct Server {
     listener: TcpListener,
     state: ServerState,
@@ -153,6 +188,9 @@ impl Server {
     pub(crate) fn address(&self) -> SocketAddr {
         self.listener.local_addr().unwrap()
     }
+    /// Loads the token and binds the listener, returning it with the inbox the attester reads.
+    ///
+    /// The inbox is bounded, so a request that finds it full is refused rather than queued.
     pub(crate) async fn bind(
         config: &AdminConfig,
     ) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
@@ -176,6 +214,11 @@ impl Server {
         ))
     }
 
+    /// Serves requests until `shutdown` is cancelled, then gives open connections
+    /// [`CLEANUP_WAIT`] to finish.
+    ///
+    /// Each connection carries one request and is capped at [`CONNECTION_WAIT`], so a slow or idle
+    /// client cannot hold one of the [`MAX_CONNECTIONS`] slots.
     pub(crate) async fn run(self, shutdown: CancellationToken) -> anyhow::Result<()> {
         #[cfg(test)]
         let on_accept = self.accepted;
@@ -194,13 +237,17 @@ impl Server {
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => break,
+                // Reaping finished connections frees their slots.
                 Some(_) = connections.join_next(), if !connections.is_empty() => {},
                 accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
                     let (stream, _) = match accepted {
                         Ok(value) => value,
+                        // The client went away before it was accepted.
                         Err(error) if matches!(error.kind(),
                             ErrorKind::ConnectionRefused | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset
                         ) => continue,
+                        // Other failures, such as running out of file descriptors, can persist,
+                        // so pause before accepting again.
                         Err(error) => {
                             warn!(%error, "admin listener accept failed");
                             tokio::select! {
@@ -233,6 +280,7 @@ impl Server {
                 }
             }
         }
+        // Stop accepting, ask open connections to finish, then drop whatever is left.
         drop(listener);
         stop.cancel();
         let _ = tokio::time::timeout(CLEANUP_WAIT, async {
@@ -244,21 +292,29 @@ impl Server {
     }
 }
 
+/// The JSON body of every error answer: a stable code for scripts and a message for the operator.
 #[derive(Serialize, Deserialize, Debug)]
 struct ErrorBody {
     code: String,
     message: String,
 }
 
+/// Why a request failed, each mapped to one HTTP status and error code.
 #[derive(Debug)]
 enum AdminError {
+    /// The bearer token is missing or wrong.
     Unauthorized,
     InvalidInput(&'static str),
     BodyTooLarge,
+    /// The listener is shutting down.
     Stopping,
+    /// The attester's inbox is full.
     QueueFull,
+    /// The attester stopped taking commands, or dropped this one unanswered.
     Unavailable,
+    /// The attester did not answer in time. The command may still have run.
     ReplyTimeout,
+    /// The store refused or failed the operation.
     Release(ReleaseError),
 }
 
@@ -335,6 +391,9 @@ impl IntoResponse for AdminError {
     }
 }
 
+/// Lets a request through only with the admin bearer token, compared in constant time.
+///
+/// Every answer, refused or not, is marked `no-store` so no hold listing is cached.
 async fn authenticate(
     State(state): State<ServerState>,
     request: Request<Body>,
@@ -361,12 +420,15 @@ async fn authenticate(
     response
 }
 
+/// The query of a holds listing.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListQuery {
+    /// The last note ID of the previous page.
     after: Option<String>,
 }
 
+/// `GET /admin/attester/holds`: one page of holds.
 async fn list(
     State(state): State<ServerState>,
     query: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
@@ -381,6 +443,7 @@ async fn list(
     dispatch(&state, Operation::List(after, reply), receive).await
 }
 
+/// `POST /admin/attester/holds/release`: releases one hold selected from the list.
 async fn release(
     State(state): State<ServerState>,
     body: Result<Json<ReleaseRequest>, axum::extract::rejection::JsonRejection>,
@@ -405,6 +468,11 @@ async fn release(
     dispatch(&state, Operation::Release(selection, reply), receive).await
 }
 
+/// Queues an operation for the attester and waits up to [`COMMAND_WAIT`] for its result.
+///
+/// A full inbox is refused at once rather than waited on. A timeout leaves the outcome unknown:
+/// the attester drops a command whose deadline has passed, but one it has already started still
+/// commits.
 async fn dispatch<T: Serialize>(
     state: &ServerState,
     operation: Operation,
@@ -413,6 +481,8 @@ async fn dispatch<T: Serialize>(
     if state.shutdown.is_cancelled() {
         return Err(AdminError::Stopping);
     }
+    // The attester checks the same deadline, so it skips a command this request no longer waits
+    // for.
     let deadline = Instant::now() + COMMAND_WAIT;
     state
         .commands

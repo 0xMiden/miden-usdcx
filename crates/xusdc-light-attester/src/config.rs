@@ -22,10 +22,12 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Optional local operator listener; requires --admin-token-file. Disabled by default.
+    /// Loopback address for the admin listener, which lists and releases holds while the attester
+    /// runs. Off unless set; requires --admin-token-file.
     #[arg(long, requires = "admin_token_file", value_parser = crate::admin::parse_listen)]
     admin_listen: Option<std::net::SocketAddr>,
-    /// Private operator-readable token file; requires --admin-listen.
+    /// File holding the admin bearer token as 64 hex characters, readable only by operators;
+    /// requires --admin-listen.
     #[arg(long, requires = "admin_listen")]
     admin_token_file: Option<PathBuf>,
     /// AWS region containing both KMS keys.
@@ -237,13 +239,11 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
-        let admin = match (cli.admin_listen, cli.admin_token_file) {
-            (Some(listen), Some(token_file)) => {
-                Some(crate::admin::AdminConfig { listen, token_file })
-            }
-            (None, None) => None,
-            _ => bail!("admin listener and token file must be configured together"),
-        };
+        // clap rejects one admin flag without the other.
+        let admin = cli
+            .admin_listen
+            .zip(cli.admin_token_file)
+            .map(|(listen, token_file)| crate::admin::AdminConfig { listen, token_file });
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
@@ -341,6 +341,7 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    /// The admin listener's settings, or `None` when it is off.
     pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
         self.admin.as_ref()
     }

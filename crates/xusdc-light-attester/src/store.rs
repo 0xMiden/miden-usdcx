@@ -71,23 +71,33 @@ impl fmt::Display for Hold {
     }
 }
 
+/// One held burn or held withdrawal, as the admin listener lists it.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HoldEntry {
     pub(crate) note_id: String,
+    /// `burn` or `withdrawal`.
     pub(crate) kind: String,
     pub(crate) reason: String,
+    /// The HTTP status of the Circle answer that caused the hold, if one did.
     pub(crate) http_status: Option<u16>,
+    /// Circle's message from that answer, on one line.
     pub(crate) circle_message: Option<String>,
+    /// The sequence number of the note's latest history row. A release names it to show which
+    /// state of the hold it saw.
     pub(crate) event_seq: i64,
 }
 
+/// One hold an operator chose to release, from the admin listener.
 #[derive(Debug, Clone)]
 pub(crate) struct ReleaseSelection {
     pub(crate) note_id: NoteId,
+    /// The `event_seq` the operator listed. The release is refused if the hold has changed since.
     pub(crate) expected_event_seq: i64,
+    /// The operator confirms Circle did not accept the withdrawal.
     pub(crate) circle_not_accepted: bool,
 }
 
+/// Why a release or listing from the admin listener did not succeed.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReleaseError {
     #[error("invalid selection")]
@@ -145,6 +155,9 @@ impl EventKind {
     }
 }
 
+/// The most holds one admin listing returns. The store reads one more to tell whether another
+/// page follows.
+pub(crate) const HOLDS_PAGE: usize = 100;
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -318,6 +331,12 @@ impl Store {
         Ok((burns, withdrawals))
     }
 
+    /// Releases the hold an operator selected from the admin listing, and returns how many burns
+    /// and withdrawals it released.
+    ///
+    /// The release goes ahead only if the note's latest history row is still the one the
+    /// operator listed. Every change to a hold writes a history row, so an operator never releases
+    /// a hold they have not seen.
     pub(crate) fn release_checked(
         &mut self,
         selection: &ReleaseSelection,
@@ -422,7 +441,11 @@ impl Store {
         }
     }
 
+    /// Up to one more than [`HOLDS_PAGE`] holds after the given note ID, burns and withdrawals
+    /// together in note order, each with the sequence number of its latest history row.
     pub(crate) fn holds_page(&self, after: Option<NoteId>) -> anyhow::Result<Vec<HoldEntry>> {
+        // A held burn takes Circle's answer from its latest hold event; a held withdrawal keeps
+        // its last answer on its own row.
         let mut statement = self.connection.prepare(
             "SELECT note_id, kind, burn_reason, withdrawal_reason, http_status, response,
                 (SELECT MAX(seq) FROM submission_events WHERE note_id = holds.note_id) AS revision
@@ -437,12 +460,13 @@ impl Store {
                 UNION ALL
                 SELECT note_id, 'withdrawal', NULL, hold_reason, last_http_status, last_response
                 FROM submissions WHERE status = ?2
-             ) holds WHERE (?1 IS NULL OR note_id > ?1) ORDER BY note_id LIMIT 101"
+             ) holds WHERE (?1 IS NULL OR note_id > ?1) ORDER BY note_id LIMIT ?3"
         ).map_err(classify_error)?;
         let mut rows = statement
             .query(params![
                 after.map(|id| id.to_bytes()),
-                SubmissionStatus::Held.as_ref()
+                SubmissionStatus::Held.as_ref(),
+                HOLDS_PAGE as i64 + 1
             ])
             .map_err(classify_error)?;
         let mut holds = Vec::new();

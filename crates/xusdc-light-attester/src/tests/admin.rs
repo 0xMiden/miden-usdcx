@@ -462,6 +462,7 @@ async fn selected_release_leaves_other_holds_and_cannot_release_a_new_hold() {
             .event_seq
             > burn.event_seq
     );
+    // A note the store never held has no hold to release, rather than a hold that changed.
     let unknown = ReleaseSelection {
         note_id: crate::admin::parse_note_id(&format!("0x{}", "11".repeat(32))).unwrap(),
         expected_event_seq: 1,
@@ -469,7 +470,28 @@ async fn selected_release_leaves_other_holds_and_cannot_release_a_new_hold() {
     };
     assert!(matches!(
         attester.store.release_checked(&unknown),
-        Err(ReleaseError::Conflict)
+        Err(ReleaseError::NotHeld(note)) if note == unknown.note_id
+    ));
+}
+
+/// A selection naming a note with nothing to release, at that note's current revision, names no
+/// hold: nothing changed since any listing, and listing again would not show it.
+#[tokio::test]
+async fn a_selection_of_a_note_with_nothing_to_release_is_not_held() {
+    let ledger = Ledger::new().await;
+    let (mut attester, _) = ledger
+        .start(vec![reply(201, json!([ledger.response(0, "created")]))])
+        .await;
+    ledger.submit(&mut attester, 0).await.unwrap();
+    let note_id = ledger.burns[0].note_id();
+    let selection = ReleaseSelection {
+        note_id,
+        expected_event_seq: attester.store.revision(note_id).unwrap().unwrap(),
+        circle_not_accepted: true,
+    };
+    assert!(matches!(
+        attester.store.release_checked(&selection),
+        Err(ReleaseError::NotHeld(note)) if note == note_id
     ));
 }
 

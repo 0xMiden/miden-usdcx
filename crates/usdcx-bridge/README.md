@@ -170,6 +170,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |
 | `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. The example uses `30s`; allow for network latency. |
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
+| `--withdrawal-limit-message-prefix` | Optional, paired with the retry interval | Exact, case-sensitive start of Circle's limit error `message`. Confirm it with Circle for the deployment; do not guess a prefix from other errors. |
+| `--withdrawal-limit-retry-interval` | Optional, paired with the message prefix | Positive delay between limit retries, for example `5m`. No default; agree the interval with the operator and Circle. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
 | `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
 | `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
@@ -191,6 +193,29 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Stop, restart and upgrade
+
+### Automatic retries after Circle's withdrawal limit
+
+With both withdrawal-limit flags set, a matching prepare or submission rejection waits and retries
+automatically. Without them, prepare and submission 400 responses keep the existing manual-hold
+behavior. Existing holds are not converted automatically; inspect them before using hold release.
+An uncertain submission keeps its original signed request; a confirmed rejection can prepare again.
+
+Withdrawals stay in burn order. A large withdrawal can delay smaller ones for much of Circle's
+rolling window; one above the entire limit may never fit and needs investigation. The service does
+not calculate available capacity or let smaller withdrawals pass. Accepted withdrawals continue
+status checks, and live hold management remains available. Waiting for the limit is not a manual
+hold and cannot be bypassed with hold release.
+
+Retry deadlines survive restarts. A store with waiting withdrawals requires both flags on startup;
+changing the interval does not shorten an already saved deadline. Each fresh prepare retry can use
+both KMS signers. Choose the interval and waiting-age alerts for Circle's actual window, which need
+not be the same in every environment.
+
+This feature upgrades the attester store. Older binaries cannot open the upgraded store. Back up
+before upgrading; do not restore an old backup without reconciling any withdrawals sent since it.
+
+### Restarting the container
 
 ```sh
 docker stop "usdcx-bridge-$USDCX_NETWORK"

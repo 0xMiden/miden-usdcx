@@ -13,60 +13,6 @@ use super::{
 
 const FAUCET: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
-#[test]
-fn version_four_adds_no_waits_and_preserves_existing_work() {
-    use rusqlite::types::Value;
-    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-    for sql in &MIGRATIONS[..3] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection.execute_batch(
-        "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block, hold_reason)
-             VALUES (X'01', X'11', X'21', 1, 2, 1), (X'02', X'12', X'22', 1, 2, NULL);
-         INSERT INTO submissions (note_id, endpoint, body, transfer_spec_hash, status)
-             VALUES (X'02', 'https://circle.invalid/v1/withdraw', X'01', X'02', 'SUBMITTING');
-         INSERT INTO submission_events (note_id, recorded_at, kind, body)
-             VALUES (X'01', 10, 'BURN_HELD', NULL), (X'02', 11, 'AUTHORIZED', X'01');
-         PRAGMA user_version = 3;"
-    ).unwrap();
-    let snapshot = |connection: &rusqlite::Connection, query: &str| {
-        connection
-            .prepare(query)
-            .unwrap()
-            .query_map([], |row| {
-                (0..row.as_ref().column_count())
-                    .map(|i| row.get::<_, Value>(i))
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap()
-            .map(Result::unwrap)
-            .collect::<Vec<_>>()
-    };
-    let queries = ["SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason FROM burns ORDER BY note_id",
-        "SELECT * FROM submissions ORDER BY note_id", "SELECT * FROM submission_events ORDER BY seq"];
-    let before = queries.map(|query| snapshot(&connection, query));
-    let transaction = connection.transaction().unwrap();
-    upgrade(&transaction, 3).unwrap();
-    transaction.commit().unwrap();
-    assert_eq!(queries.map(|query| snapshot(&connection, query)), before);
-    assert_eq!(
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        connection
-            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
-            .unwrap(),
-        STORE_VERSION
-    );
-}
-
 fn anchor() -> TrustedAnchor {
     TrustedAnchor {
         block_num: BlockNumber::GENESIS,
@@ -133,7 +79,7 @@ fn a_version_one_store_keeps_its_checkpoint() {
 /// Version 3 rebuilds the burns table without the columns it drops. Every burn keeps its place, its
 /// hold and its history, and the history table's foreign key holds against the rebuilt table.
 #[test]
-fn version_three_keeps_every_burn_and_its_history() {
+fn migrations_preserve_burns_submissions_and_history() {
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();
     let enforced: bool = connection
         .pragma_query_value(None, "foreign_keys", |row| row.get(0))
@@ -156,7 +102,17 @@ fn version_three_keeps_every_burn_and_its_history() {
         .unwrap();
 
     let transaction = connection.transaction().unwrap();
-    upgrade(&transaction, 2).unwrap();
+    transaction.execute_batch(MIGRATIONS[2]).unwrap();
+    transaction
+        .execute_batch(
+            "INSERT INTO submissions (note_id, endpoint, body, transfer_spec_hash, status)
+             VALUES (X'02', 'https://circle.invalid/v1/withdraw', X'01', X'02', 'SUBMITTING');
+         INSERT INTO submission_events (note_id, recorded_at, kind, body)
+             VALUES (X'02', 11, 'AUTHORIZED', X'01');
+         PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    upgrade(&transaction, 3).unwrap();
     // The history rows are checked against the rebuilt table here.
     transaction.commit().unwrap();
 
@@ -194,7 +150,47 @@ fn version_three_keeps_every_burn_and_its_history() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(history, [(vec![2], "BURN_HELD".to_owned())]);
+    assert_eq!(
+        history,
+        [
+            (vec![2], "BURN_HELD".to_owned()),
+            (vec![2], "AUTHORIZED".to_owned())
+        ]
+    );
+    let saved: (String, Vec<u8>, Vec<u8>, String) = connection.query_row(
+        "SELECT endpoint, body, transfer_spec_hash, status FROM submissions WHERE note_id = X'02'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    ).unwrap();
+    assert_eq!(
+        saved,
+        (
+            "https://circle.invalid/v1/withdraw".into(),
+            vec![1],
+            vec![2],
+            "SUBMITTING".into()
+        )
+    );
+    let authorized_body: Vec<u8> = connection
+        .query_row(
+            "SELECT body FROM submission_events WHERE kind = 'AUTHORIZED'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(authorized_body, [1]);
+    let waiting: u32 = connection
+        .query_row(
+            "SELECT count(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(waiting, 0);
+    let index: String = connection.query_row(
+        "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'burns_waiting_for_limit'",
+        [], |row| row.get(0)
+    ).unwrap();
+    assert_eq!(index, "burns_waiting_for_limit");
 
     let error = connection
         .execute(

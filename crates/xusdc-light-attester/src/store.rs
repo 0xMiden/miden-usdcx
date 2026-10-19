@@ -149,6 +149,9 @@ enum EventKind {
     /// signed again.
     #[strum(serialize = "OPERATOR_RELEASE")]
     OperatorRelease,
+    /// Circle rejected this attempt because its withdrawal limit was reached.
+    #[strum(serialize = "WITHDRAWAL_LIMIT")]
+    WithdrawalLimit,
 }
 
 impl EventKind {
@@ -271,38 +274,47 @@ impl Store {
         ensure!(changed == 1, CONFLICT);
         if let Some((saved, attempt)) = submission {
             ensure!(saved.note_id == note_id, CONFLICT);
-            let changed = transaction
-                .execute(
-                    "UPDATE submissions SET last_http_status = 400, last_response = ?2,
-                    last_error = 'Circle withdrawal limit'
-                 WHERE note_id = ?1 AND status = ?3 AND withdrawal_id IS NULL
-                    AND endpoint = ?4 AND body = ?5 AND transfer_spec_hash = ?6",
+            let changed = match attempt {
+                // Only a first attempt's rejection proves this authorization was never accepted.
+                SubmissionAttempt::First => transaction.execute(
+                    "DELETE FROM submissions
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
                     params![
                         note_id.to_bytes(),
-                        response,
                         SubmissionStatus::Submitting.as_ref(),
                         saved.endpoint.as_str(),
                         saved.body,
                         saved.transfer_spec_hash.as_slice()
                     ],
-                )
-                .map_err(classify_error)?;
-            ensure!(changed == 1, CONFLICT);
-            if matches!(attempt, SubmissionAttempt::First) {
-                // Only this response proves that this authorization was never accepted.
-                transaction
-                    .execute(
-                        "DELETE FROM submissions WHERE note_id = ?1",
-                        [note_id.to_bytes()],
-                    )
-                    .map_err(classify_error)?;
+                ),
+                SubmissionAttempt::Recovery => transaction.execute(
+                    "UPDATE submissions SET last_http_status = 400,
+                    last_response = ?6, last_error = 'Circle withdrawal limit'
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
+                    params![
+                        note_id.to_bytes(),
+                        SubmissionStatus::Submitting.as_ref(),
+                        saved.endpoint.as_str(),
+                        saved.body,
+                        saved.transfer_spec_hash.as_slice(),
+                        response
+                    ],
+                ),
             }
+            .map_err(classify_error)?;
+            ensure!(changed == 1, CONFLICT);
         }
         transaction
             .execute(
                 "INSERT INTO submission_events (note_id, recorded_at, kind, http_status, response)
-                VALUES (?1, unixepoch(), 'WITHDRAWAL_LIMIT', 400, ?2)",
-                params![note_id.to_bytes(), response],
+                VALUES (?1, unixepoch(), ?2, 400, ?3)",
+                params![
+                    note_id.to_bytes(),
+                    EventKind::WithdrawalLimit.as_ref(),
+                    response
+                ],
             )
             .map_err(classify_error)?;
         transaction.commit().map_err(classify_error)

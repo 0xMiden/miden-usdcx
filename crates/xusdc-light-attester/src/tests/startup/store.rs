@@ -138,6 +138,7 @@ enum InvalidStoreCase {
     WrongFaucet,
     CorruptParent,
     MalformedWithdrawalPayload,
+    HeldBurnWaitingForLimit,
     Unversioned,
     NewerVersion,
 }
@@ -270,6 +271,28 @@ fn write_invalid_store(path: &Path, case: InvalidStoreCase) {
                 )
                 .unwrap();
         }
+        InvalidStoreCase::HeldBurnWaitingForLimit => {
+            create_valid_store(path);
+            let burn = note(
+                BurnNote::script(),
+                NoteType::Public,
+                FIXED_XUSDC_BURN_TAG,
+                99,
+            )
+            .public_note
+            .unwrap();
+            rusqlite::Connection::open(path).unwrap().execute(
+                "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block, hold_reason)
+                 VALUES (?1, ?2, ?3, 0, 1, 1)",
+                params![burn.id().to_bytes(), burn.as_note().nullifier().to_bytes(), burn.to_bytes()],
+            ).unwrap();
+            // The held burn is valid until an inconsistent retry time is added.
+            drop(Store::open_existing(path, faucet_account_id(), trusted_anchor()).unwrap());
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute("UPDATE burns SET withdrawal_limit_retry_at = 0", [])
+                .unwrap();
+        }
         // What an attester wrote before stores had a version.
         InvalidStoreCase::Unversioned => {
             create_valid_store(path);
@@ -302,6 +325,7 @@ async fn invalid_store_is_rejected() {
         InvalidStoreCase::WrongFaucet,
         InvalidStoreCase::CorruptParent,
         InvalidStoreCase::MalformedWithdrawalPayload,
+        InvalidStoreCase::HeldBurnWaitingForLimit,
         InvalidStoreCase::Unversioned,
         InvalidStoreCase::NewerVersion,
     ] {
@@ -338,7 +362,11 @@ async fn invalid_store_is_rejected() {
         if matches!(case, InvalidStoreCase::NewerVersion) {
             assert!(cause.contains("is newer than this attester"), "{cause}");
         }
-        if matches!(case, InvalidStoreCase::MalformedWithdrawalPayload) {
+        if matches!(
+            case,
+            InvalidStoreCase::MalformedWithdrawalPayload
+                | InvalidStoreCase::HeldBurnWaitingForLimit
+        ) {
             assert!(cause.contains("attester store is invalid"), "{cause}");
         }
     }

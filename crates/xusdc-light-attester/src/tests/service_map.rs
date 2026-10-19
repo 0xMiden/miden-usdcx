@@ -162,13 +162,18 @@ async fn seed(ledger: &Ledger, outcomes: &[(usize, Option<&str>)]) {
 #[tokio::test]
 async fn cycle_runs_in_order() {
     let ledger = Ledger::new().await;
-    seed(&ledger, &[(0, None), (1, Some("created"))]).await;
-    let mut replies = vec![accepted(&ledger, 0, "created")];
-    replies.extend(fresh_replies(&ledger, &[2]));
-    replies.push(reply(200, ledger.response(1, "finalized")));
+    let [recovered, fresh, polled] = ledger.fresh_indices.clone().try_into().unwrap();
+    seed(&ledger, &[(recovered, None), (polled, Some("created"))]).await;
+    let mut replies = vec![accepted(&ledger, recovered, "created")];
+    replies.extend(fresh_replies(&ledger, &[fresh]));
+    replies.push(reply(200, ledger.response(polled, "finalized")));
     let (pair, calls) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, pair).await;
-    let saved = ledger.record(&attester, 0);
+    let saved = ledger.record(&attester, recovered);
+    let polled_id = ledger.response(polled, "created")["withdrawalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let report = attester.run_one_cycle().await.unwrap();
     assert!(report.discover.is_ok() && report.submit.is_ok());
     assert_eq!(counts(&calls), [1, 1]);
@@ -186,14 +191,14 @@ async fn cycle_runs_in_order() {
                 ObservedRequest::Prepare,
                 ObservedRequest::Submit { .. },
                 ObservedRequest::Lookup { id, .. },
-            ] if id == "6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e71"
+            ] if id == &polled_id
         ),
         "{requests:?}"
     );
     assert!(matches!(&requests[0], ObservedRequest::Submit { body, .. } if *body == saved.body));
-    assert_eq!(ledger.record(&attester, 0).status, Submitted);
-    assert_eq!(ledger.record(&attester, 1).status, Finalized);
-    assert_eq!(ledger.record(&attester, 2).status, Submitted);
+    assert_eq!(ledger.record(&attester, recovered).status, Submitted);
+    assert_eq!(ledger.record(&attester, polled).status, Finalized);
+    assert_eq!(ledger.record(&attester, fresh).status, Submitted);
 }
 
 #[tokio::test]
@@ -428,12 +433,10 @@ async fn submission_store_failure_stops_remaining_work() {
             error.downcast_ref::<SubmitError>(),
             Some(SubmitError::Store(_))
         ));
-        let stage = if recovering {
-            "recovery stopped"
-        } else {
-            "submission stopped"
-        };
-        assert!(format!("{error:#}").starts_with(stage), "{error:#}");
+        assert!(
+            format!("{error:#}").starts_with("submission stopped"),
+            "{error:#}"
+        );
         assert!(format!("{error:#}").contains("disk full"));
         assert_eq!(counts(&calls), [usize::from(!recovering); 2]);
         assert_eq!(
@@ -596,15 +599,16 @@ async fn discovery_store_failure_stops_work_but_retries() {
 #[tokio::test(start_paused = true)]
 async fn rate_limit_backs_off_until_a_clean_cycle() {
     let ledger = Ledger::new().await;
-    seed(&ledger, &[(0, None), (1, Some("created"))]).await;
+    let [recovered, fresh, polled] = ledger.fresh_indices.clone().try_into().unwrap();
+    seed(&ledger, &[(recovered, None), (polled, Some("created"))]).await;
     let slow_down = || reply(429, json!({"message": "slow down"}));
     let replies = vec![
         slow_down(),
         slow_down(),
-        accepted(&ledger, 0, "finalized"),
-        reply(200, ledger.prepared_response(2)),
-        accepted(&ledger, 2, "finalized"),
-        reply(200, ledger.response(1, "finalized")),
+        accepted(&ledger, recovered, "finalized"),
+        reply(200, ledger.prepared_response(fresh)),
+        accepted(&ledger, fresh, "finalized"),
+        reply(200, ledger.response(polled, "finalized")),
     ];
     let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
@@ -648,43 +652,48 @@ async fn rate_limit_ends_the_cycle_where_it_comes() {
     let reply_body = Some(br#"{"message":"slow down"}"#.to_vec());
     for case in ["recovery", "lookup", "prepare", "submission"] {
         let ledger = Ledger::new().await;
-        seed(&ledger, &[(0, None), (1, Some("created"))]).await;
-        let id = ledger.response(0, "created")["withdrawalId"].clone();
+        let [recovered, fresh, polled] = ledger.fresh_indices.clone().try_into().unwrap();
+        seed(&ledger, &[(recovered, None), (polled, Some("created"))]).await;
+        let id = ledger.response(recovered, "created")["withdrawalId"].clone();
         let (mut replies, signed, limited) = match case {
-            "recovery" => (vec![slow_down()], false, Some((0, reply_body.clone()))),
+            "recovery" => (
+                vec![slow_down()],
+                false,
+                Some((recovered, reply_body.clone())),
+            ),
             "lookup" => (
                 vec![
                     reply(409, json!({"conflict": {"withdrawalId": id}})),
                     CircleState::RateLimitedUnread,
                 ],
                 false,
-                Some((0, None)),
+                Some((recovered, None)),
             ),
             "prepare" => (
-                vec![accepted(&ledger, 0, "created"), slow_down()],
+                vec![accepted(&ledger, recovered, "created"), slow_down()],
                 false,
                 None,
             ),
             _ => (
                 vec![
-                    accepted(&ledger, 0, "created"),
-                    reply(200, ledger.prepared_response(2)),
+                    accepted(&ledger, recovered, "created"),
+                    reply(200, ledger.prepared_response(fresh)),
                     slow_down(),
                 ],
                 true,
-                Some((2, reply_body.clone())),
+                Some((fresh, reply_body.clone())),
             ),
         };
         let sent = replies.len();
         replies.push(slow_down());
         let (signers, calls) = signers(None).await;
         let (mut attester, requests, _) = ledger.runtime(replies, signers).await;
-        let polled = ledger.record(&attester, 1);
+        let saved_polled = ledger.record(&attester, polled);
 
         let report = attester.run_one_cycle().await.unwrap();
         assert_eq!(requests.lock().unwrap().len(), sent, "{case}");
         assert_eq!(counts(&calls), [usize::from(signed); 2], "{case}");
-        assert_eq!(ledger.record(&attester, 1), polled, "{case}");
+        assert_eq!(ledger.record(&attester, polled), saved_polled, "{case}");
         match limited {
             Some((index, body)) => {
                 let saved = ledger.record(&attester, index);
@@ -703,7 +712,7 @@ async fn rate_limit_ends_the_cycle_where_it_comes() {
                 ));
                 assert!(attester
                     .store
-                    .submission(ledger.burns[2].note_id())
+                    .submission(ledger.burns[fresh].note_id())
                     .unwrap()
                     .is_none());
             }
@@ -746,7 +755,8 @@ async fn only_a_rate_limit_lengthens_the_pause() {
         (201, [429, 201, 201], [0, 200, 300]),
     ] {
         let ledger = Ledger::new().await;
-        seed(&ledger, &[(0, None)]).await;
+        let first = ledger.fresh_indices[0];
+        seed(&ledger, &[(first, None)]).await;
         ledger.sql(&format!(
             "CREATE TRIGGER fail_outcome BEFORE UPDATE ON submissions \
              WHEN NEW.last_http_status = {failing} BEGIN SELECT RAISE(FAIL, 'disk full'); END;"
@@ -754,7 +764,7 @@ async fn only_a_rate_limit_lengthens_the_pause() {
         let replies = statuses
             .map(|status| match status {
                 429 => reply(429, json!({"message": "slow down"})),
-                _ => accepted(&ledger, 0, "created"),
+                _ => accepted(&ledger, first, "created"),
             })
             .to_vec();
         let (signers, _) = signers(None).await;

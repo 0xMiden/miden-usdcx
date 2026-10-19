@@ -43,6 +43,15 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
             .to_owned(),
     );
 
+    args.extend(
+        [
+            "--withdrawal-limit-message-prefix",
+            "Withdrawal limit reached",
+        ]
+        .map(String::from),
+    );
+    assert!(Cli::try_parse_from(&args).is_err());
+    args.extend(["--withdrawal-limit-retry-interval", "5m"].map(String::from));
     let Command::Run(run) = Cli::try_parse_from(args).unwrap().command else {
         panic!("expected the run command");
     };

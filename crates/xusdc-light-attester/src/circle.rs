@@ -75,6 +75,18 @@ impl RawResponse {
     }
 }
 
+pub(crate) fn is_withdrawal_limit(status: StatusCode, body: &[u8], prefix: &str) -> bool {
+    status == StatusCode::BAD_REQUEST
+        && serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|reply| {
+                reply["message"]
+                    .as_str()
+                    .map(|message| message.starts_with(prefix))
+            })
+            .unwrap_or(false)
+}
+
 /// Circle's `message` from an error reply, cut to [`MAX_LOGGED_MESSAGE_CHARS`] characters.
 pub(crate) fn circle_message(body: &[u8]) -> Option<String> {
     let reply: serde_json::Value = serde_json::from_slice(body).ok()?;

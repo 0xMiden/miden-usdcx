@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::Address;
 use anyhow::{anyhow, bail, ensure, Context};
@@ -96,6 +96,14 @@ pub struct Cli {
     /// Delay between attester cycles (for example, "1s" or "500ms").
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
+
+    /// Exact prefix of Circle's withdrawal-limit error message. Requires a retry interval.
+    #[arg(long, requires = "withdrawal_limit_retry_interval")]
+    withdrawal_limit_message_prefix: Option<String>,
+
+    /// Delay before retrying a limit rejection (for example, "5m"). Requires a message prefix.
+    #[arg(long, requires = "withdrawal_limit_message_prefix", value_parser = humantime::parse_duration)]
+    withdrawal_limit_retry_interval: Option<Duration>,
 
     /// Block at which the faucet was deployed. It is only checked against the trusted anchor: the
     /// attester refuses to start with an anchor after it, which would miss the burn notes created
@@ -211,6 +219,27 @@ pub(crate) struct CctpForwarding {
 }
 
 #[derive(Debug)]
+pub(crate) struct WithdrawalLimit {
+    pub(crate) message_prefix: String,
+    pub(crate) retry_interval: Duration,
+}
+
+impl WithdrawalLimit {
+    pub(crate) fn retry_at(&self, now: SystemTime) -> anyhow::Result<i64> {
+        let deadline = now
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .checked_add(self.retry_interval)
+            .context("withdrawal retry deadline overflow")?;
+        let seconds = deadline
+            .as_secs()
+            .checked_add(u64::from(deadline.subsec_nanos() != 0))
+            .context("withdrawal retry deadline overflow")?;
+        i64::try_from(seconds).context("withdrawal retry deadline exceeds the store's range")
+    }
+}
+
+#[derive(Debug)]
 pub struct Config {
     admin: Option<crate::admin::AdminConfig>,
     kms: KmsConfig,
@@ -222,6 +251,7 @@ pub struct Config {
     max_withdrawal_fee_bps: u64,
     cctp_forwarding: CctpForwarding,
     poll_interval: Duration,
+    withdrawal_limit: Option<WithdrawalLimit>,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
@@ -235,6 +265,24 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
+        let withdrawal_limit = cli
+            .withdrawal_limit_message_prefix
+            .zip(cli.withdrawal_limit_retry_interval)
+            .map(|(message_prefix, retry_interval)| -> anyhow::Result<_> {
+                ensure!(
+                    !message_prefix.trim().is_empty(),
+                    "withdrawal limit message prefix must not be blank"
+                );
+                ensure!(
+                    !retry_interval.is_zero(),
+                    "withdrawal limit retry interval must be greater than zero"
+                );
+                Ok(WithdrawalLimit {
+                    message_prefix,
+                    retry_interval,
+                })
+            })
+            .transpose()?;
         let admin = cli
             .admin_socket
             .map(|socket| crate::admin::AdminConfig { socket });
@@ -325,6 +373,7 @@ impl TryFrom<Cli> for Config {
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             cctp_forwarding,
             poll_interval: cli.poll_interval,
+            withdrawal_limit,
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
@@ -373,6 +422,10 @@ impl Config {
 
     pub(crate) fn poll_interval(&self) -> Duration {
         self.poll_interval
+    }
+
+    pub(crate) fn withdrawal_limit(&self) -> Option<&WithdrawalLimit> {
+        self.withdrawal_limit.as_ref()
     }
 
     pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {

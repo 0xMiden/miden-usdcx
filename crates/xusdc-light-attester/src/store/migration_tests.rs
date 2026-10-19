@@ -13,6 +13,60 @@ use super::{
 
 const FAUCET: &str = "0xbb405fd9fe431bd1135a292de098cb";
 
+#[test]
+fn version_four_adds_no_waits_and_preserves_existing_work() {
+    use rusqlite::types::Value;
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..3] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.execute_batch(
+        "INSERT INTO burns (note_id, nullifier, note, creation_block, consumption_block, hold_reason)
+             VALUES (X'01', X'11', X'21', 1, 2, 1), (X'02', X'12', X'22', 1, 2, NULL);
+         INSERT INTO submissions (note_id, endpoint, body, transfer_spec_hash, status)
+             VALUES (X'02', 'https://circle.invalid/v1/withdraw', X'01', X'02', 'SUBMITTING');
+         INSERT INTO submission_events (note_id, recorded_at, kind, body)
+             VALUES (X'01', 10, 'BURN_HELD', NULL), (X'02', 11, 'AUTHORIZED', X'01');
+         PRAGMA user_version = 3;"
+    ).unwrap();
+    let snapshot = |connection: &rusqlite::Connection, query: &str| {
+        connection
+            .prepare(query)
+            .unwrap()
+            .query_map([], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|i| row.get::<_, Value>(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let queries = ["SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason FROM burns ORDER BY note_id",
+        "SELECT * FROM submissions ORDER BY note_id", "SELECT * FROM submission_events ORDER BY seq"];
+    let before = queries.map(|query| snapshot(&connection, query));
+    let transaction = connection.transaction().unwrap();
+    upgrade(&transaction, 3).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(queries.map(|query| snapshot(&connection, query)), before);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        STORE_VERSION
+    );
+}
+
 fn anchor() -> TrustedAnchor {
     TrustedAnchor {
         block_num: BlockNumber::GENESIS,

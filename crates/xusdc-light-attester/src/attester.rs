@@ -1,5 +1,6 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -8,21 +9,22 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info, info_span, instrument, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, warn, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{circle_message, CircleApi, CircleError};
+use crate::circle::{circle_message, is_withdrawal_limit, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
-use crate::submission::SavedSubmission;
+use crate::submission::{SavedSubmission, SubmissionAttempt};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -62,6 +64,13 @@ const MAX_RATE_LIMITED_PAUSE: Duration = Duration::from_secs(60);
 /// The listener can keep queueing commands while they are handled, so a bound stops admin traffic
 /// from holding a cycle at one step.
 const ADMIN_COMMANDS_PER_CHECKPOINT: usize = 8;
+
+enum OutboundWithdrawal {
+    Prepare(DiscoveredBurn),
+    Recover(SavedSubmission),
+}
+
+type OutboundQueue = VecDeque<(NoteId, u32, OutboundWithdrawal)>;
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -138,6 +147,10 @@ impl Attester {
             trusted_anchor,
         )
         .context("failed to open attester store")?;
+        anyhow::ensure!(
+            config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
+            "saved withdrawal-limit waits require both withdrawal limit settings"
+        );
         let checkpoint = store
             .checkpoint()
             .context("failed to load the attester's checkpoint")?;
@@ -176,14 +189,16 @@ impl Attester {
         self.admin_shutdown = shutdown;
     }
 
-    /// Handles the admin commands already queued, up to [`ADMIN_COMMANDS_PER_CHECKPOINT`].
+    /// Handles the admin commands already queued, up to [`ADMIN_COMMANDS_PER_CHECKPOINT`], and
+    /// returns whether any of them released a hold.
     ///
     /// A cycle calls this before each block, burn and saved submission, so an operator waits for
     /// one step of the cycle rather than the whole of it.
-    pub(crate) async fn admin_checkpoint(&mut self) {
+    pub(crate) async fn admin_checkpoint(&mut self) -> bool {
         if self.admin.is_none() || self.admin_shutdown.is_cancelled() {
-            return;
+            return false;
         }
+        let mut released = false;
         // Ready chain futures must still give HTTP handlers a chance to enqueue work.
         tokio::task::yield_now().await;
         for _ in 0..ADMIN_COMMANDS_PER_CHECKPOINT {
@@ -198,18 +213,20 @@ impl Attester {
                     break;
                 }
             };
-            self.handle_admin(command);
+            released |= self.handle_admin(command);
         }
+        released
     }
 
-    /// Runs one admin command against the store and sends the result back to the listener.
+    /// Runs one admin command against the store, sends the result back to the listener, and
+    /// returns whether it released a hold.
     ///
     /// A command whose caller has given up, by timing out or disconnecting, is dropped without
     /// running, so a release never starts after the operator was told its outcome is unknown.
-    fn handle_admin(&mut self, command: crate::admin::Command) {
+    fn handle_admin(&mut self, command: crate::admin::Command) -> bool {
         use crate::admin::{HoldsPage, Operation, Released};
         if self.admin_shutdown.is_cancelled() || command.abandoned() {
-            return;
+            return false;
         }
         let _span = info_span!(parent: None, "attester.admin").entered();
         // The listener answers a store failure with a fixed message, so its detail is reported
@@ -251,6 +268,7 @@ impl Attester {
                     .map_err(ReleaseError::from)
                     .map_err(report);
                 let _ = reply.send(result);
+                false
             }
             Operation::Release(selection, reply) => {
                 let result = self
@@ -267,7 +285,9 @@ impl Attester {
                         Released { burns, withdrawals }
                     })
                     .map_err(report);
+                let released = result.is_ok();
                 let _ = reply.send(result);
+                released
             }
         }
     }
@@ -305,7 +325,9 @@ impl Attester {
                     command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
                 };
                 match command {
-                    Some(command) => self.handle_admin(command),
+                    Some(command) => {
+                        self.handle_admin(command);
+                    }
                     // The listener has stopped; the attester carries on without it.
                     None => self.admin = None,
                 }
@@ -332,6 +354,9 @@ impl Attester {
             withdrawals.pending.count = Empty,
             burns.unfinished.count = Empty,
             burns.unfinished.oldest_age_blocks = Empty,
+            withdrawals.limit.count = Empty,
+            withdrawals.limit.note_id = Empty,
+            withdrawals.limit.retry_at = Empty,
         )
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
@@ -363,21 +388,19 @@ impl Attester {
         let (proof_lag_block, discover) = discovery_outcome(discovered)?;
 
         let (to_recover, to_poll) = self.snapshot_submissions().classify(Actionable("store"))?;
-        let fresh_burns = match proof_lag_block {
-            Some(block) => self.ready_burns(block).classify(Actionable("store"))?,
-            None => Vec::new(),
-        };
-
-        self.advance_submissions(to_recover, rate_limited)
-            .instrument(info_span!("attester.recover"))
-            .await
-            .context("recovery stopped")
-            .classify(Actionable("store"))?;
+        let (known_ids, unknown_ids): (Vec<_>, Vec<_>) = to_recover
+            .into_iter()
+            .partition(|saved| saved.withdrawal_id.is_some());
         let submit = self
-            .submit_withdrawals(fresh_burns, rate_limited)
+            .submit_withdrawals(proof_lag_block, unknown_ids, rate_limited)
             .instrument(info_span!("attester.submit"))
             .await
             .context("submission stopped")
+            .classify(Actionable("store"))?;
+        self.advance_submissions(known_ids, rate_limited)
+            .instrument(info_span!("attester.recover"))
+            .await
+            .context("recovery stopped")
             .classify(Actionable("store"))?;
         self.advance_submissions(to_poll, rate_limited)
             .instrument(info_span!("attester.poll"))
@@ -414,6 +437,11 @@ impl Attester {
         span.record("withdrawals.pending.count", progress.withdrawals_pending);
         span.record("burns.unfinished.count", progress.burns_unfinished);
         span.record("burns.unfinished.oldest_age_blocks", oldest_age_blocks);
+        span.record("withdrawals.limit.count", progress.withdrawal_limit_waiting);
+        if let Some(wait) = self.store.first_limit_wait()? {
+            span.record("withdrawals.limit.note_id", wait.note_id.to_hex());
+            span.record("withdrawals.limit.retry_at", wait.retry_at);
+        }
         Ok(())
     }
 
@@ -517,22 +545,90 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit, each burn in an
-    /// `attester.withdraw` span. A store error stops the cycle. A prepare 400, or a forwarded burn
-    /// no larger than the CCTP fee, holds the burn. Other errors are retried next cycle while later
-    /// burns continue. A 429 stops Circle requests for this cycle.
+    fn outbound_queue(
+        &self,
+        proof_lag_block: Option<BlockNumber>,
+        recovery: Vec<SavedSubmission>,
+    ) -> anyhow::Result<OutboundQueue> {
+        let mut work = HashMap::new();
+        if let Some(block) = proof_lag_block {
+            for burn in self.ready_burns(block)? {
+                work.insert(burn.note_id(), OutboundWithdrawal::Prepare(burn));
+            }
+        }
+        for saved in recovery {
+            if saved.withdrawal_id.is_none() {
+                work.insert(saved.note_id, OutboundWithdrawal::Recover(saved));
+            }
+        }
+        Ok(self
+            .store
+            .outbound_order()?
+            .into_iter()
+            .filter_map(|(id, block)| work.remove(&id).map(|work| (id, block, work)))
+            .collect())
+    }
+
+    /// Fresh withdrawals and uncertain POSTs share one order. A limit waiter blocks later work,
+    /// even when discovery cannot make that waiter eligible for another prepare yet.
     async fn submit_withdrawals(
         &mut self,
-        burns: Vec<DiscoveredBurn>,
+        proof_lag_block: Option<BlockNumber>,
+        recovery: Vec<SavedSubmission>,
         rate_limited: &mut bool,
     ) -> Result<Result<(), SubmitError>, SubmitError> {
         let mut first_error = None;
-        for burn in burns {
-            self.admin_checkpoint().await;
+        let mut attempted = HashSet::new();
+        let mut queue = self.outbound_queue(proof_lag_block, recovery)?;
+        loop {
+            if self.admin_checkpoint().await {
+                queue =
+                    self.outbound_queue(proof_lag_block, self.store.submissions_to_recover()?)?;
+            }
             if *rate_limited {
                 break;
             }
-            match self.attempt_withdrawal(&burn, rate_limited).await {
+            let Some((note_id, creation_block, work)) = queue.pop_front() else {
+                break;
+            };
+            if !attempted.insert(note_id) {
+                continue;
+            }
+            if let Some(wait) = self.store.first_limit_wait()? {
+                if (creation_block, note_id.to_bytes())
+                    > (wait.creation_block, wait.note_id.to_bytes())
+                {
+                    break;
+                }
+                if wait.note_id == note_id {
+                    let now = SystemTime::now();
+                    if now
+                        .duration_since(UNIX_EPOCH)
+                        .context("system clock is before the Unix epoch")?
+                        .as_secs()
+                        < u64::try_from(wait.retry_at).context(INVALID)?
+                    {
+                        break;
+                    }
+                    let policy = self
+                        .config
+                        .withdrawal_limit()
+                        .context("withdrawal limit settings are missing")?;
+                    self.store
+                        .advance_limit_retry(note_id, policy.retry_at(now)?)?;
+                }
+            }
+            let result = match work {
+                OutboundWithdrawal::Prepare(burn) => {
+                    self.attempt_withdrawal(&burn, rate_limited).await
+                }
+                OutboundWithdrawal::Recover(saved) => {
+                    self.advance_submission(saved, rate_limited)
+                        .instrument(info_span!("attester.withdraw", note.id = %note_id))
+                        .await
+                }
+            };
+            match result {
                 Ok(()) => {}
                 Err(error) if error.is_fatal() => return Err(error),
                 Err(error) => {
@@ -541,6 +637,28 @@ impl Attester {
             }
         }
         Ok(first_error.map_or(Ok(()), Err))
+    }
+
+    pub(crate) fn wait_for_withdrawal_limit(
+        &mut self,
+        note_id: NoteId,
+        status: StatusCode,
+        body: &[u8],
+        submission: Option<(&SavedSubmission, SubmissionAttempt)>,
+    ) -> Result<bool, SubmitError> {
+        let Some(policy) = self
+            .config
+            .withdrawal_limit()
+            .filter(|policy| is_withdrawal_limit(status, body, &policy.message_prefix))
+        else {
+            return Ok(false);
+        };
+        let retry_at = policy.retry_at(SystemTime::now())?;
+        Span::current().record_failure(Transient("withdrawal_limit"));
+        warn!(%note_id, retry_at, circle_message = circle_message(body), "waiting for Circle's withdrawal limit");
+        self.store
+            .record_limit_rejection(note_id, retry_at, body, submission)?;
+        Ok(true)
     }
 
     /// Withdraws one burn in its own `attester.withdraw` span, so its failure lands there and never
@@ -557,6 +675,12 @@ impl Attester {
         };
         if error.is_fatal() {
             return Err(error);
+        }
+        if let SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body }) = &error
+        {
+            if self.wait_for_withdrawal_limit(burn.note_id(), *status, body, None)? {
+                return Ok(());
+            }
         }
         let (hold, response, message) = burn_hold(&error);
         // Logged before the hold is written, so a failed write cannot lose the failure.

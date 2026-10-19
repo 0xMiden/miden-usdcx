@@ -624,6 +624,7 @@ async fn progress_counts_unfinished_work() {
         withdrawals_pending: 0,
         burns_unfinished: 3,
         oldest_unfinished_burn: Some(consumed),
+        withdrawal_limit_waiting: 0,
     };
     assert_eq!(attester.store.progress().unwrap(), nothing_started);
 

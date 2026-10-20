@@ -76,6 +76,13 @@ pub struct Cli {
     #[arg(long)]
     cctp_forwarding_max_fee: u64,
 
+    /// Optional fee cap for an xReserve redeposit to Stacks, Movement or a Cardano enterprise
+    /// address, in the smallest USDC unit. Omit it to disable these routes; zero explicitly
+    /// permits only a zero inner fee. Canton and Aleo are not supported.
+    /// The total withdrawal fee limit must cover this cap and Circle's outer fee.
+    #[arg(long)]
+    xreserve_deposit_max_fee: Option<u64>,
+
     /// 0x-prefixed address of Circle's xReserve contract on Arc for the environment --circle-url
     /// points at; a forwarded response must name it as recipient and caller. Circle reaches
     /// Solana, Linea, Codex, Monad, XDC, Ink, Plume, Starknet and EDGE through xReserve on Arc
@@ -214,6 +221,7 @@ pub struct Config {
     max_withdrawal_fee: AssetAmount,
     max_withdrawal_fee_bps: u64,
     cctp_forwarding: CctpForwarding,
+    xreserve_deposit_max_fee: Option<AssetAmount>,
     poll_interval: Duration,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
@@ -231,6 +239,11 @@ impl TryFrom<Cli> for Config {
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
+        let xreserve_deposit_max_fee = cli
+            .xreserve_deposit_max_fee
+            .map(AssetAmount::new)
+            .transpose()
+            .context("maximum xreserve deposit fee is invalid")?;
         let cctp_forwarding = CctpForwarding {
             max_fee: cli.cctp_forwarding_max_fee,
             forwarder: cli.cctp_forwarder_address,
@@ -313,6 +326,7 @@ impl TryFrom<Cli> for Config {
             max_withdrawal_fee,
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             cctp_forwarding,
+            xreserve_deposit_max_fee,
             poll_interval: cli.poll_interval,
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
@@ -354,6 +368,16 @@ impl Config {
 
     pub(crate) fn cctp_forwarding(&self) -> CctpForwarding {
         self.cctp_forwarding
+    }
+
+    /// Remote destinations need explicit support; native-USDC routes keep their CCTP cap.
+    pub(crate) fn forwarding_max_fee(&self, destination: u32) -> Option<u64> {
+        match destination {
+            // Stacks, Cardano enterprise addresses and Movement, respectively.
+            10003..=10005 => self.xreserve_deposit_max_fee.map(|fee| fee.as_u64()),
+            10000.. => None,
+            _ => Some(self.cctp_forwarding.max_fee),
+        }
     }
 
     pub(crate) fn poll_interval(&self) -> Duration {

@@ -148,3 +148,29 @@ fn prepare_handles_circle_responses() {
         assert_eq!((actual_status, actual_body.as_slice()), (status, body));
     }
 }
+
+#[test]
+fn admitted_redeposit_prepares_use_their_cap_without_a_hook_override() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    args.append("--xreserve-deposit-max-fee", "428026");
+    let config = args.load();
+    let client = CircleClient::new(&config).unwrap();
+    for domain in [10003, 10004, 10005] {
+        let burn = discovered_burn(10_000_000, serial(94), domain);
+        let request = client
+            .prepare_request(&burn, config.forwarding_max_fee(domain).unwrap())
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body["batches"][0]["forwardingOptions"],
+            json!({"maxFee":"0.428026","usesFastFinality":true})
+        );
+        assert_eq!(body["batches"][0]["finalDestinationDomain"], domain);
+        assert!(body["batches"][0]["forwardingOptions"]
+            .get("hookData")
+            .is_none());
+    }
+}

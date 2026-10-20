@@ -461,3 +461,26 @@ fn kms_settings_are_validated() {
     zero.replace("--aws-kms-operation-timeout", "0s");
     assert_config_error(&zero, "AWS KMS operation timeout must be greater than zero");
 }
+
+#[test]
+fn redeposit_fee_is_optional_zero_is_explicit_and_amounts_are_bounded() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    for domain in [10003, 10004, 10005] {
+        assert_eq!(args.load().forwarding_max_fee(domain), None);
+    }
+    assert_eq!(args.load().forwarding_max_fee(9), Some(500000));
+    args.append("--xreserve-deposit-max-fee", "0");
+    for domain in [10003, 10004, 10005] {
+        assert_eq!(args.load().forwarding_max_fee(domain), Some(0));
+    }
+    for domain in [10000, 10001, 10002, 10007, 10008] {
+        assert_eq!(args.load().forwarding_max_fee(domain), None);
+    }
+    args.replace("--xreserve-deposit-max-fee", u64::MAX.to_string());
+    assert!(args.config().is_err());
+    args.replace("--xreserve-deposit-max-fee", "500000");
+    args.append("--xreserve-deposit-max-fee", "500000");
+    assert!(args.parse().is_err());
+}

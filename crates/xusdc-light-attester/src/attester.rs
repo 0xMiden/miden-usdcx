@@ -441,9 +441,13 @@ impl Attester {
         burn: &DiscoveredBurn,
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
+        let forwarding_fee = self
+            .config
+            .forwarding_max_fee(burn.items().dest_domain.as_u32())
+            .ok_or(crate::verify::VerifyError::UnsupportedDestination)?;
         let prepared = self
             .circle
-            .prepare_withdrawal(burn, self.config.cctp_forwarding().max_fee)
+            .prepare_withdrawal(burn, forwarding_fee)
             .await
             .inspect_err(|error| {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });

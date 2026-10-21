@@ -6,6 +6,7 @@ pub(crate) mod burn;
 pub mod chain;
 pub mod circle;
 pub mod config;
+pub(crate) mod export;
 pub mod service;
 pub mod signer;
 pub(crate) mod store;

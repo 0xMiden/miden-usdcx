@@ -35,6 +35,7 @@ tokio-util = "0.7"
 anyhow = "1"
 aws-config = { version = "=1.12.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "=1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"

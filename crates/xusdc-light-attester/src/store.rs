@@ -27,6 +27,9 @@ use crate::submission::{
 };
 use crate::verify::validate_saved_request;
 
+mod export;
+pub(crate) use export::{ExportBatch, ExportRecord};
+
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 pub(crate) enum BurnHoldReason {
@@ -122,6 +125,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_scan_from_the_anchor.sql"),
     include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
     include_str!("../migrations/0004_withdrawal_limit_retry.sql"),
+    include_str!("../migrations/0005_withdrawal_exports.sql"),
 ];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
@@ -1167,6 +1171,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
         "SELECT seq, note_id, recorded_at, kind, status, withdrawal_id, body, transfer_spec_hash,
             http_status, response, error, endpoint, hold_reason, burn_hold_reason, circle_status
             FROM submission_events LIMIT 0",
+        "SELECT destination, after_seq FROM withdrawal_export_cursors LIMIT 0",
     ] {
         connection.prepare(probe).map_err(classify_error)?;
     }

@@ -14,16 +14,15 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-This guide describes this branch. Released images up to v0.17.2 also require
-`--signer-provider aws-kms`, which this branch no longer accepts. Until the next release, build an
-image from this branch and use its name in place of `<BRIDGE_IMAGE>` below:
+Use `ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>` for a published image, or build one from the
+repository root and use its name in place of `<BRIDGE_IMAGE>` below:
 
 ```sh
 docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
 ```
 
-Run that build command from the repository root. Published images use
-`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
+Follow the README at the matching image tag. Images up to v0.17.2 also require
+`--signer-provider aws-kms`, which newer versions no longer accept.
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -99,7 +98,7 @@ docker run -d --name "usdcx-bridge-$USDCX_NETWORK" --stop-timeout 360 \
   --miden-rpc-url '<MIDEN_RPC_URL>' \
   --circle-url '<CIRCLE_XRESERVE_HTTPS_URL>' \
   --faucet-account-id '<USDCX_FAUCET_ID>' \
-  --relayer-page-size 100 \
+  --relayer-page-size 10 \
   --relayer-request-timeout 30s \
   --relayer-poll-interval 5s \
   --relayer-miden-data-dir /data/relayer/miden \
@@ -140,12 +139,24 @@ All options:
 docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 ```
 
+To use remote proving, add `--relayer-prover-url '<HTTP(S)_PROVER_URL>'` and choose a page size
+up to `40`. Without a prover URL, proving is local and pages are capped at `10`. Smaller page
+sizes are kept. The optional `--relayer-prover-timeout` defaults to `30s` and covers connection
+setup and proving, not transaction submission. Allow outbound access to the configured prover.
+
+Use a prover compatible with the deployed Miden version. It receives transaction witness data,
+including account state and note contents, but not the relayer's secret key. Use HTTPS outside
+a trusted local network. Startup does not check prover availability: a failed proof leaves the
+page unfinished for the next scan, without switching to local proving or shrinking the batch.
+Remote proving does not extend expiration or remove node size limits. The 40-note cap was tested
+with ordinary deposits without hook data; larger payloads may need smaller pages.
+
 ## Configuration flags
 
-This is the complete flag reference for the single `usdcx-bridge run` command in this branch.
+This is the complete flag reference for the single `usdcx-bridge run` command.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
-Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
-in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
+The relayer polling interval, expiration delta and remote proving timeout have defaults. The
+attester signs with keys in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
 paths below refer to locations inside the container.
 
 Fee amounts use USDC base units: `1000000` = 1 USDC. One basis point = 0.01%.
@@ -156,11 +167,13 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--miden-rpc-url` | Required | RPC URL supplied for the target Miden network, including `https://` or `http://`. Used by both workers. |
 | `--circle-url` | Required | Circle xReserve HTTPS API base URL for the matching environment. Used by both workers. |
 | `--faucet-account-id` | Required | Deployed USDCx faucet ID from the network configuration, in canonical lowercase `0x` hex. Used by both workers. |
-| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`. One page becomes one mint transaction. The example uses `100`; size for expected traffic and transaction limits. |
+| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`, capped at `10` for local proving or `40` for remote proving. Smaller values are kept. One page becomes one mint transaction. |
+| `--relayer-prover-url` | Optional; local proving | HTTP(S) endpoint of a compatible remote transaction prover. |
+| `--relayer-prover-timeout` | Optional; `30s` | Positive timeout for remote connection setup and proving. Unused with local proving. |
 | `--relayer-request-timeout` | Required | Positive timeout for each relayer request to Circle. The example uses `30s`; allow for network latency. |
 | `--relayer-poll-interval` | Optional; `5s` | Wait between polls after catching up with the deposit feed. |
 | `--relayer-miden-data-dir` | Required | Durable directory for the Miden client store and relayer keystore. |
-| `--relayer-expiration-delta` | Optional; `64` | Blocks allowed for mint transaction inclusion before retrying the page. Integer from `1` to `65535`. |
+| `--relayer-expiration-delta` | Optional; `64` | Maximum blocks allowed for mint transaction inclusion before retrying the page. Protocol rules can shorten this lifetime. Integer from `1` to `65535`. |
 | `--relayer-account-id` | Required | ID of the deployed, funded public Miden account that creates mint notes, as `0x` hex or bech32. Install its keystore and coordinate fee funding with Miden Ops. |
 | `--relayer-attester-public-key` | Required | Deposit signing public key supplied by Circle and enabled on the faucet. Compressed SEC1 hex, optionally prefixed with `0x`. Not a withdrawal KMS key. |
 | `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |

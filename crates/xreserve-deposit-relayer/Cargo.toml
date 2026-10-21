@@ -12,6 +12,7 @@ miden-client = { workspace = true, features = ["std", "tonic"] }
 miden-client-sqlite-store = { workspace = true }
 
 anyhow = { workspace = true }
+async-trait = "0.1"
 clap = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
@@ -25,6 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 
 [dev-dependencies]
 miden-protocol = { workspace = true, features = ["testing"] }

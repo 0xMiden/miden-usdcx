@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::{ensure, Result};
 use clap::Parser;
 use miden_protocol::account::AccountId;
 use url::Url;
@@ -19,9 +20,8 @@ pub struct Config {
     #[arg(long)]
     pub circle_url: Url,
 
-    /// The number of attestations in one Circle response, between 1 and 1000. A page is minted as
-    /// a single transaction, so this is also how many mint notes that transaction carries: a
-    /// smaller page is a cheaper proof and a smaller unit of work to redo after a failure.
+    /// Deposits requested per Circle page (1 to 1000), capped at 10 with local proving or 40 with
+    /// remote proving. Each page is minted as one transaction.
     #[arg(long)]
     pub page_size: PageSize,
 
@@ -41,6 +41,14 @@ pub struct Config {
     /// The RPC endpoint of the Miden node the mint transactions are submitted to.
     #[arg(long)]
     pub miden_node_url: Url,
+
+    /// Optional HTTP(S) endpoint for remote transaction proving. Without it, proofs run locally.
+    #[arg(long, value_parser = parse_prover_url)]
+    pub prover_url: Option<Url>,
+
+    /// Maximum time for remote proving, including connection setup.
+    #[arg(long, value_parser = parse_prover_timeout, default_value = "30s")]
+    pub prover_timeout: Duration,
 
     /// The directory holding the Miden client's state: its store, and the keystore the relayer
     /// account's signing key is read from.
@@ -71,9 +79,79 @@ pub struct Config {
     pub state_file: PathBuf,
 }
 
+impl Config {
+    /// The page size used for the configured proving mode, keeping smaller requests unchanged.
+    pub fn effective_page_size(&self) -> PageSize {
+        self.page_size.min(if self.prover_url.is_some() {
+            PageSize::REMOTE_PROVING_MAX
+        } else {
+            PageSize::LOCAL_PROVING_MAX
+        })
+    }
+
+    pub(crate) fn validate_prover(&self) -> Result<()> {
+        if let Some(url) = &self.prover_url {
+            validate_prover_url(url)?;
+        }
+        validate_prover_timeout(self.prover_timeout)
+    }
+}
+
+/// Parses the remote prover URL for either service binary.
+pub fn parse_prover_url(value: &str) -> Result<Url> {
+    let url = Url::parse(value)?;
+    validate_prover_url(&url)?;
+    Ok(url)
+}
+
+fn validate_prover_url(url: &Url) -> Result<()> {
+    ensure!(
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
+        "prover URL must be an HTTP(S) endpoint"
+    );
+    Ok(())
+}
+
+/// Parses a positive remote proving timeout for either service binary.
+pub fn parse_prover_timeout(value: &str) -> Result<Duration> {
+    let timeout = humantime::parse_duration(value)?;
+    validate_prover_timeout(timeout)?;
+    Ok(timeout)
+}
+
+fn validate_prover_timeout(timeout: Duration) -> Result<()> {
+    ensure!(
+        !timeout.is_zero(),
+        "prover timeout must be greater than zero"
+    );
+    Ok(())
+}
+
 /// Accepts either account ID form; the network prefix of a bech32 ID is parsed and then discarded.
 pub fn parse_account_id(value: &str) -> Result<AccountId, String> {
     AccountId::parse(value)
         .map(|(account_id, _network_id)| account_id)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prover_settings_require_http_and_a_positive_timeout() {
+        for url in ["http://127.0.0.1:50051", "https://prover.example"] {
+            assert!(parse_prover_url(url).is_ok());
+        }
+        for url in [
+            "prover.example",
+            "ftp://prover.example",
+            "file:///tmp/prover",
+        ] {
+            assert!(parse_prover_url(url).is_err());
+        }
+        assert_eq!(parse_prover_timeout("2s").unwrap(), Duration::from_secs(2));
+        assert!(parse_prover_timeout("0s").is_err());
+        assert!(parse_prover_timeout("invalid").is_err());
+    }
 }

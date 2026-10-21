@@ -6710,6 +6710,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "usdcx-telemetry",
  "xreserve-deposit-relayer",
  "xusdc-attester",
@@ -7155,6 +7156,7 @@ name = "xreserve-deposit-relayer"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "hex",
  "humantime",
@@ -7171,6 +7173,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tonic",
  "tracing",
  "url",
  "usdcx-telemetry",

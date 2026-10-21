@@ -60,6 +60,7 @@ use miden_usdcx::xreserve::encoding::DepositNonce;
 
 use crate::circle::PageSize;
 use crate::config::Config;
+use crate::prover::{is_remote_transport_error, RemoteProver};
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.
@@ -81,10 +82,8 @@ const STORE_FILE: &str = "store.sqlite3";
 /// directory.
 const KEYSTORE_DIR: &str = "keystore";
 
-/// A whole page has to fit in one transaction for the page to be the retry unit, and it always
-/// does: the largest page Circle is asked for is smaller than the most output notes the protocol
-/// lets a transaction create. Raising [`PageSize::MAX`] past that ceiling fails the build here
-/// rather than at the node.
+/// Circle's allowed page range must stay below the protocol's output-note ceiling. The relayer
+/// caps actual requests further for its proving mode.
 const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 
 /// Checks which deposits the faucet has already minted, then submits a page of mint notes to
@@ -198,6 +197,7 @@ impl NodeClient {
     /// - The node does not know the relayer account or the faucet.
     /// - The faucet has not enabled the configured attester public key.
     pub async fn new(config: &Config) -> Result<Self> {
+        config.validate_prover()?;
         let endpoint = Endpoint::try_from(config.miden_node_url.as_str())
             .map_err(|error| anyhow!("the miden node url is not an endpoint: {error}"))?;
 
@@ -208,7 +208,7 @@ impl NodeClient {
         let keystore = FilesystemKeyStore::new(data_dir.join(KEYSTORE_DIR))
             .map_err(|error| anyhow!("opening the miden keystore: {error}"))?;
 
-        let mut client = ClientBuilder::new()
+        let mut builder = ClientBuilder::new()
             .rpc(Arc::new(GrpcClient::new(
                 &endpoint,
                 RPC_TIMEOUT.as_millis() as u64,
@@ -219,10 +219,11 @@ impl NodeClient {
             // submitted and reports it discarded. That is the client's guess: the chain can still
             // include the transaction until its expiration block, and the wait for inclusion must
             // end on what the chain did.
-            .tx_discard_delta(None)
-            .build()
-            .await
-            .context("building the miden client")?;
+            .tx_discard_delta(None);
+        if let Some(url) = &config.prover_url {
+            builder = builder.prover(Arc::new(RemoteProver::new(url, config.prover_timeout)));
+        }
+        let mut client = builder.build().await.context("building the miden client")?;
 
         client
             .sync_state()
@@ -423,12 +424,16 @@ impl MidenClient for NodeClient {
 
 /// The class of a Miden client error under `kind`.
 ///
-/// Only a failed exchange with the node is `transient`. The client's other errors come from its own
+/// Node RPC failures and remote prover connection failures or timeouts are `transient`.
+/// Other errors come from the client's own
 /// store, its keystore, or executing and proving the transaction, such as a signing key missing
 /// from the keystore, and retrying will not fix those, so they are `actionable`.
 fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
     match error {
         ClientError::RpcError(_) => Transient(kind),
+        ClientError::TransactionProvingError(error) if is_remote_transport_error(error) => {
+            Transient("remote_prover")
+        }
         _ => Actionable(kind),
     }
 }
@@ -578,6 +583,38 @@ mod tests {
         #[case] class: FailureClass,
     ) {
         assert_eq!(client_class(&error, "node_sync"), class);
+    }
+
+    #[test]
+    fn remote_outages_are_transient_but_invalid_proofs_are_actionable() {
+        use miden_client::transaction::TransactionProverError;
+        for (status, expected) in [
+            (
+                tonic::Status::unavailable("offline"),
+                Transient("remote_prover"),
+            ),
+            (
+                tonic::Status::deadline_exceeded("late"),
+                Transient("remote_prover"),
+            ),
+            (
+                tonic::Status::cancelled("timeout"),
+                Transient("remote_prover"),
+            ),
+            (
+                tonic::Status::invalid_argument("bad inputs"),
+                Actionable("transaction_submit"),
+            ),
+        ] {
+            let error =
+                TransactionProverError::other_with_source("remote proof failed", status).into();
+            assert_eq!(client_class(&error, "transaction_submit"), expected);
+        }
+        let malformed = TransactionProverError::other("prover returned no proof").into();
+        assert_eq!(
+            client_class(&malformed, "transaction_submit"),
+            Actionable("transaction_submit")
+        );
     }
 
     /// While waiting for a transaction, a failed exchange with the node is tried again until three

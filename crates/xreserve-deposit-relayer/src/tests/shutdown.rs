@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use clap::Parser;
+use miden_protocol::crypto::utils::Serializable;
 use miden_protocol::transaction::TransactionId;
-use miden_usdcx::xreserve::encoding::DepositNonce;
+use miden_usdcx::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
 use tempfile::TempDir;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
@@ -98,6 +99,148 @@ fn pages_server(pages: Vec<(String, bool)>) -> (String, thread::JoinHandle<Vec<S
         requests
     });
     (url, server)
+}
+
+#[tokio::test]
+async fn proving_mode_caps_the_circle_request_without_dropping_deposits() {
+    for (remote, requested, expected) in [
+        (false, 100, 10),
+        (true, 100, 40),
+        (false, 3, 3),
+        (true, 3, 3),
+    ] {
+        let directory = TempDir::new().unwrap();
+        let oversized =
+            serde_json::json!({"attestations": vec![serde_json::Value::Null; expected + 1]})
+                .to_string();
+        let (url, server) = pages_server(vec![
+            (oversized, true),
+            ("{\"attestations\":[]}".into(), false),
+        ]);
+        let mut config = config(&directory, &url);
+        config.page_size = requested.try_into().unwrap();
+        config.prover_url = remote.then(|| "https://prover.invalid".parse().unwrap());
+        assert_eq!(config.prover_timeout, Duration::from_secs(30));
+        let mut relayer = Relayer::new(
+            config,
+            TestMiden {
+                reached_page: CancellationToken::new(),
+            },
+        )
+        .unwrap();
+        let before = relayer.store.state().unwrap();
+        let failure = relayer.scan(&CancellationToken::new()).await.unwrap_err();
+        assert_eq!(failure.class, Transient("invalid_response"));
+        assert_eq!(relayer.store.state().unwrap(), before);
+        assert_eq!(
+            relayer.scan(&CancellationToken::new()).await.unwrap(),
+            ScanOutcome::Complete
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0], requests[1]);
+        assert!(
+            requests[0].contains(&format!("pageSize={expected} ")),
+            "{}",
+            requests[0]
+        );
+    }
+}
+
+#[test]
+fn programmatic_config_cannot_bypass_prover_validation() {
+    let directory = TempDir::new().unwrap();
+    let mut config = config(&directory, "http://127.0.0.1:1");
+    config.prover_url = Some("file:///tmp/prover".parse().unwrap());
+    assert!(config.validate_prover().is_err());
+    config.prover_url = None;
+    config.prover_timeout = Duration::ZERO;
+    assert!(config.validate_prover().is_err());
+}
+
+#[tokio::test]
+async fn a_failed_proof_keeps_progress_for_the_next_scan() {
+    struct FailsOnce(usize);
+    impl MidenClient for FailsOnce {
+        async fn retain_unminted(
+            &mut self,
+            nonces: Vec<DepositNonce>,
+        ) -> Result<Vec<DepositNonce>, Failure> {
+            Ok(nonces)
+        }
+
+        async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
+            assert_eq!(notes.len(), 1);
+            self.0 += 1;
+            if self.0 == 1 {
+                return Err(Failure::new(
+                    Transient("remote_prover"),
+                    anyhow!("prover unavailable"),
+                ));
+            }
+            Ok(TransactionId::new(
+                miden_protocol::EMPTY_WORD,
+                miden_protocol::EMPTY_WORD,
+                miden_protocol::EMPTY_WORD,
+                miden_protocol::EMPTY_WORD,
+            ))
+        }
+    }
+
+    let directory = TempDir::new().unwrap();
+    let mut config = config(&directory, "http://127.0.0.1:1");
+    let vectors = miden_usdcx::vectors::load();
+    let vector = vectors
+        .families
+        .mi
+        .iter()
+        .find(|vector| vector.id == "mi-pos-hookdata")
+        .unwrap();
+    let intent = DepositIntent::try_from(vector.payload().as_slice()).unwrap();
+    let header = intent.header();
+    // The encoding vector's target is private; a mint note must target a public account.
+    let header = DepositIntentHeader::builder()
+        .amount(header.amount())
+        .remote_domain(config.remote_domain)
+        .remote_token(config.faucet_account_id)
+        .remote_recipient(header.remote_recipient())
+        .local_token(header.local_token())
+        .local_depositor(header.local_depositor())
+        .max_fee(header.max_fee())
+        .nonce(header.nonce())
+        .build();
+    let payload = DepositIntent::new(header, intent.hook_data().clone()).to_bytes();
+    let body = serde_json::json!({"attestations": [{
+        "payload": format!("0x{}", hex::encode(payload)),
+        "messageHash": format!("0x{}", "01".repeat(32)),
+        "attestation": format!("0x{}", "00".repeat(65)),
+    }]})
+    .to_string();
+    let (url, server) = pages_server(vec![(body.clone(), false), (body, false)]);
+    config.circle_url = url.parse().unwrap();
+    config.prover_url = Some("https://prover.invalid".parse().unwrap());
+    let mut relayer = Relayer::new(config, FailsOnce(0)).unwrap();
+    let before = relayer.store.state().unwrap();
+    assert_eq!(
+        relayer
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap_err()
+            .class,
+        Transient("remote_prover")
+    );
+    assert_eq!(relayer.store.state().unwrap(), before);
+    assert_eq!(relayer.miden_client.0, 1);
+    assert_eq!(
+        relayer.scan(&CancellationToken::new()).await.unwrap(),
+        ScanOutcome::Complete
+    );
+    assert_eq!(relayer.miden_client.0, 2);
+    assert_eq!(
+        relayer.store.state().unwrap().watermark,
+        Some(MessageHash::new([1; 32]))
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests[0], requests[1]);
 }
 
 #[test]

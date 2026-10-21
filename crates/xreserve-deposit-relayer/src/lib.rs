@@ -33,6 +33,7 @@ pub mod circle;
 pub mod config;
 pub mod miden;
 pub mod mint;
+mod prover;
 pub mod store;
 mod unminted;
 
@@ -158,6 +159,9 @@ impl<M: MidenClient> Relayer<M> {
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
     /// - The progress file is malformed or cannot be read or replaced.
     pub fn new(config: Config, miden_client: M) -> Result<Self> {
+        config.validate_prover()?;
+        let page_size = config.effective_page_size();
+        info!(%page_size, remote_proving = config.prover_url.is_some(), "relayer proving configuration");
         let store = Store::new(config.state_file.clone());
         let state = store.state().context("reading relayer startup progress")?;
         // Save the same progress to exercise the normal write/sync/rename path without advancing it.
@@ -167,7 +171,7 @@ impl<M: MidenClient> Relayer<M> {
         Ok(Self {
             circle: CircleClient::new(
                 config.circle_url.clone(),
-                config.page_size,
+                page_size,
                 config.request_timeout,
             )?,
             store,

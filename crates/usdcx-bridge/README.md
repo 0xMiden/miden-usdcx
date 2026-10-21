@@ -146,8 +146,11 @@ setup and proving, not transaction submission. Allow outbound access to the conf
 
 Use a prover compatible with the deployed Miden version. It receives transaction witness data,
 including account state and note contents, but not the relayer's secret key. Use HTTPS outside
-a trusted local network. Startup does not check prover availability: a failed proof leaves the
-page unfinished for the next scan, without switching to local proving or shrinking the batch.
+a trusted local network. Startup does not check prover availability. A remote proving error or
+timeout logs a warning and falls back to the same transaction locally, which may still contain
+40 deposits and need substantial memory and time. Only an explicit expired-submission rejection
+reduces later pages to 10 until restart. Smaller settings stay smaller; remote proving remains
+the first choice. The unfinished page is retried on the next scan.
 Remote proving does not extend expiration or remove node size limits. The 40-note cap was tested
 with ordinary deposits without hook data; larger payloads may need smaller pages.
 
@@ -167,7 +170,7 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--miden-rpc-url` | Required | RPC URL supplied for the target Miden network, including `https://` or `http://`. Used by both workers. |
 | `--circle-url` | Required | Circle xReserve HTTPS API base URL for the matching environment. Used by both workers. |
 | `--faucet-account-id` | Required | Deployed USDCx faucet ID from the network configuration, in canonical lowercase `0x` hex. Used by both workers. |
-| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`, capped at `10` for local proving or `40` for remote proving. Smaller values are kept. One page becomes one mint transaction. |
+| `--relayer-page-size` | Required | Deposits per Circle page, from `1` to `1000`. Initially capped at `10` without a prover URL, or `40` with one. Smaller values are kept. One page becomes one mint transaction. |
 | `--relayer-prover-url` | Optional; local proving | HTTP(S) endpoint of a compatible remote transaction prover. |
 | `--relayer-prover-timeout` | Optional; `30s` | Positive timeout for remote connection setup and proving. Unused with local proving. |
 | `--relayer-request-timeout` | Required | Positive timeout for each relayer request to Circle. The example uses `30s`; allow for network latency. |

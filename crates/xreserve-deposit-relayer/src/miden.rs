@@ -40,7 +40,9 @@ use std::time::Duration;
 use anyhow::{anyhow, ensure, Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient};
+use miden_client::rpc::{
+    AddTransactionError, Endpoint, EndpointError, GrpcClient, GrpcError, RpcEndpoint, RpcError,
+};
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionRequestBuilder, TransactionStatus};
 use miden_client::{Client, ClientError};
@@ -60,7 +62,7 @@ use miden_usdcx::xreserve::encoding::DepositNonce;
 
 use crate::circle::PageSize;
 use crate::config::Config;
-use crate::prover::{is_remote_transport_error, RemoteProver};
+use crate::prover::RemoteProver;
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.
@@ -424,18 +426,28 @@ impl MidenClient for NodeClient {
 
 /// The class of a Miden client error under `kind`.
 ///
-/// Node RPC failures and remote prover connection failures or timeouts are `transient`.
+/// Node RPC failures are `transient`.
 /// Other errors come from the client's own
 /// store, its keystore, or executing and proving the transaction, such as a signing key missing
 /// from the keystore, and retrying will not fix those, so they are `actionable`.
 fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
     match error {
         ClientError::RpcError(_) => Transient(kind),
-        ClientError::TransactionProvingError(error) if is_remote_transport_error(error) => {
-            Transient("remote_prover")
-        }
         _ => Actionable(kind),
     }
+}
+
+/// Recognizes the node's explicit expiration rejection, not a timeout.
+pub(crate) fn is_expired_submission(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ClientError>(),
+        Some(ClientError::RpcError(RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind: GrpcError::InvalidArgument,
+            endpoint_error: Some(EndpointError::AddTransaction(AddTransactionError::Expired)),
+            ..
+        }))
+    )
 }
 
 /// Whether the wait for a transaction tries again after a sync failed, given how many have failed
@@ -492,7 +504,6 @@ fn inclusion(
 
 #[cfg(test)]
 mod tests {
-    use miden_client::rpc::RpcError;
     use miden_client::transaction::DiscardCause;
     use rstest::rstest;
 
@@ -578,6 +589,10 @@ mod tests {
         Transient("node_sync")
     )]
     #[case::client(ClientError::AccountNonceTooLow, Actionable("node_sync"))]
+    #[case::local_prover(
+        miden_client::transaction::TransactionProverError::other("local proof failed").into(),
+        Actionable("node_sync")
+    )]
     fn client_errors_are_transient_only_from_the_node(
         #[case] error: ClientError,
         #[case] class: FailureClass,
@@ -586,35 +601,37 @@ mod tests {
     }
 
     #[test]
-    fn remote_outages_are_transient_but_invalid_proofs_are_actionable() {
-        use miden_client::transaction::TransactionProverError;
-        for (status, expected) in [
+    fn only_an_explicit_submission_expiration_reduces_batches() {
+        use AddTransactionError::{CapacityExceeded, Expired};
+        use GrpcError::{DeadlineExceeded, InvalidArgument, Unavailable};
+        use RpcEndpoint::{GetAccount, SubmitProvenTx};
+
+        for (endpoint, error_kind, rejection, expected) in [
+            (SubmitProvenTx, InvalidArgument, Some(Expired), true),
+            (GetAccount, InvalidArgument, Some(Expired), false),
+            (SubmitProvenTx, DeadlineExceeded, Some(Expired), false),
+            (SubmitProvenTx, Unavailable, None, false),
+            (SubmitProvenTx, InvalidArgument, None, false),
             (
-                tonic::Status::unavailable("offline"),
-                Transient("remote_prover"),
-            ),
-            (
-                tonic::Status::deadline_exceeded("late"),
-                Transient("remote_prover"),
-            ),
-            (
-                tonic::Status::cancelled("timeout"),
-                Transient("remote_prover"),
-            ),
-            (
-                tonic::Status::invalid_argument("bad inputs"),
-                Actionable("transaction_submit"),
+                SubmitProvenTx,
+                InvalidArgument,
+                Some(CapacityExceeded),
+                false,
             ),
         ] {
-            let error =
-                TransactionProverError::other_with_source("remote proof failed", status).into();
-            assert_eq!(client_class(&error, "transaction_submit"), expected);
+            let error = ClientError::RpcError(RpcError::RequestError {
+                endpoint,
+                error_kind,
+                endpoint_error: rejection.map(EndpointError::AddTransaction),
+                source: None,
+            });
+            let failure = Failure::new(Transient("transaction_submit"), error)
+                .context("submitting the mint transaction");
+            assert_eq!(is_expired_submission(&failure.error), expected);
         }
-        let malformed = TransactionProverError::other("prover returned no proof").into();
-        assert_eq!(
-            client_class(&malformed, "transaction_submit"),
-            Actionable("transaction_submit")
-        );
+        assert!(!is_expired_submission(&anyhow!("transaction expired")));
+        let expired = inclusion_at(&TransactionStatus::Pending, EXPIRATION_BLOCK).unwrap_err();
+        assert!(!is_expired_submission(&expired.error));
     }
 
     /// While waiting for a transaction, a failed exchange with the node is tried again until three

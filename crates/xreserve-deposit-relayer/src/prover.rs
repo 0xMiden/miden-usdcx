@@ -1,10 +1,13 @@
-//! Bounds connection setup and proving without changing the SDK's submission path.
+//! Tries remote proving first, then proves the same transaction locally if it fails.
 
 use std::time::Duration;
 
-use miden_client::remote_prover::{RemoteProverClientError, RemoteTransactionProver};
-use miden_client::transaction::{TransactionProver, TransactionProverError};
+use miden_client::remote_prover::RemoteTransactionProver;
+use miden_client::transaction::{
+    LocalTransactionProver, TransactionProver, TransactionProverError,
+};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use tracing::warn;
 use url::Url;
 
 pub(crate) struct RemoteProver {
@@ -27,34 +30,21 @@ impl TransactionProver for RemoteProver {
         &self,
         inputs: TransactionInputs,
     ) -> Result<ProvenTransaction, TransactionProverError> {
-        tokio::time::timeout(self.timeout, self.inner.prove(&inputs))
+        let remote = tokio::time::timeout(self.timeout, self.inner.prove(&inputs))
             .await
             .map_err(|error| {
                 TransactionProverError::other_with_source("remote proving timed out", error)
-            })?
-    }
-}
-
-pub(crate) fn is_remote_transport_error(error: &TransactionProverError) -> bool {
-    let TransactionProverError::Other {
-        source: Some(source),
-        ..
-    } = error
-    else {
-        return false;
-    };
-    source.is::<RemoteProverClientError>()
-        || source.is::<tokio::time::error::Elapsed>()
-        || source
-            .downcast_ref::<tonic::Status>()
-            .is_some_and(|status| {
-                matches!(
-                    status.code(),
-                    tonic::Code::Unavailable
-                        | tonic::Code::DeadlineExceeded
-                        | tonic::Code::Cancelled
-                )
             })
+            .and_then(|result| result);
+        match remote {
+            Ok(proof) => Ok(proof),
+            Err(error) => {
+                let error = anyhow::Error::new(error);
+                warn!(error = %format_args!("{error:#}"), "remote proving failed; proving the same transaction locally");
+                LocalTransactionProver::default().prove(inputs)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +57,7 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, PartialBlockchain};
     use miden_protocol::ONE;
     use rstest::rstest;
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
 
@@ -92,19 +83,28 @@ mod tests {
     }
 
     #[rstest]
-    #[case::refused(false)]
-    #[case::silent(true)]
+    #[case::refused("refused")]
+    #[case::silent("silent")]
+    #[case::malformed("malformed")]
     #[tokio::test]
-    async fn an_unavailable_prover_fails_within_the_deadline(#[case] accepts: bool) {
+    async fn a_failed_remote_attempt_returns_the_local_result(#[case] response: &str) {
         let inputs = inputs();
+        let local_error = LocalTransactionProver::default()
+            .prove(inputs.clone())
+            .unwrap_err();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap())
             .parse()
             .unwrap();
-        let server = if accepts {
+        let server = if response != "refused" {
+            let malformed = response == "malformed";
             Some(tokio::spawn(async move {
-                let (_stream, _) = listener.accept().await.unwrap();
-                std::future::pending::<()>().await;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                if malformed {
+                    stream.write_all(b"not a gRPC response\r\n").await.unwrap();
+                } else {
+                    std::future::pending::<()>().await;
+                }
             }))
         } else {
             drop(listener);
@@ -116,19 +116,14 @@ mod tests {
             TransactionProver::prove(&prover, inputs),
         )
         .await
-        .expect("remote proving exceeded its timeout")
+        .expect("remote proving did not reach local fallback within its timeout")
         .unwrap_err();
-        assert!(is_remote_transport_error(&error), "{error:?}");
-        if accepts {
-            assert!(
-                matches!(&error, TransactionProverError::Other { source: Some(source), .. }
-                if source.is::<tokio::time::error::Elapsed>()),
-                "{error:?}"
-            );
-        }
+        assert_eq!(format!("{error:?}"), format!("{local_error:?}"));
         if let Some(server) = server {
             server.abort();
-            assert!(server.await.unwrap_err().is_cancelled());
+            if let Err(error) = server.await {
+                assert!(error.is_cancelled());
+            }
         }
     }
 }

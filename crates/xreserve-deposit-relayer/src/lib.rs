@@ -267,6 +267,10 @@ impl<M: MidenClient> Relayer<M> {
             self.unminted.oldest_age(Instant::now()).as_secs(),
         );
         if let Err(failure) = &result {
+            if miden::is_expired_submission(&failure.error) && self.circle.limit_to_local_proving()
+            {
+                warn!("mint submission expired; limiting later pages to 10 deposits until restart");
+            }
             failure.report("the page failed; the next scan resumes at it");
         }
         result

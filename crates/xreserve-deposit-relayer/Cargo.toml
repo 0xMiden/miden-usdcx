@@ -26,7 +26,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
 
 [dev-dependencies]
 miden-protocol = { workspace = true, features = ["testing"] }

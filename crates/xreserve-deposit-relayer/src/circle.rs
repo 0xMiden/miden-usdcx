@@ -292,6 +292,14 @@ impl CircleClient {
         })
     }
 
+    /// Reduces later requests to the local proving cap. Returns whether the size changed.
+    pub(crate) fn limit_to_local_proving(&mut self) -> bool {
+        let smaller = self.page_size.min(PageSize::LOCAL_PROVING_MAX);
+        let changed = smaller != self.page_size;
+        self.page_size = smaller;
+        changed
+    }
+
     /// Fetches the page after `cursor`, or the first page when it is `None`.
     ///
     /// Every failure is transient: the page is fetched again on the next scan.

@@ -20,8 +20,8 @@ pub struct Config {
     #[arg(long)]
     pub circle_url: Url,
 
-    /// Deposits requested per Circle page (1 to 1000), capped at 10 with local proving or 40 with
-    /// remote proving. Each page is minted as one transaction.
+    /// Deposits requested per Circle page (1 to 1000). Initially capped at 10 without a prover
+    /// URL, or 40 with one. Each page is minted as one transaction.
     #[arg(long)]
     pub page_size: PageSize,
 

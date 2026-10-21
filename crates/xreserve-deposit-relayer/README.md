@@ -114,7 +114,7 @@ A page is one transaction, which is what makes that retry clean: no part of a fa
 already on chain, so the retry cannot build a second mint note for a deposit that already minted.
 `--page-size` therefore sets the proof size and the retry unit as well as the Circle request:
 turning it down buys cheaper proofs and less work to redo, at the cost of more requests to walk a
-backlog. Requests are capped at **10 deposits with local proving** or **40 with remote proving**.
+backlog. Requests are initially capped at **10 deposits without a prover URL** or **40 with one**.
 Smaller configured page sizes are kept. Startup logs the effective size. An oversized Circle
 response fails the page without advancing progress; it is never truncated.
 
@@ -146,10 +146,12 @@ By default, the relayer proves locally. Set `--prover-url <HTTP(S)_URL>` to use 
 prover. Optional `--prover-timeout` defaults to `30s` and bounds connection setup and proving,
 not transaction submission. Configure a prover compatible with the deployed Miden version.
 
-The first proof connects to the prover; startup does not check its availability. If proving fails
-or times out, the page remains unfinished and the existing scan loop retries it. The relayer does
-not switch to local proving or reduce the batch after a failure. To use local proving, restart
-without `--prover-url`.
+The first proof connects to the prover; startup does not check its availability. Any remote
+proving error or timeout logs a warning and falls back to proving the same transaction locally.
+This first local attempt may still contain 40 deposits and need substantial memory and time.
+If the node rejects submission because the transaction expired, later pages are capped at 10
+until restart. Smaller configured sizes stay smaller, and remote proving is still tried first.
+The next scan retries the unfinished page; other submission errors do not reduce the page size.
 
 The prover receives transaction witness data, including account state and note contents, but not
 the relayer's secret key. Use a trusted operator and HTTPS outside a trusted local network.
@@ -263,14 +265,14 @@ list is kept in memory, so a restart clears it. Every failed span carries `failu
 | `failure.class` | Meaning | `failure.kind` |
 | --- | --- | --- |
 | `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request` |
-| `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `remote_prover`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
+| `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
 
 `node_sync` and `transaction_submit` are `transient` only when the node could not be reached or
 answered with an error. The same calls also use the Miden client's store and keystore and execute
 and prove the transaction. A failure there, such as a signing key missing from the keystore, keeps
 the kind and is `actionable`.
-Remote connection failures, timeouts and cancelled or unavailable RPCs use `transient/remote_prover`.
-Malformed prover responses remain `actionable`.
+Remote proving failures log a warning before local fallback. A failed local proof remains
+`actionable/transaction_submit`.
 
 ## Progress
 

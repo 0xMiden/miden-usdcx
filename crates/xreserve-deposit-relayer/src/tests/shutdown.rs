@@ -5,9 +5,12 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use clap::Parser;
+use miden_client::rpc::{AddTransactionError, EndpointError, GrpcError, RpcEndpoint, RpcError};
+use miden_client::ClientError;
 use miden_protocol::crypto::utils::Serializable;
 use miden_protocol::transaction::TransactionId;
 use miden_usdcx::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
+use rstest::rstest;
 use tempfile::TempDir;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
@@ -75,6 +78,17 @@ fn page_server(body: String, next: bool) -> (String, thread::JoinHandle<()>) {
 /// Serves `pages` in order, one per request, and returns the request lines it was sent. A page
 /// with `next` links to the `older` cursor.
 fn pages_server(pages: Vec<(String, bool)>) -> (String, thread::JoinHandle<Vec<String>>) {
+    cursor_pages_server(
+        pages
+            .into_iter()
+            .map(|(body, next)| (body, next.then_some("older")))
+            .collect(),
+    )
+}
+
+fn cursor_pages_server(
+    pages: Vec<(String, Option<&'static str>)>,
+) -> (String, thread::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
@@ -89,11 +103,13 @@ fn pages_server(pages: Vec<(String, bool)>) -> (String, thread::JoinHandle<Vec<S
             assert!(read > 0);
             let request = String::from_utf8_lossy(&request[..read]);
             requests.push(request.lines().next().unwrap_or_default().to_owned());
-            let link = if next {
-                "Link: <https://circle.invalid/feed?pageAfter=older>; rel=\"next\"\r\n"
-            } else {
-                ""
-            };
+            let link = next
+                .map(|cursor| {
+                    format!(
+                        "Link: <https://circle.invalid/feed?pageAfter={cursor}>; rel=\"next\"\r\n"
+                    )
+                })
+                .unwrap_or_default();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{link}Connection: close\r\n\r\n{body}", body.len()).unwrap();
         }
         requests
@@ -157,9 +173,21 @@ fn programmatic_config_cannot_bypass_prover_validation() {
     assert!(config.validate_prover().is_err());
 }
 
+#[rstest]
+#[case::expired_head(true, 40, false)]
+#[case::expired_resume(true, 40, true)]
+#[case::smaller_stays_smaller(true, 3, false)]
+#[case::other_failure(false, 40, true)]
 #[tokio::test]
-async fn a_failed_proof_keeps_progress_for_the_next_scan() {
-    struct FailsOnce(usize);
+async fn a_failed_submission_keeps_progress_and_only_expiration_reduces_pages(
+    #[case] expired: bool,
+    #[case] page_size: u16,
+    #[case] resumed: bool,
+) {
+    struct FailsOnce {
+        error: Option<ClientError>,
+        batches: Vec<Vec<miden_protocol::Word>>,
+    }
     impl MidenClient for FailsOnce {
         async fn retain_unminted(
             &mut self,
@@ -169,13 +197,15 @@ async fn a_failed_proof_keeps_progress_for_the_next_scan() {
         }
 
         async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
-            assert_eq!(notes.len(), 1);
-            self.0 += 1;
-            if self.0 == 1 {
-                return Err(Failure::new(
-                    Transient("remote_prover"),
-                    anyhow!("prover unavailable"),
-                ));
+            self.batches.push(
+                notes
+                    .iter()
+                    .map(|note| note.storage().commitment())
+                    .collect(),
+            );
+            if let Some(error) = self.error.take() {
+                return Err(Failure::new(Transient("transaction_submit"), error)
+                    .context("submitting the mint transaction"));
             }
             Ok(TransactionId::new(
                 miden_protocol::EMPTY_WORD,
@@ -198,49 +228,124 @@ async fn a_failed_proof_keeps_progress_for_the_next_scan() {
     let intent = DepositIntent::try_from(vector.payload().as_slice()).unwrap();
     let header = intent.header();
     // The encoding vector's target is private; a mint note must target a public account.
-    let header = DepositIntentHeader::builder()
-        .amount(header.amount())
-        .remote_domain(config.remote_domain)
-        .remote_token(config.faucet_account_id)
-        .remote_recipient(header.remote_recipient())
-        .local_token(header.local_token())
-        .local_depositor(header.local_depositor())
-        .max_fee(header.max_fee())
-        .nonce(header.nonce())
-        .build();
-    let payload = DepositIntent::new(header, intent.hook_data().clone()).to_bytes();
-    let body = serde_json::json!({"attestations": [{
-        "payload": format!("0x{}", hex::encode(payload)),
-        "messageHash": format!("0x{}", "01".repeat(32)),
-        "attestation": format!("0x{}", "00".repeat(65)),
-    }]})
-    .to_string();
-    let (url, server) = pages_server(vec![(body.clone(), false), (body, false)]);
+    let count = usize::from(page_size.min(11));
+    let entries = (1..=count)
+        .map(|index| {
+            let header = DepositIntentHeader::builder()
+                .amount(header.amount())
+                .remote_domain(config.remote_domain)
+                .remote_token(config.faucet_account_id)
+                .remote_recipient(header.remote_recipient())
+                .local_token(header.local_token())
+                .local_depositor(header.local_depositor())
+                .max_fee(header.max_fee())
+                .nonce(DepositNonce::new([index as u8; 32]))
+                .build();
+            let payload = DepositIntent::new(header, intent.hook_data().clone()).to_bytes();
+            serde_json::json!({
+            "payload": format!("0x{}", hex::encode(payload)),
+            "messageHash": format!("0x{}", hex::encode([index as u8; 32])),
+            "attestation": format!("0x{}", "00".repeat(65)),
+            })
+        })
+        .collect::<Vec<_>>();
+    let body =
+        |entries: &[serde_json::Value]| serde_json::json!({"attestations": entries}).to_string();
+    let retry_size = if expired {
+        page_size.min(10)
+    } else {
+        page_size
+    };
+    let mut pages = vec![(body(&entries), Some("stale-outgoing"))];
+    let chunks = entries.chunks(usize::from(retry_size)).collect::<Vec<_>>();
+    pages.extend(chunks.iter().enumerate().map(|(index, entries)| {
+        (
+            body(entries),
+            (index + 1 < chunks.len()).then_some("retry-next"),
+        )
+    }));
+    pages.push((body(&[]), None));
+    let (url, server) = cursor_pages_server(pages);
     config.circle_url = url.parse().unwrap();
     config.prover_url = Some("https://prover.invalid".parse().unwrap());
-    let mut relayer = Relayer::new(config, FailsOnce(0)).unwrap();
+    config.page_size = page_size.try_into().unwrap();
+    if resumed {
+        Store::new(config.state_file.clone())
+            .set_state(&store::State {
+                watermark: Some(MessageHash::new([88; 32])),
+                scan: Some(ScanProgress {
+                    head: MessageHash::new([99; 32]),
+                    resume: CircleCursor::new("resume-here"),
+                }),
+            })
+            .unwrap();
+    }
+    let error = ClientError::RpcError(RpcError::RequestError {
+        endpoint: RpcEndpoint::SubmitProvenTx,
+        error_kind: if expired {
+            GrpcError::InvalidArgument
+        } else {
+            GrpcError::DeadlineExceeded
+        },
+        endpoint_error: expired
+            .then_some(EndpointError::AddTransaction(AddTransactionError::Expired)),
+        source: None,
+    });
+    let mut relayer = Relayer::new(
+        config,
+        FailsOnce {
+            error: Some(error),
+            batches: Vec::new(),
+        },
+    )
+    .unwrap();
     let before = relayer.store.state().unwrap();
+    let saved_bytes = std::fs::read(&relayer.config.state_file).unwrap();
     assert_eq!(
         relayer
             .scan(&CancellationToken::new())
             .await
             .unwrap_err()
             .class,
-        Transient("remote_prover")
+        Transient("transaction_submit")
     );
     assert_eq!(relayer.store.state().unwrap(), before);
-    assert_eq!(relayer.miden_client.0, 1);
+    assert_eq!(
+        std::fs::read(&relayer.config.state_file).unwrap(),
+        saved_bytes
+    );
     assert_eq!(
         relayer.scan(&CancellationToken::new()).await.unwrap(),
         ScanOutcome::Complete
     );
-    assert_eq!(relayer.miden_client.0, 2);
+    let batches = &relayer.miden_client.batches;
+    assert_eq!(batches[0].len(), count);
+    assert_eq!(batches[1..].concat(), batches[0]);
+    assert!(batches[1..]
+        .iter()
+        .all(|batch| batch.len() <= usize::from(retry_size)));
     assert_eq!(
         relayer.store.state().unwrap().watermark,
-        Some(MessageHash::new([1; 32]))
+        Some(MessageHash::new([if resumed { 99 } else { 1 }; 32]))
+    );
+    assert_eq!(
+        relayer.scan(&CancellationToken::new()).await.unwrap(),
+        ScanOutcome::Complete
     );
     let requests = server.join().unwrap();
-    assert_eq!(requests[0], requests[1]);
+    assert!(requests[0].contains(&format!("pageSize={page_size}")));
+    for request in &requests[1..] {
+        assert!(
+            request.contains(&format!("pageSize={retry_size}")),
+            "{request}"
+        );
+        assert!(!request.contains("stale-outgoing"), "{request}");
+    }
+    assert_eq!(requests[0].contains("pageAfter=resume-here"), resumed);
+    assert_eq!(requests[1].contains("pageAfter=resume-here"), resumed);
+    if chunks.len() > 1 {
+        assert!(requests[2].contains("pageAfter=retry-next"));
+    }
 }
 
 #[test]

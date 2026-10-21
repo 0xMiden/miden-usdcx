@@ -223,7 +223,8 @@ fn migrations_preserve_burns_submissions_and_history() {
             "burns",
             "sqlite_sequence",
             "submission_events",
-            "submissions"
+            "submissions",
+            "withdrawal_export_cursors"
         ]
     );
     let version: u32 = connection

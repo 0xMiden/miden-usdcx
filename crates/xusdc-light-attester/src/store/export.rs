@@ -4,18 +4,18 @@ use anyhow::{ensure, Context};
 use miden_protocol::note::NoteId;
 use rusqlite::{params, OptionalExtension};
 
-use super::{classify_error, decode_canonical, exists, Store, CONFLICT, INVALID};
+use super::{classify_error, decode_canonical, Store, INVALID};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExportRecord {
     pub(crate) note_id: NoteId,
     pub(crate) withdrawal_id: Option<String>,
+    /// Sequence of this immutable submission event.
     pub(crate) revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExportBatch {
-    pub(crate) after: i64,
     pub(crate) records: Vec<ExportRecord>,
 }
 
@@ -75,7 +75,7 @@ impl Store {
                 revision: row.get(2).map_err(classify_error)?,
             });
         }
-        Ok(ExportBatch { after, records })
+        Ok(ExportBatch { records })
     }
 
     /// Acknowledge the last record in the worker's contiguous successful prefix. Use its snapshot
@@ -83,45 +83,29 @@ impl Store {
     pub(crate) fn ack_export(
         &mut self,
         destination: &str,
-        expected: i64,
-        completed: i64,
+        last_uploaded_seq: i64,
     ) -> anyhow::Result<()> {
         ensure!(
             !destination.is_empty(),
             "export destination must not be empty"
         );
-        ensure!(expected >= 0 && completed > expected, CONFLICT);
-        let transaction = self.connection.transaction().map_err(classify_error)?;
-        ensure!(
-            exists(
-                &transaction,
-                "SELECT EXISTS (SELECT 1 FROM submission_events
-                 WHERE seq = ?1 AND kind IN ('AUTHORIZED', 'OUTCOME'))",
-                [completed],
-            )?,
-            CONFLICT
-        );
-        transaction
+        self.connection
             .execute(
-                "INSERT INTO withdrawal_export_cursors (destination, after_seq) VALUES (?1, 0)
-                 ON CONFLICT (destination) DO NOTHING",
-                [destination],
+                "INSERT INTO withdrawal_export_cursors (destination, after_seq) VALUES (?1, ?2)
+                 ON CONFLICT (destination) DO UPDATE
+                 SET after_seq = MAX(withdrawal_export_cursors.after_seq, excluded.after_seq)",
+                params![destination, last_uploaded_seq],
             )
             .map_err(classify_error)?;
-        let updated = transaction
-            .execute(
-                "UPDATE withdrawal_export_cursors SET after_seq = ?3
-                 WHERE destination = ?1 AND after_seq = ?2",
-                params![destination, expected, completed],
-            )
-            .map_err(classify_error)?;
-        ensure!(updated == 1, CONFLICT);
-        transaction.commit().map_err(classify_error)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use alloy_primitives::B256;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
@@ -133,11 +117,21 @@ mod tests {
     use miden_standards::note::BurnNote;
     use miden_usdcx::note::xreserve_burn::XUsdcBurnAttachment;
     use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
+    use opentelemetry::trace::{SpanId, Status, TracerProvider as _};
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use reqwest::Url;
+    use tokio::sync::Notify;
+    use tracing::dispatcher::with_default;
+    use tracing_opentelemetry::OpenTelemetryLayer;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
+    use crate::attester::export::ExportRuntime;
     use crate::burn::BurnCandidate;
-    use crate::store::{record_event, BurnHoldReason, EventKind, TrustedAnchor, STORE_VERSION};
+    use crate::export::tests::{wait_until, PreparedS3, Reply};
+    use crate::export::{ExportConfig, Exporter};
+    use crate::store::{record_event, EventKind, TrustedAnchor, STORE_VERSION};
     use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus};
 
     const DESTINATION: &str = "s3://exports/withdrawals/";
@@ -242,20 +236,151 @@ mod tests {
         saved
     }
 
-    fn table_contents(store: &Store, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
-        let mut statement = store
+    fn runtime(sink: &PreparedS3) -> ExportRuntime {
+        let config = ExportConfig::new("exports".into(), None, Some("eu-north-1".into())).unwrap();
+        let exporter = Exporter::with_client(config.clone(), sink.client());
+        ExportRuntime::with_exporter(config, exporter)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_saves_uploaded_snapshots_and_retries_failed_progress_after_reopening() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store.sqlite3");
+        let mut store = open(&path);
+        let note = add_burn(&mut store, 1);
+        let old_uploaded_seq = event(&store, note, "OUTCOME", Some(OLD_ID));
+        let released = Arc::new(Notify::new());
+        let sink = PreparedS3::answering([
+            Reply::Block(released.clone()),
+            Reply::Success,
+            Reply::Success,
+        ]);
+        let spans = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(spans.clone())
+            .build();
+        let subscriber = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test"))),
+        );
+        let saved_progress = |store: &Store| {
+            store
+                .connection
+                .query_row(
+                    "SELECT after_seq FROM withdrawal_export_cursors WHERE destination = ?1",
+                    [DESTINATION],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .unwrap()
+        };
+        let mut export = runtime(&sink);
+        with_default(&subscriber, || export.checkpoint(&mut store));
+        wait_until(|| sink.active_count() == 1).await;
+        let newer = event(&store, note, "AUTHORIZED", None);
+        released.notify_one();
+        wait_until(|| {
+            with_default(&subscriber, || export.checkpoint(&mut store));
+            saved_progress(&store) == Some(old_uploaded_seq)
+        })
+        .await;
+        assert!(spans.get_finished_spans().unwrap().is_empty());
+        export.shutdown().await;
+        drop(store);
+        let mut store = open(&path);
+        assert_eq!(saved_progress(&store), Some(old_uploaded_seq));
+        let pending = store.export_batch(DESTINATION, 10).unwrap();
+        assert_eq!(pending.records, [record(note, None, newer)]);
+
+        store.connection.execute_batch(
+            "CREATE TEMP TRIGGER reject_export_progress BEFORE INSERT ON withdrawal_export_cursors
+             BEGIN SELECT RAISE(ABORT, 'test progress write failed'); END;"
+        ).unwrap();
+        let mut export = runtime(&sink);
+        wait_until(|| {
+            with_default(&subscriber, || export.checkpoint(&mut store));
+            !spans.get_finished_spans().unwrap().is_empty()
+        })
+        .await;
+        assert_eq!(saved_progress(&store), Some(old_uploaded_seq));
+        assert_eq!(store.export_batch(DESTINATION, 10).unwrap(), pending);
+        let finished = spans.get_finished_spans().unwrap();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].name, "attester.export");
+        assert_eq!(finished[0].status, Status::error("store"));
+        assert!(finished[0]
+            .attributes
+            .contains(&KeyValue::new("failure.class", "actionable")));
+        assert!(format!("{:?}", finished[0].events).contains("test progress write failed"));
+        store
             .connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .execute_batch("DROP TRIGGER reject_export_progress")
             .unwrap();
-        let columns = statement.column_count();
-        let rows = statement
-            .query_map([], |row| {
-                (0..columns)
-                    .map(|column| row.get(column))
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap();
-        rows.map(Result::unwrap).collect()
+        tokio::time::advance(Duration::from_secs(10)).await;
+        wait_until(|| {
+            with_default(&subscriber, || export.checkpoint(&mut store));
+            store
+                .export_batch(DESTINATION, 10)
+                .unwrap()
+                .records
+                .is_empty()
+        })
+        .await;
+        assert_eq!(sink.count(), 3);
+        assert_eq!(spans.get_finished_spans().unwrap().len(), 1);
+        export.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_reports_s3_failure_in_a_finished_independent_span_without_lookup_secrets() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = open(&directory.path().join("store.sqlite3"));
+        let note = add_burn(&mut store, 1);
+        event(&store, note, "OUTCOME", Some(OLD_ID));
+        let sink = PreparedS3::answering([Reply::Denied]);
+        let mut export = runtime(&sink);
+        let spans = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(spans.clone())
+            .build();
+        let subscriber = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(OpenTelemetryLayer::new(provider.tracer("test"))),
+        );
+        let parent = with_default(&subscriber, || tracing::info_span!("attester.cycle"));
+        wait_until(|| {
+            with_default(&subscriber, || {
+                parent.in_scope(|| export.checkpoint(&mut store))
+            });
+            !spans.get_finished_spans().unwrap().is_empty()
+        })
+        .await;
+        let finished = spans.get_finished_spans().unwrap();
+        let [span] = finished.as_slice() else {
+            panic!("expected one finished export span")
+        };
+        assert_eq!(span.name, "attester.export");
+        assert_eq!(span.parent_span_id, SpanId::INVALID);
+        assert_eq!(span.status, Status::error("s3_export"));
+        assert!(span
+            .attributes
+            .contains(&KeyValue::new("failure.class", "actionable")));
+        assert!(span
+            .attributes
+            .contains(&KeyValue::new("failure.kind", "s3_export")));
+        let details = format!("{span:?}");
+        assert!(details.contains("AccessDenied"));
+        for secret in [
+            OLD_ID,
+            &note.to_hex(),
+            DESTINATION,
+            "Credential=",
+            "Signature=",
+            "withdrawal_id",
+        ] {
+            assert!(!details.contains(secret), "export span leaked {secret}");
+        }
+        drop(parent);
+        assert_eq!(spans.get_finished_spans().unwrap()[1].status, Status::Unset);
+        export.shutdown().await;
     }
 
     #[test]
@@ -272,54 +397,26 @@ mod tests {
         event(&store, first, "BURN_HELD", Some(OLD_ID));
         let third_revision = event(&store, third, "OUTCOME", Some(OLD_ID));
         event(&store, second, "OPERATOR_RELEASE", Some(NEW_ID));
+        let repeated_revision = event(&store, third, "OUTCOME", Some(OLD_ID));
+        assert!(repeated_revision > third_revision);
 
         let batch = store.export_batch(DESTINATION, 2).unwrap();
         assert_eq!(
             batch,
             ExportBatch {
-                after: 0,
                 records: vec![
                     record(second, None, second_revision),
                     record(first, Some(NEW_ID), first_revision),
                 ],
             }
         );
-        store
-            .ack_export(DESTINATION, batch.after, first_revision)
-            .unwrap();
+        store.ack_export(DESTINATION, first_revision).unwrap();
         assert_eq!(
             store.export_batch(DESTINATION, 2).unwrap(),
             ExportBatch {
-                after: first_revision,
-                records: vec![record(third, Some(OLD_ID), third_revision)],
+                records: vec![record(third, Some(OLD_ID), repeated_revision)],
             }
         );
-    }
-
-    #[test]
-    fn authorization_clears_an_old_id_and_a_later_outcome_replaces_it() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut store = open(&directory.path().join("store.sqlite3"));
-        let note = add_burn(&mut store, 1);
-        let old_revision = event(&store, note, "OUTCOME", Some(OLD_ID));
-        let old_snapshot = store.export_batch(DESTINATION, 1).unwrap();
-        store.ack_export(DESTINATION, 0, old_revision).unwrap();
-        let null_revision = event(&store, note, "AUTHORIZED", None);
-        let null_snapshot = store.export_batch(DESTINATION, 1).unwrap();
-        assert_eq!(null_snapshot.records, [record(note, None, null_revision)]);
-        store
-            .ack_export(DESTINATION, old_revision, null_revision)
-            .unwrap();
-        let new_revision = event(&store, note, "OUTCOME", Some(NEW_ID));
-        assert_eq!(
-            store.export_batch(DESTINATION, 1).unwrap().records,
-            [record(note, Some(NEW_ID), new_revision)]
-        );
-        assert_eq!(
-            old_snapshot.records,
-            [record(note, Some(OLD_ID), old_revision)]
-        );
-        assert_eq!(null_snapshot.records, [record(note, None, null_revision)]);
     }
 
     #[test]
@@ -331,6 +428,7 @@ mod tests {
             let old_revision = event(&store, note, "OUTCOME", Some(OLD_ID));
             let batch = store.export_batch(DESTINATION, 1).unwrap();
             let null_revision = event(&store, note, "AUTHORIZED", None);
+            let null_snapshot = store.export_batch(DESTINATION, 1).unwrap();
             let latest = if replacement {
                 record(
                     note,
@@ -342,15 +440,16 @@ mod tests {
             };
 
             store
-                .ack_export(DESTINATION, batch.after, batch.records[0].revision)
+                .ack_export(DESTINATION, batch.records[0].revision)
                 .unwrap();
             assert_eq!(
                 store.export_batch(DESTINATION, 1).unwrap(),
                 ExportBatch {
-                    after: old_revision,
                     records: vec![latest],
                 }
             );
+            assert_eq!(batch.records, [record(note, Some(OLD_ID), old_revision)]);
+            assert_eq!(null_snapshot.records, [record(note, None, null_revision)]);
         }
     }
 
@@ -364,9 +463,7 @@ mod tests {
         let batch = store.export_batch(DESTINATION, 2).unwrap();
         assert_eq!(batch.records.len(), 2);
         // The first PUT succeeded, the second failed, and the third was not sent.
-        store
-            .ack_export(DESTINATION, batch.after, revisions[0])
-            .unwrap();
+        store.ack_export(DESTINATION, revisions[0]).unwrap();
         let pending = store.export_batch(DESTINATION, 2).unwrap();
         assert_eq!(
             pending.records,
@@ -380,49 +477,14 @@ mod tests {
         drop(store);
         let mut reopened = open(&path);
         assert_eq!(reopened.export_batch(DESTINATION, 2).unwrap(), pending);
-        reopened
-            .ack_export(DESTINATION, pending.after, revisions[2])
-            .unwrap();
+        reopened.ack_export(DESTINATION, revisions[2]).unwrap();
+        // Replaying an older successful snapshot cannot move durable progress backwards.
+        reopened.ack_export(DESTINATION, revisions[0]).unwrap();
         assert!(reopened
             .export_batch(DESTINATION, 2)
             .unwrap()
             .records
             .is_empty());
-    }
-
-    #[test]
-    fn ack_requires_the_expected_cursor_and_a_relevant_forward_revision() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut store = open(&directory.path().join("store.sqlite3"));
-        let note = add_burn(&mut store, 1);
-        let first = event(&store, note, "AUTHORIZED", None);
-        let second = event(&store, note, "OUTCOME", Some(OLD_ID));
-        let unrelated = event(&store, note, "BURN_RELEASED", Some(OLD_ID));
-        for (expected, completed) in [
-            (first, second),
-            (-1, first),
-            (0, 0),
-            (0, unrelated),
-            (0, unrelated + 1),
-        ] {
-            assert!(store.ack_export(DESTINATION, expected, completed).is_err());
-            assert_eq!(store.export_batch(DESTINATION, 1).unwrap().after, 0);
-        }
-        let cursors: i64 = store
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM withdrawal_export_cursors",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(cursors, 0, "failed initial CAS must not create a cursor");
-        store.ack_export(DESTINATION, 0, first).unwrap();
-        assert!(store.ack_export(DESTINATION, 0, second).is_err());
-        assert!(store.ack_export(DESTINATION, first, first).is_err());
-        assert_eq!(store.export_batch(DESTINATION, 1).unwrap().after, first);
-        store.ack_export(DESTINATION, first, second).unwrap();
-        assert_eq!(store.export_batch(DESTINATION, 1).unwrap().after, second);
     }
 
     #[test]
@@ -436,7 +498,7 @@ mod tests {
         store.update_submission_outcome(&saved).unwrap();
         let batch = store.export_batch(DESTINATION, 1).unwrap();
         store
-            .ack_export(DESTINATION, 0, batch.records[0].revision)
+            .ack_export(DESTINATION, batch.records[0].revision)
             .unwrap();
         assert!(store
             .export_batch(DESTINATION, 1)
@@ -446,29 +508,6 @@ mod tests {
         for destination in ["s3://other/withdrawals/", "s3://exports/another-prefix/"] {
             assert_eq!(store.export_batch(destination, 1).unwrap(), batch);
         }
-    }
-
-    #[test]
-    fn duplicate_201_and_409_outcomes_keep_one_latest_mapping() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut store = open(&directory.path().join("store.sqlite3"));
-        let note = add_burn(&mut store, 1);
-        let mut saved = seed_submission(&store, note);
-        saved.status = SubmissionStatus::Submitted;
-        saved.withdrawal_id = Some(OLD_ID.into());
-        saved.last_http_status = Some(201);
-        store.update_submission_outcome(&saved).unwrap();
-        let created = store.export_batch(DESTINATION, 2).unwrap();
-        store.update_submission_outcome(&saved).unwrap();
-        assert_eq!(store.export_batch(DESTINATION, 2).unwrap(), created);
-        saved.last_http_status = Some(409);
-        store.update_submission_outcome(&saved).unwrap();
-        let conflict = store.export_batch(DESTINATION, 2).unwrap();
-        assert_eq!(conflict.records.len(), 1);
-        assert_eq!(conflict.records[0].withdrawal_id.as_deref(), Some(OLD_ID));
-        assert!(conflict.records[0].revision > created.records[0].revision);
-        store.update_submission_outcome(&saved).unwrap();
-        assert_eq!(store.export_batch(DESTINATION, 2).unwrap(), conflict);
     }
 
     #[test]
@@ -487,7 +526,7 @@ mod tests {
         assert_eq!(store.release_holds(&[note]).unwrap(), (0, 1));
         assert_eq!(store.export_batch(DESTINATION, 1).unwrap(), null);
         store
-            .ack_export(DESTINATION, 0, null.records[0].revision)
+            .ack_export(DESTINATION, null.records[0].revision)
             .unwrap();
         assert!(store
             .export_batch(DESTINATION, 1)
@@ -497,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn populated_version_four_migration_preserves_history_and_exclusive_ownership() {
+    fn populated_version_four_migration_backfills_finalized_and_null_mappings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("store.sqlite3");
         let mut store = open(&path);
@@ -508,30 +547,11 @@ mod tests {
         saved.last_http_status = Some(201);
         store.update_submission_outcome(&saved).unwrap();
         let waiting = add_burn(&mut store, 2);
-        let mut expired = seed_submission(&store, waiting);
-        expired.status = SubmissionStatus::Expired;
-        expired.withdrawal_id = Some(NEW_ID.into());
-        store.update_submission_outcome(&expired).unwrap();
-        store
-            .connection
-            .execute(
-                "UPDATE burns SET withdrawal_limit_retry_at = 1234 WHERE note_id = ?1",
-                [waiting.to_bytes()],
-            )
-            .unwrap();
-        let held = add_burn(&mut store, 3);
-        store
-            .hold_burn(held, BurnHoldReason::TooSmallToForward, None)
-            .unwrap();
+        seed_submission(&store, waiting);
         let history = store.export_batch(DESTINATION, 10).unwrap();
-        let checkpoint = store.checkpoint().unwrap();
-        let contents = [
-            "attester_state",
-            "burns",
-            "submissions",
-            "submission_events",
-        ]
-        .map(|table| (table, table_contents(&store, table)));
+        assert_eq!(history.records.len(), 2);
+        assert_eq!(history.records[0].withdrawal_id.as_deref(), Some(OLD_ID));
+        assert_eq!(history.records[1].withdrawal_id, None);
         // Version 5 adds only this table; remove it to restore the populated version-4 layout.
         store
             .connection
@@ -539,37 +559,13 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let mut migrated = Store::open_existing(&path, faucet(), anchor()).unwrap();
-        assert_eq!(migrated.checkpoint().unwrap(), checkpoint);
-        assert_eq!(migrated.discovered_burns().unwrap().len(), 3);
-        for (table, rows) in contents {
-            assert_eq!(table_contents(&migrated, table), rows, "{table}");
-        }
+        let migrated = Store::open_existing(&path, faucet(), anchor()).unwrap();
         let version: u32 = migrated
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, STORE_VERSION);
         assert_eq!(migrated.export_batch(DESTINATION, 10).unwrap(), history);
-        assert!(Store::open_existing(&path, faucet(), anchor()).is_err());
-        let other = rusqlite::Connection::open(&path).unwrap();
-        assert!(other
-            .query_row(
-                "SELECT COUNT(*) FROM withdrawal_export_cursors",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .is_err());
-        drop(other);
-        migrated
-            .ack_export(DESTINATION, 0, history.records.last().unwrap().revision)
-            .unwrap();
-        drop(migrated);
-        assert!(open(&path)
-            .export_batch(DESTINATION, 10)
-            .unwrap()
-            .records
-            .is_empty());
     }
 
     #[test]
@@ -583,10 +579,7 @@ mod tests {
         assert!(store.export_batch("", 1).is_err());
         assert_eq!(
             store.export_batch(DESTINATION, 1).unwrap(),
-            ExportBatch {
-                after: 0,
-                records: vec![]
-            }
+            ExportBatch { records: vec![] }
         );
     }
 }

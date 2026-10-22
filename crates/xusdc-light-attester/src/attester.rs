@@ -25,7 +25,7 @@ use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
 use crate::submission::{SavedSubmission, SubmissionAttempt};
 
-mod export;
+pub(crate) mod export;
 use export::ExportRuntime;
 
 #[derive(Debug, thiserror::Error)]

@@ -25,13 +25,13 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
         );
         args.append("--withdrawal-limit-retry-interval", "5m");
     }
-    let [a, b, c] = ledger.fresh_indices.clone().try_into().unwrap();
+    let [held, limit_waiting, finalized] = ledger.fresh_indices.clone().try_into().unwrap();
     let (signers, calls) = super::service_map::signers(None).await;
     let (mut attester, requests, chain) = ledger
         .runtime(
             vec![
-                reply(201, json!([ledger.response(c, "created")])),
-                reply(200, ledger.response(c, "finalized")),
+                reply(201, json!([ledger.response(finalized, "created")])),
+                reply(200, ledger.response(finalized, "finalized")),
                 reply(
                     400,
                     json!({"message": "Withdrawal limit reached: try later"}),
@@ -40,12 +40,12 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
             signers,
         )
         .await;
-    ledger.submit(&mut attester, c).await.unwrap();
+    ledger.submit(&mut attester, finalized).await.unwrap();
     poll(&mut attester).await.unwrap();
     attester
         .store
         .hold_burn(
-            ledger.burns[a].note_id(),
+            ledger.burns[held].note_id(),
             BurnHoldReason::PrepareRejected,
             None,
         )
@@ -53,6 +53,7 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
     let config =
         ExportConfig::new("withdrawal-lookups".into(), None, Some("eu-north-1".into())).unwrap();
     let destination = config.destination_key();
+    let pending_before_run = attester.store.export_batch(&destination, 100).unwrap();
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
     let exporter = Exporter::with_client(config.clone(), sink.client());
     let shutdown = CancellationToken::new();
@@ -88,7 +89,7 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
     assert_eq!(sink.active_count(), 0, "shutdown cancels the blocked PUT");
     assert_eq!(
         attester.store.first_limit_wait().unwrap().unwrap().note_id,
-        ledger.burns[b].note_id()
+        ledger.burns[limit_waiting].note_id()
     );
     assert_eq!(
         requests.lock().unwrap().len(),
@@ -97,9 +98,11 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
     );
     assert_eq!(super::service_map::counts(&calls), [0, 0]);
     let replay = attester.store.export_batch(&destination, 100).unwrap();
-    assert_eq!(
-        replay.after, 0,
-        "cancellation must leave unacknowledged mappings for restart"
-    );
-    assert!(!replay.records.is_empty());
+    assert!(!pending_before_run.records.is_empty());
+    for record in pending_before_run.records {
+        assert!(
+            replay.records.contains(&record),
+            "cancellation must leave unacknowledged mappings for restart"
+        );
+    }
 }

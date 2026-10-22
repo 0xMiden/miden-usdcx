@@ -6,12 +6,15 @@ use std::time::Duration;
 use anyhow::{anyhow, ensure, Context, Result};
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::{retry::RetryConfig, timeout::TimeoutConfig, Region};
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use usdcx_telemetry::FailureClass::{Actionable, Transient};
+use usdcx_telemetry::{Classify, Failure, FailureContext};
 
 use crate::store::{ExportBatch, ExportRecord};
 
@@ -110,16 +113,15 @@ impl ExportConfig {
 /// Only this ordered prefix of the batch is eligible for the store owner's acknowledgement.
 #[derive(Debug)]
 pub(crate) struct ExportCompletion {
-    pub(crate) after: i64,
-    pub(crate) completed: Option<i64>,
-    pub(crate) error: Option<anyhow::Error>,
+    pub(crate) last_uploaded_seq: Option<i64>,
+    pub(crate) error: Option<Failure>,
 }
 
 /// The store owner sends immutable snapshots and consumes completions without awaiting network IO.
 pub(crate) struct Exporter {
     batches: mpsc::Sender<ExportBatch>,
     completions: mpsc::Receiver<ExportCompletion>,
-    in_flight: Option<i64>,
+    in_flight: bool,
     cancellation: CancellationToken,
     worker: Option<JoinHandle<()>>,
 }
@@ -149,7 +151,7 @@ impl Exporter {
         Self {
             batches,
             completions,
-            in_flight: None,
+            in_flight: false,
             cancellation,
             worker: Some(worker),
         }
@@ -158,32 +160,30 @@ impl Exporter {
     pub(crate) fn try_send(&mut self, batch: ExportBatch) -> bool {
         // Channel capacity alone would allow a second batch after the worker receives the first.
         // Keep ownership of the slot until the owner has consumed and handled its completion.
-        if self.in_flight.is_some() {
+        if self.in_flight {
             return false;
         }
-        let after = batch.after;
         if self.batches.try_send(batch).is_err() {
             return false;
         }
-        self.in_flight = Some(after);
+        self.in_flight = true;
         true
     }
 
     pub(crate) fn try_complete(&mut self) -> Option<ExportCompletion> {
         match self.completions.try_recv() {
             Ok(completion) => {
-                self.in_flight = None;
+                self.in_flight = false;
                 Some(completion)
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                self.in_flight.take().map(|after| ExportCompletion {
-                    after,
-                    completed: None,
-                    error: Some(anyhow!(
-                        "S3 export worker stopped before reporting completion"
+            Err(mpsc::error::TryRecvError::Disconnected) => std::mem::take(&mut self.in_flight)
+                .then(|| ExportCompletion {
+                    last_uploaded_seq: None,
+                    error: Some(Failure::new(
+                        Actionable("s3_export"),
+                        anyhow!("S3 export worker stopped before reporting completion"),
                     )),
-                })
-            }
+                }),
             Err(mpsc::error::TryRecvError::Empty) => None,
         }
     }
@@ -230,8 +230,7 @@ async fn run_worker(
         let completion = match initialized {
             Ok(client) => put_batch(client, &config, batch).await,
             Err(error) => ExportCompletion {
-                after: batch.after,
-                completed: None,
+                last_uploaded_seq: None,
                 error: Some(error),
             },
         };
@@ -241,7 +240,7 @@ async fn run_worker(
     }
 }
 
-async fn load_client(config: &ExportConfig) -> Result<Client> {
+async fn load_client(config: &ExportConfig) -> Result<Client, Failure> {
     tokio::time::timeout(INITIALIZATION_TIMEOUT, async {
         let mut loader = aws_config::defaults(BehaviorVersion::latest())
             .retry_config(RetryConfig::standard().with_max_attempts(3))
@@ -257,20 +256,19 @@ async fn load_client(config: &ExportConfig) -> Result<Client> {
             loader = loader.region(Region::new(region.to_owned()));
         }
         let sdk = loader.load().await;
-        ensure!(
-            sdk.region().is_some(),
-            "S3 export region is unresolved; set --export-region or configure the AWS region provider"
-        );
+        sdk.region()
+            .context("S3 export region is unresolved; set --export-region or configure the AWS region provider")
+            .classify(Actionable("s3_export"))?;
         Ok(Client::new(&sdk))
     })
     .await
-    .context("S3 export SDK initialization timed out")?
+    .context("S3 export SDK initialization timed out")
+    .classify(Transient("s3_export"))?
 }
 
 async fn put_batch(client: &Client, config: &ExportConfig, batch: ExportBatch) -> ExportCompletion {
     let mut completion = ExportCompletion {
-        after: batch.after,
-        completed: None,
+        last_uploaded_seq: None,
         error: None,
     };
     for record in batch.records {
@@ -278,12 +276,16 @@ async fn put_batch(client: &Client, config: &ExportConfig, batch: ExportBatch) -
             completion.error = Some(error);
             break;
         }
-        completion.completed = Some(record.revision);
+        completion.last_uploaded_seq = Some(record.revision);
     }
     completion
 }
 
-async fn put_record(client: &Client, config: &ExportConfig, record: &ExportRecord) -> Result<()> {
+async fn put_record(
+    client: &Client,
+    config: &ExportConfig,
+    record: &ExportRecord,
+) -> Result<(), Failure> {
     #[derive(Serialize)]
     struct Lookup<'a> {
         withdrawal_id: Option<&'a str>,
@@ -291,7 +293,8 @@ async fn put_record(client: &Client, config: &ExportConfig, record: &ExportRecor
     let body = serde_json::to_vec(&Lookup {
         withdrawal_id: record.withdrawal_id.as_deref(),
     })
-    .context("serialize S3 withdrawal ID lookup")?;
+    .context("serialize S3 withdrawal ID lookup")
+    .classify(Actionable("s3_export"))?;
     let key = format!("{}{}.json", config.prefix(), record.note_id.to_hex());
     tokio::time::timeout(
         PUT_TIMEOUT,
@@ -305,7 +308,15 @@ async fn put_record(client: &Client, config: &ExportConfig, record: &ExportRecor
             .send(),
     )
     .await
-    .context("S3 export PutObject timed out")?
+    .context("S3 export PutObject timed out")
+    .classify(Transient("s3_export"))?
+    .classify_with(|error| {
+        if error.as_service_error().and_then(|error| error.code()) == Some("AccessDenied") {
+            Actionable("s3_export")
+        } else {
+            Transient("s3_export")
+        }
+    })
     .context("S3 export PutObject request failed")?;
     Ok(())
 }

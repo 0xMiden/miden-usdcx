@@ -394,16 +394,31 @@ async fn a_rate_limit_does_not_advance_a_suppressed_retry() {
     );
 }
 
+/// What happens when a waiting burn is tried again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Circle refuses to prepare it, for a reason other than the limit.
+    PrepareRejected,
+    /// Circle prepares it, then rejects the POST for a reason other than the limit.
+    PostRejected,
+    TransportError,
+    /// Circle's prepared withdrawal fails verification.
+    VerificationFailed,
+    Expired,
+    Failed,
+    RateLimited,
+}
+
 #[tokio::test]
 async fn waiting_ends_only_on_a_qualifying_outcome() {
     for outcome in [
-        "hold",
-        "post_hold",
-        "transport",
-        "verification",
-        "expired",
-        "failed",
-        "429",
+        Retry::PrepareRejected,
+        Retry::PostRejected,
+        Retry::TransportError,
+        Retry::VerificationFailed,
+        Retry::Expired,
+        Retry::Failed,
+        Retry::RateLimited,
     ] {
         let ledger = ledger().await;
         let a = ledger.fresh_indices[0];
@@ -412,24 +427,34 @@ async fn waiting_ends_only_on_a_qualifying_outcome() {
         drop(attester);
         make_due(&ledger);
         let mut replies = match outcome {
-            "hold" => vec![reply(400, json!({"message": "different rejection"}))],
-            "post_hold" => vec![
+            Retry::PrepareRejected => vec![reply(400, json!({"message": "different rejection"}))],
+            Retry::PostRejected => vec![
                 reply(200, ledger.prepared_response(a)),
                 reply(400, json!({"message": "different rejection"})),
             ],
-            "transport" => vec![CircleState::TransportError],
-            "verification" => {
+            Retry::TransportError => vec![CircleState::TransportError],
+            Retry::VerificationFailed => {
                 let mut bad = ledger.prepared_response(a);
                 bad["batches"][0]["messageHashToSign"] = json!(format!("0x{}", "00".repeat(32)));
                 vec![reply(200, bad)]
             }
-            "429" => vec![reply(429, json!({"message": "slow down"}))],
-            status => vec![
-                reply(200, ledger.prepared_response(a)),
-                reply(201, json!([ledger.response(a, status)])),
-            ],
+            Retry::RateLimited => vec![reply(429, json!({"message": "slow down"}))],
+            Retry::Expired | Retry::Failed => {
+                let status = if outcome == Retry::Expired {
+                    "expired"
+                } else {
+                    "failed"
+                };
+                vec![
+                    reply(200, ledger.prepared_response(a)),
+                    reply(201, json!([ledger.response(a, status)])),
+                ]
+            }
         };
-        let cleared = matches!(outcome, "hold" | "post_hold" | "failed");
+        let cleared = matches!(
+            outcome,
+            Retry::PrepareRejected | Retry::PostRejected | Retry::Failed
+        );
         if cleared {
             replies.extend(fresh_replies(&ledger, &ledger.fresh_indices[1..]));
         }
@@ -438,10 +463,10 @@ async fn waiting_ends_only_on_a_qualifying_outcome() {
         assert_eq!(
             attester.store.first_limit_wait().unwrap().is_none(),
             cleared,
-            "{outcome}"
+            "{outcome:?}"
         );
         let call_count = requests.lock().unwrap().len();
-        if outcome == "post_hold" {
+        if outcome == Retry::PostRejected {
             let saved = ledger.record(&attester, a);
             assert_eq!(saved.status, SubmissionStatus::Held);
             assert!(!saved.body.is_empty());
@@ -450,7 +475,7 @@ async fn waiting_ends_only_on_a_qualifying_outcome() {
             let retry_at = attester.store.first_limit_wait().unwrap().unwrap().retry_at;
             assert!(retry_at > 0, "deadline must be saved before the attempt");
             attester.run_one_cycle().await.unwrap();
-            assert_eq!(requests.lock().unwrap().len(), call_count, "{outcome}");
+            assert_eq!(requests.lock().unwrap().len(), call_count, "{outcome:?}");
             drop(attester);
             (attester, _) = ledger.start(vec![]).await;
             attester.run_one_cycle().await.unwrap();
@@ -459,7 +484,7 @@ async fn waiting_ends_only_on_a_qualifying_outcome() {
                 retry_at
             );
         }
-        if outcome == "expired" {
+        if outcome == Retry::Expired {
             assert_eq!(
                 ledger.record(&attester, a).status,
                 SubmissionStatus::Expired

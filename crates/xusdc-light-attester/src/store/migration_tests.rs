@@ -76,8 +76,9 @@ fn a_version_one_store_keeps_its_checkpoint() {
     }
 }
 
-/// Version 3 rebuilds the burns table without the columns it drops. Every burn keeps its place, its
-/// hold and its history, and the history table's foreign key holds against the rebuilt table.
+/// Upgrading from version 2 keeps every burn, saved submission and history row. Version 3 rebuilds
+/// the burns table without the columns it drops, and the history table's foreign key holds against
+/// the rebuilt table. Version 4 adds the withdrawal-limit retry time, with no burn waiting.
 #[test]
 fn migrations_preserve_burns_submissions_and_history() {
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();

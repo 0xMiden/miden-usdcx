@@ -138,11 +138,13 @@ async fn prepare_limit_survives_restart_without_stopping_polling() {
         development_pair().await,
     )
     .await;
-    assert!(result
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("saved withdrawal-limit waits"));
+    let error = result.err().unwrap().to_string();
+    for flag in [
+        "--withdrawal-limit-message-prefix",
+        "--withdrawal-limit-retry-interval",
+    ] {
+        assert!(error.contains(flag), "{error}");
+    }
     assert!(requests.lock().unwrap().is_empty());
     make_due(&ledger);
     let mut store = ledger.open_store().unwrap();

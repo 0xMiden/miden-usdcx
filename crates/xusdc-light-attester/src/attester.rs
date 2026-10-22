@@ -141,7 +141,8 @@ impl Attester {
         .context("failed to open attester store")?;
         anyhow::ensure!(
             config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
-            "saved withdrawal-limit waits require both withdrawal limit settings"
+            "store has withdrawals waiting for Circle's withdrawal limit; start with \
+             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
         );
         let checkpoint = store
             .checkpoint()

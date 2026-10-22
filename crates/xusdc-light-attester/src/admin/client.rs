@@ -156,7 +156,7 @@ mod tests {
             "xusdc-attester",
             "admin",
             "--socket",
-            "/run/attester/admin.sock",
+            "/data/attester/admin.sock",
         ];
         let selected = format!("{id}:123");
         let cli = Invocation::try_parse_from(admin.iter().copied().chain([

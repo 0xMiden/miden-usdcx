@@ -41,6 +41,8 @@ const CLEANUP_WAIT: Duration = Duration::from_secs(5);
 const REQUEST_LIMIT: usize = 16 * 1024;
 /// The most connections served at once; further ones wait in the listen backlog.
 const MAX_CONNECTIONS: usize = 16;
+/// How long startup waits to learn whether another process still serves an existing socket.
+const STALE_CHECK_WAIT: Duration = Duration::from_secs(1);
 
 /// Where the admin socket is created.
 #[derive(Debug, Clone)]
@@ -177,9 +179,11 @@ impl Server {
     /// Creates the socket, returning the listener with the inbox the attester reads.
     ///
     /// The inbox is bounded, so a request that finds it full is refused rather than queued.
-    pub(crate) fn bind(config: &AdminConfig) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
+    pub(crate) async fn bind(
+        config: &AdminConfig,
+    ) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
         let path = config.socket.clone();
-        remove_stale_socket(&path)?;
+        remove_stale_socket(&path).await?;
         let listener = UnixListener::bind(&path).context("cannot bind admin socket")?;
         // The socket is reachable from its directory for the moment between the bind and this
         // call, so the directory itself should be private to the service.
@@ -262,7 +266,7 @@ impl Server {
 
 /// Removes a socket file left by an attester that is no longer running. Refuses to remove anything
 /// that is not a socket, or a socket that still accepts connections.
-fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+async fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
@@ -272,12 +276,20 @@ fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
         metadata.file_type().is_socket(),
         "admin socket path exists and is not a socket"
     );
-    match std::os::unix::net::UnixStream::connect(path) {
-        Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+    // A listener that has stopped accepting can leave a blocking connect waiting on its full
+    // backlog, so the check connects without blocking and gives up after a short wait.
+    match tokio::time::timeout(STALE_CHECK_WAIT, UnixStream::connect(path)).await {
+        Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
             fs::remove_file(path).context("cannot remove stale admin socket")
         }
-        Ok(_) => anyhow::bail!("another attester is serving the admin socket"),
-        Err(error) => Err(error).context("cannot check the existing admin socket"),
+        Ok(Ok(_)) => anyhow::bail!("another attester is serving the admin socket"),
+        Ok(Err(error)) if error.kind() != ErrorKind::WouldBlock => {
+            Err(error).context("cannot check the existing admin socket")
+        }
+        // A full backlog or a connect that does not finish still means a process owns the socket.
+        _ => {
+            anyhow::bail!("another process holds the admin socket but is not accepting connections")
+        }
     }
 }
 
@@ -495,19 +507,64 @@ mod tests {
             socket: path.clone(),
         };
         fs::write(&path, b"not a socket").unwrap();
-        assert!(Server::bind(&config).is_err());
+        assert!(Server::bind(&config).await.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"not a socket");
         fs::remove_file(&path).unwrap();
 
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-        let (live, _receiver) = Server::bind(&config).unwrap();
+        // A child process spawned by another test can inherit the listener before it is marked
+        // close-on-exec, keeping it open until the child exits.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            assert!(Instant::now() < deadline, "the dropped listener stays open");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (live, _receiver) = Server::bind(&config).await.unwrap();
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert!(Server::bind(&config).is_err(), "a live socket is kept");
+        assert!(
+            Server::bind(&config).await.is_err(),
+            "a live socket is kept"
+        );
         assert!(path.exists());
         drop(live);
+    }
+
+    /// A socket whose owner has stopped accepting is kept, and the check returns promptly instead
+    /// of waiting on the full backlog.
+    ///
+    /// Linux only: macOS refuses a connection to a full backlog, which reads as a stale socket.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_socket_with_a_full_backlog_is_kept_without_blocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("admin.sock");
+        let owner =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        owner
+            .bind(&socket2::SockAddr::unix(&path).unwrap())
+            .unwrap();
+        owner.listen(1).unwrap();
+        // Nothing accepts, so connections queue until the backlog refuses one more.
+        let mut queued = Vec::new();
+        while let Ok(Ok(stream)) =
+            tokio::time::timeout(STALE_CHECK_WAIT, UnixStream::connect(&path)).await
+        {
+            queued.push(stream);
+        }
+        let started = Instant::now();
+        let config = AdminConfig {
+            socket: path.clone(),
+        };
+        let error = Server::bind(&config).await.err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "another process holds the admin socket but is not accepting connections"
+        );
+        assert!(started.elapsed() <= STALE_CHECK_WAIT + Duration::from_millis(500));
+        assert!(path.exists());
     }
 
     #[tokio::test(start_paused = true)]

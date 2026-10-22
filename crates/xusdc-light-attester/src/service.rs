@@ -58,7 +58,7 @@ impl AttesterService {
         // Bind first, so a socket that is in use or cannot be created fails before any dependency
         // is contacted.
         let admin = match config.admin() {
-            Some(config) => Some(crate::admin::Server::bind(config)?),
+            Some(config) => Some(crate::admin::Server::bind(config).await?),
             None => None,
         };
         let circle =

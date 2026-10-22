@@ -184,7 +184,7 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
-| `--admin-socket` | Optional; disabled | Unix socket path for live hold management, for example `/run/attester/admin.sock`; see [Hold management while running](#hold-management-while-running). |
+| `--admin-socket` | Optional; disabled | Unix socket path for live hold management, for example `/data/attester/admin.sock`; see [Hold management while running](#hold-management-while-running). |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
@@ -267,7 +267,7 @@ local admin socket below, or stop the bridge before using the offline `release-h
 ### Hold management while running
 
 Administration is disabled by default. To enable it, add
-`--admin-socket /run/attester/admin.sock` to `usdcx-bridge run`. The attester creates the socket
+`--admin-socket /data/attester/admin.sock` to `usdcx-bridge run`. The attester creates the socket
 readable and writable only by its own user, and removes it on shutdown. Anyone who can open the
 socket can release holds, so keep its directory private to the service's container user. A socket
 file left by a stopped attester is replaced at startup; any other file at that path stops startup.
@@ -275,9 +275,9 @@ file left by a stopped attester is replaced at startup; any other file at that p
 Run these commands inside the running container, as the service's user:
 
 ```sh
-usdcx-bridge admin --socket /run/attester/admin.sock holds
-usdcx-bridge admin --socket /run/attester/admin.sock holds --after <NOTE_ID>
-usdcx-bridge admin --socket /run/attester/admin.sock release-holds --hold <NOTE_ID>:<EVENT_SEQ> --circle-not-accepted
+usdcx-bridge admin --socket /data/attester/admin.sock holds
+usdcx-bridge admin --socket /data/attester/admin.sock holds --after <NOTE_ID>
+usdcx-bridge admin --socket /data/attester/admin.sock release-holds --hold <NOTE_ID>:<EVENT_SEQ> --circle-not-accepted
 ```
 
 Listing shows the faucet and trusted anchor, each hold's `event_seq`, and `next_after` if there is

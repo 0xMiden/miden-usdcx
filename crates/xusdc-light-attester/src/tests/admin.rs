@@ -682,6 +682,7 @@ async fn socket_transport_and_client_release_selected_holds() {
     let (server, receiver) = Server::bind(&AdminConfig {
         socket: directory.path().join("admin.sock"),
     })
+    .await
     .unwrap();
     let path = server.path().to_owned();
     let shutdown = CancellationToken::new();
@@ -803,6 +804,7 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
     let (server, receiver) = Server::bind(&AdminConfig {
         socket: directory.path().join("admin.sock"),
     })
+    .await
     .unwrap();
     let path = server.path().to_owned();
     let accepted = server.accepted.clone();

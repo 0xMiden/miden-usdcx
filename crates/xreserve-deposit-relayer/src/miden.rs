@@ -426,10 +426,9 @@ impl MidenClient for NodeClient {
 
 /// The class of a Miden client error under `kind`.
 ///
-/// Node RPC failures are `transient`.
-/// Other errors come from the client's own
-/// store, its keystore, or executing and proving the transaction, such as a signing key missing
-/// from the keystore, and retrying will not fix those, so they are `actionable`.
+/// Node RPC failures are `transient`. Other errors come from the client's own store, its keystore,
+/// or executing and proving the transaction, such as a signing key missing from the keystore, and
+/// retrying will not fix those, so they are `actionable`.
 fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
     match error {
         ClientError::RpcError(_) => Transient(kind),

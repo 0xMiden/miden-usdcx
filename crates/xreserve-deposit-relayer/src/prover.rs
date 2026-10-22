@@ -10,6 +10,8 @@ use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 use tracing::warn;
 use url::Url;
 
+/// Proves on the remote prover within `timeout`, and proves the same transaction locally when the
+/// remote attempt fails or times out.
 pub(crate) struct RemoteProver {
     inner: RemoteTransactionProver,
     timeout: Duration,
@@ -82,12 +84,23 @@ mod tests {
         .unwrap()
     }
 
+    /// How the remote prover fails.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RemoteFailure {
+        /// Nothing listens at the prover URL.
+        Refused,
+        /// The prover accepts the connection and never answers.
+        Silent,
+        /// The prover answers with something that is not gRPC.
+        Malformed,
+    }
+
     #[rstest]
-    #[case::refused("refused")]
-    #[case::silent("silent")]
-    #[case::malformed("malformed")]
+    #[case::refused(RemoteFailure::Refused)]
+    #[case::silent(RemoteFailure::Silent)]
+    #[case::malformed(RemoteFailure::Malformed)]
     #[tokio::test]
-    async fn a_failed_remote_attempt_returns_the_local_result(#[case] response: &str) {
+    async fn a_failed_remote_attempt_returns_the_local_result(#[case] failure: RemoteFailure) {
         let inputs = inputs();
         let local_error = LocalTransactionProver::default()
             .prove(inputs.clone())
@@ -96,8 +109,8 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap())
             .parse()
             .unwrap();
-        let server = if response != "refused" {
-            let malformed = response == "malformed";
+        let server = if failure != RemoteFailure::Refused {
+            let malformed = failure == RemoteFailure::Malformed;
             Some(tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 if malformed {

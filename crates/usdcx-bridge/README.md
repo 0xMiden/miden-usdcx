@@ -211,7 +211,9 @@ The target cadence is 10 seconds, subject to attester cycle duration and backlog
 `Content-Type: application/json` and `Cache-Control: max-age=10`; configure CloudFront caching to
 respect this and avoid long negative caching. Publish through one authoritative attester per
 bucket/prefix. A timed-out S3 request may finish late, so fixed-key writes cannot guarantee strict
-ordering across ambiguous timeouts. Keep the durable store when restarting.
+ordering across ambiguous timeouts. An older timed-out write can leave the lookup stale until a later
+history change republishes it; restarting alone does not republish acknowledged entries. Keep the
+durable store when restarting.
 
 The bucket must already exist. Miden grants Gateway's specific workload IAM role `s3:PutObject`
 on the chosen prefix, and Gateway grants the same action in that role's policy. A bucket encrypted

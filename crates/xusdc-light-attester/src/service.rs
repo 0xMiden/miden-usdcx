@@ -55,8 +55,8 @@ impl AttesterService {
     }
 
     async fn connect(config: Config) -> Result<Self> {
-        // Bind first, so a taken port or a bad token file fails before any dependency is
-        // contacted.
+        // Bind first, so a socket that is in use or cannot be created fails before any dependency
+        // is contacted.
         let admin = match config.admin() {
             Some(config) => Some(crate::admin::Server::bind(config).await?),
             None => None,
@@ -86,7 +86,7 @@ impl AttesterService {
         Ok(Self { attester, admin })
     }
 
-    /// Runs the attester and its optional admin listener until `shutdown` is cancelled.
+    /// Runs the attester and its optional admin socket until `shutdown` is cancelled.
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let Self {
             mut attester,
@@ -118,7 +118,7 @@ impl AttesterService {
     }
 }
 
-/// Runs offline maintenance against a stopped store, or a request to the live admin listener.
+/// Runs offline maintenance against a stopped store, or a request to the live admin socket.
 ///
 /// # Errors
 ///

@@ -98,6 +98,8 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # ends. The restart tests need a REAL file (a store that cannot lose where it got to is the point),
 # so neither an in-memory database nor a buffer in the test's own memory is an option.
 tempfile = "3"
-# The attester's local admin server and the in-process mock Circle routers used by tests.
+# Test-only: a Unix listener with a chosen backlog, so a test can fill it with a few connections.
+socket2 = "0.6"
+# Dev-only: the withdrawal listener's tests route a mock Circle server in process.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query"] }
 tower = { version = "0.5", features = ["util"] }

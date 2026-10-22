@@ -22,14 +22,10 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Loopback address for the admin listener, which lists and releases holds while the attester
-    /// runs. Off unless set; requires --admin-token-file.
-    #[arg(long, requires = "admin_token_file", value_parser = crate::admin::parse_listen)]
-    admin_listen: Option<std::net::SocketAddr>,
-    /// File holding the admin bearer token as 64 hex characters, readable only by operators;
-    /// requires --admin-listen.
-    #[arg(long, requires = "admin_listen")]
-    admin_token_file: Option<PathBuf>,
+    /// Optional Unix socket for live hold management, in a directory private to the service.
+    /// Disabled by default.
+    #[arg(long)]
+    admin_socket: Option<PathBuf>,
     /// AWS region containing both KMS keys.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     aws_kms_region: String,
@@ -239,11 +235,9 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
-        // clap rejects one admin flag without the other.
         let admin = cli
-            .admin_listen
-            .zip(cli.admin_token_file)
-            .map(|(listen, token_file)| crate::admin::AdminConfig { listen, token_file });
+            .admin_socket
+            .map(|socket| crate::admin::AdminConfig { socket });
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
@@ -341,7 +335,7 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
-    /// The admin listener's settings, or `None` when it is off.
+    /// The admin socket's settings, or `None` when it is off.
     pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
         self.admin.as_ref()
     }

@@ -84,6 +84,9 @@ pub(crate) enum HoldReason {
     HttpRejected,
 }
 
+/// Whether a POST is a signed request's first send or a resend after an unknown outcome.
+///
+/// Only a rejected first send proves Circle never accepted the request.
 #[derive(Clone, Copy)]
 pub(crate) enum SubmissionAttempt {
     First,
@@ -139,7 +142,7 @@ impl Attester {
                 "replaced an earlier submission"
             );
         }
-        self.advance_submission_attempt(saved, rate_limited, SubmissionAttempt::First)
+        self.advance_submission(saved, rate_limited, SubmissionAttempt::First)
             .await
     }
 
@@ -160,23 +163,16 @@ impl Attester {
                 continue;
             }
             let span = info_span!("attester.withdraw", note.id = %saved.note_id);
-            self.advance_submission(saved, rate_limited)
+            self.advance_submission(saved, rate_limited, SubmissionAttempt::Recovery)
                 .instrument(span)
                 .await?;
         }
         Ok(())
     }
 
-    pub(crate) async fn advance_submission(
-        &mut self,
-        saved: SavedSubmission,
-        rate_limited: &mut bool,
-    ) -> Result<(), SubmitError> {
-        self.advance_submission_attempt(saved, rate_limited, SubmissionAttempt::Recovery)
-            .await
-    }
-
-    async fn advance_submission_attempt(
+    /// Sends the saved request, or checks it with GET once Circle's ID is known, and saves the
+    /// answer. `attempt` says whether a POST is the request's first send.
+    async fn advance_submission(
         &mut self,
         mut saved: SavedSubmission,
         rate_limited: &mut bool,

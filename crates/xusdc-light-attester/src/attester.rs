@@ -311,9 +311,7 @@ impl Attester {
                     command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
                 };
                 match command {
-                    Some(command) => {
-                        self.handle_admin(command);
-                    }
+                    Some(command) => self.handle_admin(command),
                     // The listener has stopped; the attester carries on without it.
                     None => self.admin = None,
                 }
@@ -586,6 +584,8 @@ impl Attester {
         Ok(first_error.map_or(Ok(()), Err))
     }
 
+    /// Makes the burn wait when Circle's reply is a withdrawal-limit rejection, and returns whether
+    /// it was one. `submission` is the saved request the reply answers, when it answers a POST.
     pub(crate) fn wait_for_withdrawal_limit(
         &mut self,
         note_id: NoteId,

@@ -218,13 +218,17 @@ pub(crate) struct CctpForwarding {
     pub(crate) token_messenger: Address,
 }
 
+/// How the attester recognises Circle's withdrawal-limit rejections and spaces out their retries.
 #[derive(Debug)]
 pub(crate) struct WithdrawalLimit {
+    /// The start of the `message` in Circle's limit rejection.
     pub(crate) message_prefix: String,
+    /// The delay before a rejected burn is tried again.
     pub(crate) retry_interval: Duration,
 }
 
 impl WithdrawalLimit {
+    /// The Unix second, rounded up, at which a burn rejected at `now` may be tried again.
     pub(crate) fn retry_at(&self, now: SystemTime) -> anyhow::Result<i64> {
         let deadline = now
             .duration_since(UNIX_EPOCH)

@@ -75,6 +75,8 @@ impl RawResponse {
     }
 }
 
+/// Whether Circle's reply is its withdrawal-limit rejection: a 400 whose `message` starts with
+/// `prefix`.
 pub(crate) fn is_withdrawal_limit(status: StatusCode, body: &[u8], prefix: &str) -> bool {
     status == StatusCode::BAD_REQUEST
         && serde_json::from_slice::<serde_json::Value>(body)

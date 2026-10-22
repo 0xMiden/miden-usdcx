@@ -37,7 +37,7 @@ mod prover;
 pub mod store;
 mod unminted;
 
-use circle::{CircleClient, CircleCursor, Entry, MessageHash};
+use circle::{CircleClient, CircleCursor, Entry, MessageHash, PageSize};
 use config::Config;
 use miden::{MidenClient, NodeClient};
 use mint::{BuiltNotes, Minter};
@@ -161,7 +161,18 @@ impl<M: MidenClient> Relayer<M> {
     pub fn new(config: Config, miden_client: M) -> Result<Self> {
         config.validate_prover()?;
         let page_size = config.effective_page_size();
-        info!(%page_size, remote_proving = config.prover_url.is_some(), "relayer proving configuration");
+        let remote_proving = config.prover_url.is_some();
+        // A configured size above the proving cap is overridden, so say so where operators look.
+        if page_size < config.page_size {
+            warn!(
+                configured_page_size = %config.page_size,
+                %page_size,
+                remote_proving,
+                "the configured page size exceeds the proving cap; requesting smaller pages"
+            );
+        } else {
+            info!(%page_size, remote_proving, "relayer proving configuration");
+        }
         let store = Store::new(config.state_file.clone());
         let state = store.state().context("reading relayer startup progress")?;
         // Save the same progress to exercise the normal write/sync/rename path without advancing it.
@@ -269,7 +280,10 @@ impl<M: MidenClient> Relayer<M> {
         if let Err(failure) = &result {
             if miden::is_expired_submission(&failure.error) && self.circle.limit_to_local_proving()
             {
-                warn!("mint submission expired; limiting later pages to 10 deposits until restart");
+                warn!(
+                    page_size = %PageSize::LOCAL_PROVING_MAX,
+                    "mint submission expired; limiting later pages until restart"
+                );
             }
             failure.report("the page failed; the next scan resumes at it");
         }

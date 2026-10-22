@@ -32,3 +32,4 @@ miden-protocol = { workspace = true, features = ["testing"] }
 miden-usdcx = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

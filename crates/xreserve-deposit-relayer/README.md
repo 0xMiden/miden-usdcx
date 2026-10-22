@@ -115,8 +115,9 @@ already on chain, so the retry cannot build a second mint note for a deposit tha
 `--page-size` therefore sets the proof size and the retry unit as well as the Circle request:
 turning it down buys cheaper proofs and less work to redo, at the cost of more requests to walk a
 backlog. Requests are initially capped at **10 deposits without a prover URL** or **40 with one**.
-Smaller configured page sizes are kept. Startup logs the effective size. An oversized Circle
-response fails the page without advancing progress; it is never truncated.
+Smaller configured page sizes are kept. Startup logs the effective size, as a warning when the
+cap lowers the configured one. An oversized Circle response fails the page without advancing
+progress; it is never truncated.
 
 Every mint transaction carries an expiration block, at most `--expiration-delta` blocks past the one
 it was built against. Protocol rules can shorten that lifetime. That is what bounds the wait: once

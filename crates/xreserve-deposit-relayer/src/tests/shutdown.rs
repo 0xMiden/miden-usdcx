@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -345,6 +346,57 @@ async fn a_failed_submission_keeps_progress_and_only_expiration_reduces_pages(
     assert_eq!(requests[1].contains("pageAfter=resume-here"), resumed);
     if chunks.len() > 1 {
         assert!(requests[2].contains("pageAfter=retry-next"));
+    }
+}
+
+/// Startup warns when the proving cap lowers the configured page size, naming both sizes, and
+/// stays quiet when the configured size already fits.
+#[rstest]
+#[case::local_cap(100, false, Some("configured_page_size=100 page_size=10"))]
+#[case::remote_cap(100, true, Some("configured_page_size=100 page_size=40"))]
+#[case::fits(3, false, None)]
+fn startup_warns_when_the_proving_cap_lowers_the_page_size(
+    #[case] requested: u16,
+    #[case] remote: bool,
+    #[case] warning: Option<&str>,
+) {
+    #[derive(Clone, Default)]
+    struct Logs(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let directory = TempDir::new().unwrap();
+    let mut config = config(&directory, "http://127.0.0.1:1");
+    config.page_size = requested.try_into().unwrap();
+    config.prover_url = remote.then(|| "https://prover.invalid".parse().unwrap());
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        Relayer::new(
+            config,
+            TestMiden {
+                reached_page: CancellationToken::new(),
+            },
+        )
+        .unwrap();
+    });
+
+    let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    let warned = logs.lines().find(|line| line.contains(" WARN "));
+    match warning {
+        Some(fields) => assert!(warned.is_some_and(|line| line.contains(fields)), "{logs}"),
+        None => assert!(warned.is_none(), "{logs}"),
     }
 }
 

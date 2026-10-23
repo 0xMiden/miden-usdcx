@@ -141,8 +141,8 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    /// Whether the request has stopped waiting, by timing out or disconnecting, so the command
-    /// should not run.
+    /// Whether the command's deadline has passed or the listener has dropped its reply receiver.
+    /// A client disconnect alone does not drop that receiver.
     pub(crate) fn abandoned(&self) -> bool {
         self.deadline <= Instant::now()
             || match &self.operation {
@@ -425,9 +425,9 @@ fn encode<T: Serialize>(result: Result<T, AdminError>) -> Vec<u8> {
 
 /// Queues an operation for the attester and waits up to [`COMMAND_WAIT`] for its result.
 ///
-/// A full inbox is refused at once rather than waited on. A timeout leaves the outcome unknown:
-/// the attester drops a command whose deadline has passed, but one it has already started still
-/// commits.
+/// A full inbox is refused at once rather than waited on. The attester checks the deadline before
+/// handling the command, but work that passed that check can finish after the timeout. A timeout
+/// therefore leaves the outcome unknown.
 async fn dispatch<T>(
     state: &ServerState,
     operation: Operation,
@@ -436,8 +436,7 @@ async fn dispatch<T>(
     if state.shutdown.is_cancelled() {
         return Err(AdminError::Stopping);
     }
-    // The attester checks the same deadline, so it skips a command this request no longer waits
-    // for.
+    // The attester checks this deadline before handling the command.
     let deadline = Instant::now() + COMMAND_WAIT;
     state
         .commands

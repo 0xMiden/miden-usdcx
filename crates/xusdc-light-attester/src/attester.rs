@@ -184,7 +184,7 @@ impl Attester {
         if self.admin.is_none() || self.admin_shutdown.is_cancelled() {
             return;
         }
-        // Ready chain futures must still give HTTP handlers a chance to enqueue work.
+        // Ready chain futures must still give the admin listener a chance to enqueue work.
         tokio::task::yield_now().await;
         for _ in 0..ADMIN_COMMANDS_PER_CHECKPOINT {
             if self.admin_shutdown.is_cancelled() {
@@ -204,8 +204,8 @@ impl Attester {
 
     /// Runs one admin command against the store and sends the result back to the listener.
     ///
-    /// A command whose caller has given up, by timing out or disconnecting, is dropped without
-    /// running, so a release never starts after the operator was told its outcome is unknown.
+    /// Skips the command if its deadline has already passed or the listener dropped its reply
+    /// receiver. A client disconnect alone does not cancel an admitted command.
     fn handle_admin(&mut self, command: crate::admin::Command) {
         use crate::admin::{HoldsPage, Operation, Released};
         if self.admin_shutdown.is_cancelled() || command.abandoned() {

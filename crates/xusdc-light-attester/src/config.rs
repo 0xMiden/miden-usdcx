@@ -20,6 +20,14 @@ use usdcx_telemetry::TelemetryArgs;
 
 use crate::verify::xreserve_deployment;
 
+// Circle numbers the domains it reaches only through an xReserve redeposit from this one up.
+pub(crate) const FIRST_REMOTE_DOMAIN: u32 = 10_000;
+// The remote domains whose redeposit needs no inner hook data. Cardano's covers enterprise
+// addresses only.
+const STACKS_DOMAIN: u32 = 10_003;
+const CARDANO_DOMAIN: u32 = 10_004;
+const MOVEMENT_DOMAIN: u32 = 10_005;
+
 /// Command-line deployment settings for the attester.
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
@@ -383,9 +391,10 @@ impl Config {
     /// Remote destinations need explicit support; native-USDC routes keep their CCTP cap.
     pub(crate) fn forwarding_max_fee(&self, destination: u32) -> Option<u64> {
         match destination {
-            // Stacks, Cardano enterprise addresses and Movement, respectively.
-            10003..=10005 => self.xreserve_deposit_max_fee.map(|fee| fee.as_u64()),
-            10000.. => None,
+            STACKS_DOMAIN | CARDANO_DOMAIN | MOVEMENT_DOMAIN => {
+                self.xreserve_deposit_max_fee.map(|fee| fee.as_u64())
+            }
+            FIRST_REMOTE_DOMAIN.. => None,
             _ => Some(self.cctp_forwarding.max_fee),
         }
     }

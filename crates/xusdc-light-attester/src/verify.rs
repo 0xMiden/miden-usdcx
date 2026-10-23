@@ -13,7 +13,7 @@ use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
-use crate::config::{CctpForwarding, Config};
+use crate::config::{CctpForwarding, Config, FIRST_REMOTE_DOMAIN};
 use crate::signer::{SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
@@ -279,7 +279,7 @@ impl UnverifiedPrepareResponse {
             .ok_or(VerifyError::UnsupportedDestination)?;
         let forwarded =
             hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
-        let redeposit = destination >= 10000;
+        let redeposit = destination >= FIRST_REMOTE_DOMAIN;
         let secondary_fee = if redeposit {
             verify_redeposit_leg(
                 &intent,

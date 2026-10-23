@@ -820,3 +820,76 @@ async fn restart_and_shutdown_do_not_lose_work() {
         assert_eq!(ledger.record(&attester, index).status, Submitted);
     }
 }
+
+#[tokio::test]
+async fn invalid_redeposits_reach_neither_signer_nor_submission() {
+    use super::discovery::test_args;
+    use super::verify::redeposit_batch;
+    for (domain, wrong_recipient) in [
+        (10001, false),
+        (10002, false),
+        (10003, true),
+        (10003, false),
+        (10004, true),
+        (10004, false),
+        (10005, true),
+        (10005, false),
+    ] {
+        let admitted = matches!(domain, 10003..=10005);
+        let burn = discovered_burn(10_000_000, serial(96), domain);
+        let mut blocks = BlockFactory::new();
+        blocks.push(vec![], vec![]);
+        blocks.push(vec![OutputNote::Public(burn.note().clone())], vec![]);
+        blocks.push(
+            vec![],
+            vec![transaction(faucet_account_id(), &[burn.nullifier()])],
+        );
+        blocks.push(vec![], vec![]);
+        let directory = tempfile::tempdir().unwrap();
+        let mut args = test_args(&directory, &blocks.blocks()[0], 1);
+        args.append("--xreserve-deposit-max-fee", "500");
+        args.replace("--max-withdrawal-fee", "600");
+        let mut prepared =
+            redeposit_batch(&burn, if wrong_recipient { 100 } else { 101 }, 500, false);
+        if wrong_recipient {
+            let mut call = crate::verify::redeposit::depositToRemoteCall::abi_decode(
+                &hex::decode(&prepared.burn_intents[0].spec.hook_data.forwarding_calldata[2..])
+                    .unwrap(),
+            )
+            .unwrap();
+            call.remoteRecipient = B256::ZERO;
+            prepared = with_calldata(prepared, call.abi_encode());
+        }
+        let response = json!({"batches":[{"burnIntents":prepared.burn_intents,"encoded":prepared.encoded,"messageHashToSign":prepared.message_hash_to_sign}]});
+        let (circle, requests) = ScriptedCircle::new(
+            directory.path().join("state.sqlite3"),
+            vec![reply(200, response)],
+        );
+        let (chain, _) = TestChain::new(blocks.blocks(), scan_limits(3, 3));
+        let (signers, calls) = signers(None).await;
+        let mut attester = Attester::start(args.load(), Box::new(chain), Box::new(circle), signers)
+            .await
+            .unwrap();
+        let report = attester.run_one_cycle().await.unwrap();
+        assert!(report.discover.is_ok());
+        let expected = if !admitted {
+            VerifyError::UnsupportedDestination
+        } else if wrong_recipient {
+            VerifyError::ForwardedField("calldata remoteRecipient")
+        } else {
+            VerifyError::FeeTooHigh
+        };
+        assert!(matches!(report.submit,Err(SubmitError::Verification(cause)) if cause == expected));
+        assert_eq!(counts(&calls), [0, 0]);
+        let observed = requests.lock().unwrap();
+        if admitted {
+            assert!(matches!(observed.as_slice(), [ObservedRequest::Prepare]));
+        } else {
+            assert!(
+                observed.is_empty(),
+                "unresolved destinations must not reach prepare"
+            );
+        }
+        assert!(attester.store.submission(burn.note_id()).unwrap().is_none());
+    }
+}

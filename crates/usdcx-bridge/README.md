@@ -174,7 +174,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--max-withdrawal-fee` | Required | Fixed part of the withdrawal fee allowance, in USDC base units. Size from Circle quotes using the fee guide. |
 | `--max-withdrawal-fee-bps` | Required | Extra allowance as whole basis points of the burned amount. Choose with the fixed allowance using the fee guide. |
 | `--cctp-forwarding-max-fee` | Required | Positive cap for an additional CCTP transfer, in USDC base units. Size using the fee guide; required but not added for direct routes. |
-| `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc, confirmed for the target Circle environment. |
+| `--xreserve-deposit-max-fee` | Optional | Cap for an xReserve redeposit to Stacks, Movement or a Cardano enterprise address, in USDC base units. Omit it to disable these routes; size it using the fee guide. Requires `--cctp-forwarder-address` to be Circle's mainnet or testnet xReserve. |
+| `--cctp-forwarder-address` | Required | Nonzero `0x` address of xReserve on Arc, confirmed for the target Circle environment. Redeposits run through the same xReserve. |
 | `--cctp-token-messenger-address` | Required | Nonzero `0x` address of TokenMessengerV2 on Arc, confirmed for that environment. Must differ from the xReserve address. |
 | `--aws-kms-region` | Required | AWS Region containing both keys. |
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |

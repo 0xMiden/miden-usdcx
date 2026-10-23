@@ -609,6 +609,8 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
     let (signers, _) = signers(None).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let shutdown = CancellationToken::new();
+    let (admin, receiver) = tokio::sync::mpsc::channel(16);
+    attester.attach_admin(receiver, shutdown.clone());
     let mut run = Box::pin(attester.run(shutdown.clone()));
     // With a 100 ms poll interval the cycles start at 0, 200, 600 and 700 ms.
     for (wait_ms, cycles, requests_sent) in [
@@ -620,6 +622,7 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
         (97, 3, 6),
         (3, 4, 6),
     ] {
+        let mut reply = super::admin::list_command(&admin);
         assert!(
             tokio::time::timeout(Duration::from_millis(wait_ms), &mut run)
                 .await
@@ -627,6 +630,10 @@ async fn rate_limit_backs_off_until_a_clean_cycle() {
         );
         assert_eq!(*chain.scan_limit_requests.lock().unwrap(), cycles);
         assert_eq!(requests.lock().unwrap().len(), requests_sent);
+        assert!(
+            reply.try_recv().unwrap().is_ok(),
+            "admin traffic must not restart the pause"
+        );
     }
     shutdown.cancel();
     run.await.unwrap();
@@ -798,6 +805,9 @@ async fn restart_and_shutdown_do_not_lose_work() {
     let (signers, calls) = signers(Some(shutdown.clone())).await;
     let (mut attester, requests, chain) = ledger.runtime(replies, signers).await;
     let started = tokio::time::Instant::now();
+    let (admin, receiver) = tokio::sync::mpsc::channel(16);
+    attester.attach_admin(receiver, shutdown.clone());
+    let _reply = super::admin::list_command(&admin);
     attester.run(shutdown.clone()).await.unwrap();
     assert!(
         started.elapsed() < Duration::from_millis(100),

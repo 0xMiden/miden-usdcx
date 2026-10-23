@@ -1,3 +1,4 @@
+mod admin;
 mod discovery;
 mod holds;
 mod poll;

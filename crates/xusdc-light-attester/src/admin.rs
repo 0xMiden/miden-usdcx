@@ -1,0 +1,614 @@
+//! List and release holds in the running attester.
+//!
+//! The attester listens on a Unix socket. File permissions decide who may connect, so there is no
+//! token: the socket is created readable and writable only by the service's user. A client sends
+//! one JSON request on one line and reads one JSON reply on one line, then the connection closes.
+//!
+//! Each request is queued for the attester's own task, which runs it against the store between
+//! steps of a cycle and sends back the result. The listener never opens the store itself.
+
+use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{ensure, Context};
+use miden_protocol::note::NoteId;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
+
+pub(crate) mod client;
+pub use client::AdminArgs;
+
+use crate::store::{HoldEntry, ReleaseError, ReleaseSelection};
+
+/// How long a request waits for the attester to run its command.
+const COMMAND_WAIT: Duration = Duration::from_secs(60);
+/// How long a connection may take to send its request line.
+const REQUEST_WAIT: Duration = Duration::from_secs(10);
+/// The longest a connection stays open, a little over [`COMMAND_WAIT`].
+const CONNECTION_WAIT: Duration = Duration::from_secs(70);
+/// How long shutdown waits for open connections to finish before dropping them.
+const CLEANUP_WAIT: Duration = Duration::from_secs(5);
+/// The largest request line accepted.
+const REQUEST_LIMIT: usize = 16 * 1024;
+/// The most connections served at once; further ones wait in the listen backlog.
+const MAX_CONNECTIONS: usize = 16;
+/// How long startup waits to learn whether another process still serves an existing socket.
+const STALE_CHECK_WAIT: Duration = Duration::from_secs(1);
+
+/// Where the admin socket is created.
+#[derive(Debug, Clone)]
+pub(crate) struct AdminConfig {
+    pub(crate) socket: PathBuf,
+}
+
+/// Parses a note ID in the canonical form the holds list prints.
+///
+/// One spelling per note means a note ID from the list can be compared and paged on as text.
+pub(crate) fn parse_note_id(value: &str) -> anyhow::Result<NoteId> {
+    let id = NoteId::try_from_hex(value).context("invalid note ID")?;
+    ensure!(
+        id.to_string() == value,
+        "note ID must use canonical lowercase hex"
+    );
+    Ok(id)
+}
+
+/// One line a client sends.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Request {
+    /// Lists one page of holds.
+    Holds {
+        /// The last note ID of the previous page.
+        #[serde(default)]
+        after: Option<String>,
+    },
+    /// Releases one hold, as the holds list showed it.
+    Release {
+        note_id: String,
+        /// The hold's `event_seq` from the list. The release is refused if the hold has changed
+        /// since.
+        expected_event_seq: i64,
+        /// The operator confirms Circle did not accept the withdrawal. Required to release a held
+        /// withdrawal.
+        #[serde(default)]
+        circle_not_accepted: bool,
+    },
+}
+
+/// One line the attester answers with: `{"ok": …}` or `{"error": {"code": …, "message": …}}`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reply<T> {
+    Ok(T),
+    Error(ErrorBody),
+}
+
+/// The body of every error answer: a stable code for scripts and a message for the operator.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ErrorBody {
+    pub(crate) code: String,
+    pub(crate) message: String,
+}
+
+/// One page of holds, in note order.
+///
+/// The faucet and trusted anchor let the operator confirm which attester answered.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct HoldsPage {
+    pub(crate) faucet_account_id: String,
+    pub(crate) trusted_anchor_block: u32,
+    pub(crate) trusted_anchor_commitment: String,
+    pub(crate) holds: Vec<HoldEntry>,
+    /// The cursor for the next page, or `None` on the last page.
+    pub(crate) next_after: Option<String>,
+}
+
+/// How many burns and withdrawals a release made eligible again.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Released {
+    pub(crate) burns: usize,
+    pub(crate) withdrawals: usize,
+}
+
+/// A store operation the attester runs for the listener, with the channel for its result.
+pub(crate) enum Operation {
+    /// Lists the holds after the given note ID, or from the start.
+    List(
+        Option<NoteId>,
+        oneshot::Sender<Result<HoldsPage, ReleaseError>>,
+    ),
+    /// Releases the selected hold.
+    Release(
+        ReleaseSelection,
+        oneshot::Sender<Result<Released, ReleaseError>>,
+    ),
+}
+
+/// An operation queued for the attester, with the time its request stops waiting.
+pub(crate) struct Command {
+    pub(crate) operation: Operation,
+    pub(crate) deadline: Instant,
+}
+
+impl Command {
+    /// Whether the command's deadline has passed or the listener has dropped its reply receiver.
+    /// A client disconnect alone does not drop that receiver.
+    pub(crate) fn abandoned(&self) -> bool {
+        self.deadline <= Instant::now()
+            || match &self.operation {
+                Operation::List(_, reply) => reply.is_closed(),
+                Operation::Release(_, reply) => reply.is_closed(),
+            }
+    }
+}
+
+/// What every connection handler shares.
+#[derive(Clone)]
+struct ServerState {
+    /// The attester's inbox.
+    commands: mpsc::Sender<Command>,
+    /// Cancelled when the listener stops, so new requests are refused and open connections close.
+    shutdown: CancellationToken,
+}
+
+/// The admin listener, bound but not yet serving.
+pub(crate) struct Server {
+    listener: UnixListener,
+    path: PathBuf,
+    state: ServerState,
+    #[cfg(test)]
+    pub(crate) accepted: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl Server {
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Creates the socket, returning the listener with the inbox the attester reads.
+    ///
+    /// The inbox is bounded, so a request that finds it full is refused rather than queued.
+    pub(crate) async fn bind(
+        config: &AdminConfig,
+    ) -> anyhow::Result<(Self, mpsc::Receiver<Command>)> {
+        let path = config.socket.clone();
+        remove_stale_socket(&path).await?;
+        let listener = UnixListener::bind(&path).context("cannot bind admin socket")?;
+        // The socket is reachable from its directory for the moment between the bind and this
+        // call, so the directory itself should be private to the service.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .context("cannot restrict admin socket permissions")?;
+        let (commands, receiver) = mpsc::channel(16);
+        Ok((
+            Self {
+                listener,
+                path,
+                #[cfg(test)]
+                accepted: std::sync::Arc::new(tokio::sync::Notify::new()),
+                state: ServerState {
+                    commands,
+                    shutdown: CancellationToken::new(),
+                },
+            },
+            receiver,
+        ))
+    }
+
+    /// Serves requests until `shutdown` is cancelled, then removes the socket and gives open
+    /// connections [`CLEANUP_WAIT`] to finish.
+    ///
+    /// Each connection carries one request and is capped at [`CONNECTION_WAIT`], so a slow or idle
+    /// client cannot hold one of the [`MAX_CONNECTIONS`] slots.
+    pub(crate) async fn run(self, shutdown: CancellationToken) -> anyhow::Result<()> {
+        #[cfg(test)]
+        let on_accept = self.accepted;
+        let Self {
+            listener,
+            path,
+            state,
+            ..
+        } = self;
+        let stop = state.shutdown.clone();
+        let mut connections = JoinSet::new();
+        loop {
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                // Reaping finished connections frees their slots.
+                Some(_) = connections.join_next(), if !connections.is_empty() => {},
+                accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
+                    let stream = match accepted {
+                        Ok((stream, _)) => stream,
+                        // Failures such as running out of file descriptors can persist, so pause
+                        // before accepting again.
+                        Err(error) => {
+                            warn!(%error, "admin socket accept failed");
+                            tokio::select! {
+                                biased;
+                                () = shutdown.cancelled() => break,
+                                () = tokio::time::sleep(Duration::from_secs(1)) => {},
+                            }
+                            continue;
+                        }
+                    };
+                    let state = state.clone();
+                    connections.spawn(async move {
+                        let _ = tokio::time::timeout(CONNECTION_WAIT, serve(state, stream)).await;
+                    });
+                    #[cfg(test)]
+                    on_accept.notify_one();
+                }
+            }
+        }
+        // Stop accepting, ask open connections to finish, then drop whatever is left.
+        drop(listener);
+        let _ = fs::remove_file(&path);
+        stop.cancel();
+        let _ = tokio::time::timeout(CLEANUP_WAIT, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await;
+        connections.shutdown().await;
+        Ok(())
+    }
+}
+
+/// Removes a socket file left by an attester that is no longer running. Refuses to remove anything
+/// that is not a socket, or a socket that still accepts connections.
+async fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("cannot inspect admin socket path"),
+    };
+    ensure!(
+        metadata.file_type().is_socket(),
+        "admin socket path exists and is not a socket"
+    );
+    // A listener that has stopped accepting can leave a blocking connect waiting on its full
+    // backlog, so the check connects without blocking and gives up after a short wait.
+    match tokio::time::timeout(STALE_CHECK_WAIT, UnixStream::connect(path)).await {
+        Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
+            fs::remove_file(path).context("cannot remove stale admin socket")
+        }
+        Ok(Ok(_)) => anyhow::bail!("another attester is serving the admin socket"),
+        Ok(Err(error)) if error.kind() != ErrorKind::WouldBlock => {
+            Err(error).context("cannot check the existing admin socket")
+        }
+        // A full backlog or a connect that does not finish still means a process owns the socket.
+        _ => {
+            anyhow::bail!("another process holds the admin socket but is not accepting connections")
+        }
+    }
+}
+
+/// Why a request failed, each mapped to one error code.
+#[derive(Debug)]
+enum AdminError {
+    InvalidInput(&'static str),
+    RequestTooLarge,
+    /// The listener is shutting down.
+    Stopping,
+    /// The attester's inbox is full.
+    QueueFull,
+    /// The attester stopped taking commands, or dropped this one unanswered.
+    Unavailable,
+    /// The attester did not answer in time. The command may still have run.
+    ReplyTimeout,
+    /// The store refused or failed the operation.
+    Release(ReleaseError),
+}
+
+impl AdminError {
+    fn body(&self) -> ErrorBody {
+        let (code, message): (_, String) = match self {
+            Self::InvalidInput(message) => ("invalid_input", (*message).into()),
+            Self::RequestTooLarge => ("request_too_large", "request exceeds 16 KiB".into()),
+            Self::Stopping => ("stopping", "attester is stopping".into()),
+            Self::QueueFull => ("queue_full", "command was not admitted".into()),
+            Self::Unavailable => ("unavailable", "attester is unavailable".into()),
+            Self::ReplyTimeout => (
+                "reply_timeout",
+                "outcome may be unknown; list holds again before selecting another release".into(),
+            ),
+            Self::Release(ReleaseError::Invalid) => {
+                ("invalid_input", "invalid hold selection".into())
+            }
+            Self::Release(ReleaseError::NotHeld(note_id)) => (
+                "hold_not_found",
+                format!("no hold for note {note_id}; list holds to find it"),
+            ),
+            Self::Release(ReleaseError::Conflict) => (
+                "hold_changed",
+                "list holds again before selecting a release".into(),
+            ),
+            Self::Release(ReleaseError::CircleCheck) => (
+                "circle_check_required",
+                "check Circle and assert non-acceptance for the held withdrawal".into(),
+            ),
+            Self::Release(ReleaseError::Store(_)) => {
+                ("store_failed", "attester store failed".into())
+            }
+        };
+        ErrorBody {
+            code: code.into(),
+            message,
+        }
+    }
+}
+
+/// Answers one connection: read its request line, run it, write the reply line.
+async fn serve(state: ServerState, stream: UnixStream) {
+    let (read, mut write) = stream.into_split();
+    let reply = match read_request(&state, read).await {
+        Ok(request) => handle(&state, request).await,
+        Err(error) => encode::<()>(Err(error)),
+    };
+    let _ = write.write_all(&reply).await;
+    let _ = write.shutdown().await;
+}
+
+/// Reads one request line, refusing one that is too long or slow to arrive.
+async fn read_request(
+    state: &ServerState,
+    read: tokio::net::unix::OwnedReadHalf,
+) -> Result<Request, AdminError> {
+    let mut line = Vec::new();
+    let mut reader = BufReader::new(read.take(REQUEST_LIMIT as u64 + 1));
+    tokio::select! {
+        () = state.shutdown.cancelled() => return Err(AdminError::Stopping),
+        read = tokio::time::timeout(REQUEST_WAIT, reader.read_until(b'\n', &mut line)) => {
+            read.map_err(|_| AdminError::InvalidInput("request not received in time"))?
+                .map_err(|_| AdminError::InvalidInput("invalid request"))?;
+        }
+    }
+    if line.len() > REQUEST_LIMIT {
+        return Err(AdminError::RequestTooLarge);
+    }
+    serde_json::from_slice(&line).map_err(|_| AdminError::InvalidInput("invalid request"))
+}
+
+/// Validates a request and runs it through the attester.
+async fn handle(state: &ServerState, request: Request) -> Vec<u8> {
+    match request {
+        Request::Holds { after } => {
+            let after = match after.map(|id| parse_note_id(&id)).transpose() {
+                Ok(after) => after,
+                Err(_) => {
+                    return encode::<()>(Err(AdminError::InvalidInput("invalid page cursor")))
+                }
+            };
+            let (reply, receive) = oneshot::channel();
+            encode(dispatch(state, Operation::List(after, reply), receive).await)
+        }
+        Request::Release {
+            note_id,
+            expected_event_seq,
+            circle_not_accepted,
+        } => {
+            let note_id = match parse_note_id(&note_id) {
+                Ok(note_id) if expected_event_seq > 0 => note_id,
+                _ => return encode::<()>(Err(AdminError::InvalidInput("invalid hold selection"))),
+            };
+            let selection = ReleaseSelection {
+                note_id,
+                expected_event_seq,
+                circle_not_accepted,
+            };
+            let (reply, receive) = oneshot::channel();
+            encode(dispatch(state, Operation::Release(selection, reply), receive).await)
+        }
+    }
+}
+
+/// Encodes a result as one reply line.
+fn encode<T: Serialize>(result: Result<T, AdminError>) -> Vec<u8> {
+    let reply = match result {
+        Ok(value) => Reply::Ok(value),
+        Err(error) => Reply::Error(error.body()),
+    };
+    let mut line = serde_json::to_vec(&reply).expect("admin replies serialize");
+    line.push(b'\n');
+    line
+}
+
+/// Queues an operation for the attester and waits up to [`COMMAND_WAIT`] for its result.
+///
+/// A full inbox is refused at once rather than waited on. The attester checks the deadline before
+/// handling the command, but work that passed that check can finish after the timeout. A timeout
+/// therefore leaves the outcome unknown.
+async fn dispatch<T>(
+    state: &ServerState,
+    operation: Operation,
+    receive: oneshot::Receiver<Result<T, ReleaseError>>,
+) -> Result<T, AdminError> {
+    if state.shutdown.is_cancelled() {
+        return Err(AdminError::Stopping);
+    }
+    // The attester checks this deadline before handling the command.
+    let deadline = Instant::now() + COMMAND_WAIT;
+    state
+        .commands
+        .try_send(Command {
+            operation,
+            deadline,
+        })
+        .map_err(|failure| match failure {
+            mpsc::error::TrySendError::Full(_) => AdminError::QueueFull,
+            mpsc::error::TrySendError::Closed(_) => AdminError::Unavailable,
+        })?;
+    tokio::time::timeout_at(deadline, receive)
+        .await
+        .map_err(|_| AdminError::ReplyTimeout)?
+        .map_err(|_| AdminError::Unavailable)?
+        .map_err(AdminError::Release)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error_code(line: &[u8]) -> String {
+        match serde_json::from_slice::<Reply<serde_json::Value>>(line).unwrap() {
+            Reply::Error(error) => error.code,
+            Reply::Ok(value) => panic!("expected an error, got {value}"),
+        }
+    }
+
+    /// A selection naming a note with no hold is answered as a hold that is not there, apart from
+    /// a malformed selection and from a hold that changed.
+    #[test]
+    fn a_note_without_a_hold_is_not_found() {
+        let note_id = parse_note_id(&format!("0x{}", "ab".repeat(32))).unwrap();
+        let error = AdminError::Release(ReleaseError::NotHeld(note_id)).body();
+        assert_eq!(error.code, "hold_not_found");
+        assert_eq!(
+            error.message,
+            format!("no hold for note {note_id}; list holds to find it")
+        );
+    }
+
+    #[test]
+    fn requests_are_tagged_and_closed() {
+        for line in [
+            r#"{"op":"holds"}"#,
+            r#"{"op":"holds","after":null}"#,
+            r#"{"op":"release","note_id":"0x00","expected_event_seq":1}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(line).is_ok(), "{line}");
+        }
+        for line in [
+            r#"{"op":"delete"}"#,
+            r#"{"holds":[]}"#,
+            r#"{"op":"holds","extra":true}"#,
+            r#"{"op":"release","note_id":"0x00","expected_event_seq":1,"extra":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(line).is_err(), "{line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_stale_socket_is_replaced_and_the_new_one_is_private() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("admin.sock");
+        let config = AdminConfig {
+            socket: path.clone(),
+        };
+        fs::write(&path, b"not a socket").unwrap();
+        assert!(Server::bind(&config).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"not a socket");
+        fs::remove_file(&path).unwrap();
+
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        // A child process spawned by another test can inherit the listener before it is marked
+        // close-on-exec, keeping it open until the child exits.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            assert!(Instant::now() < deadline, "the dropped listener stays open");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (live, _receiver) = Server::bind(&config).await.unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            Server::bind(&config).await.is_err(),
+            "a live socket is kept"
+        );
+        assert!(path.exists());
+        drop(live);
+    }
+
+    /// A socket whose owner has stopped accepting is kept, and the check returns promptly instead
+    /// of waiting on the full backlog.
+    ///
+    /// Linux only: macOS refuses a connection to a full backlog, which reads as a stale socket.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_socket_with_a_full_backlog_is_kept_without_blocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("admin.sock");
+        let owner =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        owner
+            .bind(&socket2::SockAddr::unix(&path).unwrap())
+            .unwrap();
+        owner.listen(1).unwrap();
+        // Nothing accepts, so connections queue until the backlog refuses one more.
+        let mut queued = Vec::new();
+        while let Ok(Ok(stream)) =
+            tokio::time::timeout(STALE_CHECK_WAIT, UnixStream::connect(&path)).await
+        {
+            queued.push(stream);
+        }
+        let started = Instant::now();
+        let config = AdminConfig {
+            socket: path.clone(),
+        };
+        let error = Server::bind(&config).await.err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "another process holds the admin socket but is not accepting connections"
+        );
+        assert!(started.elapsed() <= STALE_CHECK_WAIT + Duration::from_millis(500));
+        assert!(path.exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_selections_are_not_queued_and_queue_failures_are_distinct() {
+        let (commands, mut inbox) = mpsc::channel(1);
+        let state = ServerState {
+            commands,
+            shutdown: CancellationToken::new(),
+        };
+        let canonical = format!("0x{}", "ab".repeat(32));
+        for (note_id, expected_event_seq) in [
+            (canonical.clone(), 0),
+            (canonical, -1),
+            (format!("0x{}", "AB".repeat(32)), 1),
+            ("invalid".into(), 1),
+        ] {
+            let line = handle(
+                &state,
+                Request::Release {
+                    note_id,
+                    expected_event_seq,
+                    circle_not_accepted: false,
+                },
+            )
+            .await;
+            assert_eq!(error_code(&line), "invalid_input");
+            assert!(matches!(
+                inbox.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        let (reply, _receive) = oneshot::channel();
+        state
+            .commands
+            .try_send(Command {
+                operation: Operation::List(None, reply),
+                deadline: Instant::now() + COMMAND_WAIT,
+            })
+            .unwrap_or_else(|_| panic!());
+        let list = || handle(&state, Request::Holds { after: None });
+        assert_eq!(error_code(&list().await), "queue_full");
+        inbox.recv().await.unwrap();
+        assert_eq!(error_code(&list().await), "reply_timeout");
+        assert!(inbox.recv().await.unwrap().abandoned());
+        drop(inbox);
+        assert_eq!(error_code(&list().await), "unavailable");
+    }
+}

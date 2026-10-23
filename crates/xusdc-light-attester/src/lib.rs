@@ -1,5 +1,6 @@
 //! The off-chain xUSDC withdrawal attester.
 
+pub mod admin;
 pub mod attester;
 pub(crate) mod burn;
 pub mod chain;

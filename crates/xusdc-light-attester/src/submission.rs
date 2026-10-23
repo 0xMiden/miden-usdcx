@@ -145,6 +145,7 @@ impl Attester {
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
         for saved in submissions {
+            self.admin_checkpoint().await;
             let span = info_span!("attester.withdraw", note.id = %saved.note_id);
             self.advance_submission(saved, rate_limited)
                 .instrument(span)

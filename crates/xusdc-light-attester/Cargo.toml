@@ -26,7 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
 usdcx-telemetry = { path = "../usdcx-telemetry" }
@@ -39,6 +39,7 @@ http = "1"
 miden-protocol = { workspace = true, features = ["testing"] }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+socket2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["time", "test-util"] }
 tracing-opentelemetry = { workspace = true }

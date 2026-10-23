@@ -18,7 +18,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
 usdcx-telemetry = { path = "../usdcx-telemetry" }
-url = "2"
+url = { workspace = true }
 humantime = "2"
 parse_link_header = { version = "0.4", default-features = false, features = ["url"] }
 reqwest = { workspace = true }
@@ -28,6 +28,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+miden-objects = { workspace = true }
 miden-protocol = { workspace = true, features = ["testing"] }
 miden-usdcx = { workspace = true, features = ["testing"] }
 rstest = { workspace = true }

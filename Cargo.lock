@@ -6710,6 +6710,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "usdcx-telemetry",
  "xreserve-deposit-relayer",
  "xusdc-attester",
@@ -7155,11 +7156,16 @@ name = "xreserve-deposit-relayer"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "hex",
+ "http-body-util",
  "humantime",
+ "hyper",
+ "hyper-util",
  "miden-client",
  "miden-client-sqlite-store",
+ "miden-objects",
  "miden-protocol",
  "miden-usdcx",
  "parse_link_header",
@@ -7172,6 +7178,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "url",
  "usdcx-telemetry",
 ]

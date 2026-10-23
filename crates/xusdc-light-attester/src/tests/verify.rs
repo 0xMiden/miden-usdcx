@@ -617,12 +617,17 @@ fn forwarded_route_is_bound_to_the_burn() {
     );
 }
 
-/// A fee or payout that does not fit the configuration needs an operator; every other failed check
-/// means Circle asked for a signature over something other than the burn.
+/// A destination, fee or payout that does not fit the configuration needs an operator; every other
+/// failed check means Circle asked for a signature over something other than the burn.
 #[test]
 fn verification_failures_are_classed_for_alerting() {
     use VerifyError::*;
-    for error in [FeeTooHigh, PayoutTooSmallToForward, TooSmallToForward] {
+    for error in [
+        UnsupportedDestination,
+        FeeTooHigh,
+        PayoutTooSmallToForward,
+        TooSmallToForward,
+    ] {
         assert!(
             matches!(error.failure(), FailureClass::Actionable(_)),
             "{error:?}"
@@ -630,7 +635,6 @@ fn verification_failures_are_classed_for_alerting() {
     }
     for error in [
         WrongCount,
-        UnsupportedDestination,
         UnknownSalt,
         BadAmount,
         WrongSigner,

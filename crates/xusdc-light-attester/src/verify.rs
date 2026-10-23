@@ -131,16 +131,16 @@ pub enum VerifyError {
     MalformedField(&'static str),
 }
 
-/// A fee or payout that does not fit the configuration needs an operator; anything else means
-/// Circle asked for a signature over something other than the burn.
+/// A destination, fee or payout that does not fit the configuration needs an operator; anything
+/// else means Circle asked for a signature over something other than the burn.
 impl Classified for VerifyError {
     fn failure(&self) -> FailureClass {
         match self {
+            Self::UnsupportedDestination => Actionable("unsupported_destination"),
             Self::FeeTooHigh => Actionable("fee_too_high"),
             Self::TooSmallToForward => Actionable("too_small_to_forward"),
             Self::PayoutTooSmallToForward => Actionable("payout_too_small_to_forward"),
             Self::WrongCount => Integrity("wrong_count"),
-            Self::UnsupportedDestination => Integrity("unsupported_destination"),
             Self::UnknownSalt => Integrity("unknown_salt"),
             Self::WrongBurnField(_) => Integrity("wrong_burn_field"),
             Self::BadAmount => Integrity("bad_amount"),

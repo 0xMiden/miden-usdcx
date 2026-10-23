@@ -8,21 +8,22 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info, info_span, instrument, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, warn, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{circle_message, CircleApi, CircleError};
+use crate::circle::{circle_message, is_withdrawal_limit, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
-use crate::submission::SavedSubmission;
+use crate::submission::{SavedSubmission, SubmissionAttempt};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -138,6 +139,11 @@ impl Attester {
             trusted_anchor,
         )
         .context("failed to open attester store")?;
+        anyhow::ensure!(
+            config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
+            "store has withdrawals waiting for Circle's withdrawal limit; start with \
+             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
+        );
         let checkpoint = store
             .checkpoint()
             .context("failed to load the attester's checkpoint")?;
@@ -332,6 +338,9 @@ impl Attester {
             withdrawals.pending.count = Empty,
             burns.unfinished.count = Empty,
             burns.unfinished.oldest_age_blocks = Empty,
+            withdrawals.limit.count = Empty,
+            withdrawals.limit.note_id = Empty,
+            withdrawals.limit.retry_at = Empty,
         )
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
@@ -414,6 +423,11 @@ impl Attester {
         span.record("withdrawals.pending.count", progress.withdrawals_pending);
         span.record("burns.unfinished.count", progress.burns_unfinished);
         span.record("burns.unfinished.oldest_age_blocks", oldest_age_blocks);
+        span.record("withdrawals.limit.count", progress.withdrawal_limit_waiting);
+        if let Some(wait) = self.store.first_limit_wait()? {
+            span.record("withdrawals.limit.note_id", wait.note_id.to_hex());
+            span.record("withdrawals.limit.retry_at", wait.retry_at);
+        }
         Ok(())
     }
 
@@ -517,10 +531,37 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit, each burn in an
-    /// `attester.withdraw` span. A store error stops the cycle. A prepare 400, or a forwarded burn
-    /// no larger than the CCTP fee, holds the burn. Other errors are retried next cycle while later
-    /// burns continue. A 429 stops Circle requests for this cycle.
+    /// A limit waiter blocks later burns until its wait ends. Check the store each time because
+    /// an earlier attempt may have cleared a wait or created a new one.
+    pub(crate) fn limit_allows(&mut self, note_id: NoteId) -> anyhow::Result<bool> {
+        let Some(wait) = self.store.first_limit_wait()? else {
+            return Ok(true);
+        };
+        if wait.note_id != note_id {
+            let block = self.store.burn_creation_block(note_id)?.as_u32();
+            return Ok((block, note_id.to_bytes()) < (wait.creation_block, wait.note_id.to_bytes()));
+        }
+        let now = SystemTime::now();
+        if now
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .as_secs()
+            < u64::try_from(wait.retry_at).context(INVALID)?
+        {
+            return Ok(false);
+        }
+        let policy = self
+            .config
+            .withdrawal_limit()
+            .context("withdrawal limit settings are missing")?;
+        self.store
+            .advance_limit_retry(note_id, policy.retry_at(now)?)?;
+        Ok(true)
+    }
+
+    /// Takes eligible burns through prepare, verify, sign and submit. A limit wait stops later
+    /// burns; other nonfatal failures leave them eligible to proceed. A store error or 429 stops
+    /// further Circle requests in this cycle.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -529,7 +570,7 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             self.admin_checkpoint().await;
-            if *rate_limited {
+            if *rate_limited || !self.limit_allows(burn.note_id())? {
                 break;
             }
             match self.attempt_withdrawal(&burn, rate_limited).await {
@@ -541,6 +582,30 @@ impl Attester {
             }
         }
         Ok(first_error.map_or(Ok(()), Err))
+    }
+
+    /// Makes the burn wait when Circle's reply is a withdrawal-limit rejection, and returns whether
+    /// it was one. `submission` is the saved request the reply answers, when it answers a POST.
+    pub(crate) fn wait_for_withdrawal_limit(
+        &mut self,
+        note_id: NoteId,
+        status: StatusCode,
+        body: &[u8],
+        submission: Option<(&SavedSubmission, SubmissionAttempt)>,
+    ) -> Result<bool, SubmitError> {
+        let Some(policy) = self
+            .config
+            .withdrawal_limit()
+            .filter(|policy| is_withdrawal_limit(status, body, &policy.message_prefix))
+        else {
+            return Ok(false);
+        };
+        let retry_at = policy.retry_at(SystemTime::now())?;
+        Span::current().record_failure(Transient("withdrawal_limit"));
+        warn!(%note_id, retry_at, circle_message = circle_message(body), "waiting for Circle's withdrawal limit");
+        self.store
+            .record_limit_rejection(note_id, retry_at, body, submission)?;
+        Ok(true)
     }
 
     /// Withdraws one burn in its own `attester.withdraw` span, so its failure lands there and never
@@ -557,6 +622,12 @@ impl Attester {
         };
         if error.is_fatal() {
             return Err(error);
+        }
+        if let SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body }) = &error
+        {
+            if self.wait_for_withdrawal_limit(burn.note_id(), *status, body, None)? {
+                return Ok(());
+            }
         }
         let (hold, response, message) = burn_hold(&error);
         // Logged before the hold is written, so a failed write cannot lose the failure.

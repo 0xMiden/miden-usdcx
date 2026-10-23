@@ -20,6 +20,115 @@ struct PendingPost {
     finish: Arc<Notify>,
 }
 
+#[tokio::test]
+async fn a_live_release_waits_for_the_next_snapshot_without_stopping_status_checks() {
+    use super::support::ObservedRequest;
+    use miden_protocol::utils::serde::Serializable;
+    let ledger = Ledger::new().await;
+    {
+        let mut args = ledger.config.lock().unwrap();
+        args.append("--withdrawal-limit-message-prefix", "Limit reached");
+        args.append("--withdrawal-limit-retry-interval", "5m");
+    }
+    let [a, b, c] = ledger.fresh_indices.clone().try_into().unwrap();
+    let (mut attester, _) = ledger
+        .start(vec![reply(201, json!([ledger.response(c, "created")]))])
+        .await;
+    ledger.submit(&mut attester, c).await.unwrap();
+    attester
+        .store
+        .hold_burn(
+            ledger.burns[a].note_id(),
+            BurnHoldReason::PrepareRejected,
+            None,
+        )
+        .unwrap();
+    let revision = attester.store.holds_page(None).unwrap()[0].event_seq;
+    let (inner, requests) = super::submit::ScriptedCircle::new(
+        ledger.path(),
+        vec![
+            reply(200, ledger.prepared_response(b)),
+            reply(400, json!({"message":"Limit reached"})),
+            reply(200, ledger.response(c, "finalized")),
+            reply(400, json!({"message":"Limit reached"})),
+        ],
+    );
+    let started = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    attester.circle = Box::new(PendingPost {
+        inner,
+        started: started.clone(),
+        finish: finish.clone(),
+    });
+    let (sender, receiver) = mpsc::channel(16);
+    attester.attach_admin(receiver, CancellationToken::new());
+    let operator = async {
+        started.notified().await;
+        let (reply, receive) = oneshot::channel();
+        sender
+            .try_send(Command {
+                operation: Operation::Release(
+                    ReleaseSelection {
+                        note_id: ledger.burns[a].note_id(),
+                        expected_event_seq: revision,
+                        circle_not_accepted: false,
+                    },
+                    reply,
+                ),
+                deadline: Instant::now() + Duration::from_secs(60),
+            })
+            .unwrap_or_else(|_| panic!());
+        finish.notify_one();
+        receive.await.unwrap().unwrap()
+    };
+    let (cycle, released) = tokio::join!(attester.run_one_cycle(), operator);
+    assert!(cycle.unwrap().submit.is_ok());
+    assert_eq!(released.burns, 1);
+    assert!(matches!(
+        requests.lock().unwrap().as_slice(),
+        [
+            ObservedRequest::Prepare,
+            ObservedRequest::Submit { .. },
+            ObservedRequest::Lookup { .. }
+        ]
+    ));
+    assert_eq!(
+        attester.store.first_limit_wait().unwrap().unwrap().note_id,
+        ledger.burns[b].note_id()
+    );
+    assert!(attester.store.holds().unwrap().is_empty());
+    attester.run_one_cycle().await.unwrap();
+    assert!(matches!(
+        requests.lock().unwrap().as_slice(),
+        [_, _, _, ObservedRequest::Prepare]
+    ));
+    assert_eq!(
+        attester.store.first_limit_wait().unwrap().unwrap().note_id,
+        ledger.burns[a].note_id()
+    );
+    assert_eq!(
+        attester.store.progress().unwrap().withdrawal_limit_waiting,
+        2
+    );
+    let revision = ledger.stored(&format!(
+        "SELECT MAX(seq) FROM submission_events WHERE note_id = x'{}'",
+        hex::encode(ledger.burns[a].note_id().to_bytes())
+    ));
+    // A note waiting for the withdrawal limit has no hold to release.
+    assert!(matches!(
+        attester.store.release_checked(&ReleaseSelection {
+            note_id: ledger.burns[a].note_id(),
+            expected_event_seq: revision,
+            circle_not_accepted: true
+        }),
+        Err(ReleaseError::NotHeld(note)) if note == ledger.burns[a].note_id()
+    ));
+    assert_eq!(
+        attester.store.progress().unwrap().withdrawal_limit_waiting,
+        2
+    );
+}
+
 impl CircleApi for PendingPost {
     fn check_connection(
         &self,

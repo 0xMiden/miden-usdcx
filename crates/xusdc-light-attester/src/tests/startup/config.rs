@@ -484,3 +484,28 @@ fn redeposit_fee_is_optional_zero_is_explicit_and_amounts_are_bounded() {
     args.append("--xreserve-deposit-max-fee", "500000");
     assert!(args.parse().is_err());
 }
+
+#[test]
+fn redeposit_fee_requires_a_known_xreserve_deployment() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    args.replace(
+        "--cctp-forwarder-address",
+        "0x1111111111111111111111111111111111111111",
+    );
+    // An unknown xReserve still serves CCTP routes without a redeposit cap.
+    args.load();
+    args.append("--xreserve-deposit-max-fee", "500");
+    assert_config_error(
+        &args,
+        "xreserve deposit max fee requires a known xreserve deployment as cctp forwarder address",
+    );
+    for xreserve in [
+        "0x8888888199b2df864bf678259607d6d5ebb4e3ce",
+        "0x008888878f94c0d87defdf0b07f46b93c1934442",
+    ] {
+        args.replace("--cctp-forwarder-address", xreserve);
+        args.load();
+    }
+}

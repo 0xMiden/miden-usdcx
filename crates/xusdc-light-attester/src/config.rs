@@ -18,6 +18,8 @@ use miden_protocol::Word;
 use reqwest::Url;
 use usdcx_telemetry::TelemetryArgs;
 
+use crate::verify::xreserve_deployment;
+
 /// Command-line deployment settings for the attester.
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
@@ -79,7 +81,8 @@ pub struct Cli {
     /// Optional fee cap for an xReserve redeposit to Stacks, Movement or a Cardano enterprise
     /// address, in the smallest USDC unit. Omit it to disable these routes; zero explicitly
     /// permits only a zero inner fee. Canton and Aleo are not supported.
-    /// The total withdrawal fee limit must cover this cap and Circle's outer fee.
+    /// The total withdrawal fee limit must cover this cap and Circle's outer fee. Setting it
+    /// requires --cctp-forwarder-address to be Circle's mainnet or testnet xReserve.
     #[arg(long)]
     xreserve_deposit_max_fee: Option<u64>,
 
@@ -264,6 +267,13 @@ impl TryFrom<Cli> for Config {
         ensure!(
             cctp_forwarding.forwarder != cctp_forwarding.token_messenger,
             "cctp forwarder and token messenger addresses must differ"
+        );
+        // A redeposit runs through the same xReserve, and only its known deployments can be
+        // verified; any other address would fail every redeposit burn after startup.
+        ensure!(
+            xreserve_deposit_max_fee.is_none()
+                || xreserve_deployment(cctp_forwarding.forwarder).is_some(),
+            "xreserve deposit max fee requires a known xreserve deployment as cctp forwarder address"
         );
 
         if cli.request_timeout.is_zero() {

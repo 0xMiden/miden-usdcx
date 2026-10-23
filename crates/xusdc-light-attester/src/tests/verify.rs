@@ -1035,24 +1035,3 @@ fn captured_mainnet_stacks_route_reaches_the_original_fee_refusal() {
         VerifyError::FeeTooHigh
     );
 }
-
-#[test]
-fn redeposit_rejects_an_unknown_configured_deployment() {
-    let directory = tempfile::tempdir().unwrap();
-    create_store_parent(&directory);
-    let mut args = TestArgs::new(&directory);
-    args.append("--xreserve-deposit-max-fee", "500");
-    args.replace(
-        "--cctp-forwarder-address",
-        "0x1111111111111111111111111111111111111111",
-    );
-    let burn = discovered_burn(10_000_000, serial(95), 10003);
-    assert_eq!(
-        UnverifiedPrepareResponse {
-            batches: vec![redeposit_batch(&burn, 100, 500, false)]
-        }
-        .verify(&burn, &args.load())
-        .unwrap_err(),
-        VerifyError::ForwardedField("xreserve deployment")
-    );
-}

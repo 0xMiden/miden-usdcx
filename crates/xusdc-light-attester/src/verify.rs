@@ -436,8 +436,28 @@ fn verify_forwarded_leg(
     Ok(())
 }
 
-/// Accept only the documented xReserve deployments on Arc and Ethereum. These identities come
-/// from Circle's contract-address documentation, not from the quote being authorized.
+/// The USDC on Ethereum, GatewayWallet and GatewayMinter that go with Circle's xReserve at this
+/// address, on Arc and Ethereum alike. Only the documented mainnet and testnet deployments are
+/// known; these identities come from Circle's contract-address documentation, not from the quote
+/// being authorized.
+pub(crate) fn xreserve_deployment(xreserve: Address) -> Option<(Address, Address, Address)> {
+    match xreserve {
+        value if value == address!("8888888199b2df864bf678259607d6d5ebb4e3ce") => Some((
+            address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
+            address!("77777777dcc4d5a8b6e418fd04d8997ef11000ee"),
+            address!("2222222d7164433c4c09b0b0d809a9b52c04c205"),
+        )),
+        value if value == address!("008888878f94c0d87defdf0b07f46b93c1934442") => Some((
+            address!("1c7d4b196cb0c7b01d743fbc6116a902379c7238"),
+            address!("0077777d7eba4688bdef3e311b846f25870a19b9"),
+            address!("0022222abe238cc2c7bb1f21003f0a260052475b"),
+        )),
+        _ => None,
+    }
+}
+
+/// Accept only a redeposit through the configured xReserve, a known deployment on Arc or Ethereum,
+/// that delivers the burn's payout to its remote recipient with the fee cap we asked Circle for.
 fn verify_redeposit_leg(
     intent: &eip712::BurnIntent,
     hook: &HookData,
@@ -446,19 +466,9 @@ fn verify_redeposit_leg(
     max_fee: u64,
 ) -> Result<(), VerifyError> {
     use VerifyError::ForwardedField;
-    let (ethereum_token, wallet, minter) = match forwarder {
-        value if value == address!("8888888199b2df864bf678259607d6d5ebb4e3ce") => (
-            address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
-            address!("77777777dcc4d5a8b6e418fd04d8997ef11000ee"),
-            address!("2222222d7164433c4c09b0b0d809a9b52c04c205"),
-        ),
-        value if value == address!("008888878f94c0d87defdf0b07f46b93c1934442") => (
-            address!("1c7d4b196cb0c7b01d743fbc6116a902379c7238"),
-            address!("0077777d7eba4688bdef3e311b846f25870a19b9"),
-            address!("0022222abe238cc2c7bb1f21003f0a260052475b"),
-        ),
-        _ => return Err(ForwardedField("xreserve deployment")),
-    };
+    // Startup refuses a redeposit cap with an unknown xReserve, so this only guards that check.
+    let (ethereum_token, wallet, minter) =
+        xreserve_deployment(forwarder).ok_or(ForwardedField("xreserve deployment"))?;
     let spec = &intent.spec;
     let token = match spec.destinationDomain {
         0 => ethereum_token,

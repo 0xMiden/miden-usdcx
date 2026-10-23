@@ -25,6 +25,9 @@ use crate::signer::SignerPair;
 use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
 use crate::submission::{SavedSubmission, SubmissionAttempt};
 
+pub(crate) mod export;
+use export::ExportRuntime;
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DiscoverError {
@@ -287,11 +290,54 @@ impl Attester {
     ///
     /// Each cycle is an `attester.cycle` span with no parent, carrying the cycle's progress.
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
+        let export = self.config.export().cloned().map(ExportRuntime::start);
+        self.run_with_runtime(shutdown, export).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn run_with_exporter(
+        &mut self,
+        shutdown: CancellationToken,
+        config: crate::export::ExportConfig,
+        exporter: crate::export::Exporter,
+    ) -> anyhow::Result<()> {
+        self.run_with_runtime(
+            shutdown,
+            Some(ExportRuntime::with_exporter(config, exporter)),
+        )
+        .await
+    }
+
+    async fn run_with_runtime(
+        &mut self,
+        shutdown: CancellationToken,
+        mut export: Option<ExportRuntime>,
+    ) -> anyhow::Result<()> {
+        let result = self.run_cycles(&shutdown, &mut export).await;
+        if let Some(export) = export {
+            export.shutdown().await;
+        }
+        // Closing the inbox answers any command still queued as unavailable.
+        self.admin = None;
+        result
+    }
+
+    async fn run_cycles(
+        &mut self,
+        shutdown: &CancellationToken,
+        export: &mut Option<ExportRuntime>,
+    ) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
+            if let Some(export) = export.as_mut() {
+                export.checkpoint(&mut self.store);
+            }
             self.admin_checkpoint().await;
             let mut rate_limited = false;
             self.traced_cycle(&mut rate_limited).await?;
+            if let Some(export) = export.as_mut() {
+                export.checkpoint(&mut self.store);
+            }
             pause = if rate_limited {
                 pause
                     .saturating_mul(2)
@@ -304,10 +350,15 @@ impl Attester {
             loop {
                 // Shutdown and the next cycle come before a queued command, so admin traffic
                 // cannot postpone either.
+                let export_at = export.as_ref().map_or(wake_at, ExportRuntime::next_tick);
                 let command = tokio::select! {
                     biased;
                     () = shutdown.cancelled() => break,
                     () = tokio::time::sleep_until(wake_at) => break,
+                    () = tokio::time::sleep_until(export_at), if export.is_some() => {
+                        export.as_mut().expect("enabled exporter").checkpoint(&mut self.store);
+                        continue;
+                    }
                     command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
                 };
                 match command {
@@ -317,8 +368,6 @@ impl Attester {
                 }
             }
         }
-        // Closing the inbox answers any command still queued as unavailable.
-        self.admin = None;
         Ok(())
     }
 

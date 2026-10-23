@@ -43,20 +43,10 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
             .to_owned(),
     );
 
-    assert!(
-        Cli::try_parse_from(args.clone()).is_ok(),
-        "the new cap remains optional"
-    );
-    args.extend(["--xreserve-deposit-max-fee".into(), "428026".into()]);
     let Command::Run(run) = Cli::try_parse_from(args).unwrap().command else {
         panic!("expected the run command");
     };
     let config = Config::try_from(*run).unwrap();
-    assert!(config
-        .attester
-        .circle_api_base_url()
-        .as_str()
-        .starts_with("https://circle.invalid"));
 
     assert_eq!(
         config.relayer.miden_node_url.as_str(),

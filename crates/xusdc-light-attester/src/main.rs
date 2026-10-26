@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
     let invocation = Invocation::parse();
     let _telemetry = usdcx_telemetry::init("xusdc-attester", &invocation.telemetry)?;
     if let Some(command) = invocation.command {
-        return run_command(command);
+        return run_command(command).await;
     }
     // Installed before startup so that a signal during it still lets `main` return and the
     // telemetry guard send the buffered spans. Startup then finishes under the same time limit as

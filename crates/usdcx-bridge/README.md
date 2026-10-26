@@ -14,16 +14,19 @@ You do not need to start or configure separate relayer and attester binaries. Al
 belong to `usdcx-bridge run`; their prefixes identify which worker uses them. The process starts
 work only after both workers pass startup checks, and stops both if either exits unexpectedly.
 
-This guide describes this branch. Released images up to v0.17.2 also require
-`--signer-provider aws-kms`, which this branch no longer accepts. Until the next release, build an
-image from this branch and use its name in place of `<BRIDGE_IMAGE>` below:
+Use `ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>` and follow the README at the matching release tag.
+Replace `<BRIDGE_IMAGE>` below with the image you deploy.
+
+To build from source instead, run this command from the repository root and use
+`usdcx-bridge:local` as `<BRIDGE_IMAGE>`:
 
 ```sh
 docker build -f crates/usdcx-bridge/Dockerfile -t usdcx-bridge:local .
 ```
 
-Run that build command from the repository root. Published images use
-`ghcr.io/0xmiden/miden-usdcx-bridge:<TAG>`; follow the README at the matching tag for older releases.
+Images up to v0.17.2 do not include live hold management and require `--signer-provider aws-kms`.
+That flag is no longer accepted by the CLI documented here.
+
 Run one instance per network, with separate testnet and mainnet configuration, keys and durable
 volumes. Never share stores with another bridge or standalone worker.
 
@@ -62,7 +65,8 @@ credentials are available inside the container, not just on the host. Do not put
 the image or command line.
 
 Allow outbound access to Miden RPC, Circle, AWS KMS and the workload credential provider. The
-service listens on no inbound ports and has no HTTP health endpoint.
+service listens on no inbound ports and has no HTTP health endpoint. The optional local admin
+socket is described below.
 
 ## Prepare storage and start
 
@@ -142,7 +146,7 @@ docker run --rm --network none '<BRIDGE_IMAGE>' run --help
 
 ## Configuration flags
 
-This is the complete flag reference for the single `usdcx-bridge run` command in this branch.
+These are the configuration flags for the single `usdcx-bridge run` command.
 Pass all required flags together, as in the Docker command above. **Required** means there is no default.
 Only the relayer polling interval and expiration delta have defaults. The attester signs with keys
 in AWS KMS, so the KMS settings are required. Durations accept values such as `30s` or `500ms`;
@@ -166,6 +170,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--relayer-state-file` | Required | Durable file recording progress through Circle's deposit feed. |
 | `--attester-request-timeout` | Required | Positive timeout for each attester request to Circle. The example uses `30s`; allow for network latency. |
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
+| `--withdrawal-limit-message-prefix` | Optional, paired with the retry interval | Exact, case-sensitive start of Circle's limit error `message`. Confirm it with Circle for the deployment; do not guess a prefix from other errors. |
+| `--withdrawal-limit-retry-interval` | Optional, paired with the message prefix | Positive delay between limit retries, for example `5m`. No default; agree the interval with the operator and Circle. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
 | `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
 | `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
@@ -181,12 +187,40 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
+| `--admin-socket` | Optional; disabled | Unix socket path for live hold management, for example `/data/attester/admin.sock`; see [Hold management while running](#hold-management-while-running). |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
 The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Stop, restart and upgrade
+
+### Automatic retries after Circle's withdrawal limit
+
+With both withdrawal-limit flags set, a matching prepare or submission rejection waits and retries
+automatically. Without them, prepare and submission 400 responses keep the existing manual-hold
+behavior. Existing holds are not converted automatically; inspect them before using hold release.
+An uncertain submission keeps its original signed request until Circle confirms the outcome. A
+verified expired outcome can be prepared again when due. Other submission 400s still require a
+manual hold.
+
+A blocked burn stops new prepares and new POSTs behind it, including uncertain resends. Recovery
+runs before fresh withdrawals; after a wait clears, these two phases are not globally ordered by
+burn age. A large withdrawal can delay smaller ones for much of Circle's
+rolling window; one above the entire limit may never fit and needs investigation. The service does
+not calculate available capacity or let smaller withdrawals pass. Accepted withdrawals continue
+status checks, and live hold management remains available. Waiting for the limit is not a manual
+hold and cannot be bypassed with hold release.
+
+Retry deadlines survive restarts. A store with waiting withdrawals requires both flags on startup;
+changing the interval does not shorten an already saved deadline. Each fresh prepare retry can use
+both KMS signers. Choose the interval and waiting-age alerts for Circle's actual window, which need
+not be the same in every environment.
+
+This feature upgrades the attester store. Older binaries cannot open the upgraded store. Back up
+before upgrading; do not restore an old backup without reconciling any withdrawals sent since it.
+
+### Restarting the container
 
 ```sh
 docker stop "usdcx-bridge-$USDCX_NETWORK"
@@ -250,6 +284,9 @@ Every cycle span also carries the attester's progress, zeros included:
 | `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
 | `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
 | `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
+| `withdrawals.limit.count` | Burns waiting for Circle's withdrawal limit; 0 when none wait. |
+| `withdrawals.limit.note_id` | The earliest waiting burn. Left out when none wait. |
+| `withdrawals.limit.retry_at` | Its next retry time in Unix seconds. Left out when none wait. |
 
 ## Troubleshooting
 
@@ -257,8 +294,46 @@ Use the logs and exit status to check configuration, AWS permissions, outbound a
 ownership. A locked store may mean another instance is running.
 
 Investigate held withdrawals before releasing them; restarting does not release them. Do not
-automatically release holds, delete state or change the anchor to clear an error. Stop the bridge
-before releasing holds; the image's `release-holds --help` describes that command.
+automatically release holds, delete state or change the anchor to clear an error. Use the optional
+local admin socket below, or stop the bridge before using the offline `release-holds` command.
+
+### Hold management while running
+
+Administration is disabled by default. To enable it, add
+`--admin-socket /data/attester/admin.sock` to `usdcx-bridge run`. The attester creates the socket
+readable and writable only by its own user, and removes it on shutdown. Anyone who can open the
+socket can release holds, so keep its directory private to the service's container user. A socket
+file left by a stopped attester is replaced at startup; any other file at that path stops startup.
+
+Run these commands inside the running container, as the service's user:
+
+```sh
+usdcx-bridge admin --socket /data/attester/admin.sock holds
+usdcx-bridge admin --socket /data/attester/admin.sock holds --after <NOTE_ID>
+usdcx-bridge admin --socket /data/attester/admin.sock release-holds --hold <NOTE_ID>:<EVENT_SEQ> --circle-not-accepted
+```
+
+Listing shows the faucet and trusted anchor, each hold's `event_seq`, and `next_after` if there is
+another page. Check that this is the intended faucet, then copy one hold's note ID and event sequence
+into `--hold`. The event sequence prevents an old command from releasing a newer hold on the same
+burn. Release holds one at a time; each request succeeds or fails independently.
+
+Before releasing a held signed withdrawal, check with Circle that it was not accepted, then add
+`--circle-not-accepted`. A missing withdrawal ID is not proof. Burn holds do not need that flag.
+Success means the hold was released, not that the withdrawal was paid. If a command times out or
+says the hold changed, list holds again and check the current state before trying another release.
+A note ID that has no hold is answered `hold_not_found`: listing again will not show it, so check
+the note ID.
+Commands wait for any active signing or Circle request to finish and do not skip the normal retry
+delay. The client never retries a release automatically.
+
+The standalone `xusdc-attester` accepts the same commands and flags. The existing offline
+`release-holds` command still accepts a list or file, but requires the service to be stopped.
+
+For other local clients, each connection carries one JSON request line and one JSON reply line:
+`{"op":"holds","after":"<NOTE_ID>"}` (the cursor is optional) or
+`{"op":"release","note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`. The
+reply is `{"ok":…}` or `{"error":{"code":…,"message":…}}`.
 
 ### Hold maintenance flags
 

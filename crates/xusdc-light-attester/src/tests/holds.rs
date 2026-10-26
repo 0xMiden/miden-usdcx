@@ -227,10 +227,14 @@ async fn only_named_holds_are_released() {
         .collect();
     assert_eq!(ready, [first], "only the named burn is released");
     let unknown = NoteId::try_from_hex(&format!("0x{}", "11".repeat(32))).unwrap();
-    for named in [[withdrawal, first], [withdrawal, unknown]] {
-        assert!(
-            store.release_holds(&named).is_err(),
-            "a named burn that is not held, or unknown, fails the whole release"
+    // A named burn that is not held, or unknown, fails the whole release and is named in the error.
+    for (named, failing) in [
+        ([withdrawal, first], first),
+        ([withdrawal, unknown], unknown),
+    ] {
+        assert_eq!(
+            store.release_holds(&named).unwrap_err().to_string(),
+            format!("note {failing} has no releasable hold")
         );
     }
     assert!(
@@ -362,6 +366,18 @@ async fn holds_are_listed() {
         .iter()
         .map(ToString::to_string)
         .collect();
+    let live = store.holds_page(None).unwrap();
+    let old_snapshot = live
+        .iter()
+        .find(|hold| hold.note_id == unreadable.to_string())
+        .unwrap();
+    assert_eq!(
+        (
+            old_snapshot.http_status,
+            old_snapshot.circle_message.as_deref()
+        ),
+        (None, None)
+    );
     let mut burn_lines = [
         format!("{current}\tburn\tPrepareRejected\t400\tprepare rejected"),
         format!("{unreadable}\tburn\tPrepareRejected\t-\t-"),
@@ -608,6 +624,7 @@ async fn progress_counts_unfinished_work() {
         withdrawals_pending: 0,
         burns_unfinished: 3,
         oldest_unfinished_burn: Some(consumed),
+        withdrawal_limit_waiting: 0,
     };
     assert_eq!(attester.store.progress().unwrap(), nothing_started);
 

@@ -8,21 +8,22 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::OutputNote;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info_span, instrument, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, warn, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::chain::{ChainError, ChainReader};
-use crate::circle::{circle_message, CircleApi, CircleError};
+use crate::circle::{circle_message, is_withdrawal_limit, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{BurnHoldReason, Store, TrustedAnchor, INVALID};
-use crate::submission::SavedSubmission;
+use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
+use crate::submission::{SavedSubmission, SubmissionAttempt};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -57,6 +58,12 @@ pub use crate::verify::VerifyError;
 /// While Circle keeps answering 429, the pause between cycles doubles up to this limit.
 const MAX_RATE_LIMITED_PAUSE: Duration = Duration::from_secs(60);
 
+/// The most admin commands one step of a cycle handles before the cycle moves on.
+///
+/// The listener can keep queueing commands while they are handled, so a bound stops admin traffic
+/// from holding a cycle at one step.
+const ADMIN_COMMANDS_PER_CHECKPOINT: usize = 8;
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CycleReport {
@@ -72,6 +79,13 @@ pub struct Attester {
     signers: SignerPair,
     /// The node's latest committed block, as this cycle's discovery read it.
     node_tip: Option<BlockNumber>,
+    /// Commands from the admin listener, or `None` when the listener is off or has stopped.
+    ///
+    /// Commands run on this task, between the cycle's store transactions, so the store has a
+    /// single user and needs no lock.
+    admin: Option<tokio::sync::mpsc::Receiver<crate::admin::Command>>,
+    /// Once cancelled, admin commands are dropped unanswered.
+    admin_shutdown: CancellationToken,
 }
 
 impl Attester {
@@ -125,6 +139,11 @@ impl Attester {
             trusted_anchor,
         )
         .context("failed to open attester store")?;
+        anyhow::ensure!(
+            config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
+            "store has withdrawals waiting for Circle's withdrawal limit; start with \
+             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
+        );
         let checkpoint = store
             .checkpoint()
             .context("failed to load the attester's checkpoint")?;
@@ -135,6 +154,8 @@ impl Attester {
             circle,
             signers,
             node_tip: None,
+            admin: None,
+            admin_shutdown: CancellationToken::new(),
         };
         match &checkpoint {
             // After a divergence, a restart must not send saved withdrawals while the node still
@@ -151,16 +172,124 @@ impl Attester {
         Ok(attester)
     }
 
+    /// Takes commands from the admin listener until `shutdown` is cancelled.
+    pub(crate) fn attach_admin(
+        &mut self,
+        receiver: tokio::sync::mpsc::Receiver<crate::admin::Command>,
+        shutdown: CancellationToken,
+    ) {
+        self.admin = Some(receiver);
+        self.admin_shutdown = shutdown;
+    }
+
+    /// Handles the admin commands already queued, up to [`ADMIN_COMMANDS_PER_CHECKPOINT`].
+    ///
+    /// A cycle calls this before each block, burn and saved submission, so an operator waits for
+    /// one step of the cycle rather than the whole of it.
+    pub(crate) async fn admin_checkpoint(&mut self) {
+        if self.admin.is_none() || self.admin_shutdown.is_cancelled() {
+            return;
+        }
+        // Ready chain futures must still give the admin listener a chance to enqueue work.
+        tokio::task::yield_now().await;
+        for _ in 0..ADMIN_COMMANDS_PER_CHECKPOINT {
+            if self.admin_shutdown.is_cancelled() {
+                break;
+            }
+            let command = match self.admin.as_mut().expect("enabled inbox").try_recv() {
+                Ok(command) => command,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.admin = None;
+                    break;
+                }
+            };
+            self.handle_admin(command);
+        }
+    }
+
+    /// Runs one admin command against the store and sends the result back to the listener.
+    ///
+    /// Skips the command if its deadline has already passed or the listener dropped its reply
+    /// receiver. A client disconnect alone does not cancel an admitted command.
+    fn handle_admin(&mut self, command: crate::admin::Command) {
+        use crate::admin::{HoldsPage, Operation, Released};
+        if self.admin_shutdown.is_cancelled() || command.abandoned() {
+            return;
+        }
+        let _span = info_span!(parent: None, "attester.admin").entered();
+        // The listener answers a store failure with a fixed message, so its detail is reported
+        // here.
+        let report = |error| {
+            if let ReleaseError::Store(detail) = error {
+                let failure = Failure::new(Actionable("store"), detail);
+                failure.report("admin store operation failed");
+                ReleaseError::Store(failure.error)
+            } else {
+                error
+            }
+        };
+        match command.operation {
+            Operation::List(after, reply) => {
+                let result = self
+                    .store
+                    .holds_page(after)
+                    .map(|mut holds| {
+                        // One hold past the page means another page follows; the last hold
+                        // shown is its cursor.
+                        let next_after = if holds.len() > HOLDS_PAGE {
+                            holds.truncate(HOLDS_PAGE);
+                            holds.last().map(|hold| hold.note_id.clone())
+                        } else {
+                            None
+                        };
+                        HoldsPage {
+                            faucet_account_id: self.config.faucet_account_id().to_hex(),
+                            trusted_anchor_block: self.config.trusted_anchor_block().as_u32(),
+                            trusted_anchor_commitment: self
+                                .config
+                                .trusted_anchor_commitment()
+                                .to_hex(),
+                            holds,
+                            next_after,
+                        }
+                    })
+                    .map_err(ReleaseError::from)
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+            Operation::Release(selection, reply) => {
+                let result = self
+                    .store
+                    .release_checked(&selection)
+                    .map(|(burns, withdrawals)| {
+                        info!(
+                            note_id = %selection.note_id,
+                            event_seq = selection.expected_event_seq,
+                            burns,
+                            withdrawals,
+                            "operator released a hold"
+                        );
+                        Released { burns, withdrawals }
+                    })
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+        }
+    }
+
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
     /// A store failure aborts only this cycle; the next one runs after the usual pause. After
     /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
-    /// without one. A diverged chain ends the run with its error.
+    /// without one. A diverged chain ends the run with its error. Admin commands are handled as
+    /// they arrive during the pause, and between the steps of a cycle.
     ///
     /// Each cycle is an `attester.cycle` span with no parent, carrying the cycle's progress.
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
+            self.admin_checkpoint().await;
             let mut rate_limited = false;
             self.traced_cycle(&mut rate_limited).await?;
             pause = if rate_limited {
@@ -171,11 +300,25 @@ impl Attester {
             } else {
                 self.config.poll_interval()
             };
-            tokio::select! {
-                () = shutdown.cancelled() => {}
-                () = tokio::time::sleep(pause) => {}
+            let wake_at = tokio::time::Instant::now() + pause;
+            loop {
+                // Shutdown and the next cycle come before a queued command, so admin traffic
+                // cannot postpone either.
+                let command = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => break,
+                    () = tokio::time::sleep_until(wake_at) => break,
+                    command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
+                };
+                match command {
+                    Some(command) => self.handle_admin(command),
+                    // The listener has stopped; the attester carries on without it.
+                    None => self.admin = None,
+                }
             }
         }
+        // Closing the inbox answers any command still queued as unavailable.
+        self.admin = None;
         Ok(())
     }
 
@@ -195,6 +338,9 @@ impl Attester {
             withdrawals.pending.count = Empty,
             burns.unfinished.count = Empty,
             burns.unfinished.oldest_age_blocks = Empty,
+            withdrawals.limit.count = Empty,
+            withdrawals.limit.note_id = Empty,
+            withdrawals.limit.retry_at = Empty,
         )
     )]
     async fn traced_cycle(&mut self, rate_limited: &mut bool) -> anyhow::Result<()> {
@@ -277,6 +423,11 @@ impl Attester {
         span.record("withdrawals.pending.count", progress.withdrawals_pending);
         span.record("burns.unfinished.count", progress.burns_unfinished);
         span.record("burns.unfinished.oldest_age_blocks", oldest_age_blocks);
+        span.record("withdrawals.limit.count", progress.withdrawal_limit_waiting);
+        if let Some(wait) = self.store.first_limit_wait()? {
+            span.record("withdrawals.limit.note_id", wait.note_id.to_hex());
+            span.record("withdrawals.limit.retry_at", wait.retry_at);
+        }
         Ok(())
     }
 
@@ -329,6 +480,7 @@ impl Attester {
         // Every available block is authenticated. Withdrawal readiness separately requires
         // verified depth.
         for block_num in block_range(last_verified_header.block_num().child(), tip) {
+            self.admin_checkpoint().await;
             let block = self
                 .fetch_and_verify_block(block_num, &last_verified_header)
                 .await?;
@@ -379,10 +531,39 @@ impl Attester {
         )
     }
 
-    /// Takes each eligible burn through prepare, verify, sign and submit, each burn in an
-    /// `attester.withdraw` span. A store error stops the cycle. A prepare 400, or a forwarded or
-    /// redeposited burn no larger than its second leg's fee cap, holds the burn. Other errors are
-    /// retried next cycle while later burns continue. A 429 stops Circle requests for this cycle.
+    /// A limit waiter blocks later burns until its wait ends. Check the store each time because
+    /// an earlier attempt may have cleared a wait or created a new one.
+    pub(crate) fn limit_allows(&mut self, note_id: NoteId) -> anyhow::Result<bool> {
+        let Some(wait) = self.store.first_limit_wait()? else {
+            return Ok(true);
+        };
+        if wait.note_id != note_id {
+            let block = self.store.burn_creation_block(note_id)?.as_u32();
+            return Ok((block, note_id.to_bytes()) < (wait.creation_block, wait.note_id.to_bytes()));
+        }
+        let now = SystemTime::now();
+        if now
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .as_secs()
+            < u64::try_from(wait.retry_at).context(INVALID)?
+        {
+            return Ok(false);
+        }
+        let policy = self
+            .config
+            .withdrawal_limit()
+            .context("withdrawal limit settings are missing")?;
+        self.store
+            .advance_limit_retry(note_id, policy.retry_at(now)?)?;
+        Ok(true)
+    }
+
+    /// Takes eligible burns through prepare, verify, sign and submit. A limit wait stops later
+    /// burns; other nonfatal failures leave them eligible to proceed. A store error or 429 stops
+    /// further Circle requests in this cycle.
+    /// Other prepare 400s hold the burn. A forwarded or redeposited burn is also held if its
+    /// amount is no larger than the fee cap for the second leg.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -390,7 +571,8 @@ impl Attester {
     ) -> Result<Result<(), SubmitError>, SubmitError> {
         let mut first_error = None;
         for burn in burns {
-            if *rate_limited {
+            self.admin_checkpoint().await;
+            if *rate_limited || !self.limit_allows(burn.note_id())? {
                 break;
             }
             match self.attempt_withdrawal(&burn, rate_limited).await {
@@ -402,6 +584,30 @@ impl Attester {
             }
         }
         Ok(first_error.map_or(Ok(()), Err))
+    }
+
+    /// Makes the burn wait when Circle's reply is a withdrawal-limit rejection, and returns whether
+    /// it was one. `submission` is the saved request the reply answers, when it answers a POST.
+    pub(crate) fn wait_for_withdrawal_limit(
+        &mut self,
+        note_id: NoteId,
+        status: StatusCode,
+        body: &[u8],
+        submission: Option<(&SavedSubmission, SubmissionAttempt)>,
+    ) -> Result<bool, SubmitError> {
+        let Some(policy) = self
+            .config
+            .withdrawal_limit()
+            .filter(|policy| is_withdrawal_limit(status, body, &policy.message_prefix))
+        else {
+            return Ok(false);
+        };
+        let retry_at = policy.retry_at(SystemTime::now())?;
+        Span::current().record_failure(Transient("withdrawal_limit"));
+        warn!(%note_id, retry_at, circle_message = circle_message(body), "waiting for Circle's withdrawal limit");
+        self.store
+            .record_limit_rejection(note_id, retry_at, body, submission)?;
+        Ok(true)
     }
 
     /// Withdraws one burn in its own `attester.withdraw` span, so its failure lands there and never
@@ -418,6 +624,12 @@ impl Attester {
         };
         if error.is_fatal() {
             return Err(error);
+        }
+        if let SubmitError::Prepare(CircleError::UnexpectedPrepareStatus { status, body }) = &error
+        {
+            if self.wait_for_withdrawal_limit(burn.note_id(), *status, body, None)? {
+                return Ok(());
+            }
         }
         let (hold, response, message) = burn_hold(&error);
         // Logged before the hold is written, so a failed write cannot lose the failure.

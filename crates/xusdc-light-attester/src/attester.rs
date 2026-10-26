@@ -12,7 +12,7 @@ use miden_protocol::Word;
 use reqwest::StatusCode;
 use tokio_util::sync::CancellationToken;
 use tracing::field::Empty;
-use tracing::{error, info_span, instrument, Instrument as _, Span};
+use tracing::{error, info, info_span, instrument, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, Classify as _, Failure, FailureClass, FailureSpanExt as _};
 
@@ -21,7 +21,7 @@ use crate::chain::{ChainError, ChainReader};
 use crate::circle::{circle_message, CircleApi, CircleError};
 use crate::config::Config;
 use crate::signer::SignerPair;
-use crate::store::{BurnHoldReason, Store, TrustedAnchor, INVALID};
+use crate::store::{BurnHoldReason, ReleaseError, Store, TrustedAnchor, HOLDS_PAGE, INVALID};
 use crate::submission::SavedSubmission;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +57,12 @@ pub use crate::verify::VerifyError;
 /// While Circle keeps answering 429, the pause between cycles doubles up to this limit.
 const MAX_RATE_LIMITED_PAUSE: Duration = Duration::from_secs(60);
 
+/// The most admin commands one step of a cycle handles before the cycle moves on.
+///
+/// The listener can keep queueing commands while they are handled, so a bound stops admin traffic
+/// from holding a cycle at one step.
+const ADMIN_COMMANDS_PER_CHECKPOINT: usize = 8;
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CycleReport {
@@ -72,6 +78,13 @@ pub struct Attester {
     signers: SignerPair,
     /// The node's latest committed block, as this cycle's discovery read it.
     node_tip: Option<BlockNumber>,
+    /// Commands from the admin listener, or `None` when the listener is off or has stopped.
+    ///
+    /// Commands run on this task, between the cycle's store transactions, so the store has a
+    /// single user and needs no lock.
+    admin: Option<tokio::sync::mpsc::Receiver<crate::admin::Command>>,
+    /// Once cancelled, admin commands are dropped unanswered.
+    admin_shutdown: CancellationToken,
 }
 
 impl Attester {
@@ -135,6 +148,8 @@ impl Attester {
             circle,
             signers,
             node_tip: None,
+            admin: None,
+            admin_shutdown: CancellationToken::new(),
         };
         match &checkpoint {
             // After a divergence, a restart must not send saved withdrawals while the node still
@@ -151,16 +166,124 @@ impl Attester {
         Ok(attester)
     }
 
+    /// Takes commands from the admin listener until `shutdown` is cancelled.
+    pub(crate) fn attach_admin(
+        &mut self,
+        receiver: tokio::sync::mpsc::Receiver<crate::admin::Command>,
+        shutdown: CancellationToken,
+    ) {
+        self.admin = Some(receiver);
+        self.admin_shutdown = shutdown;
+    }
+
+    /// Handles the admin commands already queued, up to [`ADMIN_COMMANDS_PER_CHECKPOINT`].
+    ///
+    /// A cycle calls this before each block, burn and saved submission, so an operator waits for
+    /// one step of the cycle rather than the whole of it.
+    pub(crate) async fn admin_checkpoint(&mut self) {
+        if self.admin.is_none() || self.admin_shutdown.is_cancelled() {
+            return;
+        }
+        // Ready chain futures must still give the admin listener a chance to enqueue work.
+        tokio::task::yield_now().await;
+        for _ in 0..ADMIN_COMMANDS_PER_CHECKPOINT {
+            if self.admin_shutdown.is_cancelled() {
+                break;
+            }
+            let command = match self.admin.as_mut().expect("enabled inbox").try_recv() {
+                Ok(command) => command,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.admin = None;
+                    break;
+                }
+            };
+            self.handle_admin(command);
+        }
+    }
+
+    /// Runs one admin command against the store and sends the result back to the listener.
+    ///
+    /// Skips the command if its deadline has already passed or the listener dropped its reply
+    /// receiver. A client disconnect alone does not cancel an admitted command.
+    fn handle_admin(&mut self, command: crate::admin::Command) {
+        use crate::admin::{HoldsPage, Operation, Released};
+        if self.admin_shutdown.is_cancelled() || command.abandoned() {
+            return;
+        }
+        let _span = info_span!(parent: None, "attester.admin").entered();
+        // The listener answers a store failure with a fixed message, so its detail is reported
+        // here.
+        let report = |error| {
+            if let ReleaseError::Store(detail) = error {
+                let failure = Failure::new(Actionable("store"), detail);
+                failure.report("admin store operation failed");
+                ReleaseError::Store(failure.error)
+            } else {
+                error
+            }
+        };
+        match command.operation {
+            Operation::List(after, reply) => {
+                let result = self
+                    .store
+                    .holds_page(after)
+                    .map(|mut holds| {
+                        // One hold past the page means another page follows; the last hold
+                        // shown is its cursor.
+                        let next_after = if holds.len() > HOLDS_PAGE {
+                            holds.truncate(HOLDS_PAGE);
+                            holds.last().map(|hold| hold.note_id.clone())
+                        } else {
+                            None
+                        };
+                        HoldsPage {
+                            faucet_account_id: self.config.faucet_account_id().to_hex(),
+                            trusted_anchor_block: self.config.trusted_anchor_block().as_u32(),
+                            trusted_anchor_commitment: self
+                                .config
+                                .trusted_anchor_commitment()
+                                .to_hex(),
+                            holds,
+                            next_after,
+                        }
+                    })
+                    .map_err(ReleaseError::from)
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+            Operation::Release(selection, reply) => {
+                let result = self
+                    .store
+                    .release_checked(&selection)
+                    .map(|(burns, withdrawals)| {
+                        info!(
+                            note_id = %selection.note_id,
+                            event_seq = selection.expected_event_seq,
+                            burns,
+                            withdrawals,
+                            "operator released a hold"
+                        );
+                        Released { burns, withdrawals }
+                    })
+                    .map_err(report);
+                let _ = reply.send(result);
+            }
+        }
+    }
+
     /// Drives cycles until `shutdown` is cancelled. A cancellation cuts the sleep between cycles
     /// short but never interrupts a running cycle, so the store is always left at a cycle boundary.
     /// A store failure aborts only this cycle; the next one runs after the usual pause. After
     /// Circle answers 429, that pause doubles each cycle, up to a minute, until a cycle passes
-    /// without one. A diverged chain ends the run with its error.
+    /// without one. A diverged chain ends the run with its error. Admin commands are handled as
+    /// they arrive during the pause, and between the steps of a cycle.
     ///
     /// Each cycle is an `attester.cycle` span with no parent, carrying the cycle's progress.
     pub async fn run(&mut self, shutdown: CancellationToken) -> anyhow::Result<()> {
         let mut pause = self.config.poll_interval();
         while !shutdown.is_cancelled() {
+            self.admin_checkpoint().await;
             let mut rate_limited = false;
             self.traced_cycle(&mut rate_limited).await?;
             pause = if rate_limited {
@@ -171,11 +294,25 @@ impl Attester {
             } else {
                 self.config.poll_interval()
             };
-            tokio::select! {
-                () = shutdown.cancelled() => {}
-                () = tokio::time::sleep(pause) => {}
+            let wake_at = tokio::time::Instant::now() + pause;
+            loop {
+                // Shutdown and the next cycle come before a queued command, so admin traffic
+                // cannot postpone either.
+                let command = tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => break,
+                    () = tokio::time::sleep_until(wake_at) => break,
+                    command = async { self.admin.as_mut().expect("enabled inbox").recv().await }, if self.admin.is_some() => command,
+                };
+                match command {
+                    Some(command) => self.handle_admin(command),
+                    // The listener has stopped; the attester carries on without it.
+                    None => self.admin = None,
+                }
             }
         }
+        // Closing the inbox answers any command still queued as unavailable.
+        self.admin = None;
         Ok(())
     }
 
@@ -329,6 +466,7 @@ impl Attester {
         // Every available block is authenticated. Withdrawal readiness separately requires
         // verified depth.
         for block_num in block_range(last_verified_header.block_num().child(), tip) {
+            self.admin_checkpoint().await;
             let block = self
                 .fetch_and_verify_block(block_num, &last_verified_header)
                 .await?;
@@ -390,6 +528,7 @@ impl Attester {
     ) -> Result<Result<(), SubmitError>, SubmitError> {
         let mut first_error = None;
         for burn in burns {
+            self.admin_checkpoint().await;
             if *rate_limited {
                 break;
             }

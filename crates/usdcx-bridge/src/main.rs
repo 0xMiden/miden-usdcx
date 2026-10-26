@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
     let _telemetry = usdcx_telemetry::init("usdcx-bridge", &cli.telemetry)?;
     let run = match cli.command {
         config::Command::Run(run) => *run,
-        config::Command::Attester(command) => return run_command(command),
+        config::Command::Attester(command) => return run_command(command).await,
     };
     let config = config::Config::try_from(run)?;
     supervisor::run(config).await

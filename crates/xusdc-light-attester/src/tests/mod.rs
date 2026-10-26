@@ -1,6 +1,7 @@
 mod admin;
 mod discovery;
 mod holds;
+mod limit_retry;
 mod poll;
 mod prepare;
 mod service_map;

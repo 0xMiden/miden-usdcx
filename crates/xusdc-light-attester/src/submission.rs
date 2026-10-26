@@ -39,8 +39,8 @@ impl SubmitError {
     }
 }
 
-/// Circle refusing to prepare a burn holds it, so that needs an operator like every failure of our
-/// own; Circle's other failures keep the class [`CircleError`] gives them.
+/// Withdrawal-limit rejections are handled before this classification. Other prepare 400 replies
+/// need an operator; Circle's other failures keep the class [`CircleError`] gives them.
 impl Classified for SubmitError {
     fn failure(&self) -> FailureClass {
         match self {
@@ -82,6 +82,15 @@ pub(crate) enum SubmissionStatus {
 pub(crate) enum HoldReason {
     #[strum(serialize = "http_rejected")]
     HttpRejected,
+}
+
+/// Whether a POST is a signed request's first send or a resend after an unknown outcome.
+///
+/// Only a rejected first send proves Circle never accepted the request.
+#[derive(Clone, Copy)]
+pub(crate) enum SubmissionAttempt {
+    First,
+    Recovery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +142,8 @@ impl Attester {
                 "replaced an earlier submission"
             );
         }
-        self.advance_submission(saved, rate_limited).await
+        self.advance_submission(saved, rate_limited, SubmissionAttempt::First)
+            .await
     }
 
     /// Try each saved request once, each in an `attester.withdraw` span. POST if Circle's ID is
@@ -146,24 +156,46 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         for saved in submissions {
             self.admin_checkpoint().await;
+            if *rate_limited {
+                break;
+            }
+            if saved.withdrawal_id.is_none() && !self.limit_allows(saved.note_id)? {
+                continue;
+            }
             let span = info_span!("attester.withdraw", note.id = %saved.note_id);
-            self.advance_submission(saved, rate_limited)
+            self.advance_submission(saved, rate_limited, SubmissionAttempt::Recovery)
                 .instrument(span)
                 .await?;
         }
         Ok(())
     }
 
-    pub(crate) async fn advance_submission(
+    /// Sends the saved request, or checks it with GET once Circle's ID is known, and saves the
+    /// answer. `attempt` says whether a POST is the request's first send.
+    async fn advance_submission(
         &mut self,
         mut saved: SavedSubmission,
         rate_limited: &mut bool,
+        attempt: SubmissionAttempt,
     ) -> Result<(), SubmitError> {
         // After a 429 the rest of the cycle leaves Circle alone; the row stays queued.
         if *rate_limited {
             return Ok(());
         }
         let mut response = self.send_saved_request(&mut saved, rate_limited).await;
+        if saved.withdrawal_id.is_none() {
+            if let Ok(reply) = &response {
+                // A later rejection does not tell us whether the first request was accepted.
+                if self.wait_for_withdrawal_limit(
+                    saved.note_id,
+                    reply.status,
+                    &reply.body,
+                    Some((&saved, attempt)),
+                )? {
+                    return Ok(());
+                }
+            }
+        }
         if saved.withdrawal_id.is_none()
             && response
                 .as_ref()

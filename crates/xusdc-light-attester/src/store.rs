@@ -16,13 +16,15 @@ use miden_protocol::transaction::PublicOutputNote;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
-use rusqlite::{params, OpenFlags, Params, Transaction};
+use rusqlite::{params, OpenFlags, OptionalExtension, Params, Transaction};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
-use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
+use crate::submission::{
+    is_well_formed_id, HoldReason, SavedSubmission, SubmissionAttempt, SubmissionStatus,
+};
 use crate::verify::validate_saved_request;
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
@@ -119,6 +121,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_scan_from_the_anchor.sql"),
     include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
+    include_str!("../migrations/0004_withdrawal_limit_retry.sql"),
 ];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
@@ -146,6 +149,9 @@ enum EventKind {
     /// signed again.
     #[strum(serialize = "OPERATOR_RELEASE")]
     OperatorRelease,
+    /// Circle rejected this attempt because its withdrawal limit was reached.
+    #[strum(serialize = "WITHDRAWAL_LIMIT")]
+    WithdrawalLimit,
 }
 
 impl EventKind {
@@ -182,6 +188,16 @@ pub(crate) struct Progress {
     pub(crate) burns_unfinished: u64,
     /// The block that consumed the oldest unfinished burn.
     pub(crate) oldest_unfinished_burn: Option<BlockNumber>,
+    /// Burns waiting for Circle's withdrawal limit.
+    pub(crate) withdrawal_limit_waiting: u64,
+}
+
+/// A burn waiting for Circle's withdrawal limit.
+pub(crate) struct LimitWait {
+    pub(crate) note_id: NoteId,
+    pub(crate) creation_block: u32,
+    /// When the burn may be tried again, in Unix seconds.
+    pub(crate) retry_at: i64,
 }
 
 pub(crate) struct Store {
@@ -587,7 +603,7 @@ impl Store {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let updated = transaction
             .execute(
-                "UPDATE burns SET hold_reason = ?2
+                "UPDATE burns SET hold_reason = ?2, withdrawal_limit_retry_at = NULL
                  WHERE note_id = ?1",
                 params![note_id.to_bytes(), reason.code()],
             )
@@ -664,6 +680,148 @@ impl Store {
                 circle_status.as_deref(),
             )?;
         }
+        if matches!(
+            outcome.status,
+            SubmissionStatus::Submitted
+                | SubmissionStatus::Finalized
+                | SubmissionStatus::Failed
+                | SubmissionStatus::Held
+        ) {
+            transaction
+                .execute(
+                    "UPDATE burns SET withdrawal_limit_retry_at = NULL WHERE note_id = ?1",
+                    [outcome.note_id.to_bytes()],
+                )
+                .map_err(classify_error)?;
+        }
+        transaction.commit().map_err(classify_error)
+    }
+
+    /// The block that created the burn `note_id`.
+    pub(crate) fn burn_creation_block(&self, note_id: NoteId) -> anyhow::Result<BlockNumber> {
+        let block = self
+            .connection
+            .query_row(
+                "SELECT creation_block FROM burns WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)?;
+        decode_block_number(block)
+    }
+
+    /// The waiting burn every later burn queues behind: the earliest by creation block, then note
+    /// ID, the order burns are withdrawn in.
+    pub(crate) fn first_limit_wait(&self) -> anyhow::Result<Option<LimitWait>> {
+        let wait = self
+            .connection
+            .query_row(
+                "SELECT note_id, creation_block, withdrawal_limit_retry_at FROM burns
+                 WHERE withdrawal_limit_retry_at IS NOT NULL
+                 ORDER BY creation_block, note_id LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(classify_error)?;
+        wait.map(|(note_id, creation_block, retry_at)| {
+            Ok(LimitWait {
+                note_id: decode_canonical(&note_id)?,
+                creation_block,
+                retry_at,
+            })
+        })
+        .transpose()
+    }
+
+    /// Moves a waiting burn's next retry to `retry_at`.
+    ///
+    /// The attester saves this before a due attempt, so a restart cannot retry the burn again at
+    /// once.
+    pub(crate) fn advance_limit_retry(
+        &mut self,
+        note_id: NoteId,
+        retry_at: i64,
+    ) -> anyhow::Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE burns SET withdrawal_limit_retry_at = ?2
+                WHERE note_id = ?1 AND withdrawal_limit_retry_at IS NOT NULL",
+                params![note_id.to_bytes(), retry_at],
+            )
+            .map_err(classify_error)?;
+        ensure!(changed == 1, CONFLICT);
+        Ok(())
+    }
+
+    /// Records Circle's withdrawal-limit rejection: the burn waits until `retry_at`, and its history
+    /// keeps the reply.
+    ///
+    /// A rejected first send deletes its saved request, which Circle never accepted, so the burn is
+    /// prepared and signed again. A rejected resend keeps its request, since an earlier send may
+    /// have been accepted.
+    pub(crate) fn record_limit_rejection(
+        &mut self,
+        note_id: NoteId,
+        retry_at: i64,
+        response: &[u8],
+        submission: Option<(&SavedSubmission, SubmissionAttempt)>,
+    ) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE burns SET withdrawal_limit_retry_at = ?2 WHERE note_id = ?1
+                AND consumption_block IS NOT NULL AND hold_reason IS NULL",
+                params![note_id.to_bytes(), retry_at],
+            )
+            .map_err(classify_error)?;
+        ensure!(changed == 1, CONFLICT);
+        if let Some((saved, attempt)) = submission {
+            ensure!(saved.note_id == note_id, CONFLICT);
+            let changed = match attempt {
+                // Only a first attempt's rejection proves this authorization was never accepted.
+                SubmissionAttempt::First => transaction.execute(
+                    "DELETE FROM submissions
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
+                    params![
+                        note_id.to_bytes(),
+                        SubmissionStatus::Submitting.as_ref(),
+                        saved.endpoint.as_str(),
+                        saved.body,
+                        saved.transfer_spec_hash.as_slice()
+                    ],
+                ),
+                SubmissionAttempt::Recovery => transaction.execute(
+                    "UPDATE submissions SET last_http_status = 400,
+                    last_response = ?6, last_error = 'Circle withdrawal limit'
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
+                    params![
+                        note_id.to_bytes(),
+                        SubmissionStatus::Submitting.as_ref(),
+                        saved.endpoint.as_str(),
+                        saved.body,
+                        saved.transfer_spec_hash.as_slice(),
+                        response
+                    ],
+                ),
+            }
+            .map_err(classify_error)?;
+            ensure!(changed == 1, CONFLICT);
+        }
+        transaction
+            .execute(
+                "INSERT INTO submission_events (note_id, recorded_at, kind, http_status, response)
+                VALUES (?1, unixepoch(), ?2, 400, ?3)",
+                params![
+                    note_id.to_bytes(),
+                    EventKind::WithdrawalLimit.as_ref(),
+                    response
+                ],
+            )
+            .map_err(classify_error)?;
         transaction.commit().map_err(classify_error)
     }
 
@@ -717,7 +875,8 @@ impl Store {
                     (SELECT COUNT(*) FROM submissions WHERE status = ?2),
                     (SELECT COUNT(*) FROM submissions WHERE status IN (?3, ?4)),
                     COUNT(*),
-                    MIN(burns.consumption_block)
+                    MIN(burns.consumption_block),
+                    (SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL)
                  FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
                  WHERE burns.consumption_block IS NOT NULL AND burns.hold_reason IS NULL
                     AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?5))",
@@ -738,6 +897,7 @@ impl Store {
                         oldest_unfinished_burn: row
                             .get::<_, Option<u32>>(5)?
                             .map(BlockNumber::from),
+                        withdrawal_limit_waiting: row.get(6)?,
                     })
                 },
             )
@@ -942,6 +1102,21 @@ fn validate_store(
 ) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
+    ensure!(
+        !exists(
+            connection,
+            "SELECT EXISTS (SELECT 1 FROM burns LEFT JOIN submissions USING (note_id)
+            WHERE withdrawal_limit_retry_at IS NOT NULL AND (
+                consumption_block IS NULL OR burns.hold_reason IS NOT NULL
+                OR (submissions.status IS NOT NULL AND submissions.status NOT IN (?1, ?2))))",
+            params![
+                SubmissionStatus::Submitting.as_ref(),
+                SubmissionStatus::Expired.as_ref()
+            ],
+        )?,
+        INVALID
+    );
+
     // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
     let mut statement = connection
         .prepare("SELECT withdrawal_id FROM submissions WHERE withdrawal_id IS NOT NULL")
@@ -1011,7 +1186,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
             FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason, withdrawal_limit_retry_at
             FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",

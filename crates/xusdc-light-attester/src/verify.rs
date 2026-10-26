@@ -13,7 +13,7 @@ use usdcx_telemetry::{Classified, FailureClass};
 
 use crate::burn::DiscoveredBurn;
 use crate::circle::{BurnIntent, StructuredHookData, UnverifiedPrepareResponse};
-use crate::config::{CctpForwarding, Config};
+use crate::config::{CctpForwarding, Config, FIRST_REMOTE_DOMAIN};
 use crate::signer::{SignerError, SignerPair};
 use crate::submission::{SavedSubmission, SubmissionStatus, SubmitError};
 
@@ -80,18 +80,34 @@ pub(crate) mod cctp {
     }
 }
 
+// Circle's xReserve redeposit entry point, called on the intermediate reserve chain.
+pub(crate) mod redeposit {
+    alloy_sol_types::sol! {
+        function depositToRemote(
+            uint256 value,
+            uint32 remoteDomain,
+            bytes32 remoteRecipient,
+            address localToken,
+            uint256 maxFee,
+            bytes hookData
+        );
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum VerifyError {
     #[error("Circle returned a different number of batches or intents")]
     WrongCount,
+    #[error("the withdrawal destination is unsupported or its redeposit cap is not configured")]
+    UnsupportedDestination,
     #[error("Circle returned an unknown salt")]
     UnknownSalt,
     #[error("Circle changed the burn's {0}")]
     WrongBurnField(&'static str),
     #[error("Circle's payout and fee do not account for the burn")]
     BadAmount,
-    #[error("Circle's fee plus the CCTP fee cap exceeds the configured ceiling")]
+    #[error("Circle's fee plus the secondary-leg fee cap exceeds the configured ceiling")]
     FeeTooHigh,
     #[error("Circle's source signer and depositor differ")]
     WrongSigner,
@@ -103,9 +119,9 @@ pub enum VerifyError {
     CallerRestricted,
     #[error("Circle's forwarded route has a wrong {0}")]
     ForwardedField(&'static str),
-    #[error("the burn is too small to pay the configured CCTP fee")]
+    #[error("the burn is too small to pay the configured secondary-leg fee")]
     TooSmallToForward,
-    #[error("Circle's fee leaves too little payout to pay the configured CCTP fee")]
+    #[error("Circle's fee leaves too little payout to pay the configured secondary-leg fee")]
     PayoutTooSmallToForward,
     #[error("Circle's signing hash differs from the checked fields")]
     DigestMismatch,
@@ -115,11 +131,12 @@ pub enum VerifyError {
     MalformedField(&'static str),
 }
 
-/// A fee or payout that does not fit the configuration needs an operator; anything else means
-/// Circle asked for a signature over something other than the burn.
+/// A destination, fee or payout that does not fit the configuration needs an operator; anything
+/// else means Circle asked for a signature over something other than the burn.
 impl Classified for VerifyError {
     fn failure(&self) -> FailureClass {
         match self {
+            Self::UnsupportedDestination => Actionable("unsupported_destination"),
             Self::FeeTooHigh => Actionable("fee_too_high"),
             Self::TooSmallToForward => Actionable("too_small_to_forward"),
             Self::PayoutTooSmallToForward => Actionable("payout_too_small_to_forward"),
@@ -254,14 +271,27 @@ impl UnverifiedPrepareResponse {
         if B256::from(burn.note_id().as_bytes()) != spec.salt {
             return Err(VerifyError::UnknownSalt);
         }
-        // Circle serves some destinations through xReserve on Arc plus a CCTP transfer. On that
-        // route the burn's destination sits in the CCTP calldata and this leg pays the forwarder.
+        // Remote xReserve destinations need their own route verification; a direct or CCTP-looking
+        // reply must not bypass that policy. Configuration admits only supported empty-hook modes.
+        let destination = burn.items().dest_domain.as_u32();
+        let forwarding_fee = config
+            .forwarding_max_fee(destination)
+            .ok_or(VerifyError::UnsupportedDestination)?;
         let forwarded =
             hook.forwarding_contract != Address::ZERO || !hook.forwarding_calldata.is_empty();
-        let cctp_fee = if forwarded {
-            let forwarding = config.cctp_forwarding();
-            verify_forwarded_leg(&intent, &hook, burn, forwarding)?;
-            U256::from(forwarding.max_fee)
+        let redeposit = destination >= FIRST_REMOTE_DOMAIN;
+        let secondary_fee = if redeposit {
+            verify_redeposit_leg(
+                &intent,
+                &hook,
+                burn,
+                config.cctp_forwarding().forwarder,
+                forwarding_fee,
+            )?;
+            U256::from(forwarding_fee)
+        } else if forwarded {
+            verify_forwarded_leg(&intent, &hook, burn, config.cctp_forwarding())?;
+            U256::from(forwarding_fee)
         } else {
             if spec.destinationDomain != burn.items().dest_domain.as_u32() {
                 return Err(VerifyError::WrongBurnField("destinationDomain"));
@@ -297,8 +327,8 @@ impl UnverifiedPrepareResponse {
         // plus a share of the burn.
         let fee_ceiling = U256::from(config.max_withdrawal_fee().as_u64())
             + burned_amount * U256::from(config.max_withdrawal_fee_bps()) / U256::from(10_000u64);
-        // The ceiling covers both legs: Circle's fee on this one plus the CCTP fee taken on Arc.
-        if intent.maxFee.saturating_add(cctp_fee) > fee_ceiling {
+        // Count Circle's outer fee and the authorized secondary fee exactly once.
+        if intent.maxFee.saturating_add(secondary_fee) > fee_ceiling {
             return Err(VerifyError::FeeTooHigh);
         }
         if spec.sourceSigner != spec.sourceDepositor {
@@ -324,10 +354,10 @@ impl UnverifiedPrepareResponse {
         if digest != parse::<B256>(&batch.message_hash_to_sign, "messageHashToSign")? {
             return Err(VerifyError::DigestMismatch);
         }
-        // The CCTP transfer fails if its fee is at least the payout.
-        if forwarded && cctp_fee >= spec.value {
+        // The secondary transfer fails if its fee is at least the payout.
+        if (forwarded || redeposit) && secondary_fee >= spec.value {
             // Even with no Circle fee the payout would be the whole burn, which is still too little.
-            if cctp_fee >= burned_amount {
+            if secondary_fee >= burned_amount {
                 return Err(VerifyError::TooSmallToForward);
             }
             // Retry this burn because a later Circle fee may leave enough payout.
@@ -402,6 +432,98 @@ fn verify_forwarded_leg(
     }
     if call.hookData.as_ref() != CCTP_FORWARD_MARKER {
         return Err(ForwardedField("calldata hookData"));
+    }
+    Ok(())
+}
+
+/// The USDC on Ethereum, GatewayWallet and GatewayMinter that go with Circle's xReserve at this
+/// address, on Arc and Ethereum alike. Only the documented mainnet and testnet deployments are
+/// known; these identities come from Circle's contract-address documentation, not from the quote
+/// being authorized.
+pub(crate) fn xreserve_deployment(xreserve: Address) -> Option<(Address, Address, Address)> {
+    match xreserve {
+        value if value == address!("8888888199b2df864bf678259607d6d5ebb4e3ce") => Some((
+            address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
+            address!("77777777dcc4d5a8b6e418fd04d8997ef11000ee"),
+            address!("2222222d7164433c4c09b0b0d809a9b52c04c205"),
+        )),
+        value if value == address!("008888878f94c0d87defdf0b07f46b93c1934442") => Some((
+            address!("1c7d4b196cb0c7b01d743fbc6116a902379c7238"),
+            address!("0077777d7eba4688bdef3e311b846f25870a19b9"),
+            address!("0022222abe238cc2c7bb1f21003f0a260052475b"),
+        )),
+        _ => None,
+    }
+}
+
+/// Accept only a redeposit through the configured xReserve, a known deployment on Arc or Ethereum,
+/// that delivers the burn's payout to its remote recipient with the fee cap we asked Circle for.
+fn verify_redeposit_leg(
+    intent: &eip712::BurnIntent,
+    hook: &HookData,
+    burn: &DiscoveredBurn,
+    forwarder: Address,
+    max_fee: u64,
+) -> Result<(), VerifyError> {
+    use VerifyError::ForwardedField;
+    // Startup refuses a redeposit cap with an unknown xReserve, so this only guards that check.
+    let (ethereum_token, wallet, minter) =
+        xreserve_deployment(forwarder).ok_or(ForwardedField("xreserve deployment"))?;
+    let spec = &intent.spec;
+    let token = match spec.destinationDomain {
+        0 => ethereum_token,
+        ARC_DOMAIN => ARC_USDC,
+        _ => return Err(ForwardedField("destinationDomain")),
+    };
+    for (matches, field) in [
+        (
+            hook.forwarding_contract == forwarder,
+            "forwardingContractAddress",
+        ),
+        (
+            spec.destinationRecipient == forwarder.into_word(),
+            "destinationRecipient",
+        ),
+        (
+            spec.destinationCaller == forwarder.into_word(),
+            "destinationCaller",
+        ),
+        (
+            spec.destinationToken == token.into_word(),
+            "destinationToken",
+        ),
+        (spec.sourceContract == wallet.into_word(), "sourceContract"),
+        (
+            spec.destinationContract == minter.into_word(),
+            "destinationContract",
+        ),
+    ] {
+        if !matches {
+            return Err(ForwardedField(field));
+        }
+    }
+    let call = redeposit::depositToRemoteCall::abi_decode(&hook.forwarding_calldata)
+        .map_err(|_| ForwardedField("forwardingCalldata"))?;
+    if call.abi_encode().as_slice() != hook.forwarding_calldata.as_ref() {
+        return Err(ForwardedField("forwardingCalldata"));
+    }
+    for (matches, field) in [
+        (call.value == spec.value, "calldata value"),
+        (
+            call.remoteDomain == burn.items().dest_domain.as_u32(),
+            "calldata remoteDomain",
+        ),
+        (
+            call.remoteRecipient.as_slice() == burn.items().dest_recipient.as_bytes(),
+            "calldata remoteRecipient",
+        ),
+        (call.localToken == token, "calldata localToken"),
+        (call.maxFee == U256::from(max_fee), "calldata maxFee"),
+        (call.hookData.is_empty(), "calldata hookData"),
+    ] {
+        if !matches {
+            return Err(ForwardedField(field));
+        }
     }
     Ok(())
 }

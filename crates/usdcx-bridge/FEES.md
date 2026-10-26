@@ -15,6 +15,7 @@ That does **not** mean every withdrawal uses CCTP.
 | --- | --- |
 | Direct payout on Arc, Base, Arbitrum or Ethereum | Circle's xReserve prepare quote. No additional CCTP cap is added. |
 | Payout through Arc with an additional CCTP transfer | The xReserve prepare quote plus the configured CCTP cap. |
+| Stacks, Movement or Cardano enterprise addresses through xReserve redeposit | The xReserve prepare quote plus the optional redeposit cap. |
 
 Circle's [withdrawal route guide](https://developers.circle.com/xreserve/concepts/technical-guide)
 explains direct payouts through Circle Gateway, its cross-chain transfer product. Arc, Base,
@@ -139,3 +140,25 @@ excessively high limits allow larger charges and can also block small CCTP withd
 current fees before launch and regularly afterward. The service does not refresh caps automatically.
 To change them, stop and recreate the container with updated flags and the same durable volume.
 Do not delete state or automatically raise limits to clear an error.
+
+## xReserve redeposit allowance
+
+The supported remote destinations are Stacks (10003), Cardano enterprise addresses (10004) and
+Movement (10005). These routes use an xReserve redeposit on Arc or Ethereum, not a CCTP transfer.
+Enable them with `--xreserve-deposit-max-fee`, in USDC base units. Omission disables new
+redeposit authorizations; explicit zero permits only a zero inner cap. Existing saved signed
+requests are recovered unchanged. The cap must match `forwardingOptions.maxFee` in the prepare
+request; do not send `forwardingOptions.hookData`.
+
+The combined check is `outer maxFee + redeposit cap <= fixed allowance + floor(burn * bps / 10000)`.
+The payout after the outer fee must exceed the redeposit cap. This counts the secondary cap once,
+without adding the CCTP cap. Destination processing fees are not Iris CCTP fees: obtain independent
+pricing and approval for both caps. They are authorization ceilings, not confirmed charges. The
+existing fee estimator does not yet cover redeposits.
+
+Only empty inner hooks are supported. Cardano base addresses need additional staking metadata and
+are not supported. Canton (10001) and Aleo (10002) remain disabled until their required mint metadata
+can be supplied and verified safely; an empty-hook quote alone does not establish that minting will
+succeed. The frontend must select a supported recipient mode and encode it correctly. The attester
+binds all 32 recipient bytes to the burn; it does not validate foreign address formats or prove
+destination delivery. Test the actual remote mint separately before advertising a route as live.

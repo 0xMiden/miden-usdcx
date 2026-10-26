@@ -562,6 +562,8 @@ impl Attester {
     /// Takes eligible burns through prepare, verify, sign and submit. A limit wait stops later
     /// burns; other nonfatal failures leave them eligible to proceed. A store error or 429 stops
     /// further Circle requests in this cycle.
+    /// Other prepare 400s hold the burn. A forwarded or redeposited burn is also held if its
+    /// amount is no larger than the fee cap for the second leg.
     async fn submit_withdrawals(
         &mut self,
         burns: Vec<DiscoveredBurn>,
@@ -651,9 +653,13 @@ impl Attester {
         burn: &DiscoveredBurn,
         rate_limited: &mut bool,
     ) -> Result<(), SubmitError> {
+        let forwarding_fee = self
+            .config
+            .forwarding_max_fee(burn.items().dest_domain.as_u32())
+            .ok_or(VerifyError::UnsupportedDestination)?;
         let prepared = self
             .circle
-            .prepare_withdrawal(burn, self.config.cctp_forwarding().max_fee)
+            .prepare_withdrawal(burn, forwarding_fee)
             .await
             .inspect_err(|error| {
                 *rate_limited |= matches!(error, CircleError::RateLimited { .. });
@@ -777,8 +783,8 @@ pub(crate) fn burn_hold(
                 circle_message(body),
             )
         }
-        // A forwarded burn no larger than the configured CCTP fee cannot pay it even without a
-        // Circle fee, so it fails the same way every cycle until that fee changes.
+        // A burn no larger than the configured fee cap of its CCTP or redeposit leg cannot pay it
+        // even without a Circle fee, so it fails the same way every cycle until that cap changes.
         SubmitError::Verification(VerifyError::TooSmallToForward) => {
             (Some(BurnHoldReason::TooSmallToForward), None, None)
         }

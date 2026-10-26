@@ -617,12 +617,17 @@ fn forwarded_route_is_bound_to_the_burn() {
     );
 }
 
-/// A fee or payout that does not fit the configuration needs an operator; every other failed check
-/// means Circle asked for a signature over something other than the burn.
+/// A destination, fee or payout that does not fit the configuration needs an operator; every other
+/// failed check means Circle asked for a signature over something other than the burn.
 #[test]
 fn verification_failures_are_classed_for_alerting() {
     use VerifyError::*;
-    for error in [FeeTooHigh, PayoutTooSmallToForward, TooSmallToForward] {
+    for error in [
+        UnsupportedDestination,
+        FeeTooHigh,
+        PayoutTooSmallToForward,
+        TooSmallToForward,
+    ] {
         assert!(
             matches!(error.failure(), FailureClass::Actionable(_)),
             "{error:?}"
@@ -647,4 +652,390 @@ fn verification_failures_are_classed_for_alerting() {
             "{error:?}"
         );
     }
+}
+
+fn copy_batch(batch: &UnverifiedPrepareBatch) -> UnverifiedPrepareBatch {
+    serde_json::from_value(json!({
+        "burnIntents": batch.burn_intents,
+        "encoded": batch.encoded,
+        "messageHashToSign": batch.message_hash_to_sign,
+    }))
+    .unwrap()
+}
+
+// Synthetic redeposit terms use Circle's documented tuple and an independently written ABI head.
+// The common outer encoding/hash helper keeps semantic mutations internally consistent.
+pub(super) fn redeposit_batch(
+    burn: &DiscoveredBurn,
+    outer_fee: u64,
+    cap: u64,
+    mainnet: bool,
+) -> UnverifiedPrepareBatch {
+    let intermediate = if burn.items().dest_domain.as_u32() == 10003 {
+        0
+    } else {
+        26
+    };
+    redeposit_batch_via(burn, outer_fee, cap, mainnet, intermediate)
+}
+
+fn redeposit_batch_via(
+    burn: &DiscoveredBurn,
+    outer_fee: u64,
+    cap: u64,
+    mainnet: bool,
+    intermediate: u32,
+) -> UnverifiedPrepareBatch {
+    let mut prepared = batch(&burn.note_id().to_hex(), burn.amount() - outer_fee, 0);
+    let (reserve, ethereum_token, wallet, minter) = if mainnet {
+        (
+            "8888888199b2df864bf678259607d6d5ebb4e3ce",
+            "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "77777777dcc4d5a8b6e418fd04d8997ef11000ee",
+            "2222222d7164433c4c09b0b0d809a9b52c04c205",
+        )
+    } else {
+        (
+            "008888878f94c0d87defdf0b07f46b93c1934442",
+            "1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+            "0077777d7eba4688bdef3e311b846f25870a19b9",
+            "0022222abe238cc2c7bb1f21003f0a260052475b",
+        )
+    };
+    let token = if intermediate == 26 {
+        "3600000000000000000000000000000000000000"
+    } else {
+        ethereum_token
+    };
+    let word = |address| format!("0x000000000000000000000000{address}");
+    prepared.burn_intents[0].max_fee = outer_fee.to_string();
+    let spec = &mut prepared.burn_intents[0].spec;
+    spec.destination_domain = intermediate;
+    spec.source_contract = word(wallet);
+    spec.destination_contract = word(minter);
+    spec.destination_token = word(token);
+    spec.destination_recipient = word(reserve);
+    spec.destination_caller = word(reserve);
+    spec.hook_data.forwarding_contract_address = format!("0x{reserve}");
+    let mut call = hex::decode("faadb53b").unwrap();
+    call.extend(U256::from(burn.amount() - outer_fee).to_be_bytes::<32>());
+    call.extend(U256::from(burn.items().dest_domain.as_u32()).to_be_bytes::<32>());
+    call.extend(burn.items().dest_recipient.as_bytes());
+    call.extend(hex::decode(&word(token)[2..]).unwrap());
+    call.extend(U256::from(cap).to_be_bytes::<32>());
+    call.extend(U256::from(192).to_be_bytes::<32>());
+    call.extend([0; 32]);
+    with_calldata(prepared, call)
+}
+
+pub(super) fn redeposit_config(ceiling: u64, cap: Option<u64>, mainnet: bool) -> Config {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    args.replace("--max-withdrawal-fee", ceiling.to_string());
+    if let Some(cap) = cap {
+        args.append("--xreserve-deposit-max-fee", cap.to_string());
+    }
+    if mainnet {
+        args.replace(
+            "--cctp-forwarder-address",
+            "0x8888888199b2df864bf678259607d6d5ebb4e3ce",
+        );
+    }
+    args.load()
+}
+
+#[test]
+fn admitted_redeposits_accept_both_documented_intermediate_deployments() {
+    for domain in [10003, 10004, 10005] {
+        let burn = discovered_burn(10_000_000, serial(90), domain);
+        for mainnet in [false, true] {
+            let config = redeposit_config(600, Some(500), mainnet);
+            for intermediate in [0, 26] {
+                let prepared = redeposit_batch_via(&burn, 100, 500, mainnet, intermediate);
+                assert!(
+                    UnverifiedPrepareResponse {
+                        batches: vec![prepared]
+                    }
+                    .verify(&burn, &config)
+                    .is_ok(),
+                    "domain {domain}, mainnet {mainnet}, intermediate {intermediate}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn redeposit_binds_the_known_route_and_every_argument() {
+    use VerifyError::ForwardedField;
+    let burn = discovered_burn(10_000_000, serial(91), 10003);
+    for (mainnet, intermediate) in [(false, 0), (false, 26), (true, 0), (true, 26)] {
+        let config = redeposit_config(600, Some(500), mainnet);
+        let prepared = redeposit_batch_via(&burn, 100, 500, mainnet, intermediate);
+        assert!(UnverifiedPrepareResponse {
+            batches: vec![copy_batch(&prepared)]
+        }
+        .verify(&burn, &config)
+        .is_ok());
+        type Edit = fn(&mut crate::circle::BurnIntent);
+        let cases: [(Edit, &str); 7] = [
+            (
+                |b| b.spec.hook_data.forwarding_contract_address = Address::ZERO.to_string(),
+                "forwardingContractAddress",
+            ),
+            (
+                |b| b.spec.destination_recipient = ZERO_WORD.into(),
+                "destinationRecipient",
+            ),
+            (
+                |b| b.spec.destination_caller = ZERO_WORD.into(),
+                "destinationCaller",
+            ),
+            (|b| b.spec.destination_domain = 99, "destinationDomain"),
+            (
+                |b| b.spec.destination_token = ZERO_WORD.into(),
+                "destinationToken",
+            ),
+            (
+                |b| b.spec.source_contract = ZERO_WORD.into(),
+                "sourceContract",
+            ),
+            (
+                |b| b.spec.destination_contract = ZERO_WORD.into(),
+                "destinationContract",
+            ),
+        ];
+        for (edit, field) in cases {
+            let mut changed = copy_batch(&prepared);
+            edit(&mut changed.burn_intents[0]);
+            rebuild_for_test(&mut changed).unwrap();
+            assert_eq!(
+                UnverifiedPrepareResponse {
+                    batches: vec![changed]
+                }
+                .verify(&burn, &config)
+                .unwrap_err(),
+                ForwardedField(field)
+            );
+        }
+        // Reusing the same contract addresses on another chain must not admit its wrong token.
+        let mut mismatched = copy_batch(&prepared);
+        mismatched.burn_intents[0].spec.destination_domain =
+            if intermediate == 26 { 0 } else { 26 };
+        rebuild_for_test(&mut mismatched).unwrap();
+        assert_eq!(
+            UnverifiedPrepareResponse {
+                batches: vec![mismatched]
+            }
+            .verify(&burn, &config)
+            .unwrap_err(),
+            ForwardedField("destinationToken")
+        );
+        let original =
+            hex::decode(&prepared.burn_intents[0].spec.hook_data.forwarding_calldata[2..]).unwrap();
+        // Mutate each inner argument, including the high recipient byte (not just an EVM suffix).
+        for (offset, field) in [
+            (35, "calldata value"),
+            (67, "calldata remoteDomain"),
+            (68, "calldata remoteRecipient"),
+            (131, "calldata localToken"),
+            (163, "calldata maxFee"),
+        ] {
+            let mut call = original.clone();
+            call[offset] ^= 1;
+            let changed = with_calldata(copy_batch(&prepared), call);
+            assert_eq!(
+                UnverifiedPrepareResponse {
+                    batches: vec![changed]
+                }
+                .verify(&burn, &config)
+                .unwrap_err(),
+                ForwardedField(field)
+            );
+        }
+        let mut nonempty =
+            crate::verify::redeposit::depositToRemoteCall::abi_decode(&original).unwrap();
+        nonempty.hookData = vec![1].into();
+        assert_eq!(
+            UnverifiedPrepareResponse {
+                batches: vec![with_calldata(copy_batch(&prepared), nonempty.abi_encode())]
+            }
+            .verify(&burn, &config)
+            .unwrap_err(),
+            ForwardedField("calldata hookData")
+        );
+        let mut malformed = Vec::new();
+        let mut selector = original.clone();
+        selector[0] ^= 1;
+        malformed.push(selector);
+        malformed.push(original[..original.len() - 1].to_vec());
+        let mut trailing = original.clone();
+        trailing.push(0);
+        malformed.push(trailing);
+        let mut offset = original.clone();
+        offset[195] = 0xa0;
+        malformed.push(offset);
+        let mut width = original.clone();
+        width[36] = 1;
+        malformed.push(width);
+        let mut padding = original.clone();
+        padding[100] = 1;
+        malformed.push(padding);
+        for call in malformed {
+            assert_eq!(
+                UnverifiedPrepareResponse {
+                    batches: vec![with_calldata(copy_batch(&prepared), call)]
+                }
+                .verify(&burn, &config)
+                .unwrap_err(),
+                ForwardedField("forwardingCalldata")
+            );
+        }
+    }
+}
+
+#[test]
+fn redeposit_cap_is_opt_in_and_other_remote_routes_cannot_bypass_it() {
+    use VerifyError::*;
+    for domain in [10000, 10001, 10002, 10003, 10004, 10005, 10007, 10008] {
+        let admitted = matches!(domain, 10003..=10005);
+        let burn = discovered_burn(10_000_000, serial(92), domain);
+        let prepared = redeposit_batch(&burn, 100, 0, false);
+        assert_eq!(
+            UnverifiedPrepareResponse {
+                batches: vec![copy_batch(&prepared)]
+            }
+            .verify(&burn, &redeposit_config(100, None, false))
+            .unwrap_err(),
+            UnsupportedDestination
+        );
+        if admitted {
+            assert!(UnverifiedPrepareResponse {
+                batches: vec![prepared]
+            }
+            .verify(&burn, &redeposit_config(100, Some(0), false))
+            .is_ok());
+        } else {
+            assert_eq!(
+                UnverifiedPrepareResponse {
+                    batches: vec![prepared]
+                }
+                .verify(&burn, &redeposit_config(1000, Some(500), false))
+                .unwrap_err(),
+                UnsupportedDestination
+            );
+        }
+        let expected = if admitted {
+            ForwardedField("destinationDomain")
+        } else {
+            UnsupportedDestination
+        };
+        let direct = batch(&burn.note_id().to_hex(), burn.amount(), domain);
+        assert_eq!(
+            UnverifiedPrepareResponse {
+                batches: vec![direct]
+            }
+            .verify(&burn, &redeposit_config(1_000_000, Some(500), false))
+            .unwrap_err(),
+            expected
+        );
+        let mut cctp = captured(FORWARDED_FIXTURE, &burn);
+        cctp.burn_intents[0].max_fee = "0".into();
+        cctp.burn_intents[0].spec.value = burn.amount().to_string();
+        let mut call = decode_call(&cctp);
+        call.amount = U256::from(burn.amount());
+        call.destinationDomain = domain;
+        call.mintRecipient = B256::from_slice(burn.items().dest_recipient.as_bytes());
+        cctp = with_calldata(cctp, call.abi_encode());
+        let expected = if admitted {
+            ForwardedField("forwardingContractAddress")
+        } else {
+            UnsupportedDestination
+        };
+        assert_eq!(
+            UnverifiedPrepareResponse {
+                batches: vec![cctp]
+            }
+            .verify(&burn, &redeposit_config(1_000_000, Some(500), false))
+            .unwrap_err(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn redeposit_combined_fees_and_payout_keep_existing_integrity_order() {
+    use VerifyError::*;
+    let burn = discovered_burn(1000, serial(93), 10003);
+    for (ceiling, cap, fee, expected) in [
+        (600, 500, 100, None),
+        (599, 500, 100, Some(FeeTooHigh)),
+        (1000, 1000, 0, Some(TooSmallToForward)),
+        (1000, 900, 100, Some(PayoutTooSmallToForward)),
+    ] {
+        let prepared = redeposit_batch(&burn, fee, cap, false);
+        let result = UnverifiedPrepareResponse {
+            batches: vec![prepared],
+        }
+        .verify(&burn, &redeposit_config(ceiling, Some(cap), false));
+        assert_eq!(result.err(), expected);
+    }
+    let mut bad = redeposit_batch(&burn, 0, 1000, false);
+    bad.message_hash_to_sign = ZERO_WORD.into();
+    assert_eq!(
+        UnverifiedPrepareResponse { batches: vec![bad] }
+            .verify(&burn, &redeposit_config(1000, Some(1000), false))
+            .unwrap_err(),
+        DigestMismatch
+    );
+}
+
+#[test]
+fn captured_mainnet_stacks_route_reaches_the_original_fee_refusal() {
+    use miden_protocol::{
+        account::AccountId, block::BlockNumber, note::Note, transaction::PublicOutputNote,
+        utils::serde::Deserializable,
+    };
+    // Untouched public note and Circle response from the incident investigation. Consumption was
+    // authenticated in the separate incident evidence; this unit test does not contact a node.
+    let note = Note::read_from_bytes(include_bytes!(
+        "fixtures/miden-mainnet-2026-10-16-stacks.note"
+    ))
+    .unwrap();
+    let faucet = AccountId::from_hex("0xe69e6ca6e39df1b10c1e5399399feb").unwrap();
+    let burn = crate::burn::BurnCandidate::new(
+        PublicOutputNote::new(note).unwrap(),
+        BlockNumber::from(57696),
+        faucet,
+    )
+    .unwrap()
+    .into_discovered(BlockNumber::from(57697));
+    assert_eq!(
+        burn.note_id().to_hex(),
+        "0x159e52ecdbb8771140535f4f999fed891aec2a20da18de1ebd28ae6a05e98644"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    args.replace("--faucet-account-id", faucet.to_hex());
+    args.replace("--max-withdrawal-fee", "1204200");
+    args.replace("--max-withdrawal-fee-bps", "2");
+    args.replace(
+        "--cctp-forwarder-address",
+        "0x8888888199b2df864bf678259607d6d5ebb4e3ce",
+    );
+    args.append("--xreserve-deposit-max-fee", "428026");
+    let response: UnverifiedPrepareResponse = serde_json::from_str(include_str!(
+        "fixtures/circle-mainnet-2026-10-20-stacks.response.json"
+    ))
+    .unwrap();
+    let raw = &response.batches[0];
+    let (encoded, digest) = canonical_values_for_test(raw).unwrap();
+    assert_eq!(encoded, hex::decode(&raw.encoded[2..]).unwrap());
+    assert_eq!(digest.to_string(), raw.message_hash_to_sign);
+    assert_eq!(
+        response.verify(&burn, &args.load()).unwrap_err(),
+        VerifyError::FeeTooHigh
+    );
 }

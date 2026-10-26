@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::Address;
 use anyhow::{anyhow, bail, ensure, Context};
@@ -22,6 +22,10 @@ use usdcx_telemetry::TelemetryArgs;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
+    /// Optional Unix socket for live hold management, in a directory private to the service.
+    /// Disabled by default.
+    #[arg(long)]
+    admin_socket: Option<PathBuf>,
     /// AWS region containing both KMS keys.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     aws_kms_region: String,
@@ -93,6 +97,14 @@ pub struct Cli {
     #[arg(long, value_parser = humantime::parse_duration)]
     poll_interval: Duration,
 
+    /// Exact prefix of Circle's withdrawal-limit error message. Requires a retry interval.
+    #[arg(long, requires = "withdrawal_limit_retry_interval")]
+    withdrawal_limit_message_prefix: Option<String>,
+
+    /// Delay before retrying a limit rejection (for example, "5m"). Requires a message prefix.
+    #[arg(long, requires = "withdrawal_limit_message_prefix", value_parser = humantime::parse_duration)]
+    withdrawal_limit_retry_interval: Option<Duration>,
+
     /// Block at which the faucet was deployed. It is only checked against the trusted anchor: the
     /// attester refuses to start with an anchor after it, which would miss the burn notes created
     /// in between.
@@ -139,6 +151,8 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or release selected holds in the running attester through its local admin listener.
+    Admin(crate::admin::AdminArgs),
     /// Stop the attester first. Without note IDs, list the holds. With note IDs, release them and
     /// exit. A released burn can be prepared again. Releasing a withdrawal deletes its saved signed
     /// request.
@@ -204,8 +218,34 @@ pub(crate) struct CctpForwarding {
     pub(crate) token_messenger: Address,
 }
 
+/// How the attester recognises Circle's withdrawal-limit rejections and spaces out their retries.
+#[derive(Debug)]
+pub(crate) struct WithdrawalLimit {
+    /// The start of the `message` in Circle's limit rejection.
+    pub(crate) message_prefix: String,
+    /// The delay before a rejected burn is tried again.
+    pub(crate) retry_interval: Duration,
+}
+
+impl WithdrawalLimit {
+    /// The Unix second, rounded up, at which a burn rejected at `now` may be tried again.
+    pub(crate) fn retry_at(&self, now: SystemTime) -> anyhow::Result<i64> {
+        let deadline = now
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .checked_add(self.retry_interval)
+            .context("withdrawal retry deadline overflow")?;
+        let seconds = deadline
+            .as_secs()
+            .checked_add(u64::from(deadline.subsec_nanos() != 0))
+            .context("withdrawal retry deadline overflow")?;
+        i64::try_from(seconds).context("withdrawal retry deadline exceeds the store's range")
+    }
+}
+
 #[derive(Debug)]
 pub struct Config {
+    admin: Option<crate::admin::AdminConfig>,
     kms: KmsConfig,
     miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
@@ -215,6 +255,7 @@ pub struct Config {
     max_withdrawal_fee_bps: u64,
     cctp_forwarding: CctpForwarding,
     poll_interval: Duration,
+    withdrawal_limit: Option<WithdrawalLimit>,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
@@ -228,6 +269,27 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
+        let withdrawal_limit = cli
+            .withdrawal_limit_message_prefix
+            .zip(cli.withdrawal_limit_retry_interval)
+            .map(|(message_prefix, retry_interval)| -> anyhow::Result<_> {
+                ensure!(
+                    !message_prefix.trim().is_empty(),
+                    "withdrawal limit message prefix must not be blank"
+                );
+                ensure!(
+                    !retry_interval.is_zero(),
+                    "withdrawal limit retry interval must be greater than zero"
+                );
+                Ok(WithdrawalLimit {
+                    message_prefix,
+                    retry_interval,
+                })
+            })
+            .transpose()?;
+        let admin = cli
+            .admin_socket
+            .map(|socket| crate::admin::AdminConfig { socket });
         let store_path = PathBuf::from(cli.store_path);
         let max_withdrawal_fee = AssetAmount::new(cli.max_withdrawal_fee)
             .context("maximum withdrawal fee is invalid")?;
@@ -305,6 +367,7 @@ impl TryFrom<Cli> for Config {
         }
 
         Ok(Self {
+            admin,
             kms,
             miden_rpc_url,
             circle_request_timeout: cli.request_timeout,
@@ -314,6 +377,7 @@ impl TryFrom<Cli> for Config {
             max_withdrawal_fee_bps: cli.max_withdrawal_fee_bps,
             cctp_forwarding,
             poll_interval: cli.poll_interval,
+            withdrawal_limit,
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
@@ -324,6 +388,10 @@ impl TryFrom<Cli> for Config {
 }
 
 impl Config {
+    /// The admin socket's settings, or `None` when it is off.
+    pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
+        self.admin.as_ref()
+    }
     pub fn kms(&self) -> &KmsConfig {
         &self.kms
     }
@@ -358,6 +426,10 @@ impl Config {
 
     pub(crate) fn poll_interval(&self) -> Duration {
         self.poll_interval
+    }
+
+    pub(crate) fn withdrawal_limit(&self) -> Option<&WithdrawalLimit> {
+        self.withdrawal_limit.as_ref()
     }
 
     pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {

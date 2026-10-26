@@ -16,12 +16,15 @@ use miden_protocol::transaction::PublicOutputNote;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::Word;
 use reqwest::Url;
-use rusqlite::{params, OpenFlags, Params, Transaction};
+use rusqlite::{params, OpenFlags, OptionalExtension, Params, Transaction};
+use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
-use crate::submission::{is_well_formed_id, HoldReason, SavedSubmission, SubmissionStatus};
+use crate::submission::{
+    is_well_formed_id, HoldReason, SavedSubmission, SubmissionAttempt, SubmissionStatus,
+};
 use crate::verify::validate_saved_request;
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
@@ -70,12 +73,55 @@ impl fmt::Display for Hold {
     }
 }
 
+/// One held burn or held withdrawal, as the admin listener lists it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct HoldEntry {
+    pub(crate) note_id: String,
+    /// `burn` or `withdrawal`.
+    pub(crate) kind: String,
+    pub(crate) reason: String,
+    /// The HTTP status of the Circle answer that caused the hold, if one did.
+    pub(crate) http_status: Option<u16>,
+    /// Circle's message from that answer, on one line.
+    pub(crate) circle_message: Option<String>,
+    /// The sequence number of the note's latest history row. A release names it to show which
+    /// state of the hold it saw.
+    pub(crate) event_seq: i64,
+}
+
+/// One hold an operator chose to release, from the admin listener.
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseSelection {
+    pub(crate) note_id: NoteId,
+    /// The `event_seq` the operator listed. The release is refused if the hold has changed since.
+    pub(crate) expected_event_seq: i64,
+    /// The operator confirms Circle did not accept the withdrawal.
+    pub(crate) circle_not_accepted: bool,
+}
+
+/// Why a release or listing from the admin listener did not succeed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReleaseError {
+    #[error("invalid selection")]
+    Invalid,
+    #[error("hold changed since it was listed")]
+    Conflict,
+    /// The note has no hold that can be released: the store never held it, or its hold is gone.
+    #[error("note {0} has no releasable hold")]
+    NotHeld(NoteId),
+    #[error("check Circle before releasing a signed withdrawal")]
+    CircleCheck,
+    #[error(transparent)]
+    Store(#[from] anyhow::Error),
+}
+
 /// The store's migrations in order: running the first `n` brings a new store to version `n`. A
 /// layout change adds its numbered file here, and [`STORE_VERSION`] follows.
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_scan_from_the_anchor.sql"),
     include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
+    include_str!("../migrations/0004_withdrawal_limit_retry.sql"),
 ];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
@@ -103,6 +149,9 @@ enum EventKind {
     /// signed again.
     #[strum(serialize = "OPERATOR_RELEASE")]
     OperatorRelease,
+    /// Circle rejected this attempt because its withdrawal limit was reached.
+    #[strum(serialize = "WITHDRAWAL_LIMIT")]
+    WithdrawalLimit,
 }
 
 impl EventKind {
@@ -112,6 +161,9 @@ impl EventKind {
     }
 }
 
+/// The most holds one admin listing returns. The store reads one more to tell whether another
+/// page follows.
+pub(crate) const HOLDS_PAGE: usize = 100;
 pub(crate) const INVALID: &str = "attester store is invalid";
 pub(crate) const CONFLICT: &str = "authenticated evidence conflicts with the attester store";
 
@@ -136,6 +188,16 @@ pub(crate) struct Progress {
     pub(crate) burns_unfinished: u64,
     /// The block that consumed the oldest unfinished burn.
     pub(crate) oldest_unfinished_burn: Option<BlockNumber>,
+    /// Burns waiting for Circle's withdrawal limit.
+    pub(crate) withdrawal_limit_waiting: u64,
+}
+
+/// A burn waiting for Circle's withdrawal limit.
+pub(crate) struct LimitWait {
+    pub(crate) note_id: NoteId,
+    pub(crate) creation_block: u32,
+    /// When the burn may be tried again, in Unix seconds.
+    pub(crate) retry_at: i64,
 }
 
 pub(crate) struct Store {
@@ -276,46 +338,201 @@ impl Store {
         let (mut burns, mut withdrawals) = (0, 0);
         // A burn named twice is released once.
         for note_id in note_ids.iter().copied().collect::<BTreeSet<_>>() {
-            let note = note_id.to_bytes();
-            let held = params![
-                note,
-                SubmissionStatus::Held.as_ref(),
-                HoldReason::HttpRejected.as_ref()
-            ];
-            if exists(
-                &transaction,
-                "SELECT EXISTS (SELECT 1 FROM burns
-                 WHERE note_id = ?1 AND hold_reason IS NOT NULL)",
-                [&note],
-            )? {
-                record_event(&transaction, note_id, EventKind::BurnReleased, None)?;
-                burns += transaction
-                    .execute(
-                        "UPDATE burns SET hold_reason = NULL WHERE note_id = ?1",
-                        [&note],
-                    )
-                    .map_err(classify_error)?;
-            } else if exists(
-                &transaction,
-                "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
-                    AND hold_reason = ?3 AND withdrawal_id IS NULL)",
-                held,
-            )? {
-                // Release only after checking this withdrawal with Circle. Remove the saved
-                // request so the next cycle can prepare and sign again. An expired signed request
-                // cannot be reused.
-                record_event(&transaction, note_id, EventKind::OperatorRelease, None)?;
-                let deleted = transaction
-                    .execute("DELETE FROM submissions WHERE note_id = ?1", [&note])
-                    .map_err(classify_error)?;
-                ensure!(deleted == 1, CONFLICT);
-                withdrawals += 1;
-            } else {
-                bail!("note {note_id} has no releasable hold");
-            }
+            // Naming a withdrawal in the offline command confirms Circle did not accept it.
+            let (burn, withdrawal) = Self::release_hold(&transaction, note_id, true)?;
+            burns += burn;
+            withdrawals += withdrawal;
         }
         transaction.commit().map_err(classify_error)?;
         Ok((burns, withdrawals))
+    }
+
+    /// Releases the hold an operator selected from the admin listing, and returns how many burns
+    /// and withdrawals it released.
+    ///
+    /// The release goes ahead only if the note's latest history row is still the one the
+    /// operator listed. Every change to a hold writes a history row, so an operator never releases
+    /// a hold they have not seen.
+    pub(crate) fn release_checked(
+        &mut self,
+        selection: &ReleaseSelection,
+    ) -> Result<(usize, usize), ReleaseError> {
+        let note_id = selection.note_id;
+        if selection.expected_event_seq <= 0 {
+            return Err(ReleaseError::Invalid);
+        }
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let note = note_id.to_bytes();
+        let revision: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(seq) FROM submission_events WHERE note_id = ?1",
+                [&note],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)?;
+        let revision = match revision {
+            Some(revision) => revision,
+            // Holding a note writes a history row, so a note without one was never held.
+            None => {
+                if exists(
+                    &transaction,
+                    "SELECT EXISTS (
+                        SELECT 1 FROM burns WHERE note_id = ?1 AND hold_reason IS NOT NULL
+                        UNION ALL
+                        SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
+                    )",
+                    params![note, SubmissionStatus::Held.as_ref()],
+                )? {
+                    return Err(ReleaseError::Store(anyhow!(INVALID)));
+                }
+                return Err(ReleaseError::NotHeld(note_id));
+            }
+        };
+        // Only a revision that moved means the hold changed since it was listed.
+        if revision != selection.expected_event_seq {
+            return Err(ReleaseError::Conflict);
+        }
+        // Every change to a hold writes a history row, so at the listed revision a note with
+        // nothing to release never had a releasable hold, and `release_hold` says so.
+        let released = Self::release_hold(&transaction, note_id, selection.circle_not_accepted)?;
+        transaction.commit().map_err(classify_error)?;
+        Ok(released)
+    }
+
+    /// Releases the note's hold and returns how many burns and withdrawals it released.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReleaseError::NotHeld`]: the note has nothing to release.
+    /// - [`ReleaseError::CircleCheck`]: the hold is a signed withdrawal and the caller has not
+    ///   confirmed Circle did not accept it.
+    /// - [`ReleaseError::Store`]: the store failed.
+    fn release_hold(
+        transaction: &Transaction<'_>,
+        note_id: NoteId,
+        circle_not_accepted: bool,
+    ) -> Result<(usize, usize), ReleaseError> {
+        let note = note_id.to_bytes();
+        let held = params![
+            note,
+            SubmissionStatus::Held.as_ref(),
+            HoldReason::HttpRejected.as_ref()
+        ];
+        if exists(
+            transaction,
+            "SELECT EXISTS (SELECT 1 FROM burns
+                 WHERE note_id = ?1 AND hold_reason IS NOT NULL)",
+            [&note],
+        )? {
+            record_event(transaction, note_id, EventKind::BurnReleased, None)?;
+            let burns = transaction
+                .execute(
+                    "UPDATE burns SET hold_reason = NULL WHERE note_id = ?1",
+                    [&note],
+                )
+                .map_err(classify_error)?;
+            Ok((burns, 0))
+        } else if exists(
+            transaction,
+            "SELECT EXISTS (SELECT 1 FROM submissions WHERE note_id = ?1 AND status = ?2
+                    AND hold_reason = ?3 AND withdrawal_id IS NULL)",
+            held,
+        )? {
+            if !circle_not_accepted {
+                return Err(ReleaseError::CircleCheck);
+            }
+            // Release only after checking this withdrawal with Circle. Remove the saved
+            // request so the next cycle can prepare and sign again. An expired signed request
+            // cannot be reused.
+            record_event(transaction, note_id, EventKind::OperatorRelease, None)?;
+            let deleted = transaction
+                .execute("DELETE FROM submissions WHERE note_id = ?1", [&note])
+                .map_err(classify_error)?;
+            if deleted != 1 {
+                return Err(ReleaseError::Store(anyhow!(CONFLICT)));
+            }
+            Ok((0, 1))
+        } else {
+            Err(ReleaseError::NotHeld(note_id))
+        }
+    }
+
+    /// Up to one more than [`HOLDS_PAGE`] holds after the given note ID, burns and withdrawals
+    /// together in note order, each with the sequence number of its latest history row.
+    pub(crate) fn holds_page(&self, after: Option<NoteId>) -> anyhow::Result<Vec<HoldEntry>> {
+        // A held burn takes Circle's answer from its latest hold event; a held withdrawal keeps
+        // its last answer on its own row.
+        let mut statement = self.connection.prepare(
+            "SELECT note_id, kind, burn_reason, withdrawal_reason, http_status, response,
+                (SELECT MAX(seq) FROM submission_events WHERE note_id = holds.note_id) AS revision
+             FROM (
+                SELECT b.note_id, 'burn' AS kind, b.hold_reason AS burn_reason,
+                    NULL AS withdrawal_reason,
+                    CASE WHEN e.status IS NULL THEN e.http_status END AS http_status,
+                    CASE WHEN e.status IS NULL THEN e.response END AS response
+                FROM burns b LEFT JOIN submission_events e ON e.seq = (
+                    SELECT MAX(seq) FROM submission_events WHERE note_id = b.note_id AND kind = 'BURN_HELD'
+                ) WHERE b.hold_reason IS NOT NULL
+                UNION ALL
+                SELECT note_id, 'withdrawal', NULL, hold_reason, last_http_status, last_response
+                FROM submissions WHERE status = ?2
+             ) holds WHERE (?1 IS NULL OR note_id > ?1) ORDER BY note_id LIMIT ?3"
+        ).map_err(classify_error)?;
+        let mut rows = statement
+            .query(params![
+                after.map(|id| id.to_bytes()),
+                SubmissionStatus::Held.as_ref(),
+                HOLDS_PAGE as i64 + 1
+            ])
+            .map_err(classify_error)?;
+        let mut holds = Vec::new();
+        while let Some(row) = rows.next().map_err(classify_error)? {
+            let kind: String = row.get(1).map_err(classify_error)?;
+            let reason = if kind == "burn" {
+                format!(
+                    "{:?}",
+                    BurnHoldReason::from_code(row.get(2).map_err(classify_error)?)
+                        .context(INVALID)?
+                )
+            } else {
+                let reason: Option<String> = row.get(3).map_err(classify_error)?;
+                reason
+                    .map(|reason| {
+                        reason
+                            .parse::<HoldReason>()
+                            .map(|reason| format!("{reason:?}"))
+                            .map_err(|_| anyhow!(INVALID))
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| "-".into())
+            };
+            let response: Option<Vec<u8>> = row.get(5).map_err(classify_error)?;
+            let event_seq: i64 = row
+                .get::<_, Option<i64>>(6)
+                .map_err(classify_error)?
+                .context(INVALID)?;
+            ensure!(event_seq > 0, INVALID);
+            holds.push(HoldEntry {
+                note_id: decode_canonical::<NoteId>(
+                    &row.get::<_, Vec<u8>>(0).map_err(classify_error)?,
+                )?
+                .to_string(),
+                kind,
+                reason,
+                http_status: row.get(4).map_err(classify_error)?,
+                circle_message: response.as_deref().and_then(one_line_circle_message).map(
+                    |message| {
+                        // The live client prints this external text in an operator's terminal.
+                        message
+                            .chars()
+                            .filter(|character| !character.is_control())
+                            .collect()
+                    },
+                ),
+                event_seq,
+            });
+        }
+        Ok(holds)
     }
 
     /// Every held burn and held withdrawal: burns first, each group in note order.
@@ -386,7 +603,7 @@ impl Store {
         let transaction = self.connection.transaction().map_err(classify_error)?;
         let updated = transaction
             .execute(
-                "UPDATE burns SET hold_reason = ?2
+                "UPDATE burns SET hold_reason = ?2, withdrawal_limit_retry_at = NULL
                  WHERE note_id = ?1",
                 params![note_id.to_bytes(), reason.code()],
             )
@@ -463,7 +680,161 @@ impl Store {
                 circle_status.as_deref(),
             )?;
         }
+        if matches!(
+            outcome.status,
+            SubmissionStatus::Submitted
+                | SubmissionStatus::Finalized
+                | SubmissionStatus::Failed
+                | SubmissionStatus::Held
+        ) {
+            transaction
+                .execute(
+                    "UPDATE burns SET withdrawal_limit_retry_at = NULL WHERE note_id = ?1",
+                    [outcome.note_id.to_bytes()],
+                )
+                .map_err(classify_error)?;
+        }
         transaction.commit().map_err(classify_error)
+    }
+
+    /// The block that created the burn `note_id`.
+    pub(crate) fn burn_creation_block(&self, note_id: NoteId) -> anyhow::Result<BlockNumber> {
+        let block = self
+            .connection
+            .query_row(
+                "SELECT creation_block FROM burns WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)?;
+        decode_block_number(block)
+    }
+
+    /// The waiting burn every later burn queues behind: the earliest by creation block, then note
+    /// ID, the order burns are withdrawn in.
+    pub(crate) fn first_limit_wait(&self) -> anyhow::Result<Option<LimitWait>> {
+        let wait = self
+            .connection
+            .query_row(
+                "SELECT note_id, creation_block, withdrawal_limit_retry_at FROM burns
+                 WHERE withdrawal_limit_retry_at IS NOT NULL
+                 ORDER BY creation_block, note_id LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(classify_error)?;
+        wait.map(|(note_id, creation_block, retry_at)| {
+            Ok(LimitWait {
+                note_id: decode_canonical(&note_id)?,
+                creation_block,
+                retry_at,
+            })
+        })
+        .transpose()
+    }
+
+    /// Moves a waiting burn's next retry to `retry_at`.
+    ///
+    /// The attester saves this before a due attempt, so a restart cannot retry the burn again at
+    /// once.
+    pub(crate) fn advance_limit_retry(
+        &mut self,
+        note_id: NoteId,
+        retry_at: i64,
+    ) -> anyhow::Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE burns SET withdrawal_limit_retry_at = ?2
+                WHERE note_id = ?1 AND withdrawal_limit_retry_at IS NOT NULL",
+                params![note_id.to_bytes(), retry_at],
+            )
+            .map_err(classify_error)?;
+        ensure!(changed == 1, CONFLICT);
+        Ok(())
+    }
+
+    /// Records Circle's withdrawal-limit rejection: the burn waits until `retry_at`, and its history
+    /// keeps the reply.
+    ///
+    /// A rejected first send deletes its saved request, which Circle never accepted, so the burn is
+    /// prepared and signed again. A rejected resend keeps its request, since an earlier send may
+    /// have been accepted.
+    pub(crate) fn record_limit_rejection(
+        &mut self,
+        note_id: NoteId,
+        retry_at: i64,
+        response: &[u8],
+        submission: Option<(&SavedSubmission, SubmissionAttempt)>,
+    ) -> anyhow::Result<()> {
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE burns SET withdrawal_limit_retry_at = ?2 WHERE note_id = ?1
+                AND consumption_block IS NOT NULL AND hold_reason IS NULL",
+                params![note_id.to_bytes(), retry_at],
+            )
+            .map_err(classify_error)?;
+        ensure!(changed == 1, CONFLICT);
+        if let Some((saved, attempt)) = submission {
+            ensure!(saved.note_id == note_id, CONFLICT);
+            let changed = match attempt {
+                // Only a first attempt's rejection proves this authorization was never accepted.
+                SubmissionAttempt::First => transaction.execute(
+                    "DELETE FROM submissions
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
+                    params![
+                        note_id.to_bytes(),
+                        SubmissionStatus::Submitting.as_ref(),
+                        saved.endpoint.as_str(),
+                        saved.body,
+                        saved.transfer_spec_hash.as_slice()
+                    ],
+                ),
+                SubmissionAttempt::Recovery => transaction.execute(
+                    "UPDATE submissions SET last_http_status = 400,
+                    last_response = ?6, last_error = 'Circle withdrawal limit'
+                    WHERE note_id = ?1 AND status = ?2 AND withdrawal_id IS NULL
+                        AND endpoint = ?3 AND body = ?4 AND transfer_spec_hash = ?5",
+                    params![
+                        note_id.to_bytes(),
+                        SubmissionStatus::Submitting.as_ref(),
+                        saved.endpoint.as_str(),
+                        saved.body,
+                        saved.transfer_spec_hash.as_slice(),
+                        response
+                    ],
+                ),
+            }
+            .map_err(classify_error)?;
+            ensure!(changed == 1, CONFLICT);
+        }
+        transaction
+            .execute(
+                "INSERT INTO submission_events (note_id, recorded_at, kind, http_status, response)
+                VALUES (?1, unixepoch(), ?2, 400, ?3)",
+                params![
+                    note_id.to_bytes(),
+                    EventKind::WithdrawalLimit.as_ref(),
+                    response
+                ],
+            )
+            .map_err(classify_error)?;
+        transaction.commit().map_err(classify_error)
+    }
+
+    /// The note's latest history row, which is the revision a release selection names.
+    #[cfg(test)]
+    pub(crate) fn revision(&self, note_id: NoteId) -> anyhow::Result<Option<i64>> {
+        self.connection
+            .query_row(
+                "SELECT MAX(seq) FROM submission_events WHERE note_id = ?1",
+                [note_id.to_bytes()],
+                |row| row.get(0),
+            )
+            .map_err(classify_error)
     }
 
     #[cfg(test)]
@@ -504,7 +875,8 @@ impl Store {
                     (SELECT COUNT(*) FROM submissions WHERE status = ?2),
                     (SELECT COUNT(*) FROM submissions WHERE status IN (?3, ?4)),
                     COUNT(*),
-                    MIN(burns.consumption_block)
+                    MIN(burns.consumption_block),
+                    (SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL)
                  FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
                  WHERE burns.consumption_block IS NOT NULL AND burns.hold_reason IS NULL
                     AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?5))",
@@ -525,6 +897,7 @@ impl Store {
                         oldest_unfinished_burn: row
                             .get::<_, Option<u32>>(5)?
                             .map(BlockNumber::from),
+                        withdrawal_limit_waiting: row.get(6)?,
                     })
                 },
             )
@@ -729,6 +1102,21 @@ fn validate_store(
 ) -> anyhow::Result<()> {
     validate_store_format(connection)?;
 
+    ensure!(
+        !exists(
+            connection,
+            "SELECT EXISTS (SELECT 1 FROM burns LEFT JOIN submissions USING (note_id)
+            WHERE withdrawal_limit_retry_at IS NOT NULL AND (
+                consumption_block IS NULL OR burns.hold_reason IS NOT NULL
+                OR (submissions.status IS NOT NULL AND submissions.status NOT IN (?1, ?2))))",
+            params![
+                SubmissionStatus::Submitting.as_ref(),
+                SubmissionStatus::Expired.as_ref()
+            ],
+        )?,
+        INVALID
+    );
+
     // A saved withdrawal ID goes into a status URL, so each must still be a UUID.
     let mut statement = connection
         .prepare("SELECT withdrawal_id FROM submissions WHERE withdrawal_id IS NOT NULL")
@@ -798,7 +1186,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
             FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason, withdrawal_limit_retry_at
             FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",

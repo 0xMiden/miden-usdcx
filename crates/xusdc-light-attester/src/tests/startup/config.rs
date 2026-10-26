@@ -28,6 +28,39 @@ fn assert_cli_error(args: &TestArgs, expected_kind: ErrorKind) {
 }
 
 #[test]
+fn withdrawal_limit_settings_are_paired_and_explicit() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let valid = TestArgs::new(&directory);
+    assert!(valid.load().withdrawal_limit().is_none());
+    for (flag, value) in [
+        ("--withdrawal-limit-message-prefix", "Limit"),
+        ("--withdrawal-limit-retry-interval", "5m"),
+    ] {
+        let mut partial = valid.clone();
+        partial.append(flag, value);
+        assert_cli_error(&partial, ErrorKind::MissingRequiredArgument);
+    }
+    let mut paired = valid;
+    paired.append("--withdrawal-limit-message-prefix", " Limit ");
+    paired.append("--withdrawal-limit-retry-interval", "5m");
+    let config = paired.load();
+    let policy = config.withdrawal_limit().unwrap();
+    assert_eq!(policy.message_prefix, " Limit ");
+    assert_eq!(policy.retry_interval, std::time::Duration::from_secs(300));
+    paired.replace("--withdrawal-limit-retry-interval", "0s");
+    assert_config_error(
+        &paired,
+        "withdrawal limit retry interval must be greater than zero",
+    );
+    paired.replace("--withdrawal-limit-retry-interval", "1ms");
+    for prefix in ["", "  "] {
+        paired.replace("--withdrawal-limit-message-prefix", prefix);
+        assert_config_error(&paired, "withdrawal limit message prefix must not be blank");
+    }
+}
+
+#[test]
 fn cli_surface_is_explicit() {
     let tempdir = tempfile::tempdir().unwrap();
     create_store_parent(&tempdir);

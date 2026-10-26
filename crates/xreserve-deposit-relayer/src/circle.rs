@@ -50,15 +50,15 @@ impl CircleCursor {
 /// The number of attestations requested per page, within Circle's documented `pageSize` range of
 /// 1 through 1000.
 ///
-/// It is also how many mint notes one Miden transaction carries, since the relayer submits a page
-/// as a single transaction — so turning it down buys smaller proofs as well as smaller pages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The relayer caps this further for its proving mode. One page becomes one transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PageSize(u16);
 
 impl PageSize {
     const MIN: u16 = 1;
-    /// The largest page Circle documents, which is also the most mint notes one transaction is
-    /// ever asked to carry. [`crate::miden`] checks that against the protocol's own ceiling.
+    pub(crate) const LOCAL_PROVING_MAX: Self = Self(10);
+    pub(crate) const REMOTE_PROVING_MAX: Self = Self(40);
+    /// The largest page Circle documents, before applying the proving limit.
     pub const MAX: u16 = 1000;
 }
 
@@ -292,6 +292,14 @@ impl CircleClient {
         })
     }
 
+    /// Reduces later requests to the local proving cap. Returns whether the size changed.
+    pub(crate) fn limit_to_local_proving(&mut self) -> bool {
+        let smaller = self.page_size.min(PageSize::LOCAL_PROVING_MAX);
+        let changed = smaller != self.page_size;
+        self.page_size = smaller;
+        changed
+    }
+
     /// Fetches the page after `cursor`, or the first page when it is `None`.
     ///
     /// Every failure is transient: the page is fetched again on the next scan.
@@ -366,6 +374,15 @@ impl CircleClient {
         }
 
         let page = Page::decode(&body, link.as_deref()).classify(Transient("invalid_response"))?;
+        if page.entries.len() > usize::from(self.page_size.0) {
+            return Err(Failure::new(
+                Transient("invalid_response"),
+                anyhow!(
+                    "circle returned more than the requested {} deposits",
+                    self.page_size
+                ),
+            ));
+        }
         span.record("attestations.count", page.entries.len());
         if let Some(next) = &page.next {
             span.record("next", next.as_str());

@@ -278,6 +278,8 @@ mod tests {
                 poll_interval: std::time::Duration::from_secs(5),
                 remote_domain: REMOTE_DOMAIN,
                 miden_node_url: "http://127.0.0.1:57291".parse().unwrap(),
+                prover_url: None,
+                prover_timeout: std::time::Duration::from_secs(30),
                 miden_data_dir: "unused".into(),
                 expiration_delta: ExpirationDelta::try_from(64).unwrap(),
                 faucet_account_id: xusdc_dummy_faucet_id(),

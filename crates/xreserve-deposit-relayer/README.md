@@ -114,16 +114,18 @@ A page is one transaction, which is what makes that retry clean: no part of a fa
 already on chain, so the retry cannot build a second mint note for a deposit that already minted.
 `--page-size` therefore sets the proof size and the retry unit as well as the Circle request:
 turning it down buys cheaper proofs and less work to redo, at the cost of more requests to walk a
-backlog. Circle's largest page (1000) is below the protocol's per-transaction output-note ceiling,
-and the build fails if that ever stops being true.
+backlog. Requests are initially capped at **10 deposits without a prover URL** or **40 with one**.
+Smaller configured page sizes are kept. Startup logs the effective size, as a warning when the
+cap lowers the configured one. An oversized Circle response fails the page without advancing
+progress; it is never truncated.
 
-Every mint transaction carries an expiration block, `--expiration-delta` blocks past the one it was
-built against. That is what bounds the wait: once the chain reaches the expiration block without
-the transaction in it, no later block can carry it, so the relayer gives up and retries the page. A
+Every mint transaction carries an expiration block, at most `--expiration-delta` blocks past the one
+it was built against. Protocol rules can shorten that lifetime. That is what bounds the wait: once
+the chain reaches the expiration block without the transaction in it, no later block can carry it,
+so the relayer gives up and retries the page. A
 transaction the node discards ends the wait the same way. The Miden client's own limit on how long
-a transaction may stay pending, 20 blocks by default, is turned off, so nothing shorter than the
-expiration delta ends the wait. A larger delta tolerates a slower chain; a smaller one notices a
-lost transaction sooner.
+a transaction may stay pending, 20 blocks by default, is turned off. The relayer uses the
+transaction's actual expiration block instead.
 
 While it waits, the relayer asks the node every second whether the transaction is in a block. One
 failed request does not end the wait: the transaction may still land, and giving up on it would
@@ -138,6 +140,24 @@ checks the faucet's used-nonce map for them on every page, under the same sync a
 deposits, until the faucet mints them. Each page span reports how many are still waiting and for
 how long (see [Tracing](#tracing)). The list is lost on restart, and a deposit the faucet will never
 mint stays on it until then, so restarting is how an operator clears it after looking into it.
+
+### Remote proving
+
+By default, the relayer proves locally. Set `--prover-url <HTTP(S)_URL>` to use the SDK's remote
+prover. Optional `--prover-timeout` defaults to `30s` and bounds connection setup and proving,
+not transaction submission. Configure a prover compatible with the deployed Miden version.
+
+The first proof connects to the prover; startup does not check its availability. Any remote
+proving error or timeout logs a warning and falls back to proving the same transaction locally.
+This first local attempt may still contain 40 deposits and need substantial memory and time.
+If the node rejects submission because the transaction expired, later pages are capped at 10
+until restart. Smaller configured sizes stay smaller, and remote proving is still tried first.
+The next scan retries the unfinished page; other submission errors do not reduce the page size.
+
+The prover receives transaction witness data, including account state and note contents, but not
+the relayer's secret key. Use a trusted operator and HTTPS outside a trusted local network.
+Remote proving does not extend expiration or remove the node's message-size limit. The 40-note
+cap was tested with ordinary deposits without hook data; larger payloads may need a smaller page.
 
 ## Malformed attestations
 
@@ -159,10 +179,10 @@ Pass all deployment settings as command-line arguments:
 ```sh
 just run-relayer \
   --circle-url https://xreserve-api-testnet.circle.com \
-  --page-size 100 \
+  --page-size 10 \
   --request-timeout 30s \
   --poll-interval 5s \
-  --remote-domain 10001 \
+  --remote-domain 10007 \
   --miden-node-url http://127.0.0.1:57291 \
   --miden-data-dir target/relayer-miden \
   --expiration-delta 64 \
@@ -172,9 +192,9 @@ just run-relayer \
   --state-file target/relayer-state
 ```
 
-The Circle domain identifier and the account identifiers depend on the deployment. The faucet must
-be a public account, since the mint notes are routed to it as a network account. The attester
-public key must use compressed SEC1 format.
+Miden's Circle domain is `10007`. The account IDs and public key above are examples; replace them
+with the deployment's values. The faucet must be public, since mint notes route to it as a network
+account. The attester public key must use compressed SEC1 format.
 
 The relayer account must already exist on chain, and its signing key must already be in the keystore
 directory. Neither is created here. Startup checks node access, account availability, that the
@@ -252,6 +272,8 @@ list is kept in memory, so a restart clears it. Every failed span carries `failu
 answered with an error. The same calls also use the Miden client's store and keystore and execute
 and prove the transaction. A failure there, such as a signing key missing from the keystore, keeps
 the kind and is `actionable`.
+Remote proving failures log a warning before local fallback. A failed local proof remains
+`actionable/transaction_submit`.
 
 ## Progress
 

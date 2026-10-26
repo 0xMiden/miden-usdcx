@@ -40,7 +40,9 @@ use std::time::Duration;
 use anyhow::{anyhow, ensure, Context, Result};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient};
+use miden_client::rpc::{
+    AddTransactionError, Endpoint, EndpointError, GrpcClient, GrpcError, RpcEndpoint, RpcError,
+};
 use miden_client::store::TransactionFilter;
 use miden_client::transaction::{TransactionRequestBuilder, TransactionStatus};
 use miden_client::{Client, ClientError};
@@ -60,6 +62,7 @@ use miden_usdcx::xreserve::encoding::DepositNonce;
 
 use crate::circle::PageSize;
 use crate::config::Config;
+use crate::prover::RemoteProver;
 
 /// How long one node RPC call may take. The calls are a state sync and a transaction submission
 /// against a node the relayer operator runs, so this is a liveness bound, not a tuning knob.
@@ -81,10 +84,8 @@ const STORE_FILE: &str = "store.sqlite3";
 /// directory.
 const KEYSTORE_DIR: &str = "keystore";
 
-/// A whole page has to fit in one transaction for the page to be the retry unit, and it always
-/// does: the largest page Circle is asked for is smaller than the most output notes the protocol
-/// lets a transaction create. Raising [`PageSize::MAX`] past that ceiling fails the build here
-/// rather than at the node.
+/// Circle's allowed page range must stay below the protocol's output-note ceiling. The relayer
+/// caps actual requests further for its proving mode.
 const _: () = assert!(PageSize::MAX as usize <= MAX_OUTPUT_NOTES_PER_TX);
 
 /// Checks which deposits the faucet has already minted, then submits a page of mint notes to
@@ -198,6 +199,7 @@ impl NodeClient {
     /// - The node does not know the relayer account or the faucet.
     /// - The faucet has not enabled the configured attester public key.
     pub async fn new(config: &Config) -> Result<Self> {
+        config.validate_prover()?;
         let endpoint = Endpoint::try_from(config.miden_node_url.as_str())
             .map_err(|error| anyhow!("the miden node url is not an endpoint: {error}"))?;
 
@@ -208,7 +210,7 @@ impl NodeClient {
         let keystore = FilesystemKeyStore::new(data_dir.join(KEYSTORE_DIR))
             .map_err(|error| anyhow!("opening the miden keystore: {error}"))?;
 
-        let mut client = ClientBuilder::new()
+        let mut builder = ClientBuilder::new()
             .rpc(Arc::new(GrpcClient::new(
                 &endpoint,
                 RPC_TIMEOUT.as_millis() as u64,
@@ -219,10 +221,11 @@ impl NodeClient {
             // submitted and reports it discarded. That is the client's guess: the chain can still
             // include the transaction until its expiration block, and the wait for inclusion must
             // end on what the chain did.
-            .tx_discard_delta(None)
-            .build()
-            .await
-            .context("building the miden client")?;
+            .tx_discard_delta(None);
+        if let Some(url) = &config.prover_url {
+            builder = builder.prover(Arc::new(RemoteProver::new(url, config.prover_timeout)));
+        }
+        let mut client = builder.build().await.context("building the miden client")?;
 
         client
             .sync_state()
@@ -423,14 +426,27 @@ impl MidenClient for NodeClient {
 
 /// The class of a Miden client error under `kind`.
 ///
-/// Only a failed exchange with the node is `transient`. The client's other errors come from its own
-/// store, its keystore, or executing and proving the transaction, such as a signing key missing
-/// from the keystore, and retrying will not fix those, so they are `actionable`.
+/// Node RPC failures are `transient`. Other errors come from the client's own store, its keystore,
+/// or executing and proving the transaction, such as a signing key missing from the keystore, and
+/// retrying will not fix those, so they are `actionable`.
 fn client_class(error: &ClientError, kind: &'static str) -> FailureClass {
     match error {
         ClientError::RpcError(_) => Transient(kind),
         _ => Actionable(kind),
     }
+}
+
+/// Recognizes the node's explicit expiration rejection, not a timeout.
+pub(crate) fn is_expired_submission(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ClientError>(),
+        Some(ClientError::RpcError(RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind: GrpcError::InvalidArgument,
+            endpoint_error: Some(EndpointError::AddTransaction(AddTransactionError::Expired)),
+            ..
+        }))
+    )
 }
 
 /// Whether the wait for a transaction tries again after a sync failed, given how many have failed
@@ -487,7 +503,6 @@ fn inclusion(
 
 #[cfg(test)]
 mod tests {
-    use miden_client::rpc::RpcError;
     use miden_client::transaction::DiscardCause;
     use rstest::rstest;
 
@@ -573,11 +588,49 @@ mod tests {
         Transient("node_sync")
     )]
     #[case::client(ClientError::AccountNonceTooLow, Actionable("node_sync"))]
+    #[case::local_prover(
+        miden_client::transaction::TransactionProverError::other("local proof failed").into(),
+        Actionable("node_sync")
+    )]
     fn client_errors_are_transient_only_from_the_node(
         #[case] error: ClientError,
         #[case] class: FailureClass,
     ) {
         assert_eq!(client_class(&error, "node_sync"), class);
+    }
+
+    #[test]
+    fn only_an_explicit_submission_expiration_reduces_batches() {
+        use AddTransactionError::{CapacityExceeded, Expired};
+        use GrpcError::{DeadlineExceeded, InvalidArgument, Unavailable};
+        use RpcEndpoint::{GetAccount, SubmitProvenTx};
+
+        for (endpoint, error_kind, rejection, expected) in [
+            (SubmitProvenTx, InvalidArgument, Some(Expired), true),
+            (GetAccount, InvalidArgument, Some(Expired), false),
+            (SubmitProvenTx, DeadlineExceeded, Some(Expired), false),
+            (SubmitProvenTx, Unavailable, None, false),
+            (SubmitProvenTx, InvalidArgument, None, false),
+            (
+                SubmitProvenTx,
+                InvalidArgument,
+                Some(CapacityExceeded),
+                false,
+            ),
+        ] {
+            let error = ClientError::RpcError(RpcError::RequestError {
+                endpoint,
+                error_kind,
+                endpoint_error: rejection.map(EndpointError::AddTransaction),
+                source: None,
+            });
+            let failure = Failure::new(Transient("transaction_submit"), error)
+                .context("submitting the mint transaction");
+            assert_eq!(is_expired_submission(&failure.error), expected);
+        }
+        assert!(!is_expired_submission(&anyhow!("transaction expired")));
+        let expired = inclusion_at(&TransactionStatus::Pending, EXPIRATION_BLOCK).unwrap_err();
+        assert!(!is_expired_submission(&expired.error));
     }
 
     /// While waiting for a transaction, a failed exchange with the node is tried again until three

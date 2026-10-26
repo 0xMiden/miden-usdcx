@@ -12,6 +12,7 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         --circle-url https://circle.invalid
         --faucet-account-id 0x222222222222221122222222222222
         --relayer-page-size 100 --relayer-request-timeout 30s
+        --relayer-prover-url https://prover.invalid --relayer-prover-timeout 15s
         --relayer-miden-data-dir /unused/relayer
         --relayer-account-id 0x111111101111111111111111111111
         --relayer-attester-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
@@ -64,4 +65,9 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
     // The two services keep their own timings.
     assert_eq!(config.relayer.request_timeout, Duration::from_secs(30));
     assert_eq!(config.relayer.poll_interval, Duration::from_secs(5));
+    assert_eq!(
+        config.relayer.prover_url.unwrap().as_str(),
+        "https://prover.invalid/"
+    );
+    assert_eq!(config.relayer.prover_timeout, Duration::from_secs(15));
 }

@@ -5,9 +5,12 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use miden_protocol::account::AccountId;
 use miden_usdcx::xreserve::encoding::CircleDomain;
+use url::Url;
 use usdcx_telemetry::TelemetryArgs;
 use xreserve_deposit_relayer::circle::PageSize;
-use xreserve_deposit_relayer::config::{parse_account_id, Config as RelayerConfig};
+use xreserve_deposit_relayer::config::{
+    parse_account_id, parse_prover_timeout, parse_prover_url, Config as RelayerConfig,
+};
 use xreserve_deposit_relayer::miden::ExpirationDelta;
 use xreserve_deposit_relayer::mint::AttesterPublicKey;
 use xusdc_attester::config::{
@@ -47,10 +50,18 @@ pub(crate) struct RunArgs {
 
 #[derive(Args)]
 struct RelayerArgs {
-    /// The number of deposit attestations in one Circle response, between 1 and 1000. A page is
-    /// minted as a single transaction.
+    /// Deposits per Circle page (1 to 1000). Initially capped at 10 without a prover URL, or 40
+    /// with one. Each page is minted as one transaction.
     #[arg(long)]
     relayer_page_size: PageSize,
+
+    /// Optional HTTP(S) remote prover endpoint. Without it, the relayer proves locally.
+    #[arg(long, value_parser = parse_prover_url)]
+    relayer_prover_url: Option<Url>,
+
+    /// Maximum time for remote proving, including connection setup.
+    #[arg(long, value_parser = parse_prover_timeout, default_value = "30s")]
+    relayer_prover_timeout: Duration,
 
     /// The maximum duration of one Circle request made by the relayer (for example, "30s").
     #[arg(long, value_parser = humantime::parse_duration)]
@@ -98,6 +109,8 @@ impl TryFrom<RunArgs> for Config {
         let relayer = RelayerConfig {
             circle_url: attester.circle_api_base_url().clone(),
             page_size: cli.relayer.relayer_page_size,
+            prover_url: cli.relayer.relayer_prover_url,
+            prover_timeout: cli.relayer.relayer_prover_timeout,
             request_timeout: cli.relayer.relayer_request_timeout,
             poll_interval: cli.relayer.relayer_poll_interval,
             remote_domain: CircleDomain::MIDEN,

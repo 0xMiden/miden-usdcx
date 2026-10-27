@@ -297,6 +297,7 @@ impl Attester {
             error!(
                 note_id = %saved.note_id,
                 withdrawal_id = saved.withdrawal_id.as_deref().unwrap_or("not assigned"),
+                expected_transfer_spec_hash = %saved.transfer_spec_hash,
                 status = ?saved.status,
                 http_status = ?saved.last_http_status,
                 hold_reason = ?saved.hold_reason,

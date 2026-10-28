@@ -16,6 +16,7 @@ use miden_protocol::utils::serde::Serializable;
 use reqwest::{header::CONTENT_TYPE, Method, StatusCode};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
+use tracing::instrument::WithSubscriber as _;
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 
 use crate::attester::{release_holds, Attester};
@@ -1515,5 +1516,253 @@ async fn circle_answers_are_read_into_the_saved_row() {
             (id, error),
             "{name}"
         );
+    }
+}
+
+fn mismatch_events(output: &tempfile::NamedTempFile) -> Vec<Value> {
+    std::fs::read_to_string(output.path())
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("withdrawal identity mismatch details"))
+        .map(|line| serde_json::from_str(line.split_once(" details=").unwrap().1).unwrap())
+        .collect()
+}
+
+/// Recovery reports each persisted unsigned request, not current config or another burn's row.
+#[tokio::test]
+async fn mismatch_diagnostics_read_the_saved_requests_after_restart() {
+    let ledger = Ledger::new().await;
+    let mut saved = Vec::new();
+    let mut expected = Vec::new();
+    let mut replies = Vec::new();
+    for index in 0..2 {
+        let mut row = ledger
+            .signed(index)
+            .await
+            .submission(ENDPOINT.parse().unwrap())
+            .unwrap();
+        let mut body: Value = serde_json::from_slice(&row.body).unwrap();
+        // Deliberately distinct saved fields make a wrong-row or rebuilt-request log fail.
+        let mut prepared =
+            super::verify::captured(super::verify::FORWARDED_FIXTURE, &ledger.burns[index]);
+        let intent = &mut prepared.burn_intents[0];
+        intent.max_fee = (111 + index).to_string();
+        intent.max_block_height = (123456 + index).to_string();
+        intent.spec.value = (234567 + index).to_string();
+        intent.spec.destination_recipient =
+            format!("0x{}", if index == 0 { "12" } else { "34" }.repeat(32));
+        intent
+            .spec
+            .hook_data
+            .forwarding_calldata
+            .push_str(if index == 0 { "abcd" } else { "1234" });
+        let (encoded, _) = crate::verify::canonical_values_for_test(&prepared).unwrap();
+        row.transfer_spec_hash = keccak256(&encoded[72..]);
+        let unsigned = serde_json::to_value(&prepared.burn_intents[0]).unwrap();
+        body["batches"][0]["burnIntents"][0] = unsigned.clone();
+        body["batches"][0]["burnSignatures"] = json!(["DO_NOT_LOG_SIGNATURE"]);
+        body["batches"][0]["burnIntents"][0]["unknownSecret"] = json!("DO_NOT_LOG_UNKNOWN");
+        row.body = serde_json::to_vec(&body).unwrap();
+        let mut response = ledger.response(index, "finalized");
+        response["transferSpecHashes"] = json!([B256::repeat_byte(0xee).to_string()]);
+        response["attestation"] = json!("DO_NOT_LOG_CIRCLE_SIGNATURE");
+        replies.push(reply(
+            409,
+            json!({"conflict": {"withdrawalId": response["withdrawalId"]}}),
+        ));
+        replies.push(CircleState::TransportError);
+        expected.push(unsigned);
+        saved.push(row);
+    }
+    let (mut attester, _) = ledger.start(replies).await;
+    for row in &saved {
+        attester.store.save_submission(row).unwrap();
+        attester
+            .advance_submissions(vec![row.clone()], &mut false)
+            .await
+            .unwrap();
+    }
+    drop(attester);
+
+    let indices: Vec<_> = ledger
+        .ordered_indices()
+        .into_iter()
+        .filter(|&i| i < 2)
+        .collect();
+    let replies = indices
+        .iter()
+        .map(|&index| {
+            let mut response = ledger.response(index, "finalized");
+            response["transferSpecHashes"] = json!([B256::repeat_byte(0xee).to_string()]);
+            response["attestation"] = json!("DO_NOT_LOG_CIRCLE_SIGNATURE");
+            reply(200, response)
+        })
+        .collect();
+    let (mut attester, requests) = ledger.start(replies).await;
+    let before: Vec<_> = (0..2).map(|i| ledger.record(&attester, i)).collect();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(output.reopen().unwrap())
+        .finish();
+    recover(&mut attester)
+        .with_subscriber(subscriber)
+        .await
+        .unwrap();
+    let events = mismatch_events(&output);
+    assert_eq!(events.len(), 2);
+    for (event, index) in events.iter().zip(indices) {
+        let after = ledger.record(&attester, index);
+        let stored: Value = serde_json::from_slice(&before[index].body).unwrap();
+        let stored_unsigned: crate::circle::BurnIntent =
+            serde_json::from_value(stored["batches"][0]["burnIntents"][0].clone()).unwrap();
+        assert_eq!(event["expectedBurnTxId"], before[index].note_id.to_hex());
+        assert_eq!(
+            event["savedUnsignedIntent"],
+            serde_json::to_value(stored_unsigned).unwrap()
+        );
+        assert_eq!(event["savedUnsignedIntent"], expected[index]);
+        assert_ne!(event["savedUnsignedIntent"], expected[1 - index]);
+        assert_eq!(
+            event["expectedTransferSpecHash"],
+            before[index].transfer_spec_hash.to_string()
+        );
+        assert_eq!(
+            event["reported"]["checks"]["transferSpecHashMatches"],
+            false
+        );
+        assert_eq!(event["reported"]["status"], "finalized");
+        assert_eq!(after.body, before[index].body);
+        assert_eq!(after.transfer_spec_hash, before[index].transfer_spec_hash);
+        assert_eq!(after.status, SubmissionStatus::Submitting);
+        println!(
+            "stored_unsigned_before_after={}",
+            json!({"noteId": after.note_id.to_hex(), "hash": after.transfer_spec_hash.to_string(), "intent": expected[index]})
+        );
+    }
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert!(requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|request| matches!(request, ObservedRequest::Lookup { .. })));
+    let logged = std::fs::read_to_string(output.path()).unwrap();
+    for secret in [
+        "DO_NOT_LOG_SIGNATURE",
+        "DO_NOT_LOG_UNKNOWN",
+        "DO_NOT_LOG_CIRCLE_SIGNATURE",
+        "burnSignatures",
+    ] {
+        assert!(!logged.contains(secret), "{secret} leaked");
+    }
+    println!("{logged}");
+}
+
+#[tokio::test]
+async fn mismatch_diagnostics_repeat_only_when_needed_and_fail_safely() {
+    let ledger = Ledger::new().await;
+    let mut wrong = ledger.response(0, "finalized");
+    wrong["transferSpecHashes"] = json!([B256::repeat_byte(0xff).to_string()]);
+    let mut changed = wrong.clone();
+    changed["transferSpecHashes"] = json!([B256::repeat_byte(0xee).to_string()]);
+    let mut unknown_status = ledger.response(0, "future_status");
+    unknown_status["attestation"] = json!("DO_NOT_LOG_CIRCLE_SIGNATURE");
+    let mut extra = wrong.clone();
+    extra["updatedAt"] = json!("unrelated timestamp");
+    extra["attestation"] = json!("DO_NOT_LOG_CIRCLE_SIGNATURE");
+    let (mut attester, _) = ledger
+        .start(vec![
+            conflict(),
+            reply(200, wrong.clone()),
+            reply(200, extra),
+            CircleState::TransportError,
+            reply(200, wrong.clone()),
+            reply(200, changed.clone()),
+            reply(200, unknown_status),
+            reply(200, changed.clone()),
+            reply(200, ledger.response(0, "created")),
+            reply(200, changed.clone()),
+        ])
+        .await;
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(output.reopen().unwrap())
+        .finish();
+    async {
+        ledger.submit(&mut attester, 0).await.unwrap();
+        for expected_count in [1, 1, 1, 2] {
+            recover(&mut attester).await.unwrap();
+            assert_eq!(mismatch_events(&output).len(), expected_count);
+        }
+        recover(&mut attester).await.unwrap();
+        assert!(
+            attester.logged_mismatches.is_empty(),
+            "matching identity clears the cache even with an unknown status"
+        );
+        recover(&mut attester).await.unwrap();
+        assert_eq!(mismatch_events(&output).len(), 3);
+        recover(&mut attester).await.unwrap();
+        assert!(attester.logged_mismatches.is_empty());
+        poll(&mut attester).await.unwrap();
+        assert_eq!(mismatch_events(&output).len(), 4);
+    }
+    .with_subscriber(subscriber)
+    .await;
+    let original_body: Value = serde_json::from_slice(&ledger.record(&attester, 0).body).unwrap();
+    drop(attester);
+
+    // Invalid diagnostic data does not prevent status recovery or disclose raw saved fields.
+    for case in [
+        "malformed request",
+        "oversized request",
+        "oversized response",
+    ] {
+        let body = match case {
+            "oversized request" => {
+                json!({"batches": [{"burnTxId": ledger.burns[0].note_id().to_hex(), "padding": "DO_NOT_LOG_PADDING".repeat(2000)}]})
+            }
+            "malformed request" => {
+                json!({"batches": [{"burnTxId": ledger.burns[0].note_id().to_hex(), "burnIntents": ["DO_NOT_LOG_MALFORMED"]}]})
+            }
+            _ => original_body.clone(),
+        };
+        ledger.sql(&format!(
+            "UPDATE submissions SET body = x'{}'",
+            hex::encode(serde_json::to_vec(&body).unwrap())
+        ));
+        let mut response = wrong.clone();
+        if case == "oversized response" {
+            response["attestation"] = json!("DO_NOT_LOG_CIRCLE_SIGNATURE".repeat(2000));
+        }
+        let (mut attester, _) = ledger.start(vec![reply(200, response)]).await;
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(output.reopen().unwrap())
+            .finish();
+        poll(&mut attester)
+            .with_subscriber(subscriber)
+            .await
+            .unwrap();
+        let events = mismatch_events(&output);
+        assert_eq!(events.len(), 1, "restart must emit again");
+        if case == "oversized response" {
+            assert!(events[0]["reported"]["unavailable"].is_string());
+            assert_eq!(
+                events[0]["savedUnsignedIntent"],
+                original_body["batches"][0]["burnIntents"][0]
+            );
+        } else {
+            assert!(events[0]["savedUnsignedIntent"]["unavailable"].is_string());
+        }
+        let logged = std::fs::read_to_string(output.path()).unwrap();
+        assert!(!logged.contains("DO_NOT_LOG"));
+        let saved = ledger.record(&attester, 0);
+        assert_eq!(saved.status, SubmissionStatus::Submitted);
+        assert_eq!(serde_json::from_slice::<Value>(&saved.body).unwrap(), body);
     }
 }

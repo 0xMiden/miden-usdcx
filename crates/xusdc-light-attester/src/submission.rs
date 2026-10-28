@@ -1,15 +1,18 @@
 //! Saves signed requests before sending them, then resumes uncertain submissions unchanged.
 
-use alloy_primitives::B256;
+use alloy_primitives::{keccak256, B256};
 use miden_protocol::note::NoteId;
 use reqwest::{StatusCode, Url};
+use serde::Deserialize;
+use serde_json::{json, Value};
 use tracing::{error, info, info_span, warn, Instrument as _, Span};
 use usdcx_telemetry::FailureClass::{Actionable, Integrity, Transient};
 use usdcx_telemetry::{Classified, FailureClass, FailureSpanExt as _};
 
 use crate::attester::Attester;
 use crate::circle::{
-    self, circle_message, CircleError, ConflictResponse, RawResponse, WithdrawalResponse,
+    self, circle_message, BurnIntent, CircleError, ConflictResponse, RawResponse,
+    WithdrawalResponse,
 };
 use crate::signer::SignerError;
 use crate::verify::{SignedWithdrawal, VerifyError};
@@ -282,6 +285,23 @@ impl Attester {
         saved: &SavedSubmission,
         failure: Option<FailureClass>,
     ) -> Result<(), SubmitError> {
+        if matches!(failure, Some(Integrity("wrong_withdrawal"))) {
+            let details = saved.identity_diagnostics().to_string();
+            let fingerprint = keccak256(details.as_bytes());
+            if self.logged_mismatches.insert(saved.note_id, fingerprint) != Some(fingerprint) {
+                error!(note_id = %saved.note_id, details = %details, "withdrawal identity mismatch details");
+            }
+        } else if matches!(
+            saved.status,
+            SubmissionStatus::Finalized
+                | SubmissionStatus::Expired
+                | SubmissionStatus::Failed
+                | SubmissionStatus::Held
+        ) || (failure.is_none() && saved.status == SubmissionStatus::Submitted)
+            || matches!(failure, Some(Transient("unknown_status")))
+        {
+            self.logged_mismatches.remove(&saved.note_id);
+        }
         if let Some(class) = failure {
             Span::current().record_failure(class);
             // For a failed withdrawal the saved text is Circle's own failure reason: outside text
@@ -312,6 +332,78 @@ impl Attester {
 }
 
 impl SavedSubmission {
+    /// Read only the known unsigned fields. The saved body also contains signatures.
+    fn identity_diagnostics(&self) -> Value {
+        // Bound diagnostic input independently of whether the request/response was accepted.
+        const MAX_BYTES: usize = 16 * 1024;
+        #[derive(Deserialize)]
+        struct Request {
+            batches: [Batch; 1],
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Batch {
+            burn_intents: [BurnIntent; 1],
+        }
+
+        let intent = if self.body.len() > MAX_BYTES {
+            json!({"unavailable": "saved request exceeds diagnostic limit"})
+        } else {
+            serde_json::from_slice::<Request>(&self.body)
+                .ok()
+                .and_then(|request| serde_json::to_value(&request.batches[0].burn_intents[0]).ok())
+                .unwrap_or_else(|| json!({"unavailable": "saved unsigned request is malformed"}))
+        };
+        let reported = self.last_response.as_deref().and_then(|body| {
+            if body.len() > MAX_BYTES {
+                return None;
+            }
+            if self.withdrawal_id.is_some() {
+                serde_json::from_slice::<WithdrawalResponse>(body).ok()
+            } else {
+                serde_json::from_slice::<[WithdrawalResponse; 1]>(body)
+                    .ok()
+                    .map(|[response]| response)
+            }
+        });
+        let reported = reported.map(|response| {
+            let id_valid = is_well_formed_id(&response.withdrawal_id);
+            let hashes = response.transfer_spec_hashes.iter()
+                .map(|hash| hash.parse::<B256>().map(|hash| hash.to_string()))
+                .collect::<Result<Vec<_>, _>>().ok();
+            let status = match response.status.as_str() {
+                "created" | "verified" | "confirmed" | "finalized" | "expired" | "failed" => {
+                    response.status.as_str()
+                }
+                _ => "unknown",
+            };
+            json!({
+                "withdrawalId": if id_valid { response.withdrawal_id.as_str() } else { "malformed" },
+                "burnTxId": response.burn_note_id.parse::<B256>().ok().map(|id| id.to_string()),
+                "status": status,
+                "transferSpecHashes": hashes,
+                "transferSpecHashesMalformed": hashes.is_none(),
+                "transferSpecHashCount": response.transfer_spec_hashes.len(),
+                "checks": {
+                    "withdrawalIdValid": id_valid,
+                    "burnNoteMatches": self.matches_note(&response.burn_note_id),
+                    "singleTransferSpecHash": response.transfer_spec_hashes.len() == 1,
+                    "transferSpecHashMatches": response.transfer_spec_hashes.first()
+                        .and_then(|hash| hash.parse::<B256>().ok()) == Some(self.transfer_spec_hash),
+                    "withdrawalIdMatches": self.withdrawal_id.as_ref()
+                        .is_none_or(|id| id == &response.withdrawal_id),
+                }
+            })
+        }).unwrap_or_else(|| json!({"unavailable": "response is malformed or exceeds diagnostic limit"}));
+        json!({
+            "expectedBurnTxId": self.note_id.to_hex(),
+            "expectedWithdrawalId": self.withdrawal_id,
+            "expectedTransferSpecHash": self.transfer_spec_hash.to_string(),
+            "savedUnsignedIntent": intent,
+            "reported": reported,
+        })
+    }
+
     fn hold(&mut self, reason: HoldReason, message: &str) {
         self.status = SubmissionStatus::Held;
         self.hold_reason = Some(reason);

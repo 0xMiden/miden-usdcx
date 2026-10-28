@@ -1,8 +1,10 @@
 //! Service startup and the sequential withdrawal-attester cycle.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use alloy_primitives::B256;
 use anyhow::Context;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
@@ -86,6 +88,8 @@ pub struct Attester {
     admin: Option<tokio::sync::mpsc::Receiver<crate::admin::Command>>,
     /// Once cancelled, admin commands are dropped unanswered.
     admin_shutdown: CancellationToken,
+    /// Suppress unchanged identity diagnostics until the mismatch clears or the service restarts.
+    pub(crate) logged_mismatches: BTreeMap<NoteId, B256>,
 }
 
 impl Attester {
@@ -156,6 +160,7 @@ impl Attester {
             node_tip: None,
             admin: None,
             admin_shutdown: CancellationToken::new(),
+            logged_mismatches: BTreeMap::new(),
         };
         match &checkpoint {
             // After a divergence, a restart must not send saved withdrawals while the node still

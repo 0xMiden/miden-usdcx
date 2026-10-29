@@ -44,6 +44,26 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
             .to_owned(),
     );
 
+    let mut excluded = args.clone();
+    excluded.extend([
+        "--persist-burn-exclusion".into(),
+        format!("0x{}", "01".repeat(32)),
+        "--burn-exclusion-reason".into(),
+        "review pending".into(),
+    ]);
+    for reason in ["review pending", " "] {
+        *excluded.last_mut().unwrap() = reason.into();
+        let Command::Run(run) = Cli::try_parse_from(&excluded).unwrap().command else {
+            panic!("expected the run command");
+        };
+        let configured = Config::try_from(*run);
+        if reason == " " {
+            assert!(format!("{:#}", configured.err().unwrap()).contains("burn exclusion reason"));
+        } else {
+            assert!(configured.is_ok());
+        }
+    }
+
     let Command::Run(run) = Cli::try_parse_from(args).unwrap().command else {
         panic!("expected the run command");
     };

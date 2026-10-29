@@ -137,17 +137,17 @@ impl Attester {
             .await
             .context("failed to connect to the Circle API")?;
 
-        let store = Store::open_or_create(
+        let open_store = if config.burn_exclusions().is_some() {
+            Store::open_existing
+        } else {
+            Store::open_or_create
+        };
+        let store = open_store(
             config.store_path(),
             config.faucet_account_id(),
             trusted_anchor,
         )
         .context("failed to open attester store")?;
-        anyhow::ensure!(
-            config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
-            "store has withdrawals waiting for Circle's withdrawal limit; start with \
-             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
-        );
         let checkpoint = store
             .checkpoint()
             .context("failed to load the attester's checkpoint")?;
@@ -174,6 +174,20 @@ impl Attester {
                 .save_block(&block)
                 .context("failed to save the trusted anchor as the first checkpoint")?,
         }
+        if let Some((ids, reason)) = attester.config.burn_exclusions() {
+            attester.store.persist_burn_exclusions(ids, reason)?;
+        }
+        for (note_id, reason) in attester.store.burn_exclusions()? {
+            info!(%note_id, %reason, store = %attester.config.store_path().display(),
+                faucet = %attester.config.faucet_account_id(),
+                "burn exclusion is durable, including if later startup fails");
+        }
+        anyhow::ensure!(
+            attester.config.withdrawal_limit().is_some()
+                || attester.store.first_limit_wait()?.is_none(),
+            "store has withdrawals waiting for Circle's withdrawal limit; start with \
+             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
+        );
         Ok(attester)
     }
 
@@ -338,6 +352,7 @@ impl Attester {
             tip.number = Empty,
             tip.stale_duration_secs = Empty,
             burns.held.count = Empty,
+            burns.excluded.count = Empty,
             withdrawals.held.count = Empty,
             withdrawals.failed.count = Empty,
             withdrawals.pending.count = Empty,
@@ -423,6 +438,7 @@ impl Attester {
             now.saturating_sub(u64::from(verified.timestamp())),
         );
         span.record("burns.held.count", progress.burns_held);
+        span.record("burns.excluded.count", progress.burns_excluded);
         span.record("withdrawals.held.count", progress.withdrawals_held);
         span.record("withdrawals.failed.count", progress.withdrawals_failed);
         span.record("withdrawals.pending.count", progress.withdrawals_pending);

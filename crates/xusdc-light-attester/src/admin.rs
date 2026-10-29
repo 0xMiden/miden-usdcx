@@ -337,6 +337,10 @@ impl AdminError {
                 "circle_check_required",
                 "check Circle and assert non-acceptance for the held withdrawal".into(),
             ),
+            Self::Release(ReleaseError::Excluded(note_id)) => (
+                "burn_excluded",
+                format!("note {note_id} is persistently excluded; its hold cannot be released"),
+            ),
             Self::Release(ReleaseError::Store(_)) => {
                 ("store_failed", "attester store failed".into())
             }
@@ -477,6 +481,16 @@ mod tests {
             error.message,
             format!("no hold for note {note_id}; list holds to find it")
         );
+    }
+
+    #[test]
+    fn persistent_burn_exclusion_has_a_clear_release_error() {
+        let id = parse_note_id(&format!("0x{}", "ab".repeat(32))).unwrap();
+        let line = encode::<()>(Err(AdminError::Release(ReleaseError::Excluded(id))));
+        assert_eq!(error_code(&line), "burn_excluded");
+        assert!(std::str::from_utf8(&line)
+            .unwrap()
+            .contains("persistently excluded; its hold cannot be released"));
     }
 
     #[test]

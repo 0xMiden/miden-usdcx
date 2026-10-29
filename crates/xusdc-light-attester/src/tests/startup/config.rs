@@ -542,3 +542,51 @@ fn redeposit_fee_requires_a_known_xreserve_deployment() {
         args.load();
     }
 }
+
+#[test]
+fn persistent_burn_exclusion_arguments_are_paired_bounded_and_deduplicated() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let valid = TestArgs::new(&directory);
+    let id = startup_anchor().header().commitment().to_hex();
+    assert!(valid.load().burn_exclusions().is_none());
+    for (flag, value) in [
+        ("--persist-burn-exclusion", id.as_str()),
+        ("--burn-exclusion-reason", "reason"),
+    ] {
+        let mut partial = valid.clone();
+        partial.append(flag, value);
+        assert_cli_error(&partial, ErrorKind::MissingRequiredArgument);
+    }
+    let mut paired = valid;
+    paired.append("--persist-burn-exclusion", &id);
+    paired.append("--persist-burn-exclusion", &id);
+    paired.append("--burn-exclusion-reason", "  reason  ");
+    let config =
+        crate::config::Config::try_from(paired.invocation().unwrap().run.unwrap()).unwrap();
+    let (ids, reason) = config.burn_exclusions().unwrap();
+    assert_eq!(
+        ids,
+        [miden_protocol::note::NoteId::try_from_hex(&id).unwrap()]
+    );
+    assert_eq!(reason, "reason");
+    for reason in [
+        String::new(),
+        " ".into(),
+        "é".repeat(129),
+        "a\nb".into(),
+        "reason\n".into(),
+        "a\0b".into(),
+    ] {
+        paired.replace("--burn-exclusion-reason", reason);
+        assert_config_error(&paired, "burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters");
+    }
+    paired.replace("--burn-exclusion-reason", "é".repeat(128));
+    assert_eq!(paired.load().burn_exclusions().unwrap().1.len(), 256);
+    paired.replace("--persist-burn-exclusion", "not-an-id");
+    assert!(paired
+        .config()
+        .unwrap_err()
+        .to_string()
+        .contains("note id not-an-id is invalid"));
+}

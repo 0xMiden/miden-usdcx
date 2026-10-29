@@ -189,6 +189,8 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
 | `--withdrawal-limit-message-prefix` | Optional, paired with the retry interval | Exact, case-sensitive start of Circle's limit error `message`. Confirm it with Circle for the deployment; do not guess a prefix from other errors. |
 | `--withdrawal-limit-retry-interval` | Optional, paired with the message prefix | Positive delay between limit retries, for example `5m`. No default; agree the interval with the operator and Circle. |
+| `--persist-burn-exclusion` | Optional, repeatable; requires a reason | Persistently suspend a known consumed note's automatic withdrawal work. Removing the flag does not remove the exclusion. |
+| `--burn-exclusion-reason` | Required with exclusion IDs | One reason for all IDs, 1–256 UTF-8 bytes after trimming, without control characters. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
 | `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
 | `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
@@ -229,13 +231,32 @@ not calculate available capacity or let smaller withdrawals pass. Accepted withd
 status checks, and live hold management remains available. Waiting for the limit is not a manual
 hold and cannot be bypassed with hold release.
 
-Retry deadlines survive restarts. A store with waiting withdrawals requires both flags on startup;
+Retry deadlines survive restarts. A store with nonexcluded waiting withdrawals requires both flags on startup;
 changing the interval does not shorten an already saved deadline. Each fresh prepare retry can use
 both KMS signers. Choose the interval and waiting-age alerts for Circle's actual window, which need
 not be the same in every environment.
 
 This feature upgrades the attester store. Older binaries cannot open the upgraded store. Back up
 before upgrading; do not restore an old backup without reconciling any withdrawals sent since it.
+
+For an exceptional operator-directed suspension, add `--persist-burn-exclusion <NOTE_ID>` and
+`--burn-exclusion-reason "automatic processing suspended pending settlement review"` to `run`.
+The standalone attester accepts the same options. This requires an existing store and known,
+consumed notes; unknown notes or conflicting reasons reject the entire requested batch.
+Repeated identical arguments are no-ops. The exclusion persists when arguments are later omitted;
+there is no removal command, and both live and offline hold release refuse excluded notes.
+
+Exclusion preserves the original signed request, hash, UUID, status, diagnostics, burn evidence,
+holds, retry deadlines and prior history. It adds a reason on the burn and an `OPERATOR_EXCLUDED`
+history event. It stops preparation, signing, submission and status polling for that burn, without
+claiming payment or cancelling an authorization Circle already received. Do not use it to bypass
+normal withdrawal limits. Check the startup note ID/reason acknowledgement, `burns.excluded.count`,
+and continued progress of other withdrawals. The exclusion commits after checkpoint authentication
+and remains committed if a later startup step fails, including relayer startup.
+
+A consistent backup made after exclusion retains it. A pre-exclusion restore does not; retained
+arguments reapply it only if the restored store already contains the consumed note. Do not lower
+the schema version or create an empty store to bypass older binaries' refusal of the new schema.
 
 ### Restarting the container
 
@@ -296,13 +317,14 @@ Every cycle span also carries the attester's progress, zeros included:
 | `tip.number` | The node's latest committed block. Left out when the node could not be read. |
 | `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the trusted anchor. |
 | `burns.held.count` | Burns held before submission. |
+| `burns.excluded.count` | Burns persistently excluded by an operator; this does not mean they were paid. |
 | `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
 | `withdrawals.failed.count` | Withdrawals Circle reported as failed. |
-| `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
-| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
+| `withdrawals.pending.count` | Nonexcluded withdrawals being sent, or accepted by Circle and not final yet. |
+| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held, failed and excluded burns are left out. |
 | `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
-| `withdrawals.limit.count` | Burns waiting for Circle's withdrawal limit; 0 when none wait. |
-| `withdrawals.limit.note_id` | The earliest waiting burn. Left out when none wait. |
+| `withdrawals.limit.count` | Nonexcluded burns waiting for Circle's withdrawal limit; 0 when none wait. |
+| `withdrawals.limit.note_id` | The earliest nonexcluded waiting burn. Left out when none wait. |
 | `withdrawals.limit.retry_at` | Its next retry time in Unix seconds. Left out when none wait. |
 
 ## Troubleshooting

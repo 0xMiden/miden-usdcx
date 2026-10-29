@@ -1,5 +1,7 @@
 //! Durable submission and recovery, using synthetic responses rather than claiming live proof.
 
+mod exclusion;
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;

@@ -137,17 +137,17 @@ impl Attester {
             .await
             .context("failed to connect to the Circle API")?;
 
-        let open_store = if config.burn_exclusions().is_some() {
-            Store::open_existing
-        } else {
-            Store::open_or_create
-        };
-        let store = open_store(
+        let store = Store::open_or_create(
             config.store_path(),
             config.faucet_account_id(),
             trusted_anchor,
         )
         .context("failed to open attester store")?;
+        anyhow::ensure!(
+            config.withdrawal_limit().is_some() || store.first_limit_wait()?.is_none(),
+            "store has withdrawals waiting for Circle's withdrawal limit; start with \
+             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
+        );
         let checkpoint = store
             .checkpoint()
             .context("failed to load the attester's checkpoint")?;
@@ -174,20 +174,11 @@ impl Attester {
                 .save_block(&block)
                 .context("failed to save the trusted anchor as the first checkpoint")?,
         }
-        if let Some((ids, reason)) = attester.config.burn_exclusions() {
-            attester.store.persist_burn_exclusions(ids, reason)?;
-        }
         for (note_id, reason) in attester.store.burn_exclusions()? {
             info!(%note_id, %reason, store = %attester.config.store_path().display(),
                 faucet = %attester.config.faucet_account_id(),
-                "burn exclusion is durable, including if later startup fails");
+                "burn remains persistently excluded from automatic withdrawal work");
         }
-        anyhow::ensure!(
-            attester.config.withdrawal_limit().is_some()
-                || attester.store.first_limit_wait()?.is_none(),
-            "store has withdrawals waiting for Circle's withdrawal limit; start with \
-             --withdrawal-limit-message-prefix and --withdrawal-limit-retry-interval"
-        );
         Ok(attester)
     }
 
@@ -275,6 +266,22 @@ impl Attester {
                     })
                     .map_err(ReleaseError::from)
                     .map_err(report);
+                let _ = reply.send(result);
+            }
+            Operation::ExcludeBurn(note_id, reason, reply) => {
+                let result = self.store.exclude_burn(note_id, &reason).map_err(|error| {
+                    if let crate::store::ExclusionError::Store(detail) = error {
+                        let failure = Failure::new(Actionable("store"), detail);
+                        failure.report("admin store operation failed");
+                        crate::store::ExclusionError::Store(failure.error)
+                    } else {
+                        error
+                    }
+                });
+                if result.is_ok() {
+                    info!(%note_id, reason = reason.trim(),
+                        "burn is persistently excluded; payment is not confirmed");
+                }
                 let _ = reply.send(result);
             }
             Operation::Release(selection, reply) => {
@@ -593,6 +600,10 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             self.admin_checkpoint().await;
+            // The selection predates this checkpoint; exclusion takes effect before more work.
+            if self.store.is_excluded(burn.note_id())? {
+                continue;
+            }
             if *rate_limited || !self.limit_allows(burn.note_id())? {
                 break;
             }

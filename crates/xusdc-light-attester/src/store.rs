@@ -22,7 +22,6 @@ use strum::IntoEnumIterator;
 
 use crate::burn::{BurnCandidate, DiscoveredBurn};
 use crate::circle::circle_message;
-use crate::config::parse_exclusion_reason;
 use crate::submission::{
     is_well_formed_id, HoldReason, SavedSubmission, SubmissionAttempt, SubmissionStatus,
 };
@@ -114,6 +113,19 @@ pub(crate) enum ReleaseError {
     CircleCheck,
     #[error("note {0} is persistently excluded; its hold cannot be released")]
     Excluded(NoteId),
+    #[error(transparent)]
+    Store(#[from] anyhow::Error),
+}
+
+/// Why an operator exclusion did not succeed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExclusionError {
+    #[error("burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters")]
+    InvalidReason,
+    #[error("note {0} is not a known consumed burn")]
+    NotConsumed(NoteId),
+    #[error("note {0} already has a different exclusion reason")]
+    Conflict(NoteId),
     #[error(transparent)]
     Store(#[from] anyhow::Error),
 }
@@ -274,39 +286,38 @@ impl Store {
         })
     }
 
-    /// Add exclusions atomically without changing any saved request or previous history.
-    pub(crate) fn persist_burn_exclusions(
-        &mut self,
-        ids: &[NoteId],
-        reason: &str,
-    ) -> anyhow::Result<()> {
-        ensure!(
-            parse_exclusion_reason(reason)? == reason,
-            "burn exclusion reason must be trimmed"
-        );
+    /// Excludes one consumed burn without changing its saved request or previous history.
+    pub(crate) fn exclude_burn(&mut self, id: NoteId, reason: &str) -> Result<(), ExclusionError> {
+        let reason = parse_exclusion_reason(reason).map_err(|_| ExclusionError::InvalidReason)?;
         let transaction = self.connection.transaction().map_err(classify_error)?;
-        for id in ids.iter().copied().collect::<BTreeSet<_>>() {
-            let saved: Option<String> = transaction.query_row(
-                "SELECT exclusion_reason FROM burns WHERE note_id = ?1 AND consumption_block IS NOT NULL",
-                [id.to_bytes()], |row| row.get(0),
-            ).optional().map_err(classify_error)?
-                .with_context(|| format!("burn {id} is not a known consumed burn"))?;
-            ensure!(
-                saved.as_deref().is_none_or(|saved| saved == reason),
-                "burn {id} already has a different exclusion reason"
-            );
-            // Active selectors will skip this request, so validate it before hiding it from them.
-            select_submissions(&transaction, Some(id), None, false)?;
-            if saved.is_none() {
-                let updated = transaction.execute(
-                    "UPDATE burns SET exclusion_reason = ?2 WHERE note_id = ?1 AND exclusion_reason IS NULL",
-                    params![id.to_bytes(), reason],
-                ).map_err(classify_error)?;
-                ensure!(updated == 1, CONFLICT);
-                record_event(&transaction, id, EventKind::OperatorExcluded, None)?;
-            }
+        let saved: Option<String> = transaction.query_row(
+            "SELECT exclusion_reason FROM burns WHERE note_id = ?1 AND consumption_block IS NOT NULL",
+            [id.to_bytes()], |row| row.get(0),
+        ).optional().map_err(classify_error)?.ok_or(ExclusionError::NotConsumed(id))?;
+        if saved.as_deref().is_some_and(|saved| saved != reason) {
+            return Err(ExclusionError::Conflict(id));
         }
-        transaction.commit().map_err(classify_error)
+        // Active selectors will skip this request, so validate it before hiding it from them.
+        select_submissions(&transaction, Some(id), None, false)?;
+        if saved.is_none() {
+            let updated = transaction.execute(
+                "UPDATE burns SET exclusion_reason = ?2 WHERE note_id = ?1 AND exclusion_reason IS NULL",
+                params![id.to_bytes(), reason],
+            ).map_err(classify_error)?;
+            if updated != 1 {
+                return Err(anyhow!(CONFLICT).into());
+            }
+            record_event(&transaction, id, EventKind::OperatorExcluded, None)?;
+        }
+        transaction.commit().map_err(classify_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn is_excluded(&self, id: NoteId) -> anyhow::Result<bool> {
+        exists(&self.connection,
+            "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 AND exclusion_reason IS NOT NULL)",
+            [id.to_bytes()],
+        )
     }
 
     pub(crate) fn burn_exclusions(&self) -> anyhow::Result<Vec<(NoteId, String)>> {
@@ -1273,6 +1284,16 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
 }
 
 /// Exclusions are add-only; their reasons must remain valid when the store is reopened.
+/// Normalize operator input; the store also requires the saved value to already be normalized.
+fn parse_exclusion_reason(value: &str) -> anyhow::Result<&str> {
+    let reason = value.trim();
+    ensure!(
+        !reason.is_empty() && reason.len() <= 256 && !value.chars().any(char::is_control),
+        "burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters"
+    );
+    Ok(reason)
+}
+
 fn load_exclusions(connection: &rusqlite::Connection) -> anyhow::Result<Vec<(NoteId, String)>> {
     let mut statement = connection.prepare(
         "SELECT note_id, exclusion_reason FROM burns WHERE exclusion_reason IS NOT NULL ORDER BY note_id"

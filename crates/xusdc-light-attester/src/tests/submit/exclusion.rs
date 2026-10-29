@@ -1,16 +1,10 @@
 //! Durable operator suspension of a saved hash mismatch, using equivalent synthetic requests.
 use super::*;
-use crate::config::Config;
 use crate::store::{BurnHoldReason, ReleaseError, ReleaseSelection, STORE_VERSION};
 use miden_protocol::note::NoteId;
 use rusqlite::types::Value as SqlValue;
 
 const REASON: &str = "automatic processing suspended pending settlement review";
-
-fn exclude(args: &mut TestArgs, id: NoteId) {
-    args.append("--persist-burn-exclusion", id.to_hex());
-    args.append("--burn-exclusion-reason", REASON);
-}
 
 fn rows(ledger: &Ledger, index: usize, table: &str, columns: &str) -> Vec<Vec<SqlValue>> {
     let disk = read_store(&ledger.path());
@@ -31,15 +25,12 @@ fn rows(ledger: &Ledger, index: usize, table: &str, columns: &str) -> Vec<Vec<Sq
 
 const BURN_COLUMNS: &str = "note_id, nullifier, note, creation_block, consumption_block, hold_reason, withdrawal_limit_retry_at";
 
-async fn try_start(
-    ledger: &Ledger,
-    config: Config,
-    blocks: Vec<SignedBlock>,
-) -> anyhow::Result<Attester> {
+async fn try_start(ledger: &Ledger) -> anyhow::Result<Attester> {
+    let config = ledger.config.lock().unwrap().load();
     let (circle, _) = ScriptedCircle::new(ledger.path(), vec![]);
     Attester::start(
         config,
-        Box::new(TestChain::new(blocks, scan_limits(3, 3)).0),
+        Box::new(TestChain::new(ledger.blocks.clone(), scan_limits(3, 3)).0),
         Box::new(circle),
         development_pair().await,
     )
@@ -137,17 +128,8 @@ async fn persistent_burn_exclusion_saved_mismatch_upgrade_and_restart() {
     drop(attester);
     released_store(&ledger);
     assert_eq!(super::super::support::store_version(&ledger.path()), 4);
-    exclude(
-        &mut ledger.config.lock().unwrap(),
-        ledger.burns[0].note_id(),
-    );
-    // First invocation upgrades schema 4; repeated arguments and omitted arguments both retain it.
-    for invocation in 0..3 {
-        if invocation == 2 {
-            let mut args = ledger.config.lock().unwrap();
-            args.remove("--persist-burn-exclusion");
-            args.remove("--burn-exclusion-reason");
-        }
+    // Startup upgrades schema 4; the store excludes the saved request before the next cycle.
+    for invocation in 0..2 {
         let mut replies = vec![mismatch(2)];
         if invocation == 0 {
             replies.extend([
@@ -157,6 +139,14 @@ async fn persistent_burn_exclusion_saved_mismatch_upgrade_and_restart() {
         }
         let (pair, calls) = signers(None).await;
         let (mut attester, requests, _) = ledger.runtime(replies, pair).await;
+        if invocation == 0 {
+            for reason in [format!("  {REASON}  "), REASON.into()] {
+                attester
+                    .store
+                    .exclude_burn(ledger.burns[0].note_id(), &reason)
+                    .unwrap();
+            }
+        }
         assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
         assert_eq!(ledger.record(&attester, 0), saved);
         assert_eq!(
@@ -244,7 +234,7 @@ async fn persistent_burn_exclusion_selectors_and_atomicity() {
             saved.withdrawal_id = known.then(|| ID.into());
             store.update_submission_outcome(&saved).unwrap();
         }
-        store.persist_burn_exclusions(&[id, id], REASON).unwrap();
+        store.exclude_burn(id, &"é".repeat(128)).unwrap();
         assert!(store.submissions_to_recover().unwrap().is_empty());
         assert!(store.submissions_to_poll().unwrap().is_empty());
         assert_eq!(
@@ -271,9 +261,7 @@ async fn persistent_burn_exclusion_selectors_and_atomicity() {
         hex::encode(ids[1].to_bytes())
     ));
     let mut store = ledger.open_store().unwrap();
-    let error = store
-        .persist_burn_exclusions(&ids[..2], REASON)
-        .unwrap_err();
+    let error = store.exclude_burn(ids[1], REASON).unwrap_err();
     assert!(format!("{error:#}").contains("forced exclusion event failure"));
     assert!(store.burn_exclusions().unwrap().is_empty());
     assert_eq!(ledger.stored("SELECT COUNT(*) FROM submission_events"), 0);
@@ -288,19 +276,15 @@ async fn persistent_burn_exclusion_selectors_and_atomicity() {
         ids[1],
         NoteId::try_from_hex(&miden_protocol::Word::empty().to_hex()).unwrap(),
     ] {
-        let error = store
-            .persist_burn_exclusions(&[ids[0], bad], REASON)
-            .unwrap_err();
+        let error = store.exclude_burn(bad, REASON).unwrap_err();
         assert!(error.to_string().contains("not a known consumed burn"));
         assert!(store.burn_exclusions().unwrap().is_empty());
     }
-    store.persist_burn_exclusions(&[ids[2]], REASON).unwrap();
-    let error = store
-        .persist_burn_exclusions(&[ids[0], ids[2]], "different")
-        .unwrap_err();
+    store.exclude_burn(ids[2], REASON).unwrap();
+    let error = store.exclude_burn(ids[2], "different").unwrap_err();
     assert!(error.to_string().contains("different exclusion reason"));
     store
-        .persist_burn_exclusions(&[ids[2], ids[2]], REASON)
+        .exclude_burn(ids[2], &format!("  {REASON}  "))
         .unwrap();
     assert_eq!(store.burn_exclusions().unwrap(), [(ids[2], REASON.into())]);
     assert_eq!(ledger.stored("SELECT COUNT(*) FROM submission_events"), 1);
@@ -320,80 +304,39 @@ async fn persistent_burn_exclusion_selectors_and_atomicity() {
 }
 
 #[tokio::test]
-async fn persistent_burn_exclusion_startup_boundaries_and_fifo() {
+async fn persistent_burn_exclusion_retains_fifo_evidence() {
     let ledger = Ledger::new().await;
     let [a, b, c] = ledger.fresh_indices.clone().try_into().unwrap();
-    let mut args = ledger.config.lock().unwrap().clone();
-    exclude(&mut args, ledger.burns[a].note_id());
-    let error = try_start(&ledger, args.load(), ledger.fork_blocks.clone())
-        .await
-        .err()
-        .unwrap();
-    assert!(format!("{error:#}").contains("diverged"));
-    assert!(ledger
-        .open_store()
-        .unwrap()
-        .burn_exclusions()
-        .unwrap()
-        .is_empty());
-    let mut missing = args.clone();
-    let missing_path = ledger.directory.path().join("missing.sqlite3");
-    missing.replace("--store-path", missing_path.as_os_str());
-    assert!(format!(
-        "{:#}",
-        try_start(&ledger, missing.load(), ledger.blocks.clone())
-            .await
-            .err()
-            .unwrap()
-    )
-    .contains("failed to open attester store"));
-    assert!(!missing_path.exists());
     ledger.sql(&format!(
         "UPDATE burns SET withdrawal_limit_retry_at = 9999999999 WHERE note_id IN (x'{}', x'{}')",
         hex::encode(ledger.burns[a].note_id().to_bytes()),
         hex::encode(ledger.burns[b].note_id().to_bytes())
     ));
-    // The first exclusion commits even though the other active waiter still requires settings.
-    let error = try_start(&ledger, args.load(), ledger.blocks.clone())
-        .await
-        .err()
+    let mut store = ledger.open_store().unwrap();
+    store
+        .exclude_burn(ledger.burns[a].note_id(), REASON)
         .unwrap();
+    drop(store);
+    let error = try_start(&ledger).await.err().unwrap();
     assert!(error.to_string().contains("store has withdrawals waiting"));
-    let store = ledger.open_store().unwrap();
+    let mut store = ledger.open_store().unwrap();
     assert_eq!(
         store.first_limit_wait().unwrap().unwrap().note_id,
         ledger.burns[b].note_id()
     );
     assert_eq!(store.progress().unwrap().withdrawal_limit_waiting, 1);
+    store
+        .exclude_burn(ledger.burns[b].note_id(), REASON)
+        .unwrap();
     drop(store);
-    args.append(
-        "--persist-burn-exclusion",
-        ledger.burns[b].note_id().to_hex(),
-    );
-    *ledger.config.lock().unwrap() = args;
-    let (mut attester, _) = ledger
-        .start(vec![
-            reply(200, ledger.prepared_response(c)),
-            reply(201, json!([ledger.response(c, "finalized")])),
-        ])
-        .await;
-    assert!(attester.run_one_cycle().await.unwrap().submit.is_ok());
-    assert_eq!(
-        ledger.record(&attester, c).status,
-        SubmissionStatus::Finalized
-    );
+    let (mut attester, _) = ledger.start(vec![]).await;
     assert!(attester.store.first_limit_wait().unwrap().is_none());
+    assert!(attester.limit_allows(ledger.burns[c].note_id()).unwrap());
     let progress = attester.store.progress().unwrap();
     assert_eq!(
-        (
-            progress.burns_excluded,
-            progress.burns_unfinished,
-            progress.withdrawals_pending,
-            progress.withdrawal_limit_waiting
-        ),
-        (2, 0, 0, 0)
+        (progress.burns_excluded, progress.withdrawal_limit_waiting),
+        (2, 0)
     );
-    assert!(progress.oldest_unfinished_burn.is_none());
     assert_eq!(
         ledger.stored("SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at = 9999999999"),
         2
@@ -415,20 +358,21 @@ async fn persistent_burn_exclusion_cannot_hide_invalid_requests_or_release_evide
             if retained {
                 attester
                     .store
-                    .persist_burn_exclusions(&[ledger.burns[0].note_id()], REASON)
+                    .exclude_burn(ledger.burns[0].note_id(), REASON)
                     .unwrap();
             }
             drop(attester);
             ledger.sql(&format!("UPDATE submissions SET {mutation}"));
-            let mut args = ledger.config.lock().unwrap().clone();
-            if !retained {
-                exclude(&mut args, ledger.burns[0].note_id());
+            if retained {
+                let error = try_start(&ledger).await.err().unwrap();
+                assert!(format!("{error:#}").contains(INVALID));
+            } else {
+                let mut store = ledger.open_store().unwrap();
+                let error = store
+                    .exclude_burn(ledger.burns[0].note_id(), REASON)
+                    .unwrap_err();
+                assert!(format!("{error:#}").contains(INVALID));
             }
-            let error = try_start(&ledger, args.load(), ledger.blocks.clone())
-                .await
-                .err()
-                .unwrap();
-            assert!(format!("{error:#}").contains(INVALID));
             assert_eq!(
                 ledger.stored("SELECT COUNT(*) FROM burns WHERE exclusion_reason IS NOT NULL"),
                 i64::from(retained)
@@ -445,10 +389,9 @@ async fn persistent_burn_exclusion_cannot_hide_invalid_requests_or_release_evide
         .store
         .hold_burn(ids[1], BurnHoldReason::PrepareRejected, None)
         .unwrap();
-    attester
-        .store
-        .persist_burn_exclusions(&ids, REASON)
-        .unwrap();
+    for id in ids {
+        attester.store.exclude_burn(id, REASON).unwrap();
+    }
     let saved = rows(&ledger, 0, "submissions", "*");
     for id in ids {
         assert!(matches!(attester.store.release_checked(&ReleaseSelection {

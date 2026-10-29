@@ -1,6 +1,5 @@
 //! Deployment-specific attester configuration.
 
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +32,7 @@ const MOVEMENT_DOMAIN: u32 = 10_005;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Optional Unix socket for live hold management, in a directory private to the service.
+    /// Optional Unix socket for live administration, in a directory private to the service.
     /// Disabled by default.
     #[arg(long)]
     admin_socket: Option<PathBuf>,
@@ -124,15 +123,6 @@ pub struct Cli {
     #[arg(long, requires = "withdrawal_limit_message_prefix", value_parser = humantime::parse_duration)]
     withdrawal_limit_retry_interval: Option<Duration>,
 
-    /// Persistently suspend automatic withdrawal work for this known, consumed note; repeat for
-    /// each note. Changes durable state: removing the flag later does not remove an exclusion.
-    #[arg(long, value_name = "NOTE_ID", requires = "burn_exclusion_reason")]
-    persist_burn_exclusion: Vec<String>,
-
-    /// Reason for all requested exclusions: 1–256 UTF-8 bytes after trimming, no control characters.
-    #[arg(long, value_name = "TEXT", requires = "persist_burn_exclusion")]
-    burn_exclusion_reason: Option<String>,
-
     /// Block at which the faucet was deployed. It is only checked against the trusted anchor: the
     /// attester refuses to start with an anchor after it, which would miss the burn notes created
     /// in between.
@@ -161,7 +151,7 @@ pub struct Cli {
     store_path: OsString,
 }
 
-/// The command line: run the attester, or release its holds once.
+/// The command line: run the attester or administer its withdrawal work.
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -179,7 +169,7 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Inspect or release selected holds in the running attester through its local admin listener.
+    /// Manage holds and burn exclusions through the running attester's local admin listener.
     Admin(crate::admin::AdminArgs),
     /// Stop the attester first. Without note IDs, list the holds. With note IDs, release them and
     /// exit. A released burn can be prepared again. Releasing a withdrawal deletes its saved signed
@@ -285,7 +275,6 @@ pub struct Config {
     xreserve_deposit_max_fee: Option<AssetAmount>,
     poll_interval: Duration,
     withdrawal_limit: Option<WithdrawalLimit>,
-    burn_exclusions: Option<(Vec<NoteId>, String)>,
     trusted_anchor_block: BlockNumber,
     trusted_anchor_commitment: Word,
     minimum_finality_depth_blocks: u32,
@@ -299,18 +288,6 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
-        let burn_exclusions = cli
-            .burn_exclusion_reason
-            .as_deref()
-            .map(|reason| {
-                let ids = parse_note_ids(&cli.persist_burn_exclusion, None)?
-                    .into_iter()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                Ok::<_, anyhow::Error>((ids, parse_exclusion_reason(reason)?.to_owned()))
-            })
-            .transpose()?;
         let withdrawal_limit = cli
             .withdrawal_limit_message_prefix
             .zip(cli.withdrawal_limit_retry_interval)
@@ -433,7 +410,6 @@ impl TryFrom<Cli> for Config {
             xreserve_deposit_max_fee,
             poll_interval: cli.poll_interval,
             withdrawal_limit,
-            burn_exclusions,
             trusted_anchor_block: BlockNumber::from(cli.trusted_anchor_block),
             trusted_anchor_commitment,
             minimum_finality_depth_blocks: cli.minimum_finality_depth_blocks,
@@ -499,12 +475,6 @@ impl Config {
         self.withdrawal_limit.as_ref()
     }
 
-    pub(crate) fn burn_exclusions(&self) -> Option<(&[NoteId], &str)> {
-        self.burn_exclusions
-            .as_ref()
-            .map(|(ids, reason)| (ids.as_slice(), reason.as_str()))
-    }
-
     pub(crate) fn trusted_anchor_block(&self) -> BlockNumber {
         self.trusted_anchor_block
     }
@@ -562,14 +532,4 @@ pub fn parse_trusted_anchor_commitment(value: &str) -> anyhow::Result<Word> {
         bail!("trusted anchor commitment must use canonical 0x-prefixed lowercase 32-byte hex");
     }
     Ok(commitment)
-}
-
-/// Normalize operator input; the store also requires the saved value to already be normalized.
-pub(crate) fn parse_exclusion_reason(value: &str) -> anyhow::Result<&str> {
-    let reason = value.trim();
-    ensure!(
-        !reason.is_empty() && reason.len() <= 256 && !value.chars().any(char::is_control),
-        "burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters"
-    );
-    Ok(reason)
 }

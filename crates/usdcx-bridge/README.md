@@ -189,8 +189,6 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--attester-poll-interval` | Required | Positive delay between attester cycles. The example uses `1s`; choose according to RPC and Circle request limits. |
 | `--withdrawal-limit-message-prefix` | Optional, paired with the retry interval | Exact, case-sensitive start of Circle's limit error `message`. Confirm it with Circle for the deployment; do not guess a prefix from other errors. |
 | `--withdrawal-limit-retry-interval` | Optional, paired with the message prefix | Positive delay between limit retries, for example `5m`. No default; agree the interval with the operator and Circle. |
-| `--persist-burn-exclusion` | Optional, repeatable; requires a reason | Persistently suspend a known consumed note's automatic withdrawal work. Removing the flag does not remove the exclusion. |
-| `--burn-exclusion-reason` | Required with exclusion IDs | One reason for all IDs, 1–256 UTF-8 bytes after trimming, without control characters. |
 | `--attester-store-path` | Required | Durable SQLite file. Its parent directory must exist and only one attester may open it. |
 | `--faucet-deployment-block` | Required | Deployment height from the network's faucet deployment record. It is only checked against the anchor: startup fails if the anchor is after it. |
 | `--trusted-anchor-block` | Required | Verified checkpoint height from the network configuration, at or before faucet deployment. A fresh store starts scanning here; an existing store continues from the last block it verified. |
@@ -238,25 +236,6 @@ not be the same in every environment.
 
 This feature upgrades the attester store. Older binaries cannot open the upgraded store. Back up
 before upgrading; do not restore an old backup without reconciling any withdrawals sent since it.
-
-For an exceptional operator-directed suspension, add `--persist-burn-exclusion <NOTE_ID>` and
-`--burn-exclusion-reason "automatic processing suspended pending settlement review"` to `run`.
-The standalone attester accepts the same options. This requires an existing store and known,
-consumed notes; unknown notes or conflicting reasons reject the entire requested batch.
-Repeated identical arguments are no-ops. The exclusion persists when arguments are later omitted;
-there is no removal command, and both live and offline hold release refuse excluded notes.
-
-Exclusion preserves the original signed request, hash, UUID, status, diagnostics, burn evidence,
-holds, retry deadlines and prior history. It adds a reason on the burn and an `OPERATOR_EXCLUDED`
-history event. It stops preparation, signing, submission and status polling for that burn, without
-claiming payment or cancelling an authorization Circle already received. Do not use it to bypass
-normal withdrawal limits. Check the startup note ID/reason acknowledgement, `burns.excluded.count`,
-and continued progress of other withdrawals. The exclusion commits after checkpoint authentication
-and remains committed if a later startup step fails, including relayer startup.
-
-A consistent backup made after exclusion retains it. A pre-exclusion restore does not; retained
-arguments reapply it only if the restored store already contains the consumed note. Do not lower
-the schema version or create an empty store to bypass older binaries' refusal of the new schema.
 
 ### Restarting the container
 
@@ -336,7 +315,7 @@ Investigate held withdrawals before releasing them; restarting does not release 
 automatically release holds, delete state or change the anchor to clear an error. Use the optional
 local admin socket below, or stop the bridge before using the offline `release-holds` command.
 
-### Hold management while running
+### Hold management and burn exclusion while running
 
 Administration is disabled by default. To enable it, add
 `--admin-socket /data/attester/admin.sock` to `usdcx-bridge run`. The attester creates the socket
@@ -366,12 +345,36 @@ the note ID.
 Commands wait for any active signing or Circle request to finish and do not skip the normal retry
 delay. The client never retries a release automatically.
 
+For an exceptional suspension of one known consumed burn, run:
+
+```sh
+usdcx-bridge admin --socket /data/attester/admin.sock exclude-burn --note-id <NOTE_ID> --reason "automatic processing suspended pending settlement review"
+```
+
+The reason must be 1–256 UTF-8 bytes after trimming, without control characters. Repeating the
+same note and normalized reason succeeds without another history event; a different reason or
+unknown/unconsumed note is refused. If the reply is lost, repeat that exact command. The client
+never retries automatically. Success acknowledges a committed exclusion that survives restarts;
+there is no removal command, and both live and offline hold release refuse excluded notes.
+
+Exclusion preserves the original signed request, hash, UUID, status, diagnostics, burn evidence,
+holds, retry deadlines and prior history. It adds an immutable reason on the burn and an
+`OPERATOR_EXCLUDED` history event. Commands run between complete operations: after success, cached
+work cannot prepare, sign, submit or poll that burn. Exclusion does not confirm payment or cancel
+an authorization already sent to Circle. Do not use it to bypass normal withdrawal limits.
+Check the acknowledgement, startup note ID/reason logs, `burns.excluded.count`, and other withdrawals.
+
+A consistent backup made after exclusion retains it; a pre-exclusion restore does not. Reapply
+only after reconciling the restored state. Older binaries refuse the upgraded store; do not lower
+the schema version or create an empty store to bypass that refusal.
+
 The standalone `xusdc-attester` accepts the same commands and flags. The existing offline
 `release-holds` command still accepts a list or file, but requires the service to be stopped.
 
 For other local clients, each connection carries one JSON request line and one JSON reply line:
-`{"op":"holds","after":"<NOTE_ID>"}` (the cursor is optional) or
-`{"op":"release","note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`. The
+`{"op":"holds","after":"<NOTE_ID>"}` (the cursor is optional),
+`{"op":"release","note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`, or
+`{"op":"exclude_burn","note_id":"<NOTE_ID>","reason":"review pending"}`. The
 reply is `{"ok":…}` or `{"error":{"code":…,"message":…}}`.
 
 ### Hold maintenance flags

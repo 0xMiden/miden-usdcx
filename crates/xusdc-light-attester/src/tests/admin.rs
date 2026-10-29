@@ -872,12 +872,63 @@ async fn socket_transport_and_client_release_selected_holds() {
         crate::service::run_command(invocation.command.unwrap())
             .await
             .unwrap();
+        let invocation = crate::config::Invocation::try_parse_from([
+            "xusdc-attester",
+            "admin",
+            "--socket",
+            socket,
+            "exclude-burn",
+            "--note-id",
+            &page.holds[2].note_id,
+            "--reason",
+            " review pending ",
+        ])
+        .unwrap();
+        crate::service::run_command(invocation.command.unwrap())
+            .await
+            .unwrap();
+        for (note_id, reason, code) in [
+            (
+                page.holds[2].note_id.clone(),
+                "different",
+                "exclusion_conflict",
+            ),
+            (
+                format!("0x{}", "00".repeat(32)),
+                "review pending",
+                "burn_not_consumed",
+            ),
+            ("not-an-id".into(), "review pending", "invalid_input"),
+            (page.holds[2].note_id.clone(), "", "invalid_input"),
+            (page.holds[2].note_id.clone(), " ", "invalid_input"),
+            (
+                page.holds[2].note_id.clone(),
+                &"é".repeat(129),
+                "invalid_input",
+            ),
+            (page.holds[2].note_id.clone(), "a\nb", "invalid_input"),
+            (page.holds[2].note_id.clone(), "reason\n", "invalid_input"),
+        ] {
+            let request = json!(Request::ExcludeBurn {
+                note_id,
+                reason: reason.into()
+            });
+            assert_eq!(
+                exchange(&path, request.to_string().as_bytes()).await["error"]["code"],
+                code
+            );
+        }
         shutdown.cancel();
+        crate::admin::parse_note_id(&page.holds[2].note_id).unwrap()
     };
-    let (result, _, _) = tokio::join!(serve, owner, client);
+    let (result, _, excluded) = tokio::join!(serve, owner, client);
     result.unwrap();
     assert!(!path.exists(), "the socket is removed on shutdown");
     assert_eq!(attester.store.holds_page(None).unwrap().len(), 1);
+    assert_eq!(
+        attester.store.burn_exclusions().unwrap(),
+        [(excluded, "review pending".into())]
+    );
 }
 
 #[tokio::test]
@@ -961,4 +1012,103 @@ async fn service_shutdown_keeps_its_pending_post_and_cleans_up_connections() {
     );
     assert!(ledger.open_store().is_ok());
     assert!(!path.exists(), "the socket is removed on shutdown");
+}
+
+#[tokio::test]
+async fn persistent_burn_exclusion_skips_cached_fresh_recovery_and_poll_selections() {
+    use super::support::{CircleState, ObservedRequest};
+    use crate::submission::SubmissionStatus;
+    for status in [
+        None,
+        Some(SubmissionStatus::Submitting),
+        Some(SubmissionStatus::Submitted),
+    ] {
+        let ledger = Ledger::new().await;
+        let [first, excluded, other] = ledger.ordered_indices().try_into().unwrap();
+        let (pair, calls) = super::service_map::signers(None).await;
+        let (mut attester, _, _) = ledger
+            .runtime(vec![CircleState::TransportError], pair)
+            .await;
+        ledger.submit(&mut attester, first).await.unwrap();
+        if let Some(status) = status {
+            let mut saved = ledger
+                .signed_with_max_height(excluded, None)
+                .await
+                .submission("https://circle.invalid/v1/withdraw".parse().unwrap())
+                .unwrap();
+            attester.store.save_submission(&saved).unwrap();
+            if status == SubmissionStatus::Submitted {
+                saved.status = status;
+                saved.withdrawal_id = Some("6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70".into());
+                attester.store.update_submission_outcome(&saved).unwrap();
+            }
+        }
+        let (inner, requests) = super::submit::ScriptedCircle::new(
+            ledger.path(),
+            vec![
+                reply(201, json!([ledger.response(first, "finalized")])),
+                reply(200, ledger.prepared_response(other)),
+                reply(201, json!([ledger.response(other, "finalized")])),
+            ],
+        );
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        attester.circle = Box::new(PendingPost {
+            inner,
+            started: started.clone(),
+            finish: finish.clone(),
+        });
+        let (sender, receiver) = mpsc::channel(16);
+        attester.attach_admin(receiver, CancellationToken::new());
+        let operator = async {
+            // The first recovery POST starts only after all three work vectors were selected.
+            started.notified().await;
+            let (reply, mut receive) = oneshot::channel();
+            sender
+                .try_send(Command {
+                    operation: Operation::ExcludeBurn(
+                        ledger.burns[excluded].note_id(),
+                        "review pending".into(),
+                        reply,
+                    ),
+                    deadline: Instant::now() + Duration::from_secs(60),
+                })
+                .unwrap_or_else(|_| panic!());
+            tokio::task::yield_now().await;
+            assert!(matches!(
+                receive.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            finish.notify_one();
+            receive.await.unwrap().unwrap();
+            finish.notify_one();
+        };
+        let (cycle, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(attester.run_one_cycle(), operator)
+        })
+        .await
+        .unwrap();
+        assert!(cycle.unwrap().submit.is_ok());
+        assert_eq!(super::service_map::counts(&calls), [1, 1]);
+        assert!(matches!(
+            requests.lock().unwrap().as_slice(),
+            [
+                ObservedRequest::Submit { .. },
+                ObservedRequest::Prepare,
+                ObservedRequest::Submit { .. }
+            ]
+        ));
+        assert_eq!(
+            ledger.record(&attester, other).status,
+            SubmissionStatus::Finalized
+        );
+        assert_eq!(
+            attester
+                .store
+                .submission(ledger.burns[excluded].note_id())
+                .unwrap()
+                .map(|saved| saved.status),
+            status
+        );
+    }
 }

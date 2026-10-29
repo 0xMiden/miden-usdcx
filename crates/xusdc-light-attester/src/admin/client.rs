@@ -31,6 +31,14 @@ pub enum AdminOperation {
         #[arg(long, value_parser = parse_cursor)]
         after: Option<String>,
     },
+    /// Persistently stop automatic work for one consumed burn; payment is not confirmed.
+    ExcludeBurn {
+        #[arg(long, value_parser = parse_cursor)]
+        note_id: String,
+        /// Immutable reason: 1–256 UTF-8 bytes after trimming, without control characters.
+        #[arg(long)]
+        reason: String,
+    },
     /// Release one hold from the list.
     ReleaseHolds {
         /// Note ID and event sequence from the holds list, separated by a colon.
@@ -81,11 +89,11 @@ async fn exchange<T: DeserializeOwned>(args: &AdminArgs, request: &Request) -> a
             .await
     })
     .await
-    .context("admin reply timed out; list holds before selecting another release")?
-    .context("admin reply lost; list holds before selecting another release")?;
+    .context("admin reply timed out; outcome may be unknown; list holds before another release, or repeat the exact exclude-burn command")?
+    .context("admin reply lost; outcome may be unknown; list holds before another release, or repeat the exact exclude-burn command")?;
     ensure!(
         bytes.len() as u64 <= REPLY_LIMIT,
-        "admin reply exceeds limit; list holds before selecting another release"
+        "admin reply exceeds limit; outcome may be unknown; list holds before another release, or repeat the exact exclude-burn command"
     );
     match serde_json::from_slice(&bytes).context("invalid admin reply")? {
         Reply::Ok(value) => Ok(value),
@@ -120,6 +128,16 @@ pub(crate) async fn run(args: AdminArgs) -> anyhow::Result<()> {
             if let Some(after) = page.next_after {
                 println!("next_after={after}");
             }
+        }
+        AdminOperation::ExcludeBurn { note_id, reason } => {
+            let request = Request::ExcludeBurn {
+                note_id: note_id.clone(),
+                reason: reason.clone(),
+            };
+            exchange::<()>(&args, &request).await?;
+            println!(
+                "burn {note_id} persistently excluded (survives restart; payment is not confirmed)"
+            );
         }
         AdminOperation::ReleaseHolds {
             hold: (note_id, expected_event_seq),

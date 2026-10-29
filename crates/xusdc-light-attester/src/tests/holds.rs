@@ -619,6 +619,7 @@ async fn progress_counts_unfinished_work() {
         .await;
     let nothing_started = Progress {
         burns_held: 0,
+        burns_excluded: 0,
         withdrawals_held: 0,
         withdrawals_failed: 0,
         withdrawals_pending: 0,

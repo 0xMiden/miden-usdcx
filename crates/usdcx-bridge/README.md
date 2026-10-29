@@ -229,7 +229,7 @@ not calculate available capacity or let smaller withdrawals pass. Accepted withd
 status checks, and live hold management remains available. Waiting for the limit is not a manual
 hold and cannot be bypassed with hold release.
 
-Retry deadlines survive restarts. A store with waiting withdrawals requires both flags on startup;
+Retry deadlines survive restarts. A store with nonexcluded waiting withdrawals requires both flags on startup;
 changing the interval does not shorten an already saved deadline. Each fresh prepare retry can use
 both KMS signers. Choose the interval and waiting-age alerts for Circle's actual window, which need
 not be the same in every environment.
@@ -296,13 +296,14 @@ Every cycle span also carries the attester's progress, zeros included:
 | `tip.number` | The node's latest committed block. Left out when the node could not be read. |
 | `tip.stale_duration_secs` | Seconds since the last verified block was made. It grows when the node stops producing blocks or the attester stops verifying them, and while a new store catches up from the trusted anchor. |
 | `burns.held.count` | Burns held before submission. |
+| `burns.excluded.count` | Burns persistently excluded by an operator; this does not mean they were paid. |
 | `withdrawals.held.count` | Withdrawals held after Circle rejected them. |
 | `withdrawals.failed.count` | Withdrawals Circle reported as failed. |
-| `withdrawals.pending.count` | Withdrawals being sent, or accepted by Circle and not final yet. |
-| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held and failed burns are left out. |
+| `withdrawals.pending.count` | Nonexcluded withdrawals being sent, or accepted by Circle and not final yet. |
+| `burns.unfinished.count` | Consumed burns not paid out yet: waiting for depth, waiting to be submitted, or submitted and not final. Held, failed and excluded burns are left out. |
 | `burns.unfinished.oldest_age_blocks` | The last verified block minus the block that consumed the oldest unfinished burn; 0 when there is none. |
-| `withdrawals.limit.count` | Burns waiting for Circle's withdrawal limit; 0 when none wait. |
-| `withdrawals.limit.note_id` | The earliest waiting burn. Left out when none wait. |
+| `withdrawals.limit.count` | Nonexcluded burns waiting for Circle's withdrawal limit; 0 when none wait. |
+| `withdrawals.limit.note_id` | The earliest nonexcluded waiting burn. Left out when none wait. |
 | `withdrawals.limit.retry_at` | Its next retry time in Unix seconds. Left out when none wait. |
 
 ## Troubleshooting
@@ -314,7 +315,7 @@ Investigate held withdrawals before releasing them; restarting does not release 
 automatically release holds, delete state or change the anchor to clear an error. Use the optional
 local admin socket below, or stop the bridge before using the offline `release-holds` command.
 
-### Hold management while running
+### Hold management and burn exclusion while running
 
 Administration is disabled by default. To enable it, add
 `--admin-socket /data/attester/admin.sock` to `usdcx-bridge run`. The attester creates the socket
@@ -344,12 +345,36 @@ the note ID.
 Commands wait for any active signing or Circle request to finish and do not skip the normal retry
 delay. The client never retries a release automatically.
 
+For an exceptional suspension of one known consumed burn, run:
+
+```sh
+usdcx-bridge admin --socket /data/attester/admin.sock exclude-burn --note-id <NOTE_ID> --reason "automatic processing suspended pending settlement review"
+```
+
+The reason must be 1–256 UTF-8 bytes after trimming, without control characters. Repeating the
+same note and normalized reason succeeds without another history event; a different reason or
+unknown/unconsumed note is refused. If the reply is lost, repeat that exact command. The client
+never retries automatically. Success acknowledges a committed exclusion that survives restarts;
+there is no removal command, and both live and offline hold release refuse excluded notes.
+
+Exclusion preserves the original signed request, hash, UUID, status, diagnostics, burn evidence,
+holds, retry deadlines and prior history. It adds an immutable reason on the burn and an
+`OPERATOR_EXCLUDED` history event. Commands run between complete operations: after success, cached
+work cannot prepare, sign, submit or poll that burn. Exclusion does not confirm payment or cancel
+an authorization already sent to Circle. Do not use it to bypass normal withdrawal limits.
+Check the acknowledgement, startup note ID/reason logs, `burns.excluded.count`, and other withdrawals.
+
+A consistent backup made after exclusion retains it; a pre-exclusion restore does not. Reapply
+only after reconciling the restored state. Older binaries refuse the upgraded store; do not lower
+the schema version or create an empty store to bypass that refusal.
+
 The standalone `xusdc-attester` accepts the same commands and flags. The existing offline
 `release-holds` command still accepts a list or file, but requires the service to be stopped.
 
 For other local clients, each connection carries one JSON request line and one JSON reply line:
-`{"op":"holds","after":"<NOTE_ID>"}` (the cursor is optional) or
-`{"op":"release","note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`. The
+`{"op":"holds","after":"<NOTE_ID>"}` (the cursor is optional),
+`{"op":"release","note_id":"<NOTE_ID>","expected_event_seq":123,"circle_not_accepted":true}`, or
+`{"op":"exclude_burn","note_id":"<NOTE_ID>","reason":"review pending"}`. The
 reply is `{"ok":…}` or `{"error":{"code":…,"message":…}}`.
 
 ### Hold maintenance flags

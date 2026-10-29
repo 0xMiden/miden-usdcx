@@ -159,6 +159,9 @@ impl Attester {
     ) -> Result<(), SubmitError> {
         for saved in submissions {
             self.admin_checkpoint().await;
+            if self.store.is_excluded(saved.note_id)? {
+                continue;
+            }
             if *rate_limited {
                 break;
             }

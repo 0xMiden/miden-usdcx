@@ -111,6 +111,21 @@ pub(crate) enum ReleaseError {
     NotHeld(NoteId),
     #[error("check Circle before releasing a signed withdrawal")]
     CircleCheck,
+    #[error("note {0} is persistently excluded; its hold cannot be released")]
+    Excluded(NoteId),
+    #[error(transparent)]
+    Store(#[from] anyhow::Error),
+}
+
+/// Why an operator exclusion did not succeed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ExclusionError {
+    #[error("burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters")]
+    InvalidReason,
+    #[error("note {0} is not a known consumed burn")]
+    NotConsumed(NoteId),
+    #[error("note {0} already has a different exclusion reason")]
+    Conflict(NoteId),
     #[error(transparent)]
     Store(#[from] anyhow::Error),
 }
@@ -122,6 +137,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_scan_from_the_anchor.sql"),
     include_str!("../migrations/0003_drop_unused_burn_columns.sql"),
     include_str!("../migrations/0004_withdrawal_limit_retry.sql"),
+    include_str!("../migrations/0005_burn_exclusion.sql"),
 ];
 
 /// The layout version this attester writes, kept in SQLite's `user_version`.
@@ -152,6 +168,9 @@ enum EventKind {
     /// Circle rejected this attempt because its withdrawal limit was reached.
     #[strum(serialize = "WITHDRAWAL_LIMIT")]
     WithdrawalLimit,
+    /// An operator suspended automatic processing; the immutable reason stays on the burn.
+    #[strum(serialize = "OPERATOR_EXCLUDED")]
+    OperatorExcluded,
 }
 
 impl EventKind {
@@ -178,6 +197,8 @@ pub(crate) struct TrustedAnchor {
 pub(crate) struct Progress {
     /// Burns held before submission.
     pub(crate) burns_held: u64,
+    /// Burns explicitly excluded from automatic processing, regardless of submission status.
+    pub(crate) burns_excluded: u64,
     /// Withdrawals held after Circle rejected them.
     pub(crate) withdrawals_held: u64,
     /// Withdrawals Circle reported as failed.
@@ -263,6 +284,44 @@ impl Store {
             connection,
             faucet_account_id,
         })
+    }
+
+    /// Excludes one consumed burn without changing its saved request or previous history.
+    pub(crate) fn exclude_burn(&mut self, id: NoteId, reason: &str) -> Result<(), ExclusionError> {
+        let reason = parse_exclusion_reason(reason).map_err(|_| ExclusionError::InvalidReason)?;
+        let transaction = self.connection.transaction().map_err(classify_error)?;
+        let saved: Option<String> = transaction.query_row(
+            "SELECT exclusion_reason FROM burns WHERE note_id = ?1 AND consumption_block IS NOT NULL",
+            [id.to_bytes()], |row| row.get(0),
+        ).optional().map_err(classify_error)?.ok_or(ExclusionError::NotConsumed(id))?;
+        if saved.as_deref().is_some_and(|saved| saved != reason) {
+            return Err(ExclusionError::Conflict(id));
+        }
+        // Active selectors will skip this request, so validate it before hiding it from them.
+        select_submissions(&transaction, Some(id), None, false)?;
+        if saved.is_none() {
+            let updated = transaction.execute(
+                "UPDATE burns SET exclusion_reason = ?2 WHERE note_id = ?1 AND exclusion_reason IS NULL",
+                params![id.to_bytes(), reason],
+            ).map_err(classify_error)?;
+            if updated != 1 {
+                return Err(anyhow!(CONFLICT).into());
+            }
+            record_event(&transaction, id, EventKind::OperatorExcluded, None)?;
+        }
+        transaction.commit().map_err(classify_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn is_excluded(&self, id: NoteId) -> anyhow::Result<bool> {
+        exists(&self.connection,
+            "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 AND exclusion_reason IS NOT NULL)",
+            [id.to_bytes()],
+        )
+    }
+
+    pub(crate) fn burn_exclusions(&self) -> anyhow::Result<Vec<(NoteId, String)>> {
+        load_exclusions(&self.connection)
     }
 
     /// The checkpoint: the header of the last authenticated block, which the next block is
@@ -413,6 +472,12 @@ impl Store {
         circle_not_accepted: bool,
     ) -> Result<(usize, usize), ReleaseError> {
         let note = note_id.to_bytes();
+        if exists(transaction,
+            "SELECT EXISTS (SELECT 1 FROM burns WHERE note_id = ?1 AND exclusion_reason IS NOT NULL)",
+            [&note],
+        )? {
+            return Err(ReleaseError::Excluded(note_id));
+        }
         let held = params![
             note,
             SubmissionStatus::Held.as_ref(),
@@ -577,7 +642,8 @@ impl Store {
                 circle_message,
             });
         }
-        for held in select_submissions(&self.connection, None, Some(SubmissionStatus::Held))? {
+        for held in select_submissions(&self.connection, None, Some(SubmissionStatus::Held), false)?
+        {
             holds.push(Hold {
                 note_id: held.note_id,
                 kind: "withdrawal",
@@ -633,17 +699,27 @@ impl Store {
 
     /// The saved submission for `note_id`, if there is one.
     pub(crate) fn submission(&self, note_id: NoteId) -> anyhow::Result<Option<SavedSubmission>> {
-        Ok(select_submissions(&self.connection, Some(note_id), None)?.pop())
+        Ok(select_submissions(&self.connection, Some(note_id), None, false)?.pop())
     }
 
     /// The submissions still being sent, which recovery resumes.
     pub(crate) fn submissions_to_recover(&self) -> anyhow::Result<Vec<SavedSubmission>> {
-        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitting))
+        select_submissions(
+            &self.connection,
+            None,
+            Some(SubmissionStatus::Submitting),
+            true,
+        )
     }
 
     /// The submissions Circle accepted that are not final yet, which polling checks.
     pub(crate) fn submissions_to_poll(&self) -> anyhow::Result<Vec<SavedSubmission>> {
-        select_submissions(&self.connection, None, Some(SubmissionStatus::Submitted))
+        select_submissions(
+            &self.connection,
+            None,
+            Some(SubmissionStatus::Submitted),
+            true,
+        )
     }
 
     /// Save the latest reply. Add a history event if the status, withdrawal ID, HTTP status,
@@ -717,7 +793,7 @@ impl Store {
             .connection
             .query_row(
                 "SELECT note_id, creation_block, withdrawal_limit_retry_at FROM burns
-                 WHERE withdrawal_limit_retry_at IS NOT NULL
+                 WHERE withdrawal_limit_retry_at IS NOT NULL AND exclusion_reason IS NULL
                  ORDER BY creation_block, note_id LIMIT 1",
                 [],
                 |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?, row.get(2)?)),
@@ -873,12 +949,15 @@ impl Store {
                     (SELECT COUNT(*) FROM burns WHERE hold_reason IS NOT NULL),
                     (SELECT COUNT(*) FROM submissions WHERE status = ?1),
                     (SELECT COUNT(*) FROM submissions WHERE status = ?2),
-                    (SELECT COUNT(*) FROM submissions WHERE status IN (?3, ?4)),
+                    (SELECT COUNT(*) FROM submissions WHERE status IN (?3, ?4) AND NOT EXISTS (
+                        SELECT 1 FROM burns WHERE burns.note_id = submissions.note_id AND exclusion_reason IS NOT NULL)),
                     COUNT(*),
                     MIN(burns.consumption_block),
-                    (SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL)
+                    (SELECT COUNT(*) FROM burns WHERE withdrawal_limit_retry_at IS NOT NULL AND exclusion_reason IS NULL),
+                    (SELECT COUNT(*) FROM burns WHERE exclusion_reason IS NOT NULL)
                  FROM burns LEFT JOIN submissions ON submissions.note_id = burns.note_id
                  WHERE burns.consumption_block IS NOT NULL AND burns.hold_reason IS NULL
+                    AND burns.exclusion_reason IS NULL
                     AND (submissions.status IS NULL OR submissions.status NOT IN (?1, ?2, ?5))",
                 params![
                     SubmissionStatus::Held.as_ref(),
@@ -898,6 +977,7 @@ impl Store {
                             .get::<_, Option<u32>>(5)?
                             .map(BlockNumber::from),
                         withdrawal_limit_waiting: row.get(6)?,
+                        burns_excluded: row.get(7)?,
                     })
                 },
             )
@@ -1168,6 +1248,9 @@ fn validate_store(
     let checkpoint = load_checkpoint(connection)?;
     load_candidates(connection, faucet_account_id, "", [])?;
     load_burns(connection, faucet_account_id, true)?;
+    for (id, _) in load_exclusions(connection)? {
+        select_submissions(connection, Some(id), None, false)?;
+    }
     if checkpoint.is_some_and(|checkpoint| checkpoint.block_num() < trusted_anchor.block_num) {
         bail!(INVALID);
     }
@@ -1186,7 +1269,7 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     for probe in [
         "SELECT singleton, faucet_account_id, anchor_block, anchor_commitment, checkpoint
             FROM attester_state LIMIT 0",
-        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason, withdrawal_limit_retry_at
+        "SELECT note_id, nullifier, note, creation_block, consumption_block, hold_reason, withdrawal_limit_retry_at, exclusion_reason
             FROM burns LIMIT 0",
         "SELECT note_id, endpoint, body, transfer_spec_hash, status, withdrawal_id,
             hold_reason, last_http_status, last_response, last_error FROM submissions LIMIT 0",
@@ -1200,12 +1283,45 @@ fn validate_store_format(connection: &rusqlite::Connection) -> anyhow::Result<()
     Ok(())
 }
 
-/// Load saved submissions in note order. Apply `note_id` and `status` filters when supplied. Reject
-/// the store if a selected row fails validation.
+/// Exclusions are add-only; their reasons must remain valid when the store is reopened.
+/// Normalize operator input; the store also requires the saved value to already be normalized.
+fn parse_exclusion_reason(value: &str) -> anyhow::Result<&str> {
+    let reason = value.trim();
+    ensure!(
+        !reason.is_empty() && reason.len() <= 256 && !value.chars().any(char::is_control),
+        "burn exclusion reason must be 1–256 UTF-8 bytes after trimming, without control characters"
+    );
+    Ok(reason)
+}
+
+fn load_exclusions(connection: &rusqlite::Connection) -> anyhow::Result<Vec<(NoteId, String)>> {
+    let mut statement = connection.prepare(
+        "SELECT note_id, exclusion_reason FROM burns WHERE exclusion_reason IS NOT NULL ORDER BY note_id"
+    ).map_err(classify_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(classify_error)?;
+    rows.map(|row| {
+        let (id, reason) = row.map_err(classify_error)?;
+        ensure!(
+            parse_exclusion_reason(&reason).context(INVALID)? == reason,
+            INVALID
+        );
+        Ok((decode_canonical(&id)?, reason))
+    })
+    .collect()
+}
+
+/// Load saved submissions in note order. Apply `note_id` and `status` filters when supplied.
+/// Only active work omits excluded burns; raw inspection and validation retain them.
+/// Reject the store if a selected row fails validation.
 fn select_submissions(
     connection: &rusqlite::Connection,
     note_id: Option<NoteId>,
     status: Option<SubmissionStatus>,
+    active_only: bool,
 ) -> anyhow::Result<Vec<SavedSubmission>> {
     let mut statement = connection
         .prepare(
@@ -1213,13 +1329,16 @@ fn select_submissions(
             status, withdrawal_id, hold_reason,
             last_http_status, last_response, last_error FROM submissions
          WHERE (?1 IS NULL OR note_id = ?1) AND (?2 IS NULL OR status = ?2)
+         AND (NOT ?3 OR NOT EXISTS (SELECT 1 FROM burns
+             WHERE burns.note_id = submissions.note_id AND exclusion_reason IS NOT NULL))
          ORDER BY note_id",
         )
         .map_err(classify_error)?;
     let mut rows = statement
         .query(params![
             note_id.map(|id| id.to_bytes()),
-            status.as_ref().map(SubmissionStatus::as_ref)
+            status.as_ref().map(SubmissionStatus::as_ref),
+            active_only,
         ])
         .map_err(classify_error)?;
     let mut records = Vec::new();
@@ -1378,7 +1497,7 @@ fn load_burns(
         .prepare(
             "SELECT note_id, nullifier, note, creation_block, consumption_block FROM burns
              WHERE consumption_block IS NOT NULL AND (?1 OR (
-                 hold_reason IS NULL AND NOT EXISTS (
+                 exclusion_reason IS NULL AND hold_reason IS NULL AND NOT EXISTS (
                      SELECT 1 FROM submissions WHERE submissions.note_id = burns.note_id
                         AND submissions.status != ?2
                  )

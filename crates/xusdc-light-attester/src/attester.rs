@@ -174,6 +174,11 @@ impl Attester {
                 .save_block(&block)
                 .context("failed to save the trusted anchor as the first checkpoint")?,
         }
+        for (note_id, reason) in attester.store.burn_exclusions()? {
+            info!(%note_id, %reason, store = %attester.config.store_path().display(),
+                faucet = %attester.config.faucet_account_id(),
+                "burn remains persistently excluded from automatic withdrawal work");
+        }
         Ok(attester)
     }
 
@@ -263,6 +268,22 @@ impl Attester {
                     .map_err(report);
                 let _ = reply.send(result);
             }
+            Operation::ExcludeBurn(note_id, reason, reply) => {
+                let result = self.store.exclude_burn(note_id, &reason).map_err(|error| {
+                    if let crate::store::ExclusionError::Store(detail) = error {
+                        let failure = Failure::new(Actionable("store"), detail);
+                        failure.report("admin store operation failed");
+                        crate::store::ExclusionError::Store(failure.error)
+                    } else {
+                        error
+                    }
+                });
+                if result.is_ok() {
+                    info!(%note_id, reason = reason.trim(),
+                        "burn is persistently excluded; payment is not confirmed");
+                }
+                let _ = reply.send(result);
+            }
             Operation::Release(selection, reply) => {
                 let result = self
                     .store
@@ -338,6 +359,7 @@ impl Attester {
             tip.number = Empty,
             tip.stale_duration_secs = Empty,
             burns.held.count = Empty,
+            burns.excluded.count = Empty,
             withdrawals.held.count = Empty,
             withdrawals.failed.count = Empty,
             withdrawals.pending.count = Empty,
@@ -423,6 +445,7 @@ impl Attester {
             now.saturating_sub(u64::from(verified.timestamp())),
         );
         span.record("burns.held.count", progress.burns_held);
+        span.record("burns.excluded.count", progress.burns_excluded);
         span.record("withdrawals.held.count", progress.withdrawals_held);
         span.record("withdrawals.failed.count", progress.withdrawals_failed);
         span.record("withdrawals.pending.count", progress.withdrawals_pending);
@@ -577,6 +600,10 @@ impl Attester {
         let mut first_error = None;
         for burn in burns {
             self.admin_checkpoint().await;
+            // The selection predates this checkpoint; exclusion takes effect before more work.
+            if self.store.is_excluded(burn.note_id())? {
+                continue;
+            }
             if *rate_limited || !self.limit_allows(burn.note_id())? {
                 break;
             }

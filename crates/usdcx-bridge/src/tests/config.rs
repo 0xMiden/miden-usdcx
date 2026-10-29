@@ -71,3 +71,24 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
     );
     assert_eq!(config.relayer.prover_timeout, Duration::from_secs(15));
 }
+
+#[test]
+fn persistent_burn_exclusion_uses_the_shared_admin_command() {
+    let id = format!("0x{}", "01".repeat(32));
+    let cli = Cli::try_parse_from([
+        "usdcx-bridge",
+        "admin",
+        "--socket",
+        "/data/attester/admin.sock",
+        "exclude-burn",
+        "--note-id",
+        &id,
+        "--reason",
+        "review pending",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command,
+        Command::Attester(xusdc_attester::config::Command::Admin(_))
+    ));
+}

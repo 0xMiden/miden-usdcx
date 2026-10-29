@@ -32,7 +32,7 @@ const MOVEMENT_DOMAIN: u32 = 10_005;
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the xUSDC withdrawal attester")]
 pub struct Cli {
-    /// Optional Unix socket for live hold management, in a directory private to the service.
+    /// Optional Unix socket for live administration, in a directory private to the service.
     /// Disabled by default.
     #[arg(long)]
     admin_socket: Option<PathBuf>,
@@ -151,7 +151,7 @@ pub struct Cli {
     store_path: OsString,
 }
 
-/// The command line: run the attester, or release its holds once.
+/// The command line: run the attester or administer its withdrawal work.
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -169,7 +169,7 @@ pub struct Invocation {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Inspect or release selected holds in the running attester through its local admin listener.
+    /// Manage holds and burn exclusions through the running attester's local admin listener.
     Admin(crate::admin::AdminArgs),
     /// Stop the attester first. Without note IDs, list the holds. With note IDs, release them and
     /// exit. A released burn can be prepared again. Releasing a withdrawal deletes its saved signed

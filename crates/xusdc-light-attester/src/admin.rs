@@ -1,4 +1,4 @@
-//! List and release holds in the running attester.
+//! Manage holds and burn exclusions in the running attester.
 //!
 //! The attester listens on a Unix socket. File permissions decide who may connect, so there is no
 //! token: the socket is created readable and writable only by the service's user. A client sends
@@ -27,7 +27,7 @@ use tracing::warn;
 pub(crate) mod client;
 pub use client::AdminArgs;
 
-use crate::store::{HoldEntry, ReleaseError, ReleaseSelection};
+use crate::store::{ExclusionError, HoldEntry, ReleaseError, ReleaseSelection};
 
 /// How long a request waits for the attester to run its command.
 const COMMAND_WAIT: Duration = Duration::from_secs(60);
@@ -72,6 +72,8 @@ pub(crate) enum Request {
         #[serde(default)]
         after: Option<String>,
     },
+    /// Persistently excludes one known consumed burn from automatic withdrawal work.
+    ExcludeBurn { note_id: String, reason: String },
     /// Releases one hold, as the holds list showed it.
     Release {
         note_id: String,
@@ -127,6 +129,7 @@ pub(crate) enum Operation {
         Option<NoteId>,
         oneshot::Sender<Result<HoldsPage, ReleaseError>>,
     ),
+    ExcludeBurn(NoteId, String, oneshot::Sender<Result<(), ExclusionError>>),
     /// Releases the selected hold.
     Release(
         ReleaseSelection,
@@ -148,6 +151,7 @@ impl Command {
             || match &self.operation {
                 Operation::List(_, reply) => reply.is_closed(),
                 Operation::Release(_, reply) => reply.is_closed(),
+                Operation::ExcludeBurn(_, _, reply) => reply.is_closed(),
             }
     }
 }
@@ -308,6 +312,19 @@ enum AdminError {
     ReplyTimeout,
     /// The store refused or failed the operation.
     Release(ReleaseError),
+    Exclude(ExclusionError),
+}
+
+impl From<ReleaseError> for AdminError {
+    fn from(error: ReleaseError) -> Self {
+        Self::Release(error)
+    }
+}
+
+impl From<ExclusionError> for AdminError {
+    fn from(error: ExclusionError) -> Self {
+        Self::Exclude(error)
+    }
 }
 
 impl AdminError {
@@ -320,7 +337,7 @@ impl AdminError {
             Self::Unavailable => ("unavailable", "attester is unavailable".into()),
             Self::ReplyTimeout => (
                 "reply_timeout",
-                "outcome may be unknown; list holds again before selecting another release".into(),
+                "outcome may be unknown; list holds before another release, or repeat the exact exclude-burn command".into(),
             ),
             Self::Release(ReleaseError::Invalid) => {
                 ("invalid_input", "invalid hold selection".into())
@@ -337,7 +354,14 @@ impl AdminError {
                 "circle_check_required",
                 "check Circle and assert non-acceptance for the held withdrawal".into(),
             ),
-            Self::Release(ReleaseError::Store(_)) => {
+            Self::Release(ReleaseError::Excluded(note_id)) => (
+                "burn_excluded",
+                format!("note {note_id} is persistently excluded; its hold cannot be released"),
+            ),
+            Self::Exclude(ExclusionError::InvalidReason) => ("invalid_input", ExclusionError::InvalidReason.to_string()),
+            Self::Exclude(error @ ExclusionError::NotConsumed(_)) => ("burn_not_consumed", error.to_string()),
+            Self::Exclude(error @ ExclusionError::Conflict(_)) => ("exclusion_conflict", error.to_string()),
+            Self::Exclude(ExclusionError::Store(_)) | Self::Release(ReleaseError::Store(_)) => {
                 ("store_failed", "attester store failed".into())
             }
         };
@@ -392,6 +416,21 @@ async fn handle(state: &ServerState, request: Request) -> Vec<u8> {
             let (reply, receive) = oneshot::channel();
             encode(dispatch(state, Operation::List(after, reply), receive).await)
         }
+        Request::ExcludeBurn { note_id, reason } => {
+            let note_id = match parse_note_id(&note_id) {
+                Ok(id) => id,
+                Err(_) => return encode::<()>(Err(AdminError::InvalidInput("invalid note ID"))),
+            };
+            let (reply, receive) = oneshot::channel();
+            encode(
+                dispatch(
+                    state,
+                    Operation::ExcludeBurn(note_id, reason, reply),
+                    receive,
+                )
+                .await,
+            )
+        }
         Request::Release {
             note_id,
             expected_event_seq,
@@ -428,10 +467,10 @@ fn encode<T: Serialize>(result: Result<T, AdminError>) -> Vec<u8> {
 /// A full inbox is refused at once rather than waited on. The attester checks the deadline before
 /// handling the command, but work that passed that check can finish after the timeout. A timeout
 /// therefore leaves the outcome unknown.
-async fn dispatch<T>(
+async fn dispatch<T, E: Into<AdminError>>(
     state: &ServerState,
     operation: Operation,
-    receive: oneshot::Receiver<Result<T, ReleaseError>>,
+    receive: oneshot::Receiver<Result<T, E>>,
 ) -> Result<T, AdminError> {
     if state.shutdown.is_cancelled() {
         return Err(AdminError::Stopping);
@@ -452,7 +491,7 @@ async fn dispatch<T>(
         .await
         .map_err(|_| AdminError::ReplyTimeout)?
         .map_err(|_| AdminError::Unavailable)?
-        .map_err(AdminError::Release)
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -477,6 +516,16 @@ mod tests {
             error.message,
             format!("no hold for note {note_id}; list holds to find it")
         );
+    }
+
+    #[test]
+    fn persistent_burn_exclusion_has_a_clear_release_error() {
+        let id = parse_note_id(&format!("0x{}", "ab".repeat(32))).unwrap();
+        let line = encode::<()>(Err(AdminError::Release(ReleaseError::Excluded(id))));
+        assert_eq!(error_code(&line), "burn_excluded");
+        assert!(std::str::from_utf8(&line)
+            .unwrap()
+            .contains("persistently excluded; its hold cannot be released"));
     }
 
     #[test]

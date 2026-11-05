@@ -22,8 +22,11 @@ struct Cli {
     telemetry: TelemetryArgs,
     /// Create a NEW progress file at Circle's current head, excluding all earlier feed entries.
     /// Run before any new deposit; never use this to replace existing progress.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "require_head_watermark")]
     init_state_at_current_head: bool,
+    /// Stop unless the saved completed-scan watermark is present in each fetched head page.
+    #[arg(long)]
+    require_head_watermark: bool,
 }
 
 #[tokio::main]
@@ -32,6 +35,7 @@ async fn main() -> Result<()> {
         config,
         telemetry,
         init_state_at_current_head,
+        require_head_watermark,
     } = Cli::parse();
     let _telemetry = usdcx_telemetry::init("xreserve-deposit-relayer", &telemetry)?;
 
@@ -52,7 +56,7 @@ async fn main() -> Result<()> {
     usdcx_telemetry::cancel_on_signal(shutdown.clone())?;
     usdcx_telemetry::stop_within(
         async {
-            Relayer::start(config)
+            Relayer::start_with_head_watermark(config, require_head_watermark)
                 .await?
                 .run_until(shutdown.clone())
                 .await

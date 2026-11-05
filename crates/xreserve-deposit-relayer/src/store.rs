@@ -104,6 +104,12 @@ impl Store {
         Ok(())
     }
 
+    /// Checks persistence without rewriting a guarded boundary before its head-page check.
+    pub(crate) fn check_writable(&self, state: &State) -> Result<()> {
+        self.prepare_state(state)?;
+        Ok(())
+    }
+
     fn parent(&self) -> &std::path::Path {
         self.path
             .parent()

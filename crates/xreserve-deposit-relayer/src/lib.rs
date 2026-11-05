@@ -53,7 +53,20 @@ pub struct Relayer<M> {
     miden_client: M,
     minter: Minter,
     unminted: Unminted,
+    require_head_watermark: bool,
 }
+
+/// A missing boundary stops guarded relays instead of retrying into older feed pages.
+#[derive(Debug)]
+struct HeadWatermarkError(&'static str);
+
+impl std::fmt::Display for HeadWatermarkError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for HeadWatermarkError {}
 
 /// Initializes only a new feed boundary. This does not construct a Miden client or open its state.
 pub async fn initialize_state_at_current_head(config: &Config) -> Result<MessageHash> {
@@ -153,9 +166,14 @@ impl Relayer<NodeClient> {
     /// - The node cannot be reached, does not know the relayer account or the faucet, or the
     ///   faucet has not enabled the configured attester public key (see [`NodeClient::new`]).
     /// - Any of the checks of [`Relayer::new`] fails.
-    #[instrument(name = "relayer.startup", skip_all)]
     pub async fn start(config: Config) -> Result<Self> {
-        Self::connect(config)
+        Self::start_with_head_watermark(config, false).await
+    }
+
+    /// Starts with an optional completed-scan watermark that must remain in every head page.
+    #[instrument(name = "relayer.startup", skip_all)]
+    pub async fn start_with_head_watermark(config: Config, required: bool) -> Result<Self> {
+        Self::connect(config, required)
             .await
             .classify(Actionable("startup"))
             .map_err(|failure| {
@@ -164,11 +182,11 @@ impl Relayer<NodeClient> {
             })
     }
 
-    async fn connect(config: Config) -> Result<Self> {
+    async fn connect(config: Config, required: bool) -> Result<Self> {
         let miden = NodeClient::new(&config)
             .await
             .context("connecting to miden")?;
-        Self::new(config, miden)
+        Self::new_with_head_watermark(config, miden, required)
     }
 }
 
@@ -180,6 +198,10 @@ impl<M: MidenClient> Relayer<M> {
     /// - The Circle client cannot be built (see [`CircleClient::new`]).
     /// - The progress file is malformed or cannot be read or replaced.
     pub fn new(config: Config, miden_client: M) -> Result<Self> {
+        Self::new_with_head_watermark(config, miden_client, false)
+    }
+
+    fn new_with_head_watermark(config: Config, miden_client: M, required: bool) -> Result<Self> {
         config.validate_prover()?;
         let page_size = config.effective_page_size();
         let remote_proving = config.prover_url.is_some();
@@ -196,10 +218,15 @@ impl<M: MidenClient> Relayer<M> {
         }
         let store = Store::new(config.state_file.clone());
         let state = store.state().context("reading relayer startup progress")?;
-        // Save the same progress to exercise the normal write/sync/rename path without advancing it.
-        store
-            .set_state(&state)
-            .context("checking relayer progress persistence")?;
+        if required {
+            Self::check_head_watermark_state(&state)?;
+            store.check_writable(&state)?;
+        } else {
+            // Exercise the normal write/sync/rename path without advancing progress.
+            store
+                .set_state(&state)
+                .context("checking relayer progress persistence")?;
+        }
         Ok(Self {
             circle: CircleClient::new(
                 config.circle_url.clone(),
@@ -210,8 +237,18 @@ impl<M: MidenClient> Relayer<M> {
             minter: Minter::from_config(&config),
             miden_client,
             unminted: Unminted::default(),
+            require_head_watermark: required,
             config,
         })
+    }
+
+    fn check_head_watermark_state(state: &State) -> Result<(), HeadWatermarkError> {
+        if state.watermark.is_none() || state.scan.is_some() {
+            return Err(HeadWatermarkError(
+                "guarded relay requires a saved watermark with no unfinished scan; reconcile progress without resetting it",
+            ));
+        }
+        Ok(())
     }
 
     /// Runs one scan, as the crate docs define it, resuming an interrupted one if there is one.
@@ -239,7 +276,13 @@ impl<M: MidenClient> Relayer<M> {
     /// - Submitting the mint notes fails.
     async fn scan(&mut self, shutdown: &CancellationToken) -> Result<ScanOutcome, Failure> {
         let mut position = match self.store.state().classify(Actionable("progress_file")) {
-            Ok(state) => Position::from_state(state),
+            Ok(state) => {
+                if self.require_head_watermark {
+                    Self::check_head_watermark_state(&state)
+                        .classify(Actionable("head_watermark"))?;
+                }
+                Position::from_state(state)
+            }
             Err(failure) => {
                 failure.report("could not read the relayer's progress");
                 return Err(failure);
@@ -306,7 +349,11 @@ impl<M: MidenClient> Relayer<M> {
                     "mint submission expired; limiting later pages until restart"
                 );
             }
-            failure.report("the page failed; the next scan resumes at it");
+            if failure.error.is::<HeadWatermarkError>() {
+                failure.report("the head watermark boundary failed; stopping the relayer");
+            } else {
+                failure.report("the page failed; the next scan resumes at it");
+            }
         }
         result
     }
@@ -406,6 +453,14 @@ impl<M: MidenClient> Relayer<M> {
                 .message_hash()
                 .is_some_and(|hash| Some(&hash) == watermark)
         });
+        if self.require_head_watermark
+            && (resume.is_some() || watermark.is_none() || reached.is_none())
+        {
+            return Err(Failure::new(
+                Actionable("head_watermark"),
+                HeadWatermarkError("saved watermark is absent from the head page; reconcile progress without resetting it"),
+            ));
+        }
         let fresh = &page.entries[..reached.unwrap_or(page.entries.len())];
 
         let BuiltNotes { notes, skipped } = self.minter.build_notes(fresh);
@@ -499,6 +554,9 @@ impl<M: MidenClient> Relayer<M> {
             }
             match self.traced_scan(&shutdown).await {
                 Ok(ScanOutcome::Stopped) => return Ok(()),
+                Err(failure) if failure.error.is::<HeadWatermarkError>() => {
+                    return Err(failure.error);
+                }
                 // The next scan resumes where a failed one stopped.
                 Ok(ScanOutcome::Complete) | Err(_) => {}
             }

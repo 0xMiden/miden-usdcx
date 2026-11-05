@@ -70,6 +70,8 @@ pub(crate) fn decode(
     transaction: &str,
 ) -> Result<Vec<Message>> {
     let value: Value = serde_json::from_slice(raw)?;
+    // The checked Circle envelope supplies transaction association. Source events
+    // supply the relevant occurrence count, not an independent event-to-nonce proof.
     ensure!(
         source.transaction(
             value["sourceTxHash"]
@@ -82,6 +84,8 @@ pub(crate) fn decode(
         .as_array()
         .context("missing Circle messages")?;
     ensure!(records.len() <= 1000, "too many Circle messages");
+    // Validate the whole reply before admitting any record; a bad tail cannot
+    // leave a partially accepted prefix in the journal.
     let mut out = vec![];
     for record in records {
         match record["status"].as_str().context("missing Circle status")? {

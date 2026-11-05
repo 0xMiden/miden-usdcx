@@ -203,19 +203,19 @@ impl Store {
                 )
                 .optional()?;
             if let Some(old) = old {
-                if old != positions {
-                    if manual(
+                if old != positions
+                    && manual(
                         &tx,
                         domain,
                         &candidate.transaction,
                         "source position conflict",
-                    )? {
-                        transitions.push((
-                            domain,
-                            candidate.transaction.clone(),
-                            "source position conflict",
-                        ));
-                    }
+                    )?
+                {
+                    transitions.push((
+                        domain,
+                        candidate.transaction.clone(),
+                        "source position conflict",
+                    ));
                 }
             } else {
                 tx.execute(
@@ -304,6 +304,8 @@ impl Store {
         Ok(())
     }
     pub fn admit(&mut self, job: &Job, messages: &[Message], now: i64) -> Result<()> {
+        // Union validated reply messages by global CCTP nonce. The source occurrence count
+        // bounds admission; a nonce/content conflict quarantines both owners atomically.
         let tx = self.db.transaction()?;
         let expected: usize = tx.query_row(
             "SELECT expected FROM source_txs WHERE domain=? AND hash=? AND state='pending'",
@@ -375,6 +377,8 @@ impl Store {
                     ],
                 )?;
             }
+            // Source 'complete' means every expected unique message was admitted,
+            // not that Arc settlement or Miden delivery has happened.
             tx.execute(
                 "UPDATE source_txs SET state=?,next_poll=? WHERE domain=? AND hash=?",
                 params![
@@ -422,6 +426,8 @@ impl Store {
         Ok(())
     }
     pub fn received(&self, nonce: B256) -> Result<()> {
+        // 'received' records finalized used-CCTP-nonce suppression of an unsigned
+        // sponsorship. It is not our receipt, an xReserve intent or Miden delivery.
         self.db.execute(
             "UPDATE messages SET state='received' WHERE nonce=? AND state='queued'",
             [nonce.to_string()],
@@ -504,6 +510,8 @@ impl Store {
             )? == 1,
             "pending receipt mismatch"
         );
+        // 'success' is our finalized helper receipt. 'reverted' is terminal manual
+        // work: the paid EOA nonce advances, but this message never re-arms itself.
         tx.execute(
             "UPDATE messages SET state=? WHERE nonce=?",
             params![
@@ -556,6 +564,9 @@ fn manual(db: &Connection, domain: u32, hash: &str, reason: &'static str) -> Res
     )?;
     Ok(previous != "manual")
 }
+// Missing messages from active sources reserve occurrence slots. Admitted queued
+// and pending messages occupy those slots until terminal; the same reservation
+// must not be counted again when Circle supplies its message.
 fn reserved_work(db: &Connection) -> rusqlite::Result<usize> {
     db.query_row(
         "SELECT

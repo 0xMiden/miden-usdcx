@@ -154,6 +154,9 @@ impl Worker {
                         .halt("unexplained sender nonce; manual recovery required")?;
                     return Ok(());
                 }
+                // Under the configured Circle/helper/finalized-RPC trust, a used
+                // CCTP nonce suppresses this unsigned sponsorship. Pending EOA nonce
+                // ownership is reconciled above; this does not prove Miden delivery.
                 match self.arc.used(message.nonce).await {
                     Ok(true) => self.store.received(message.nonce)?,
                     Ok(false) => match self

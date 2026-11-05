@@ -83,6 +83,8 @@ impl ArcSender {
             .await?;
         Ok((hex_u64(&finalized)?, hex_u64(&pending)?))
     }
+    // This is the transmitter's global CCTP nonce, distinct from the dedicated
+    // gas payer's EOA nonce. It cannot settle an owned pending transaction.
     pub async fn used(&self, nonce: B256) -> Result<bool> {
         ensure!(
             nonce != B256::ZERO && !self.transmitter.is_zero(),
@@ -109,6 +111,9 @@ impl ArcSender {
                 == Some(message.nonce),
             "queued message mismatch"
         );
+        // The fixed helper owns recipient/economic validation and atomic receive,
+        // net-USDC deposit and residue cleanup. Simulate that exact call, then sign
+        // it unchanged; do not duplicate its financial policy in the worker.
         let calldata = calldata(message);
         let call = json!({"from":config.signer,"to":config.helper,"value":"0x0","data":format!("0x{}",hex::encode(&calldata)),"gas":height(config.max_gas)});
         self.rpc

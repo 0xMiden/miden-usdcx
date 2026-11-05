@@ -21,7 +21,9 @@ pub async fn run(
     let startup = |error| diagnostics::at(error, "startup", "provider_unavailable");
     let config = config::Config::load(path)
         .map_err(|error| diagnostics::at(error, "configuration", "configuration_invalid"))?;
-    // Refuse a new store for an old sender before creating any journal.
+    // Require finalized and pending nonce zero before creating a journal. This
+    // cannot prove absence of lost signed history; a genuinely fresh dedicated
+    // sender remains an operator requirement.
     if initialize {
         let mut arc = arc::ArcSender::new(&config)?;
         arc.verify(&config).await.map_err(startup)?;

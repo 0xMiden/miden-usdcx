@@ -1,7 +1,10 @@
 use super::Page;
 use crate::{
     config::{base58, Config, Network, Source},
-    message::{padded, Candidate, Position},
+    message::{
+        padded, Candidate, Position, APPLICATION_HOOK_LENGTH, APPLICATION_HOOK_VERSION,
+        STANDARD_FINALITY,
+    },
     rpc::Rpc,
 };
 use alloy_primitives::keccak256;
@@ -14,6 +17,14 @@ use solana_pubkey::Pubkey;
 use std::{collections::BTreeSet, time::Duration};
 
 const SCAN_BUDGET: Duration = Duration::from_secs(5);
+const ANCHOR_EVENT_CPI_TAG: [u8; 8] = [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d];
+const ANCHOR_TAG_BYTES: usize = 8;
+const EVENT_HEADER_BYTES: usize = 2 * ANCHOR_TAG_BYTES;
+// Borsh uses 32-byte pubkeys, little-endian u64/u32 fields and a u32 Vec length.
+const BURN_HEADER_BYTES: usize = 188;
+const HOOK_LENGTH_OFFSET: usize = BURN_HEADER_BYTES - 4;
+const MAX_EVENT_BYTES: usize = 65536;
+const INNER_ORDINAL_BITS: u32 = 32;
 
 #[derive(Deserialize, Serialize)]
 struct Cursor {
@@ -22,8 +33,11 @@ struct Cursor {
 }
 #[derive(Deserialize, Serialize)]
 struct Pass {
+    // The previous completed head, or the configured inclusive initial boundary.
     old_head: String,
+    // Freeze the newest signature until every entry back to old_head is examined.
     pass_top: String,
+    // Only fully examined signatures may become the next exclusive RPC cursor.
     resume_before: String,
 }
 #[derive(BorshDeserialize)]
@@ -107,6 +121,8 @@ pub(crate) async fn scan(
         .as_ref()
         .map(|p| p.pass_top.clone())
         .unwrap_or(top);
+    // Initial history includes the configured start signature. Later passes exclude
+    // the prior completed head, which was already committed in the previous pass.
     let first_pass = cursor.head.is_none();
     let mut seen = BTreeSet::new();
     let mut transactions = Vec::new();
@@ -136,7 +152,10 @@ pub(crate) async fn scan(
             .context("signature error metadata missing")?
             .is_null()
         {
-            let transaction=rpc.call("getTransaction",json!([signature,{"commitment":"finalized","encoding":"jsonParsed","maxSupportedTransactionVersion":1}])).await?;
+            let transaction = rpc.call(
+                "getTransaction",
+                json!([signature, {"commitment":"finalized", "encoding":"jsonParsed", "maxSupportedTransactionVersion":1}]),
+            ).await?;
             ensure!(
                 transaction["slot"] == json!(slot),
                 "signature and transaction slots differ"
@@ -265,23 +284,27 @@ pub(crate) fn decode(
             ensure!(encoded.len() <= 90000, "event data exceeds bound");
             let bytes = bs58::decode(encoded).into_vec()?;
             ensure!(
-                bytes.len() >= 16
-                    && bytes.len() <= 65536
-                    && bytes[..8] == [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d],
+                bytes.len() >= EVENT_HEADER_BYTES
+                    && bytes.len() <= MAX_EVENT_BYTES
+                    && bytes[..ANCHOR_TAG_BYTES] == ANCHOR_EVENT_CPI_TAG,
                 "invalid Anchor event tag"
             );
-            if bytes[8..16] != discriminator[..8] {
+            if bytes[ANCHOR_TAG_BYTES..EVENT_HEADER_BYTES] != discriminator[..ANCHOR_TAG_BYTES] {
                 continue;
             }
-            let body = &bytes[16..];
-            ensure!(body.len() >= 188, "truncated burn event");
-            let length = u32::from_le_bytes(body[184..188].try_into()?) as usize;
+            let body = &bytes[EVENT_HEADER_BYTES..];
+            ensure!(body.len() >= BURN_HEADER_BYTES, "truncated burn event");
+            let length = u32::from_le_bytes(body[HOOK_LENGTH_OFFSET..BURN_HEADER_BYTES].try_into()?)
+                as usize;
             ensure!(
-                length <= 65536 - 188 && body.len() == 188 + length,
+                length <= MAX_EVENT_BYTES - BURN_HEADER_BYTES
+                    && body.len() == BURN_HEADER_BYTES + length,
                 "invalid Borsh hook length"
             );
             let burn = Burn::try_from_slice(body).context("invalid burn Borsh")?;
             let helper = padded(config.helper).0;
+            let hook_version =
+                alloy_primitives::U256::from(APPLICATION_HOOK_VERSION).to_be_bytes::<32>();
             if burn.burn_token != base58::<32>(usdc)?
                 || burn.destination_domain != config.arc_domain
                 || burn.mint_recipient != helper
@@ -290,12 +313,13 @@ pub(crate) fn decode(
                 continue;
             }
             candidate.manual |= burn.destination_token_messenger != padded(config.messenger).0
-                || burn.min_finality_threshold != 2000
-                || burn.hook_data.len() != 64
-                || burn.hook_data.get(..32)
-                    != Some(&alloy_primitives::U256::from(1).to_be_bytes::<32>()[..]);
+                || burn.min_finality_threshold != STANDARD_FINALITY
+                || burn.hook_data.len() != APPLICATION_HOOK_LENGTH
+                || burn.hook_data.get(..32) != Some(&hook_version[..]);
+            // Preserve the outer instruction index and the full inner ordinal,
+            // including unrelated inner instructions, as one stable occurrence ID.
             candidate.positions.push(Position {
-                ordinal: (index << 32) | ordinal as u64,
+                ordinal: (index << INNER_ORDINAL_BITS) | ordinal as u64,
                 digest: keccak256(&bytes),
             });
         }

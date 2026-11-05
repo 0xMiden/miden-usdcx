@@ -6,7 +6,7 @@ use usdcx_telemetry::{cancel_on_signal, stop_within, TelemetryArgs, SHUTDOWN_TIM
 #[derive(Parser)]
 #[command(about = "Independent CCTP source discovery and fixed Arc helper completion")]
 struct Args {
-    /// Fixed private JSON configuration for this journal epoch.
+    /// Fixed private JSON configuration bound to this durable journal.
     #[arg(long)]
     config: PathBuf,
     /// Initialize once with a genuinely fresh dedicated sender; exits without sending.

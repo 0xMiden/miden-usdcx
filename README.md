@@ -5,8 +5,8 @@ contract that mints xUSDC on Miden against Circle-attested deposits and burns it
 plus the Rust encoding library and validation harness that support it.
 
 > xUSDC is Circle's xReserve stablecoin, **not** standard USDC and **not** CCTP. Native USDC stays
-> locked 1:1 in Circle's xReserve contract on the source chain; this repository is only the Miden
-> side.
+> locked 1:1 in Circle's xReserve contract on the source chain; the faucet implements the Miden side. The optional CCTP worker completes upstream
+> native-USDC burns through the separately deployed immutable Arc helper.
 
 ## What's here
 
@@ -19,6 +19,43 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-genesis/` | Rust crate: the genesis tool — builds the genesis xUSDC faucet fully offline (its id deterministic before any network exists) from the configured role-account ids, generates and prefunds the distributor that holds the initial supply, records the consumed deposit nonces, and writes the `.mac` account files the node's genesis config takes. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
 | `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. `DEVIATIONS.md`: where the implementation deliberately deviates from Circle's spec, plus the known open items. Auditors: start with these two. |
+
+## Incoming CCTP worker
+
+`crates/cctp-deposit-relayer` independently discovers configured finalized EVM/Solana burns,
+obtains Circle attestations and submits their original bytes to one immutable Arc helper. It uses
+one serial loop, one SQLite journal and a dedicated gas sender. Omitted sources cause no discovery
+RPC. The existing xReserve-to-Miden relayer, withdrawal services and portal remain independent.
+
+Build with `cargo build --locked -p cctp-deposit-relayer`. `config.rs` defines the fixed private
+JSON configuration: RPC/Circle/KMS inputs, helper runtime/address/chain/signer, explicit source
+identities/history starts, queue capacity and per-transaction gas/fee limits. No sources or funded
+limits are supplied by default. Initialize once with
+`cctp-deposit-relayer --config /etc/cctp-worker/profile.json --init`, using a genuinely fresh dedicated
+sender and a nonexistent journal, then run the same command without `--init`. Nonce zero is required
+but cannot prove a key has no missing signed history. Configuration changes require a stopped,
+reconciled operator procedure; the service refuses a changed journal identity.
+
+The journal commits exact signed transaction bytes before broadcast. One unresolved sender nonce
+blocks further signing; only identical bytes may be rebroadcast. Canonical finalized receipts
+settle that nonce. A paid revert remains manual across restarts, and there is no automatic fee
+replacement or paid retry. Unknown sender nonce use or stale pending work requires manual recovery.
+Third-party CCTP completion never releases an owned sender nonce. A source page larger than queue
+capacity retains its cursor and logs the blockage while admitted work continues; operator review
+is required if the page cannot fit even after the queue drains.
+
+Use only intact-journal restarts, one host/process and no other user of that sender key. Old/lost
+backups and cross-host recovery require fencing the old sender and manual reconciliation; equal
+RPC nonces cannot reconstruct missing signed attempts. Keep the complete consistent SQLite journal.
+Logs are the operator interface; there is no HTTP hint/status/readiness service or daily spend
+budget. A finite dedicated gas balance and small per-transaction ceilings bound operator exposure.
+
+The Dockerfile builds from the repository root. The independent systemd example requires its own
+OS user, private configuration and durable SQLite path. Mount private configuration read-only and
+use a writable durable `/data` volume with separate resource limits. Configure telemetry with
+`--export-filter cctp_deposit_relayer=info`. Trusted finalized RPC history, Circle transaction
+association, dependency-upgrade review, real Arc/source/provider/KMS/funding qualification and final
+Miden delivery remain operational boundaries; local Ethereum fixtures do not prove them.
 
 ## How it works
 

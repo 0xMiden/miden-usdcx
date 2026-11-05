@@ -67,7 +67,7 @@ impl Signer for TestSigner {
                 "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
             ),
         };
-        Box::pin(async move { Ok(SigningPublicKey(key)) })
+        Box::pin(async move { SigningPublicKey::from_compressed(key) })
     }
     fn sign_digest(
         &self,

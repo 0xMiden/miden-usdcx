@@ -78,7 +78,7 @@ impl Signer for KmsSigner {
                 .as_bytes()
                 .try_into()
                 .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?;
-            Ok(SigningPublicKey(bytes))
+            SigningPublicKey::from_compressed(bytes)
         })
     }
 

@@ -5,6 +5,8 @@ members = [
   "crates/usdcx-bridge",
   "crates/xreserve-deposit-relayer",
   "crates/usdcx-telemetry",
+  "crates/usdcx-kms-signer",
+  "crates/cctp-deposit-relayer",
 ]
 # PARKED: `crates/xusdc-validation` sits outside the workspace. The members above use
 # published protocol-family crates at `=0.17.1`, and client and SQLite store crates at
@@ -61,6 +63,8 @@ strum = { version = "=0.28.0", features = ["derive"] }
 hex = "0.4"
 alloy-primitives = { version = "=1.6.1", default-features = false }
 alloy-sol-types = { version = "=1.6.1", default-features = false }
+alloy-consensus = { version = "=2.5.0", default-features = false, features = ["std", "k256"] }
+alloy-eips = { version = "=2.5.0", default-features = false, features = ["std"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 # Generated builders (use-bon-builder). The withdrawal listener's Circle request types are the first
 # adopter: `PrepareBurnIntentInput` carries eleven fields, five of them optional, and a positional

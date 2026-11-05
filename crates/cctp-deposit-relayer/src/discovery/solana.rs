@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_pubkey::Pubkey;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
+
+const SCAN_BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize, Serialize)]
 struct Cursor {
@@ -43,6 +45,7 @@ pub(crate) async fn scan(
     rpc: &Rpc,
     cursor: &Value,
 ) -> Result<Option<Page>> {
+    let started = tokio::time::Instant::now();
     let Network::Solana {
         messenger,
         start_signature,
@@ -144,7 +147,9 @@ pub(crate) async fn scan(
             }
         }
         last = Some(signature.to_owned());
-        if found {
+        // Advance only after the complete transaction has been examined. An in-flight
+        // RPC keeps its ten-second transport bound; run() can also cancel on shutdown.
+        if found || started.elapsed() >= SCAN_BUDGET {
             break;
         }
     }

@@ -77,22 +77,27 @@ impl Worker {
             let source = &self.config.sources[index];
             if let Some(cursor) = self.store.cursor(source.domain)? {
                 let rpc = Rpc::new(source.rpc.clone())?;
-                let request = async {
-                    match source.network {
-                        Network::Evm { .. } => evm::scan(&self.config, source, &rpc, &cursor).await,
-                        Network::Solana { .. } => {
-                            solana::scan(&self.config, source, &rpc, &cursor).await
-                        }
+                let result = match source.network {
+                    Network::Evm { .. } => tokio::time::timeout(
+                        Duration::from_secs(10),
+                        evm::scan(&self.config, source, &rpc, &cursor),
+                    )
+                    .await
+                    .unwrap_or(Ok(None)),
+                    // Solana returns a bounded examined prefix itself. Cancelling the whole
+                    // page here would repeatedly discard progress on a healthy slow provider.
+                    Network::Solana { .. } => {
+                        solana::scan(&self.config, source, &rpc, &cursor).await
                     }
                 };
-                match tokio::time::timeout(Duration::from_secs(10), request).await {
-                    Ok(Ok(Some(page))) => {
+                match result {
+                    Ok(Some(page)) => {
                         if !self.store.page(&self.config, source.domain, &page)? {
                             tracing::warn!(domain=source.domain,"source page exceeds queue capacity; cursor retained, admitted work continues");
                         }
                     }
-                    Ok(Ok(None)) | Err(_) => {}
-                    Ok(Err(error)) => {
+                    Ok(None) => {}
+                    Err(error) => {
                         if unavailable(&error) {
                             tracing::warn!(
                                 domain = source.domain,

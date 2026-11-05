@@ -197,3 +197,36 @@ fn first_durable_sender_halt_emits_one_sanitized_operator_event() {
     assert!(store.halted().unwrap());
     assert_eq!(count.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn retained_descriptor_cannot_extend_store_ownership_and_errors_release_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = config(&dir, &TestSigner::new());
+    let store = Store::open(&c, true).unwrap();
+    // dup/try_clone shares the open-file description, as fork does before exec.
+    let inherited = store.retained_owner_descriptor().unwrap();
+    assert!(
+        Store::open(&c, false).is_err(),
+        "live owner must exclude another opener"
+    );
+    drop(store);
+    let reopened =
+        Store::open(&c, false).expect("retained descriptor must not outlive Store ownership");
+    drop(inherited);
+    assert!(
+        Store::open(&c, false).is_err(),
+        "closing an old descriptor must not unlock the new owner"
+    );
+    drop(reopened);
+    let mut mismatch = c.clone();
+    mismatch.max_gas += 1;
+    let error = Store::open(&mismatch, false).err().unwrap();
+    assert!(error.to_string().contains("identity mismatch"));
+    let reopened = Store::open(&c, false).expect("failed open must release ownership");
+    assert!(Store::open(&c, false).is_err());
+    drop(reopened);
+    assert!(Store::open(&c, false).is_ok());
+    eprintln!(
+        "LOCK_LIFETIME_BODY retained_fd=true live_owner_exclusive=true failed_open_released=true"
+    );
+}

@@ -84,6 +84,10 @@ async fn actual_child_kill_before_and_after_commit_reopens_exact_continuity() {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        assert!(
+            Store::open(&c, false).is_err(),
+            "actual child still owns the journal before SIGKILL"
+        );
         child.kill().await.unwrap();
         let _ = child.wait().await.unwrap();
         let mut reopened = Store::open(&c, false).unwrap();

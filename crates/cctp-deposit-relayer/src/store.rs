@@ -10,7 +10,17 @@ use std::{
 
 pub(crate) struct Store {
     pub db: Connection,
-    _lock: File,
+    // Fields drop in declaration order: SQLite must close before ownership ends.
+    _lock: OwnershipLock,
+}
+struct OwnershipLock(File);
+impl Drop for OwnershipLock {
+    fn drop(&mut self) {
+        // flock belongs to the open-file description. A descriptor inherited by a
+        // concurrent fork can retain it briefly before exec, even after our close.
+        // Release our ownership explicitly; the final close remains the fallback.
+        let _ = self.0.unlock();
+    }
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Job {
@@ -26,6 +36,10 @@ pub(crate) struct Pending {
     pub created: i64,
 }
 impl Store {
+    #[cfg(test)]
+    pub fn retained_owner_descriptor(&self) -> std::io::Result<File> {
+        self._lock.0.try_clone()
+    }
     pub fn open(config: &Config, initialize: bool) -> Result<Self> {
         let path = &config.journal;
         let canonical = if path.exists() {
@@ -45,6 +59,8 @@ impl Store {
             .truncate(false)
             .open(sidecar)?;
         lock.try_lock().context("journal already owned")?;
+        // Guard immediately so every later initialization/error path also unlocks.
+        let lock = OwnershipLock(lock);
         if initialize {
             use std::os::unix::fs::OpenOptionsExt;
             OpenOptions::new()

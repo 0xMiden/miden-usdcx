@@ -29,14 +29,55 @@ obtains Circle attestations and submits their original bytes to one immutable Ar
 one serial loop, one SQLite journal and a dedicated gas sender. Omitted sources cause no discovery
 RPC. The existing xReserve-to-Miden relayer, withdrawal services and portal remain independent.
 
-Build with `cargo build --locked -p cctp-deposit-relayer`. `config.rs` defines the fixed private
-JSON configuration: RPC/Circle/KMS inputs, helper runtime/address/chain/signer, explicit source
-identities/history starts, queue capacity and per-transaction gas/fee limits. No sources or funded
-limits are supplied by default. Initialize once with
-`cctp-deposit-relayer --config /etc/cctp-worker/profile.json --init`, using a genuinely fresh dedicated
-sender and a nonexistent journal, then run the same command without `--init`. Nonce zero is required
-but cannot prove a key has no missing signed history. Configuration changes require a stopped,
-reconciled operator procedure; the service refuses a changed journal identity.
+Clone the integration branch and build only the worker graph:
+
+```sh
+git clone --branch feat/cctp-bridging-in https://github.com/0xMiden/miden-usdcx.git
+cd miden-usdcx
+cargo build --release --locked -p cctp-deposit-relayer
+cargo test --locked -p cctp-deposit-relayer -p usdcx-kms-signer -p usdcx-telemetry
+mkdir -p runtime/cctp
+cp crates/cctp-deposit-relayer/config.example.json runtime/cctp/profile.local.json
+chmod 700 runtime/cctp
+chmod 600 runtime/cctp/profile.local.json
+```
+
+The example deliberately fails validation. Replace the RPC/Circle URLs, helper address/runtime
+hash, destination messenger, signer and immutable KMS ARN; choose explicit gas/fee limits; replace
+the Solana genesis/program/native-USDC mint and retained finalized start signature/slot. The source
+start is inclusive. Use a host journal path inside `runtime/cctp` for a native process, or
+`/data/journal.sqlite` in the container. The disabled public candidate in
+`contracts/cctp-deposit-helper/deployments/arc-testnet.candidate.json` supplies historical public
+identities for rechecking, not approval to start or burn. Omit sources served by another preferred
+route. Providers must retain the chosen source boundary and support finalized Arc reads/logs.
+
+Use the normal AWS credential chain. The locked SDK enables SSO for a human-operated session;
+`AWS_PROFILE=miden-usdcx` requires an operator-managed AWS config and a current `aws sso login`
+session. SSO expires and is not an unattended service identity. An approved workload role through
+IMDS, including an existing Roles Anywhere credential helper endpoint, remains supported. This
+build does not enable `credential_process`. Do not put static credentials, SSO caches or certificate
+keys in this repository or image. Pin an existing compatible KMS key's immutable ARN and verify
+its public key/address. Previous Miden or Circle message signing does not consume an Arc EOA nonce;
+any previous Arc signed-transaction history must be reconciled before reuse.
+
+Check the exact locked Rust credential path without signing or creating a journal:
+`cargo run --locked -p usdcx-kms-signer --example inspect_key -- eu-north-1 <immutable-key-arn>`.
+It performs only DescribeKey/GetPublicKey, validates the key metadata and prints the derived public
+EVM address. Compare it with the independently pinned sender before initialization.
+
+Initialize once with a dedicated sender whose latest and pending Arc nonces are both zero, with
+no offline signed Arc transaction, old journal or competing sender process:
+
+```sh
+target/release/cctp-deposit-relayer --config runtime/cctp/profile.local.json --init
+target/release/cctp-deposit-relayer --config runtime/cctp/profile.local.json
+```
+
+Initialization exits without sending. A failure after journal creation can leave an empty valid
+journal: inspect the error and preserve it before deciding how to continue. Ordinary restarts use
+the same complete journal and profile without `--init`. The entire serialized configuration except
+the journal path is bound to the journal, including endpoint credentials, source order, gas caps
+and KMS identity. Changing any of these requires stopping/fencing and manual reconciliation.
 
 For local testing and demonstrations on **Arc Testnet (chain 5042002) only**, use
 `crates/cctp-deposit-relayer/config.local.example.json` as the profile template. Set the
@@ -78,16 +119,38 @@ RPC nonces cannot reconstruct missing signed attempts. Keep the complete consist
 Logs are the operator interface; there is no HTTP hint/status/readiness service or daily spend
 budget. A finite dedicated gas balance and small per-transaction ceilings bound operator exposure.
 
-The Dockerfile builds from the repository root. The independent systemd example requires its own
-OS user, private configuration and durable SQLite path. Mount private configuration read-only and
-use a writable durable `/data` volume with separate resource limits. Configure telemetry with
+Build the Linux amd64 image from the repository root on a qualified Docker host:
+
+```sh
+docker build --platform linux/amd64 -f crates/cctp-deposit-relayer/Dockerfile -t cctp-worker:local .
+docker run --rm --network none cctp-worker:local --help
+docker volume create cctp-worker-data
+docker run --name cctp-worker-init --rm -v "$PWD/runtime/cctp/profile.local.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json --init
+docker run --name cctp-worker --restart unless-stopped --stop-timeout 30 -v "$PWD/runtime/cctp/profile.local.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json
+docker stop --time 30 cctp-worker
+docker start cctp-worker
+```
+
+Supply the approved AWS workload environment/mounts to both initialization and service containers;
+the commands above intentionally contain no credentials. The image runs as UID/GID 10002. A named
+volume inherits `/data` ownership; a bind-mounted journal directory must be writable by that UID,
+including SQLite WAL/SHM sidecars. Mount the whole directory, never only the database file. Keep
+private profiles and state outside the build context; the narrow ignored `runtime/cctp` directory
+is available for local use. Choose host memory/CPU limits appropriate to the selected runtime.
+SIGTERM requests bounded shutdown. Reuse the same volume/profile on restart and never clear a
+journal or rerun initialization to resolve unknown nonce use, a paid revert or a lost RPC reply.
+Stop and reconcile source occurrence, exact signed bytes, canonical receipt and sender nonce with
+the operator; there is no automatic paid retry, fee replacement, refund or recipient change.
+The independent systemd example requires its own OS user, private config and durable SQLite path.
+Configure telemetry with
 `--export-filter cctp_deposit_relayer=info`. Trusted finalized RPC history, Circle transaction
 association, dependency-upgrade review, real Arc/source/provider/KMS/funding qualification and final
 Miden delivery remain operational boundaries; local Ethereum fixtures do not prove them.
 
-Known discovery limitation: a healthy Solana page can exceed the worker's ten-second whole-scan
-deadline, cancel before saving progress and repeat indefinitely. This remains unresolved. The
-worker is a local review candidate and is not qualified for public-testnet or production operation.
+The public deployment candidate remains disabled until its qualification record is complete.
+The focused CCTP workflow checks the worker on Linux and helper tooling on macOS ARM64. Image
+build/linkage, nonroot journal checks, actual runtime SIGTERM/restart, provider capability and the
+selected KMS credential path each need source-bound results before service operation is qualified.
 
 ## Incoming CCTP helper
 
@@ -99,6 +162,25 @@ pinned Circle reference contracts, run concrete, fuzz, invariant and integration
 and stop a loopback-only Arc Anvil instance for runtime checks. `scripts/Deploy.s.sol` performs
 nonbroadcast preflight; local validation does not establish a live deployment or an end-to-end
 public-testnet bridge.
+
+Generate/check the shared compiler ABI and run the real worker against a fresh loopback fixture:
+
+```sh
+node tooling/generate-abi.cjs
+node tooling/generate-abi.cjs --check
+node tooling/run-worker-integration.cjs
+tooling/forge build --ast
+CCTP_ARC_RPC_URL=https://rpc.testnet.arc.network node tooling/check-public-deployment.cjs /tmp/cctp-public-check.json
+```
+
+The worker runner resolves the repository and Cargo JSON test executable, owns ephemeral ports and
+processes, and keeps generated test keys in memory. It executes three genuine local source burns,
+including identical messages with distinct CCTP nonces, through the pinned Circle/helper/xReserve
+contracts. Its token and Gateway are local stand-ins; it never uses AWS or public RPC and does not
+qualify public Arc or Miden delivery. Optional first argument selects a parent output directory.
+The public checker is read-only, pins one finalized Arc block and verifies exact compiler runtime
+with immutables, all getters, dependencies and reserve views. Its result alone does not earn the
+five deployment qualification flags, prove source-history capacity or authorize a source burn.
 
 ## How it works
 

@@ -9,3 +9,16 @@ target
 **/.env
 **/.env.*
 **/*.private.json
+/runtime/cctp/
+/crates/cctp-deposit-relayer/profile.local.json
+/crates/cctp-deposit-relayer/journal.sqlite*
+contracts/cctp-deposit-helper/artifacts
+contracts/cctp-deposit-helper/cache
+contracts/cctp-deposit-helper/modules
+contracts/cctp-deposit-helper/tooling/node_modules
+contracts/cctp-deposit-helper/tooling/*.tar.gz
+contracts/cctp-deposit-helper/tooling/forge
+contracts/cctp-deposit-helper/tooling/anvil
+contracts/cctp-deposit-helper/tooling/local-gates
+contracts/cctp-deposit-helper/reference/*/artifacts
+contracts/cctp-deposit-helper/reference/*/cache

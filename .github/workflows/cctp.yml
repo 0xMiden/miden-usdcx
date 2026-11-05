@@ -1,0 +1,100 @@
+name: CCTP
+
+on:
+  push:
+    branches: [feat/cctp-bridging-in, build/cctp-release-tooling-20261105]
+    paths: &cctp-paths
+      - .github/workflows/cctp.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .dockerignore
+      - crates/cctp-deposit-relayer/**
+      - crates/usdcx-kms-signer/**
+      - crates/usdcx-telemetry/**
+      - contracts/cctp-deposit-helper/**
+  pull_request:
+    paths: *cctp-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cctp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_EC2_METADATA_DISABLED: 'true'
+  CARGO_BUILD_JOBS: '2'
+
+jobs:
+  worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo test --locked -p cctp-deposit-relayer -p usdcx-kms-signer -p usdcx-telemetry
+      - run: cargo clippy --locked -p cctp-deposit-relayer -p usdcx-kms-signer -p usdcx-telemetry --all-targets -- -D warnings
+      - run: cargo fmt --all -- --check
+
+  helper:
+    # The pinned Arc Foundry archive is qualified on Darwin ARM64 only.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.18.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: python3 tooling/bootstrap.py
+        working-directory: contracts/cctp-deposit-helper
+      - run: python3 tooling/run-local-gates.py
+        working-directory: contracts/cctp-deposit-helper
+      - run: node tooling/generate-abi.cjs --check
+        working-directory: contracts/cctp-deposit-helper
+      - run: node contracts/cctp-deposit-helper/tooling/run-worker-integration.cjs
+
+  linux-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: crates/cctp-deposit-relayer/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cctp-worker:check
+          build-args: COMMIT=${{ github.sha }}
+      - name: Check release linkage and entrypoint without credentials or network
+        run: docker run --rm --network none cctp-worker:check --help
+      - name: Resolve the focused journal test executable
+        id: journal-test
+        run: |
+          cargo test --locked -p cctp-deposit-relayer --lib --no-run --message-format=json > /tmp/cctp-tests.jsonl
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          rows = [json.loads(line) for line in open('/tmp/cctp-tests.jsonl')]
+          paths = [row['executable'] for row in rows if row.get('reason') == 'compiler-artifact' and row.get('executable') and row.get('target', {}).get('name') == 'cctp_deposit_relayer' and row.get('profile', {}).get('test')]
+          assert len(paths) == 1
+          print('executable=' + paths[0])
+          PY
+      - name: Check nonroot durable directory ownership across containers
+        run: |
+          docker volume create cctp-worker-check
+          trap 'docker volume rm cctp-worker-check' EXIT
+          docker run --rm --network none -v cctp-worker-check:/data --entrypoint /bin/sh cctp-worker:check -ec 'test "$(id -u)" = 10002; test "$(id -g)" = 10002; umask 077; echo continuity > /data/runtime-check'
+          docker run --rm --network none -e TMPDIR=/data -v cctp-worker-check:/data -v '${{ steps.journal-test.outputs.executable }}:/tmp/journal-test:ro' --entrypoint /tmp/journal-test cctp-worker:check tests::journal::journal_page_atomicity_reopen_identity_and_capacity --exact --nocapture
+          docker run --rm --network none -v cctp-worker-check:/data --entrypoint /bin/sh cctp-worker:check -ec 'test "$(cat /data/runtime-check)" = continuity; rm /data/runtime-check'

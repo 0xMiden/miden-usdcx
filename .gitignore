@@ -8,3 +8,6 @@ local-node-data/
 .env.*
 !.env.example
 *.private.json
+/runtime/cctp/
+/crates/cctp-deposit-relayer/profile.local.json
+/crates/cctp-deposit-relayer/journal.sqlite*

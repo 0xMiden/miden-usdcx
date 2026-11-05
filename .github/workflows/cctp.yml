@@ -2,7 +2,7 @@ name: CCTP
 
 on:
   push:
-    branches: [feat/cctp-bridging-in, build/cctp-release-tooling-20261105]
+    branches: [feat/cctp-bridging-in, build/cctp-release-tooling-20261105, test/cctp-local-signer]
     paths: &cctp-paths
       - .github/workflows/cctp.yml
       - Cargo.toml

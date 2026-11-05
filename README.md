@@ -80,6 +80,7 @@ the journal path is bound to the journal, including endpoint credentials, source
 and KMS identity. Changing any of these requires stopping/fencing and manual reconciliation.
 
 For local testing and demonstrations on **Arc Testnet (chain 5042002) only**, use
+branch `test/cctp-local-signer` when cloning and
 `crates/cctp-deposit-relayer/config.local.example.json` as the profile template. Set the
 public `signer` to a fresh dedicated test wallet's address and fill the same verified helper,
 source, provider and fee settings. This profile selects `local_env` and omits `kms`;
@@ -98,7 +99,8 @@ are excluded from Git and the Docker context. Keep the private file outside the 
 Build with `cargo build --locked -p cctp-deposit-relayer`, then initialize once with
 `target/debug/cctp-deposit-relayer --config /absolute/private/profile.private.json --init`.
 Run the same command without `--init` and restart with the same profile, key and intact
-journal. Mount the dotenv file read-only for containers. The derived sender must match the
+journal. Mount the dotenv file read-only for containers, owned by the container worker
+(UID 10002 in the supplied image). The derived sender must match the
 profile before any RPC or journal creation. The actual RPC must still report the configured
 chain and helper identity. Local mode refuses mainnet chain 5042. Do not use an old deployer
 or source wallet, delete a journal to change keys, or repeat initialization after signing;

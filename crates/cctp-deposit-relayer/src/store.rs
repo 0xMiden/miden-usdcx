@@ -63,11 +63,15 @@ impl Store {
             let tx = db.transaction()?;
             tx.execute_batch(SCHEMA)?;
             tx.execute(
-                "INSERT INTO meta VALUES(1,?,0,NULL,0)",
+                "INSERT INTO meta (id, identity, next_nonce, halt, iris_after)
+                 VALUES (1, ?, 0, NULL, 0)",
                 [config.identity()?],
             )?;
             for source in &config.sources {
-                tx.execute("INSERT INTO sources VALUES(?,'null',NULL)", [source.domain])?;
+                tx.execute(
+                    "INSERT INTO sources (domain, cursor, halt) VALUES (?, 'null', NULL)",
+                    [source.domain],
+                )?;
             }
             tx.commit()?;
         }
@@ -171,7 +175,7 @@ impl Store {
         })
     }
     pub fn capacity(&self, config: &Config) -> Result<bool> {
-        let count:usize=self.db.query_row("SELECT (SELECT coalesce(sum(t.expected-(SELECT count(*) FROM messages m WHERE m.domain=t.domain AND m.source_tx=t.hash)),0) FROM source_txs t WHERE t.state='pending')+(SELECT count(*) FROM messages WHERE state IN ('queued','pending'))",[],|r|r.get(0))?;
+        let count = reserved_work(&self.db)?;
         Ok(count < config.queue_capacity)
     }
     pub fn page(
@@ -215,7 +219,9 @@ impl Store {
                 }
             } else {
                 tx.execute(
-                    "INSERT INTO source_txs VALUES(?,?,?,?,?,0,?)",
+                    "INSERT INTO source_txs
+                        (domain, hash, positions, expected, state, next_poll, reason)
+                     VALUES (?, ?, ?, ?, ?, 0, ?)",
                     params![
                         domain,
                         candidate.transaction,
@@ -242,7 +248,7 @@ impl Store {
                 }
             }
         }
-        let count:usize=tx.query_row("SELECT (SELECT coalesce(sum(t.expected-(SELECT count(*) FROM messages m WHERE m.domain=t.domain AND m.source_tx=t.hash)),0) FROM source_txs t WHERE t.state='pending')+(SELECT count(*) FROM messages WHERE state IN ('queued','pending'))",[],|r|r.get(0))?;
+        let count = reserved_work(&tx)?;
         if count > config.queue_capacity {
             return Ok(false);
         }
@@ -257,7 +263,27 @@ impl Store {
         Ok(true)
     }
     pub fn due(&self, now: i64) -> Result<Option<Job>> {
-        Ok(self.db.query_row("SELECT t.domain,t.hash FROM source_txs t JOIN sources s ON s.domain=t.domain WHERE t.state='pending' AND s.halt IS NULL AND t.next_poll<=? AND (SELECT iris_after FROM meta WHERE id=1)<=? ORDER BY t.next_poll,t.rowid LIMIT 1",params![now,now],|r|Ok(Job{domain:r.get(0)?,transaction:r.get(1)?})).optional()?)
+        Ok(self
+            .db
+            .query_row(
+                "SELECT t.domain, t.hash
+             FROM source_txs t
+             JOIN sources s ON s.domain = t.domain
+             WHERE t.state = 'pending'
+               AND s.halt IS NULL
+               AND t.next_poll <= ?
+               AND (SELECT iris_after FROM meta WHERE id = 1) <= ?
+             ORDER BY t.next_poll, t.rowid
+             LIMIT 1",
+                params![now, now],
+                |row| {
+                    Ok(Job {
+                        domain: row.get("domain")?,
+                        transaction: row.get("hash")?,
+                    })
+                },
+            )
+            .optional()?)
     }
     pub fn postpone(&self, job: &Job, time: i64) -> Result<()> {
         self.db.execute(
@@ -337,7 +363,9 @@ impl Store {
         } else {
             for message in fresh.values() {
                 tx.execute(
-                    "INSERT INTO messages VALUES(?,?,?,?,?,'queued',0)",
+                    "INSERT INTO messages
+                        (nonce, domain, source_tx, message, attestation, state, next_try)
+                     VALUES (?, ?, ?, ?, ?, 'queued', 0)",
                     params![
                         message.nonce.to_string(),
                         job.domain,
@@ -368,7 +396,23 @@ impl Store {
         Ok(())
     }
     pub fn ready(&self, now: i64) -> Result<Option<Message>> {
-        Ok(self.db.query_row("SELECT m.nonce,m.domain,m.source_tx,m.message,m.attestation FROM messages m JOIN source_txs t ON t.domain=m.domain AND t.hash=m.source_tx JOIN sources s ON s.domain=m.domain WHERE m.state='queued' AND m.next_try<=? AND t.state!='manual' AND s.halt IS NULL ORDER BY m.next_try,m.rowid LIMIT 1",[now],read_message).optional()?)
+        Ok(self
+            .db
+            .query_row(
+                "SELECT m.nonce, m.domain, m.source_tx, m.message, m.attestation
+             FROM messages m
+             JOIN source_txs t ON t.domain = m.domain AND t.hash = m.source_tx
+             JOIN sources s ON s.domain = m.domain
+             WHERE m.state = 'queued'
+               AND m.next_try <= ?
+               AND t.state != 'manual'
+               AND s.halt IS NULL
+             ORDER BY m.next_try, m.rowid
+             LIMIT 1",
+                [now],
+                read_message,
+            )
+            .optional()?)
     }
     pub fn postpone_message(&self, nonce: B256, time: i64) -> Result<()> {
         self.db.execute(
@@ -385,18 +429,36 @@ impl Store {
         Ok(())
     }
     pub fn pending(&self) -> Result<Option<Pending>> {
-        let row=self.db.query_row("SELECT m.nonce,m.domain,m.source_tx,m.message,m.attestation,p.eoa_nonce,p.raw,p.hash,p.created FROM pending p JOIN messages m ON m.nonce=p.nonce WHERE p.id=1",[],|r|Ok((read_message(r)?,r.get::<_,u64>(5)?,r.get(6)?,r.get::<_,String>(7)?,r.get(8)?))).optional()?;
-        row.map(|(message, eoa_nonce, raw, hash, created)| {
-            Ok(Pending {
-                message,
-                eoa_nonce,
-                raw,
-                hash: hash.parse()?,
-                created,
-            })
-        })
-        .transpose()
+        Ok(self
+            .db
+            .query_row(
+                "SELECT m.nonce, m.domain, m.source_tx, m.message, m.attestation,
+                    p.eoa_nonce, p.raw, p.hash, p.created
+             FROM pending p
+             JOIN messages m ON m.nonce = p.nonce
+             WHERE p.id = 1",
+                [],
+                |row| {
+                    let hash: String = row.get("hash")?;
+                    let hash = hash.parse().map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                    Ok(Pending {
+                        message: read_message(row)?,
+                        eoa_nonce: row.get("eoa_nonce")?,
+                        raw: row.get("raw")?,
+                        hash,
+                        created: row.get("created")?,
+                    })
+                },
+            )
+            .optional()?)
     }
+
     pub fn save_pending(&mut self, p: &Pending) -> Result<()> {
         let tx = self.db.transaction()?;
         ensure!(
@@ -408,7 +470,8 @@ impl Store {
             "sender nonce mismatch"
         );
         tx.execute(
-            "INSERT INTO pending VALUES(1,?,?,?,?,?)",
+            "INSERT INTO pending (id, nonce, eoa_nonce, raw, hash, created)
+             VALUES (1, ?, ?, ?, ?, ?)",
             params![
                 p.message.nonce.to_string(),
                 p.eoa_nonce,
@@ -493,11 +556,59 @@ fn manual(db: &Connection, domain: u32, hash: &str, reason: &'static str) -> Res
     )?;
     Ok(previous != "manual")
 }
-const SCHEMA:&str="
-CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1),identity TEXT NOT NULL,next_nonce INTEGER NOT NULL,halt TEXT,iris_after INTEGER NOT NULL);
-CREATE TABLE sources(domain INTEGER PRIMARY KEY,cursor TEXT NOT NULL,halt TEXT);
-CREATE TABLE source_txs(domain INTEGER NOT NULL REFERENCES sources(domain),hash TEXT NOT NULL,positions TEXT NOT NULL,expected INTEGER NOT NULL,state TEXT NOT NULL,next_poll INTEGER NOT NULL,reason TEXT,PRIMARY KEY(domain,hash));
-CREATE TABLE messages(nonce TEXT PRIMARY KEY,domain INTEGER NOT NULL,source_tx TEXT NOT NULL,message BLOB NOT NULL,attestation BLOB NOT NULL,state TEXT NOT NULL,next_try INTEGER NOT NULL,FOREIGN KEY(domain,source_tx) REFERENCES source_txs(domain,hash));
-CREATE TABLE pending(id INTEGER PRIMARY KEY CHECK(id=1),nonce TEXT NOT NULL UNIQUE REFERENCES messages(nonce),eoa_nonce INTEGER NOT NULL,raw BLOB NOT NULL,hash TEXT NOT NULL,created INTEGER NOT NULL);
-PRAGMA user_version=10;
+fn reserved_work(db: &Connection) -> rusqlite::Result<usize> {
+    db.query_row(
+        "SELECT
+            (SELECT coalesce(sum(
+                t.expected - (SELECT count(*) FROM messages m
+                              WHERE m.domain = t.domain AND m.source_tx = t.hash)
+            ), 0) FROM source_txs t WHERE t.state = 'pending')
+            + (SELECT count(*) FROM messages WHERE state IN ('queued', 'pending'))",
+        [],
+        |row| row.get(0),
+    )
+}
+
+const SCHEMA: &str = "
+CREATE TABLE meta (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    identity TEXT NOT NULL,
+    next_nonce INTEGER NOT NULL,
+    halt TEXT,
+    iris_after INTEGER NOT NULL
+);
+CREATE TABLE sources (
+    domain INTEGER PRIMARY KEY,
+    cursor TEXT NOT NULL,
+    halt TEXT
+);
+CREATE TABLE source_txs (
+    domain INTEGER NOT NULL REFERENCES sources(domain),
+    hash TEXT NOT NULL,
+    positions TEXT NOT NULL,
+    expected INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    next_poll INTEGER NOT NULL,
+    reason TEXT,
+    PRIMARY KEY(domain, hash)
+);
+CREATE TABLE messages (
+    nonce TEXT PRIMARY KEY,
+    domain INTEGER NOT NULL,
+    source_tx TEXT NOT NULL,
+    message BLOB NOT NULL,
+    attestation BLOB NOT NULL,
+    state TEXT NOT NULL,
+    next_try INTEGER NOT NULL,
+    FOREIGN KEY(domain, source_tx) REFERENCES source_txs(domain, hash)
+);
+CREATE TABLE pending (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    nonce TEXT NOT NULL UNIQUE REFERENCES messages(nonce),
+    eoa_nonce INTEGER NOT NULL,
+    raw BLOB NOT NULL,
+    hash TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
+PRAGMA user_version = 10;
 ";

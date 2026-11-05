@@ -1,0 +1,15 @@
+receiveAndDeposit
+├── configuration
+│   ├── rejects zero required addresses and invalid faucet syntax
+│   └── exposes six immutable values; token code size is not assumed
+├── invalid envelope, binding, recipient or principal
+│   └── rejects before receiver/reserve boundary with specific error
+├── valid message
+│   ├── wrong remote-token mapping → reject before receive
+│   ├── failed receive, nonpositive/wrong/oversized delta → atomic revert
+│   ├── approval/reserve/callback failure → atomic revert and original retry
+│   ├── underconsumption or residual allowance → atomic revert
+│   ├── reentry rejected and uncaught → revert outer
+│   ├── reentry rejection caught → one valid outer completion
+│   └── success → exact net deposit, donation preserved, allowance zero, one event
+└── supplied native value → nonpayable rejection

@@ -1,0 +1,307 @@
+[
+  {
+    "kind": "cctp",
+    "compiler": "0.7.6+commit.7338295f.Emscripten.clang",
+    "sourceCount": 45,
+    "sourceManifest": {
+      "src/v2/MessageTransmitterV2.sol": {
+        "sha256": "b78a554bf191acbc4991ac47ddbd70fc92f11a127b063e051148514f09bd0714"
+      },
+      "src/v2/TokenMessengerV2.sol": {
+        "sha256": "b0d85c268edc378d341a1abfbcba8625840af513821985a2b7b157703677e7a4"
+      },
+      "src/v2/TokenMinterV2.sol": {
+        "sha256": "ebc51ff71d520d4063f2ce71a10a76c57f000991a660f65a9f9c5c13bae0d167"
+      },
+      "src/proxy/AdminUpgradableProxy.sol": {
+        "sha256": "86128f0fd1f551ddab766a733d7f365a90f7d7f7f30eab161cebdc5b3b86fc33"
+      },
+      "lib/openzeppelin-contracts/contracts/proxy/UpgradeableProxy.sol": {
+        "sha256": "37b919b73cc882815acbc8e803fe703536515ff6791faa43940b251a0fc164f6"
+      },
+      "src/interfaces/v2/IMessageTransmitterV2.sol": {
+        "sha256": "a6be814462bdcb5608fee66bb59044632c1079eee97b8de3c5c2101f5ea76fdb"
+      },
+      "src/v2/BaseMessageTransmitter.sol": {
+        "sha256": "5a68980143673d291987894b0b54ad6ab5924f80735d8ace7dbf40dbaac1ebe0"
+      },
+      "src/messages/v2/MessageV2.sol": {
+        "sha256": "eda28ca9d890c26ad32badfdbc1f8569e1ffece0fb8568987d45cf124cccbbae"
+      },
+      "src/messages/v2/AddressUtils.sol": {
+        "sha256": "a619d6eacbc686df5dfa4eaa712c7d500b3033aba27d392ea005ee82159f5ee6"
+      },
+      "@memview-sol/contracts/TypedMemView.sol": {
+        "sha256": "e8772d54d8d8b89991bcea4f9d7a28407de9c49d7d3d826b55be432e0b75c0b5"
+      },
+      "src/interfaces/v2/IMessageHandlerV2.sol": {
+        "sha256": "0ad3e1686b59f16c79a114c10153aaa4c23684c77b5ab1a4770242220ab0d852"
+      },
+      "src/v2/FinalityThresholds.sol": {
+        "sha256": "bce770ff4fb92fcc93b2bec3b5cf59742aec68cd0a2d58cfa4a1111cef19cd08"
+      },
+      "lib/openzeppelin-contracts/contracts/math/SafeMath.sol": {
+        "sha256": "4a04d0a20a19e3ef1dcabae9cad9ba006430a4e7eec4d9b519db87999722c98a"
+      },
+      "src/v2/BaseTokenMessenger.sol": {
+        "sha256": "dac5712b006e93abda833dda359356a71b39c6df3ce81fbefcd59c2353fec680"
+      },
+      "src/interfaces/v2/ITokenMinterV2.sol": {
+        "sha256": "9efff26504b6c342f39fe5056702d52b68afba06648e70941fe3d177f4b0d071"
+      },
+      "src/interfaces/v2/IRelayerV2.sol": {
+        "sha256": "b19d1873f266ff31feb3d14668727cd8be3bdc6e685fc97c7eb575e6eae2a9c5"
+      },
+      "src/messages/v2/BurnMessageV2.sol": {
+        "sha256": "e3398be6e11276d5a01e9995c3e01353257578c994b06e44ab1cdb7cda0c9352"
+      },
+      "src/TokenMinter.sol": {
+        "sha256": "bbf0fbe9d585ec80b89943a0546f1c0d696f8afeec525f04098d064089e672ce"
+      },
+      "src/interfaces/IMintBurnToken.sol": {
+        "sha256": "03eae2aa920d149f6e1406356334348dd7a4af234e88b12a4a15ec7b228f3f50"
+      },
+      "lib/openzeppelin-contracts/contracts/proxy/Proxy.sol": {
+        "sha256": "c795b86880d9694a8a8dc3fbf4cc6b268d6e35be227a890e8fefed490772d19c"
+      },
+      "lib/openzeppelin-contracts/contracts/utils/Address.sol": {
+        "sha256": "11ad5e3e21434e00c4ceba1f5a977b7a68bdd7d16b849276ce4ff4495129eec7"
+      },
+      "@memview-sol/contracts/SafeMath.sol": {
+        "sha256": "67b73aa1957ee3e77c8e8f185f2d4b147dedef6bf19a34026a8167e35ee7cd70"
+      },
+      "src/interfaces/v2/IReceiverV2.sol": {
+        "sha256": "1b5e7a7ce9acfab166337690efd39b871cd43c70b56d74e9a714d974c6c80bd7"
+      },
+      "src/roles/v2/AttestableV2.sol": {
+        "sha256": "fdad4aabd542493db53c0f3d86a363b5beede6713151cb47cdca978bb200fe4f"
+      },
+      "src/roles/Pausable.sol": {
+        "sha256": "01304cbe1eb52c1568b68fc9fdc427e3b82fa7a4d85df418e3a187225759cbe8"
+      },
+      "src/roles/Rescuable.sol": {
+        "sha256": "4efbae25b7485ceb8e59192335632736e24f5a0304edef44f33a02b39db3e350"
+      },
+      "src/proxy/Initializable.sol": {
+        "sha256": "43cdd64a5463f718ab4cb1dbb9a350a2a60a359dd7879e738a19fbbd27eab6c7"
+      },
+      "src/interfaces/ITokenMinter.sol": {
+        "sha256": "9091fccb4034b3c7c53b0d2d4b4e60d08b6f9c1d94eee13d40d21f0e1abeb753"
+      },
+      "src/messages/BurnMessage.sol": {
+        "sha256": "ec2b579d148045e873e7aeeb09e55c370f61c99b760856ef3320b2ebbda119bd"
+      },
+      "src/roles/v2/Denylistable.sol": {
+        "sha256": "30612f2b0d2646bfa5ac0901dc8dd5133aa1d3ee7a9aa259644177e893dc652b"
+      },
+      "src/roles/TokenController.sol": {
+        "sha256": "452ac158a26fcf170b5b7ff2fed2f75e4bb33116ffabe3cc1189599dd9c36dc9"
+      },
+      "src/TokenMessenger.sol": {
+        "sha256": "0712d0818baf8360b3fa61ede2966926bd2d159580b1cc88eb98c10162baf935"
+      },
+      "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol": {
+        "sha256": "0573c2961569aa4906845d0cd428b5b7394956170054ceeaa8f8af96cd44875c"
+      },
+      "src/interfaces/IReceiver.sol": {
+        "sha256": "aad2f61e40599de54ea5297c822f5d1c4cfc0fbb43b176b6c4b76897f860424d"
+      },
+      "src/roles/Ownable2Step.sol": {
+        "sha256": "c93fbe6d3e97a6eceb4c90d59b091718e65d20e94eadf4dabd00cd031b6703f8"
+      },
+      "lib/openzeppelin-contracts/contracts/token/ERC20/SafeERC20.sol": {
+        "sha256": "eea796f96939e7dd6119de00941717ce5772d8a942b184f5e48d2b962d0ab655"
+      },
+      "src/roles/Attestable.sol": {
+        "sha256": "2e97e082a853d86cbd6796136b8ade2f383a2245acb41dcade4b04c9a54f6c65"
+      },
+      "src/interfaces/IMessageHandler.sol": {
+        "sha256": "441e69d0d67db8c824849c44f2db974f1ef17363ffeddc1c90d02d4aad307762"
+      },
+      "src/interfaces/IMessageTransmitter.sol": {
+        "sha256": "2d205bb0d10d62dda0dea129ab71d9873bbebac09e5c47fccc5c0e01fb641754"
+      },
+      "src/messages/Message.sol": {
+        "sha256": "a7ce03beb721072072210faf502098e6d83c6c3fee49f1455941e0c1d0947e5e"
+      },
+      "src/roles/Ownable.sol": {
+        "sha256": "360bb6855548425902964527a04dfab8e1c87b3722c0241296bc6aa4c86226a6"
+      },
+      "lib/openzeppelin-contracts/contracts/utils/EnumerableSet.sol": {
+        "sha256": "c8b73a000476872a00f6153d66be31a4a99b7565068f05336129748bfad704ea"
+      },
+      "lib/openzeppelin-contracts/contracts/cryptography/ECDSA.sol": {
+        "sha256": "0c3c8f0e880bfb11298ab86b2863e7a6ce8c85e443fbf4998b8ed3b32739c853"
+      },
+      "src/interfaces/IRelayer.sol": {
+        "sha256": "312195cc6821c84bf7dad0e5d1549d35ff066a326b7bea8badd637097f00c634"
+      },
+      "lib/openzeppelin-contracts/contracts/utils/Context.sol": {
+        "sha256": "9a3d1e5be0f0ace13e2d9aa1d0a1c3a6574983983ad5de94fc412f878bf7fe89"
+      }
+    }
+  },
+  {
+    "kind": "xreserve",
+    "compiler": "0.8.29+commit.ab55807c.Emscripten.clang",
+    "sourceCount": 52,
+    "sourceManifest": {
+      "src/xReserve.sol": {
+        "sha256": "e5df090d9925800c0e69451152b8e6cd0890413be6be42f7c86f17799834c38d"
+      },
+      "src/RemoteDomainDepositor.sol": {
+        "sha256": "19fb6933a1deb490e08ad3328e3b135edcbe357b61de0c229af1e759a2a1b7a5"
+      },
+      "src/UpgradeablePlaceholder.sol": {
+        "sha256": "b89d5d63ec86c87f05573b5290889a766e30eebf2fb732bd306e050c02b9994f"
+      },
+      "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol": {
+        "sha256": "ca1c1476f97761f3a5830395576c82756899ad8896489cef9c388afab825ef21"
+      },
+      "@openzeppelin/contracts/proxy/Proxy.sol": {
+        "sha256": "5f5081378d4bc82b814b0d64990b7f7b9c69697593b73a3341f4a269940ba540"
+      },
+      "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol": {
+        "sha256": "8850e97f15234cf93d7d1828b6289aeda7fa7167b3550b2f2a9713c8e2cecc80"
+      },
+      "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol": {
+        "sha256": "2d07bcf9728190a5c807cf68defc3f3c52aa098d04770d44af37f30abade38d5"
+      },
+      "src/modules/remote-domain-depositor/Attestable.sol": {
+        "sha256": "2b6384928aae7268aac2f6b6670eba0dd1b161820a49ca437e30c650ebcf6fcb"
+      },
+      "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol": {
+        "sha256": "e65937e8c36af5c343406e97399759bd576090c0599b864bbea3501d617f7e1f"
+      },
+      "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol": {
+        "sha256": "f527a063813c2bf60c153fb08e38539578935402894fcc36fac42324ca325d3b"
+      },
+      "src/lib/AddressLib.sol": {
+        "sha256": "dbb7b8cdb683a4ce10c528e0dbccca619dbcf1150719fe31c0553d89431f4438"
+      },
+      "src/lib/DepositIntent.sol": {
+        "sha256": "2cc2d93d2e4f1f9ed056763456ab2690216fd8b16724849eb8c357a51a93a481"
+      },
+      "src/interfaces/IGatewayWallet.sol": {
+        "sha256": "c50975714c1b6907337be543664830a8e43ca78f00bb6325ec2fb1c74ca43c14"
+      },
+      "src/interfaces/IRemoteDomainDepositor.sol": {
+        "sha256": "91e1dc445e283840cfbf7a1ad87f9b83f942c0baf1fcca4c1e5d3406b7acc2c6"
+      },
+      "src/lib/DepositIntentLib.sol": {
+        "sha256": "6c73b2975a89e222012d88491b411688a07124d602f27dccb4054e2180327a25"
+      },
+      "src/modules/x-reserve/Domain.sol": {
+        "sha256": "72c1c46b23c9fecbbdfdee0f3035109e43fc552124899563f4d0d637f7215623"
+      },
+      "src/modules/x-reserve/Immutables.sol": {
+        "sha256": "b6c337e09c96e0f3919cf929659e7156c0af249f3588e4ef70185f82e30f2125"
+      },
+      "src/modules/x-reserve/Withdrawal.sol": {
+        "sha256": "b6ea3535214484923a89d0cfd9cfec2acc6cd103aeffd73628d540647596d841"
+      },
+      "@openzeppelin/contracts/proxy/beacon/IBeacon.sol": {
+        "sha256": "422eabc0e645e24c3a52898f6255b349323b013544a3ebdc4b2d3f7fc5bb7e9e"
+      },
+      "@openzeppelin/contracts/utils/Address.sol": {
+        "sha256": "b3710b1712637eb8c0df81912da3450da6ff67b0b3ed18146b033ed15b1aa3b9"
+      },
+      "@openzeppelin/contracts/utils/StorageSlot.sol": {
+        "sha256": "b4a5fb7ab93bfeda06509eafbd5f71fde0e0de84b6d9129553bd535a42166c15"
+      },
+      "@openzeppelin/contracts/interfaces/draft-IERC1822.sol": {
+        "sha256": "7bfe4dbf903e34b1dc61da3e27c33d601dcc496dcaf989dc6d2af610e24a145f"
+      },
+      "@openzeppelin/contracts/interfaces/IERC1271.sol": {
+        "sha256": "c222d6d35af16214627df99796551f94497c74662e94aa1e80ca5e211a751f61"
+      },
+      "@openzeppelin/contracts/utils/cryptography/ECDSA.sol": {
+        "sha256": "37828cb50b47bcc51c7b770bde15d5885d871ef1e67028057a0b788c3568726e"
+      },
+      "@openzeppelin/contracts/utils/structs/EnumerableSet.sol": {
+        "sha256": "c40bf629cac9f40a2d68153867e1099325bee57b2232add4b3e4c2bb08d0a6f5"
+      },
+      "src/common/Constants.sol": {
+        "sha256": "2d11b70b872f95d62552dfc0f7e5250d60c8f3fe6145dac9cdc4b4775f2125c4"
+      },
+      "src/modules/remote-domain-depositor/DomainManageable.sol": {
+        "sha256": "e92b81a6f82fb7bdb4023fe5ed5e51598dfb456421767c4439b443daf7c011c2"
+      },
+      "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol": {
+        "sha256": "9247b9ad7939d23990dbdc9274917c3762ffb37e5137ef7bbfcc2e2fba1b8dd2"
+      },
+      "src/common/Errors.sol": {
+        "sha256": "6a4402feb4445853740fec82d7e9cde888e465033083df6811fece4a8b4535f8"
+      },
+      "@memview-sol/TypedMemView.sol": {
+        "sha256": "5be5fa7ce84f1b1f465cdbf435012e2c53c4498df43e889c0ae97c7dd208e00e"
+      },
+      "@gateway/src/lib/Cursor.sol": {
+        "sha256": "a8c2c3f6146929623f82d221c37dfa66c9eb842889754206abf0ed1e4e18cbf8"
+      },
+      "@gateway/src/lib/TransferSpecLib.sol": {
+        "sha256": "c70e4dbab97343d57bfaa5895d1f3bba09b63914e49e80b4a04c495841396cc0"
+      },
+      "src/interfaces/IGatewayMinter.sol": {
+        "sha256": "045aeee2f204ad3f22afb068b7980491894407141ab82450a43139d792d27fe5"
+      },
+      "src/lib/NoValidationAttestationLib.sol": {
+        "sha256": "cefb69d0d54e2bb9dbc92ca010d16a5c744b826e7c15859ab890e6c42a8311c0"
+      },
+      "src/lib/WithdrawHookDataLib.sol": {
+        "sha256": "8e7cde4754f1f2638c46c8aa31687cae297036cd5d09e5adf40853ba03ba82a2"
+      },
+      "src/modules/x-reserve/DepositToRemote.sol": {
+        "sha256": "a084d9b99069b6e28205f95237e3cd0b804b0c204a7bfe17cecae8ce922264bb"
+      },
+      "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol": {
+        "sha256": "a08e16324da33a9d666dc07a22ae58031c242a3869f6808e55b4b82fc70cb209"
+      },
+      "@gateway/src/lib/TransferSpec.sol": {
+        "sha256": "400c85d2260878fb64761ce4bad36ab8ba0fccbcb416f9ffd4ffb8a215e5c43d"
+      },
+      "@gateway/src/lib/Attestations.sol": {
+        "sha256": "c85e108b4415da3041ce05933c969b8ff69253517d54fd84877b1499dd988b2f"
+      },
+      "src/lib/WithdrawHookData.sol": {
+        "sha256": "2d1cbb013167055696dacda6ea7024bd6e18bb016735504cacdd7d926fb7ba47"
+      },
+      "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol": {
+        "sha256": "11b45418823fd6e961d8db5cf5c2795b08f51f88a66f8e37a38fcd052ee711a4"
+      },
+      "@openzeppelin/contracts/token/ERC20/IERC20.sol": {
+        "sha256": "6f2faae462e286e24e091d7718575179644dc60e79936ef0c92e2d1ab3ca3cee"
+      },
+      "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol": {
+        "sha256": "471157c89111d7b9eab456b53ebe9042bc69504a64cb5cc980d38da9103379ae"
+      },
+      "src/interfaces/IRemoteDomainHookExecutor.sol": {
+        "sha256": "87e023909d304268e834f14b9a93d3cb0232c971bcddc60e5a1d39691b154e1d"
+      },
+      "src/lib/DepositParams.sol": {
+        "sha256": "6d45c91b39d8751548a119536c7b93c9c26ce6c25a590a926fa7312f9a8c8d08"
+      },
+      "src/modules/x-reserve/Blocklistable.sol": {
+        "sha256": "a33f37d3ed5cdfc1c7c59d45c19e68943cfa39545d58f97e786dbdf65a638695"
+      },
+      "src/modules/x-reserve/RemoteDomainRegistration.sol": {
+        "sha256": "d8e4960ae01b00f55c4157b0688efcec6f9b29f50f8325b7165f74f86876c2ed"
+      },
+      "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol": {
+        "sha256": "912509e0e9bf74e0f8a8c92d031b5b26d2d35c6d4abf3f56251be1ea9ca946bf"
+      },
+      "@openzeppelin/contracts/utils/Create2.sol": {
+        "sha256": "36d45e7dcdc545448a569d160e2a5e0bab7dd479cf5bc0dfe57d41c590ba84b8"
+      },
+      "src/modules/x-reserve/Pausing.sol": {
+        "sha256": "720d90936289abb507b2eab5c0372049a3a2f2d1692c93f2982a3689b01c4adb"
+      },
+      "src/modules/x-reserve/TokenSupport.sol": {
+        "sha256": "fb7493cde9c28591fd3eba5addbbfab7800a0f70f83fea7bfdb1cec35415ec0f"
+      },
+      "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol": {
+        "sha256": "78df1c8d83d858b123485f7cc2e15e40e28d787a21f949374ee34aa45c1ad69c"
+      }
+    }
+  }
+]

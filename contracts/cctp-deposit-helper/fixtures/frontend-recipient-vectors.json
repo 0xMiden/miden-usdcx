@@ -1,0 +1,19 @@
+{
+  "source": "miden-protocol=0.17.1; miden-standards=0.17.1; aid fixtures miden-usdcx=0.17.1",
+  "vectors": [
+    {
+      "accountHex": "0x8110548cc41852010140bd1325ff08",
+      "bytes32": "0x000000000000000000000000000000008110548cc41852010140bd1325ff0800",
+      "id": "aid-rt-1",
+      "mainnet": "mm1azq3q4yvcsv9yqgpgz73xf0lpqcg7zgd",
+      "testnet": "mtst1azq3q4yvcsv9yqgpgz73xf0lpq0w9upu"
+    },
+    {
+      "accountHex": "0x0320a8188931a401038036a64a672c",
+      "bytes32": "0x000000000000000000000000000000000320a8188931a401038036a64a672c00",
+      "id": "aid-rt-2",
+      "mainnet": "mm1aqpjp2qc3yc6gqgrsqm2vjn89saklct3",
+      "testnet": "mtst1aqpjp2qc3yc6gqgrsqm2vjn89s2syxzq"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "accepted": true,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852010140bd1325ff0800",
+      "error": null,
+      "id": "valid"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x00000000000000000000000000000000ffffffff000000010000000000000000",
+      "error": "NonCanonicalAccountId",
+      "id": "prefix-field-modulus"
+    },
+    {
+      "accepted": true,
+      "bytes32": "0x00000000000000000000000000000000fffffffefffffff10000000000000000",
+      "error": null,
+      "id": "largest-v1-prefix-below-modulus"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852000000000000000000",
+      "error": "NonCanonicalAccountId",
+      "id": "version-zero"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852020000000000000000",
+      "error": "NonCanonicalAccountId",
+      "id": "version-two"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000008110548cc418520f0000000000000000",
+      "error": "NonCanonicalAccountId",
+      "id": "version-fifteen"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852018000000000000000",
+      "error": "NonCanonicalAccountId",
+      "id": "suffix-high-bit"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852010000000000000001",
+      "error": "NonCanonicalAccountId",
+      "id": "suffix-low-byte"
+    },
+    {
+      "accepted": true,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852010000000000000000",
+      "error": null,
+      "id": "suffix-zero"
+    },
+    {
+      "accepted": true,
+      "bytes32": "0x000000000000000000000000000000008110548cc41852017fffffffffffff00",
+      "error": null,
+      "id": "suffix-upper-valid"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x010000000000000000000000000000008110548cc41852010140bd1325ff0800",
+      "error": "AccountIdOutOfRange",
+      "id": "pad-0"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000001000000008110548cc41852010140bd1325ff0800",
+      "error": "AccountIdOutOfRange",
+      "id": "pad-11"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000010000008110548cc41852010140bd1325ff0800",
+      "error": "AccountIdOutOfRange",
+      "id": "pad-12"
+    },
+    {
+      "accepted": false,
+      "bytes32": "0x000000000000000000000000000000018110548cc41852010140bd1325ff0800",
+      "error": "AccountIdOutOfRange",
+      "id": "pad-15"
+    }
+  ],
+  "decoder": "miden-usdcx=0.17.1 EthEmbeddedAccountIdExt::try_from_bytes32"
+}

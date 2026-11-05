@@ -18,6 +18,8 @@ plus the Rust encoding library and validation harness that support it.
 | `crates/xusdc-encoding/` | Rust crate: the encoding library (the Rust mirror of the MASM codecs — bytes32 hashing, uint256→amount reduction, DepositIntent parse), the `XReserveStablecoinBuilder` that composes the faucet account, golden test vectors, the `build.rs` that assembles every MASM project above, and the **execute** test suite. |
 | `crates/xusdc-genesis/` | Rust crate: the genesis tool — builds the genesis xUSDC faucet fully offline (its id deterministic before any network exists) from the configured role-account ids, generates and prefunds the distributor that holds the initial supply, records the consumed deposit nonces, and writes the `.mac` account files the node's genesis config takes. |
 | `crates/xusdc-validation/` | Rust crate: the local-node validation harness that deploys the production faucet to a real Miden node and drives the mint/burn/admin acceptance matrix (rows `A`–`L`). |
+| `crates/cctp-deposit-relayer/` | Optional incoming CCTP discovery and Arc helper submission worker. |
+| `contracts/cctp-deposit-helper/` | Immutable Solidity receive-and-deposit helper with local Circle reference integration tests and pinned tooling. |
 | `docs/` | `ARCHITECTURE.md`: how the faucet fits together, the mint and burn paths, and where the trust boundaries sit. `DEVIATIONS.md`: where the implementation deliberately deviates from Circle's spec, plus the known open items. Auditors: start with these two. |
 
 ## Incoming CCTP worker
@@ -56,6 +58,21 @@ use a writable durable `/data` volume with separate resource limits. Configure t
 `--export-filter cctp_deposit_relayer=info`. Trusted finalized RPC history, Circle transaction
 association, dependency-upgrade review, real Arc/source/provider/KMS/funding qualification and final
 Miden delivery remain operational boundaries; local Ethereum fixtures do not prove them.
+
+Known discovery limitation: a healthy Solana page can exceed the worker's ten-second whole-scan
+deadline, cancel before saving progress and repeat indefinitely. This remains unresolved. The
+worker is a local review candidate and is not qualified for public-testnet or production operation.
+
+## Incoming CCTP helper
+
+The helper package preserves its `contracts/`, `tests/`, `scripts/` and generated `modules/` layout.
+From `contracts/cctp-deposit-helper`, run `python3 tooling/bootstrap.py`, then
+`python3 tooling/run-local-gates.py`. Bootstrap retrieves pinned Arc Foundry, Solidity compilers
+and library sources; the verified bootstrap platform is macOS ARM64. The local gates build the
+pinned Circle reference contracts, run concrete, fuzz, invariant and integration tests, and own
+and stop a loopback-only Arc Anvil instance for runtime checks. `scripts/Deploy.s.sol` performs
+nonbroadcast preflight; local validation does not establish a live deployment or an end-to-end
+public-testnet bridge.
 
 ## How it works
 

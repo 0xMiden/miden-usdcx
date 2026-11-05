@@ -1,0 +1,15 @@
+[profile.default]
+src = "src"
+test = "no-tests"
+script = "no-scripts"
+out = "artifacts"
+libs = []
+auto_detect_solc = false
+auto_detect_remappings = false
+ffi = false
+solc = "../../tooling/solc-0829"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1500
+via_ir = true
+remappings = ["@gateway/:src/lib/=@gateway/src/lib/"]

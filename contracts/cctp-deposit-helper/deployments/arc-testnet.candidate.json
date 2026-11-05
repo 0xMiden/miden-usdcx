@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 1,
+  "kind": "disabled-public-deployment-candidate",
+  "deploymentId": "solana-devnet-arc-testnet-miden-testnet-v1",
+  "environment": "testnet",
+  "enabled": false,
+  "historicalObservedAt": "2026-10-29T12:26:39.930Z",
+  "helper": {
+    "address": "0xe9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d",
+    "runtimeHash": "0x472814a3d87be4685ddd56cadda53f5c87ba7ff1aacabacc0188252888bb6ed2",
+    "deploymentBlock": "69669264",
+    "abiVersion": "miden-cctp-helper-v1",
+    "abiPath": "../abi/MidenCctpDepositHelper.json",
+    "abiSha256": "237b93bc9629d086e6408754b97e400c9a780de3568bd1976f99059949cd201a",
+    "sourceSha256": "82a77d61051fd6f8e18f7fc44a59e6ce060083eeb5eb8f79613f5039399e473f",
+    "compilerVersion": "0.8.29+commit.ab55807c"
+  },
+  "arc": {
+    "chainId": 5042002,
+    "domain": 26
+  },
+  "immutables": {
+    "messageTransmitter": "0xe737e5cebeeba77efe34d4aa090756590b1ce275",
+    "tokenMessenger": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+    "usdc": "0x3600000000000000000000000000000000000000",
+    "xReserve": "0x008888878f94c0d87defdf0b07f46b93c1934442",
+    "midenDomain": 10007,
+    "expectedMidenFaucet": "0x000000000000000000000000000000004cbdcaffe75f0a317482224dae643600"
+  },
+  "dependencies": [
+    {
+      "name": "messageTransmitter",
+      "address": "0xe737e5cebeeba77efe34d4aa090756590b1ce275",
+      "runtimeHash": "0xd2c8d48075d832fb7d07f6db5545a1bee37fdf886325c441a8dd1cef4c9dae99",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "implementation": "0xa849059bc1f6fff867ef77bed6fa874f77a62466",
+      "implementationRuntimeHash": "0x3b5d3d6b6036d5b0c88d727440fa7391d5ab0fb2c32ae68bea880589c5dbf578"
+    },
+    {
+      "name": "tokenMessenger",
+      "address": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+      "runtimeHash": "0xd2c8d48075d832fb7d07f6db5545a1bee37fdf886325c441a8dd1cef4c9dae99",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "implementation": "0xf07c0ad13178a9ef5c3ffa0be69e0becd452bf6d",
+      "implementationRuntimeHash": "0xcc9566f7c5416ae59643261497ede6f4f8b0bc7589f25659add9a52a90bb16b9"
+    },
+    {
+      "name": "tokenMinter",
+      "address": "0xb43db544e2c27092c107639ad201b3defabcf192",
+      "runtimeHash": "0xfc330d52b7656b971ef47bbb8cd44877181fbc9ac0fe76cb4cb5bb364a992eff",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    },
+    {
+      "name": "usdc",
+      "address": "0x3600000000000000000000000000000000000000",
+      "runtimeHash": "0xc9987bd3af6b26a030951faa7eacc017b68343aeedf3ce5fe68f821c4b93939d",
+      "implementationSlot": "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+      "implementation": "0xc6ad664ac6679f4ce74e10e91449c93ec1ae3ca6",
+      "implementationRuntimeHash": "0x237a5899a4c4e1c8b60fe7626371778ce8ef0a554350cd92cdf8ae393f59966f"
+    },
+    {
+      "name": "xReserve",
+      "address": "0x008888878f94c0d87defdf0b07f46b93c1934442",
+      "runtimeHash": "0x939e866641b49f068165f8fb926b1137f9bf9b208252c7986c47ca12d260403b",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "implementation": "0xee16dc8ff7a6d77412f5b1c3194c392e93b4df34",
+      "implementationRuntimeHash": "0xe2ffe9e2fe5190df59397895d8e9a29e4e77964a935a61e71f37a1f608847d94"
+    },
+    {
+      "name": "gatewayWallet",
+      "address": "0x0077777d7eba4688bdef3e311b846f25870a19b9",
+      "runtimeHash": "0x874a21508289bf01ee9802032607ae53ba0a4f47f28143a8493921b8db102187",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "implementation": "0xa33d52b46964495ea6e2bb09ce85faed05776e28",
+      "implementationRuntimeHash": "0x69ed7283bbdb751a492d5e4320bd99db7ff6b9ef911afb2032521a59526706b4"
+    },
+    {
+      "name": "gatewayMinter",
+      "address": "0x0022222abe238cc2c7bb1f21003f0a260052475b",
+      "runtimeHash": "0x874a21508289bf01ee9802032607ae53ba0a4f47f28143a8493921b8db102187",
+      "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "implementation": "0x9ef4c7ad4f577be713972310e655337bfd0b84bf",
+      "implementationRuntimeHash": "0x0c479785c0c0f5a450bcf3200c854db9da6e4b585a5b694ca4eac85396cc28f5"
+    }
+  ],
+  "views": [
+    {
+      "name": "messageTransmitter",
+      "signature": "function localDomain() view returns(uint32)",
+      "args": [],
+      "result": "26"
+    },
+    {
+      "name": "messageTransmitter",
+      "signature": "function version() view returns(uint32)",
+      "args": [],
+      "result": "1"
+    },
+    {
+      "name": "messageTransmitter",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "tokenMessenger",
+      "signature": "function localMessageTransmitter() view returns(address)",
+      "args": [],
+      "result": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
+    },
+    {
+      "name": "tokenMessenger",
+      "signature": "function messageBodyVersion() view returns(uint32)",
+      "args": [],
+      "result": "1"
+    },
+    {
+      "name": "tokenMessenger",
+      "signature": "function localMinter() view returns(address)",
+      "args": [],
+      "result": "0xb43db544E2c27092c107639Ad201b3dEfAbcF192"
+    },
+    {
+      "name": "tokenMessenger",
+      "signature": "function remoteTokenMessengers(uint32) view returns(bytes32)",
+      "args": [
+        5
+      ],
+      "result": "0xa65fc81d0fefa8860cb3b83f089b0224be8a6687b7ae49f594c0b9b4d7e93893"
+    },
+    {
+      "name": "tokenMinter",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "tokenMinter",
+      "signature": "function localTokenMessenger() view returns(address)",
+      "args": [],
+      "result": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
+    },
+    {
+      "name": "tokenMinter",
+      "signature": "function getLocalToken(uint32,bytes32) view returns(address)",
+      "args": [
+        5,
+        "0x3b442cb3912157f13a933d0134282d032b5ffecd01a2dbf1b7790608df002ea7"
+      ],
+      "result": "0x3600000000000000000000000000000000000000"
+    },
+    {
+      "name": "usdc",
+      "signature": "function decimals() view returns(uint8)",
+      "args": [],
+      "result": "6"
+    },
+    {
+      "name": "usdc",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "xReserve",
+      "signature": "function domain() view returns(uint32)",
+      "args": [],
+      "result": "26"
+    },
+    {
+      "name": "xReserve",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "xReserve",
+      "signature": "function isRemoteDomainRegistered(uint32) view returns(bool)",
+      "args": [
+        10007
+      ],
+      "result": true
+    },
+    {
+      "name": "xReserve",
+      "signature": "function domainDepositsPaused(uint32) view returns(bool)",
+      "args": [
+        10007
+      ],
+      "result": false
+    },
+    {
+      "name": "xReserve",
+      "signature": "function domainWithdrawalsPaused(uint32) view returns(bool)",
+      "args": [
+        10007
+      ],
+      "result": false
+    },
+    {
+      "name": "xReserve",
+      "signature": "function getRemoteToken(uint32,address) view returns(bytes32)",
+      "args": [
+        10007,
+        "0x3600000000000000000000000000000000000000"
+      ],
+      "result": "0x000000000000000000000000000000004cbdcaffe75f0a317482224dae643600"
+    },
+    {
+      "name": "xReserve",
+      "signature": "function isTokenSupported(address) view returns(bool)",
+      "args": [
+        "0x3600000000000000000000000000000000000000"
+      ],
+      "result": true
+    },
+    {
+      "name": "xReserve",
+      "signature": "function getRemoteDomainHookExecutor(uint32) view returns(address)",
+      "args": [
+        10007
+      ],
+      "result": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "name": "xReserve",
+      "signature": "function gatewayWallet() view returns(address)",
+      "args": [],
+      "result": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
+    },
+    {
+      "name": "xReserve",
+      "signature": "function gatewayMinter() view returns(address)",
+      "args": [],
+      "result": "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B"
+    },
+    {
+      "name": "gatewayWallet",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "gatewayMinter",
+      "signature": "function paused() view returns(bool)",
+      "args": [],
+      "result": false
+    },
+    {
+      "name": "gatewayWallet",
+      "signature": "function isTokenSupported(address) view returns(bool)",
+      "args": [
+        "0x3600000000000000000000000000000000000000"
+      ],
+      "result": true
+    },
+    {
+      "name": "usdc",
+      "signature": "function isMinter(address) view returns(bool)",
+      "args": [
+        "0xb43db544e2c27092c107639ad201b3defabcf192"
+      ],
+      "result": true
+    },
+    {
+      "name": "usdc",
+      "signature": "function isBlacklisted(address) view returns(bool)",
+      "args": [
+        "0xb43db544e2c27092c107639ad201b3defabcf192"
+      ],
+      "result": false
+    },
+    {
+      "name": "usdc",
+      "signature": "function isBlacklisted(address) view returns(bool)",
+      "args": [
+        "0x0077777d7eba4688bdef3e311b846f25870a19b9"
+      ],
+      "result": false
+    },
+    {
+      "name": "usdc",
+      "signature": "function isBlacklisted(address) view returns(bool)",
+      "args": [
+        "0x008888878f94c0d87defdf0b07f46b93c1934442"
+      ],
+      "result": false
+    },
+    {
+      "name": "usdc",
+      "signature": "function isBlacklisted(address) view returns(bool)",
+      "args": [
+        "0xe9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d"
+      ],
+      "result": false
+    },
+    {
+      "name": "gatewayWallet",
+      "signature": "function isDenylisted(address) view returns(bool)",
+      "args": [
+        "0x008888878f94c0d87defdf0b07f46b93c1934442"
+      ],
+      "result": false
+    }
+  ],
+  "source": {
+    "network": "solana-devnet",
+    "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "tokenMessengerProgram": "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
+    "messageTransmitterProgram": "CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC",
+    "idlHash": "46c195982ce970f90131f79e9b86eeadcb0d589d08f701f5506aa8ad4fa9e81d",
+    "finality": "finalized",
+    "history": "unqualified",
+    "startSlot": "516414731"
+  },
+  "miden": {
+    "domain": 10007,
+    "faucetId": "0x4cbdcaffe75f0a317482224dae6436",
+    "recipientCodec": "miden-0.17.1-v1"
+  },
+  "qualification": {
+    "helperAsDepositor": false,
+    "zeroRemoteFee": false,
+    "arcRuntime": false,
+    "phantomSignOnly": false,
+    "sourcePrograms": false,
+    "evidenceHash": null,
+    "pending": [
+      "Fresh source/program/IDL/history and provider qualification",
+      "Authenticate prior same-helper Circle-signed DepositIntent",
+      "Actual production Phantom sign-only proof and expiry",
+      "Miden faucet/network/SDK compatibility",
+      "Canonical noncircular qualification snapshot; no flag inferred from this candidate"
+    ]
+  }
+}

@@ -198,3 +198,40 @@ pub(crate) fn base58<const N: usize>(s: &str) -> Result<[u8; N]> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid base58 width"))
 }
+
+#[cfg(test)]
+mod release_tests {
+    use super::Config;
+    use serde_json::json;
+
+    #[test]
+    fn documented_example_requires_explicit_operator_inputs() {
+        let example = include_str!("../config.example.json");
+        let template: Config = serde_json::from_str(example).unwrap();
+        assert!(template.validate().is_err());
+        let mut value: serde_json::Value = serde_json::from_str(example).unwrap();
+        for name in ["helper", "messenger", "signer"] {
+            value[name] = json!("0x1111111111111111111111111111111111111111");
+        }
+        value["helper_code_hash"] = json!(format!("0x{}", "11".repeat(32)));
+        value["arc_rpc"] = json!("http://127.0.0.1:18545/");
+        value["circle_url"] = json!("http://127.0.0.1:18546/");
+        value["kms"]["key_arn"] = json!("arn:aws:kms:eu-north-1:000000000000:key/example");
+        value["max_gas"] = json!(1_000_000);
+        value["max_fee_per_gas"] = json!(1_000_000_000);
+        value["sources"][0]["rpc"] = json!("http://127.0.0.1:18547/");
+        for name in ["genesis_hash", "messenger", "usdc"] {
+            value["sources"][0][name] = json!(bs58::encode([7_u8; 32]).into_string());
+        }
+        value["sources"][0]["start_signature"] = json!(bs58::encode([9_u8; 64]).into_string());
+        value["sources"][0]["start_slot"] = json!(42);
+        let config: Config = serde_json::from_value(value).unwrap();
+        config.validate().unwrap();
+        let identity = config.identity().unwrap();
+        let mut moved = config.clone();
+        moved.journal = "/other/journal.sqlite".into();
+        assert_eq!(moved.identity().unwrap(), identity);
+        moved.max_gas += 1;
+        assert_ne!(moved.identity().unwrap(), identity);
+    }
+}

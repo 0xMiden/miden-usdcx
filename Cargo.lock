@@ -1435,9 +1435,11 @@ dependencies = [
  "borsh",
  "bs58",
  "clap",
+ "dotenvy",
  "hex",
  "httpdate",
  "k256 0.13.4",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2088,6 +2090,12 @@ name = "dissimilar"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
+
+[[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "dunce"

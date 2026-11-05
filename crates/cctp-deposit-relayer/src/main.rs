@@ -4,7 +4,9 @@ use tokio_util::sync::CancellationToken;
 use usdcx_telemetry::{cancel_on_signal, stop_within, TelemetryArgs, SHUTDOWN_TIMEOUT};
 
 #[derive(Parser)]
-#[command(about = "Independent CCTP source discovery and fixed Arc helper completion")]
+#[command(
+    about = "Independent CCTP source discovery and fixed Arc helper completion; optional local_env signing is Arc Testnet only"
+)]
 struct Args {
     /// Fixed private JSON configuration bound to this durable journal.
     #[arg(long)]

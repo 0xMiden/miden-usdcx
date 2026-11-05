@@ -4,3 +4,7 @@
 local-node-data/
 .DS_Store
 *.log
+.env
+.env.*
+!.env.example
+*.private.json

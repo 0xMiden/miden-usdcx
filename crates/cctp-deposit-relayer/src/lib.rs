@@ -5,6 +5,7 @@ mod circle;
 mod config;
 mod diagnostics;
 mod discovery;
+mod local_signer;
 mod message;
 mod rpc;
 mod store;
@@ -21,6 +22,14 @@ pub async fn run(
     let startup = |error| diagnostics::at(error, "startup", "provider_unavailable");
     let config = config::Config::load(path)
         .map_err(|error| diagnostics::at(error, "configuration", "configuration_invalid"))?;
+    // Local credentials must match the public journal sender before any RPC or
+    // journal initialization. Never fall back to another credential source.
+    let local_signer = config
+        .local_env
+        .as_ref()
+        .map(|_| local_signer::LocalEnvSigner::load(&config))
+        .transpose()
+        .map_err(|error| diagnostics::at(error, "signer_connect", "local_env_unavailable"))?;
     // Require finalized and pending nonce zero before creating a journal. This
     // cannot prove absence of lost signed history; a genuinely fresh dedicated
     // sender remains an operator requirement.
@@ -35,18 +44,25 @@ pub async fn run(
     }
     let store = store::Store::open(&config, initialize)
         .map_err(|error| diagnostics::at(error, "journal_open", "journal_unavailable"))?;
-    let client =
-        usdcx_kms_signer::KmsSigner::client(&config.kms.region, std::time::Duration::from_secs(10))
-            .await;
-    let signer = usdcx_kms_signer::KmsSigner::connect(client, &config.kms.key_arn)
-        .await
-        .map_err(|error| {
-            diagnostics::at(
-                error.into(),
-                "signer_connect",
-                "authentication_or_key_unavailable",
-            )
-        })?;
+    let signer: Box<dyn Signer> = if let Some(signer) = local_signer {
+        Box::new(signer)
+    } else {
+        let kms = config.kms.as_ref().expect("validated KMS selection");
+        let client =
+            usdcx_kms_signer::KmsSigner::client(&kms.region, std::time::Duration::from_secs(10))
+                .await;
+        Box::new(
+            usdcx_kms_signer::KmsSigner::connect(client, &kms.key_arn)
+                .await
+                .map_err(|error| {
+                    diagnostics::at(
+                        error.into(),
+                        "signer_connect",
+                        "authentication_or_key_unavailable",
+                    )
+                })?,
+        )
+    };
     if initialize {
         if signer.public_key().await?.address()? != config.signer {
             return Err(diagnostics::at(
@@ -57,7 +73,7 @@ pub async fn run(
         }
         return Ok(());
     }
-    worker::Worker::new(config, store, Box::new(signer))
+    worker::Worker::new(config, store, signer)
         .await?
         .run(shutdown)
         .await

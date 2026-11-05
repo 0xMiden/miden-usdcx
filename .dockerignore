@@ -6,3 +6,6 @@ target
 **/target
 *.log
 .DS_Store
+**/.env
+**/.env.*
+**/*.private.json

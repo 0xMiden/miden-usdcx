@@ -29,6 +29,12 @@ obtains Circle attestations and submits their original bytes to one immutable Ar
 one serial loop, one SQLite journal and a dedicated gas sender. Omitted sources cause no discovery
 RPC. The existing xReserve-to-Miden relayer, withdrawal services and portal remain independent.
 
+Run the incoming worker and the [xReserve-to-Miden publisher](crates/xreserve-deposit-relayer/README.md)
+as separate services. For a bounded run, initialize the publisher with
+`--init-state-at-current-head` before any intended deposit, then start it with
+`--require-head-watermark` before starting new burns. Provision its public Miden courier account,
+complete keystore and finite fee balance separately from the worker's Arc gas sender.
+
 Clone the integration branch and build only the worker graph:
 
 ```sh

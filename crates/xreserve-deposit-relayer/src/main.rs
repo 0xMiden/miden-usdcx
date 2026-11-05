@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use usdcx_telemetry::TelemetryArgs;
 use xreserve_deposit_relayer::config::Config;
+use xreserve_deposit_relayer::initialize_state_at_current_head;
 use xreserve_deposit_relayer::Relayer;
 
 #[derive(Parser)]
@@ -19,12 +20,29 @@ struct Cli {
     config: Config,
     #[command(flatten)]
     telemetry: TelemetryArgs,
+    /// Create a NEW progress file at Circle's current head, excluding all earlier feed entries.
+    /// Run before any new deposit; never use this to replace existing progress.
+    #[arg(long)]
+    init_state_at_current_head: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let Cli { config, telemetry } = Cli::parse();
+    let Cli {
+        config,
+        telemetry,
+        init_state_at_current_head,
+    } = Cli::parse();
     let _telemetry = usdcx_telemetry::init("xreserve-deposit-relayer", &telemetry)?;
+
+    if init_state_at_current_head {
+        let watermark = initialize_state_at_current_head(&config).await?;
+        println!(
+            "initialized {} at Circle head {watermark}",
+            config.state_file.display()
+        );
+        return Ok(());
+    }
 
     // A signal lets the page in flight finish and save its progress, and `main` then returns so the
     // telemetry guard sends the spans that are still buffered. The handler is installed before

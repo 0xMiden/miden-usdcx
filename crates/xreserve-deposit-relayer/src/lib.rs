@@ -20,7 +20,7 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use miden_protocol::note::Note;
 use miden_usdcx::note::xreserve_mint::XUsdcMintNote;
 use tokio_util::sync::CancellationToken;
@@ -53,6 +53,27 @@ pub struct Relayer<M> {
     miden_client: M,
     minter: Minter,
     unminted: Unminted,
+}
+
+/// Initializes only a new feed boundary. This does not construct a Miden client or open its state.
+pub async fn initialize_state_at_current_head(config: &Config) -> Result<MessageHash> {
+    let store = Store::new(config.state_file.clone());
+    store.require_absent()?;
+    let circle = CircleClient::new(
+        config.circle_url.clone(),
+        PageSize::try_from(1)?,
+        config.request_timeout,
+    )?;
+    let page = circle
+        .fetch_page(config.remote_domain, None)
+        .await
+        .map_err(|failure| failure.error)?;
+    ensure!(page.entries.len() == 1, "the Circle head page is empty");
+    let watermark = page.entries[0]
+        .message_hash()
+        .context("the Circle head entry has no readable message hash")?;
+    store.initialize(watermark)?;
+    Ok(watermark)
 }
 
 /// Renders the identifiers of a page's items as one tracing field, so a page's trace names every
@@ -492,3 +513,7 @@ impl<M: MidenClient> Relayer<M> {
 #[cfg(test)]
 #[path = "tests/shutdown.rs"]
 mod shutdown_tests;
+
+#[cfg(test)]
+#[path = "tests/startup_boundary.rs"]
+mod startup_boundary_tests;

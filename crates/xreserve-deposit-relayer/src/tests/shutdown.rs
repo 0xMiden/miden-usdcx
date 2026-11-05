@@ -40,7 +40,7 @@ impl MidenClient for TestMiden {
     }
 }
 
-fn config(directory: &TempDir, url: &str) -> Config {
+pub(super) fn config(directory: &TempDir, url: &str) -> Config {
     let mut config = Config::try_parse_from([
         "relayer",
         "--circle-url",
@@ -71,14 +71,16 @@ fn config(directory: &TempDir, url: &str) -> Config {
     config
 }
 
-fn page_server(body: String, next: bool) -> (String, thread::JoinHandle<()>) {
+pub(super) fn page_server(body: String, next: bool) -> (String, thread::JoinHandle<()>) {
     let (url, server) = pages_server(vec![(body, next)]);
     (url, thread::spawn(move || drop(server.join().unwrap())))
 }
 
 /// Serves `pages` in order, one per request, and returns the request lines it was sent. A page
 /// with `next` links to the `older` cursor.
-fn pages_server(pages: Vec<(String, bool)>) -> (String, thread::JoinHandle<Vec<String>>) {
+pub(super) fn pages_server(
+    pages: Vec<(String, bool)>,
+) -> (String, thread::JoinHandle<Vec<String>>) {
     cursor_pages_server(
         pages
             .into_iter()

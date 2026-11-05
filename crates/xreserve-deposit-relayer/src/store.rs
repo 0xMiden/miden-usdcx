@@ -23,7 +23,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
@@ -69,6 +69,56 @@ impl Store {
     /// A store over the file at `path`. The file need not exist yet.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    /// Refuses every existing path, including an empty file or a dangling symlink, without
+    /// reading its contents. The final no-clobber publication also handles a concurrent creator.
+    pub fn require_absent(&self) -> Result<()> {
+        match fs::symlink_metadata(&self.path) {
+            Ok(_) => bail!("progress path already exists: `{}`", self.path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error)
+                .with_context(|| format!("checking progress path `{}`", self.path.display())),
+        }
+    }
+
+    /// Creates a complete progress file once, excluding feed entries at or below `watermark`.
+    /// An existing progress file is never read or replaced.
+    pub fn initialize(&self, watermark: MessageHash) -> Result<()> {
+        self.require_absent()?;
+        let file = self.prepare_state(&State {
+            watermark: Some(watermark),
+            scan: None,
+        })?;
+        file.persist_noclobber(&self.path)
+            .map_err(|error| error.error)
+            .with_context(|| {
+                format!(
+                    "creating progress at `{}` without replacing it",
+                    self.path.display()
+                )
+            })?;
+        fs::File::open(self.parent())
+            .and_then(|directory| directory.sync_all())
+            .context("syncing the progress directory")?;
+        Ok(())
+    }
+
+    fn parent(&self) -> &std::path::Path {
+        self.path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+    }
+
+    fn prepare_state(&self, state: &State) -> Result<tempfile::NamedTempFile> {
+        let mut file = tempfile::NamedTempFile::new_in(self.parent())
+            .context("creating a temporary progress file")?;
+        serde_json::to_writer_pretty(&mut file, state).context("encoding relay progress")?;
+        file.as_file()
+            .sync_all()
+            .context("syncing relay progress")?;
+        Ok(file)
     }
 
     /// The state the last poll left behind, or an empty state on a first run.
@@ -194,5 +244,76 @@ mod tests {
 
         let error = format!("{:#}", store.state().unwrap_err());
         assert!(error.contains("reading the state"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn initialization_is_exclusive_and_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        store.initialize(MessageHash::new([7; 32])).unwrap();
+        let before = std::fs::read(dir.path().join("state")).unwrap();
+        assert!(store.initialize(MessageHash::new([8; 32])).is_err());
+        assert_eq!(std::fs::read(dir.path().join("state")).unwrap(), before);
+        assert_eq!(
+            store.state().unwrap(),
+            State {
+                watermark: Some(MessageHash::new([7; 32])),
+                scan: None,
+            }
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_initializers_leave_one_complete_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = [7, 8].map(|byte| {
+            let path = dir.path().join("state");
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                Store::new(path).initialize(MessageHash::new([byte; 32]))
+            })
+        });
+        let results = handles.map(|handle| handle.join().unwrap());
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let state = store(&dir).state().unwrap();
+        assert!([MessageHash::new([7; 32]), MessageHash::new([8; 32])]
+            .contains(&state.watermark.unwrap()));
+        assert!(state.scan.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn initialization_failure_does_not_create_the_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("missing-parent/state");
+        assert!(Store::new(target.clone())
+            .initialize(MessageHash::new([7; 32]))
+            .is_err());
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialization_refuses_directories_and_dangling_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(Store::new(directory.clone())
+            .initialize(MessageHash::new([7; 32]))
+            .is_err());
+        assert!(directory.is_dir());
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path().join("absent"), &link).unwrap();
+        assert!(Store::new(link.clone())
+            .initialize(MessageHash::new([7; 32]))
+            .is_err());
+        assert!(std::fs::symlink_metadata(link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }

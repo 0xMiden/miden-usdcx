@@ -38,6 +38,32 @@ sender and a nonexistent journal, then run the same command without `--init`. No
 but cannot prove a key has no missing signed history. Configuration changes require a stopped,
 reconciled operator procedure; the service refuses a changed journal identity.
 
+For local testing and demonstrations on **Arc Testnet (chain 5042002) only**, use
+`crates/cctp-deposit-relayer/config.local.example.json` as the profile template. Set the
+public `signer` to a fresh dedicated test wallet's address and fill the same verified helper,
+source, provider and fee settings. This profile selects `local_env` and omits `kms`;
+exactly one signer configuration is required. Existing KMS profiles remain supported.
+No AWS account, credentials or login is needed in local mode.
+
+Copy `crates/cctp-deposit-relayer/.env.example` to a private absolute path, set its Unix
+permissions to `0600`, and use a local editor to replace the placeholder with that wallet's
+32-byte private key in hex. Set `local_env.dotenv` to the file's absolute path. The file
+must be owned by the worker's OS user, regular and at most 4 KiB; symbolic links,
+variable interpolation, duplicate keys and unrelated variables are refused. Only
+`CCTP_RELAYER_PRIVATE_KEY` is read from this file. Keys are never accepted as command-line
+arguments or read from ambient process variables. `.env` files and private JSON profiles
+are excluded from Git and the Docker context. Keep the private file outside the repository.
+
+Build with `cargo build --locked -p cctp-deposit-relayer`, then initialize once with
+`target/debug/cctp-deposit-relayer --config /absolute/private/profile.private.json --init`.
+Run the same command without `--init` and restart with the same profile, key and intact
+journal. Mount the dotenv file read-only for containers. The derived sender must match the
+profile before any RPC or journal creation. The actual RPC must still report the configured
+chain and helper identity. Local mode refuses mainnet chain 5042. Do not use an old deployer
+or source wallet, delete a journal to change keys, or repeat initialization after signing;
+nonce zero cannot prove absence of lost offline signed transactions. Changing mode, dotenv
+path, sender or other bound settings requires stopped manual reconciliation.
+
 The journal commits exact signed transaction bytes before broadcast. One unresolved sender nonce
 blocks further signing; only identical bytes may be rebroadcast. Canonical finalized receipts
 settle that nonce. A paid revert remains manual across restarts, and there is no automatic fee

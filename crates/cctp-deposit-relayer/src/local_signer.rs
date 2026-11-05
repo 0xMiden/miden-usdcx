@@ -31,7 +31,9 @@ impl LocalEnvSigner {
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
+            // Nonregular files must reach the descriptor check without waiting
+            // for a FIFO writer. Regular-file reads retain their normal behavior.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         let file = options
             .open(&local.dotenv)

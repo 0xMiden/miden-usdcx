@@ -233,8 +233,55 @@ async fn local_startup_child() {
     .await
     {
         report_failure(&error);
-        panic!("local init failed");
+        std::process::exit(1);
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_fifo_without_writer_exits_before_rpc_or_journal() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, process::Stdio};
+    let (dir, mut c, _key, state, task) = server().await;
+    let fifo = dir.path().join("no-writer.fifo");
+    let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // This owned FIFO has no writer; a blocking open would hang before fstat.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    c.chain_id = 5_042_002;
+    c.kms = None;
+    c.local_env = Some(LocalEnv { dotenv: fifo });
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::local_signer::local_startup_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("CCTP_TEST_PROFILE", profile(&dir, &c))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let status = match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            child.kill().await.unwrap();
+            child.wait().await.unwrap();
+            panic!("local FIFO startup did not exit within two seconds");
+        }
+    };
+    let mut stderr = String::new();
+    tokio::io::AsyncReadExt::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr)
+        .await
+        .unwrap();
+    assert_eq!(status.code(), Some(1));
+    assert!(stderr.contains("stage=signer_connect reason=local_env_invalid"));
+    assert!(!c.journal.exists());
+    assert!(!Path::new(&format!("{}.ownership.lock", c.journal.display())).exists());
+    assert!(state.lock().unwrap().calls.is_empty());
+    assert!(state.lock().unwrap().sends.is_empty());
+    task.abort();
 }
 
 #[tokio::test]

@@ -116,3 +116,13 @@ jobs:
           docker run --rm --network none -v cctp-worker-check:/data --entrypoint /bin/sh cctp-worker:check -ec 'test "$(id -u)" = 10002; test "$(id -g)" = 10002; umask 077; echo continuity > /data/runtime-check'
           docker run --rm --network none -e TMPDIR=/data -v cctp-worker-check:/data -v '${{ steps.journal-test.outputs.executable }}:/tmp/journal-test:ro' --entrypoint /tmp/journal-test cctp-worker:check tests::journal::journal_page_atomicity_reopen_identity_and_capacity --exact --nocapture
           docker run --rm --network none -v cctp-worker-check:/data --entrypoint /bin/sh cctp-worker:check -ec 'test "$(cat /data/runtime-check)" = continuity; rm /data/runtime-check'
+      - name: Check actual worker SIGTERM and intact-journal restart
+        run: |
+          python3 crates/cctp-deposit-relayer/tooling/check-process-lifecycle.py --self-test --evidence /tmp/cctp-lifecycle-negative
+          python3 crates/cctp-deposit-relayer/tooling/check-process-lifecycle.py --image cctp-worker:check --evidence /tmp/cctp-lifecycle-image
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cctp-process-lifecycle
+          path: /tmp/cctp-lifecycle-*
+          if-no-files-found: error

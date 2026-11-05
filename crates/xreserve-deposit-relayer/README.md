@@ -240,8 +240,10 @@ For a dedicated run that must exclude all earlier feed entries, append
 deposit**. This fetches one Circle head entry and creates a new progress file containing its
 message hash. It returns before opening Miden state or keys, creating an account, proving or
 submitting. It refuses every existing progress path, including an empty file or symlink, and
-never replaces old progress. Empty or unreadable heads fail. If persistence reports an error,
-check whether a complete file was created before trying again; initialization never overwrites it.
+never replaces old progress. Empty or unreadable heads fail. Parent access and directory sync are
+checked before publication. If the final directory sync fails after publication, the error identifies
+the created checkpoint's path and watermark and reports uncertain durability. Preserve and inspect
+that checkpoint; do not delete or reinitialize it.
 
 Then run the same deployment command with `--require-head-watermark` instead. The flags conflict.
 This mode requires saved progress with a watermark and no unfinished scan. Before building notes,

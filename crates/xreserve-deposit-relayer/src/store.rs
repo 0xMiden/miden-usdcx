@@ -85,7 +85,24 @@ impl Store {
     /// Creates a complete progress file once, excluding feed entries at or below `watermark`.
     /// An existing progress file is never read or replaced.
     pub fn initialize(&self, watermark: MessageHash) -> Result<()> {
+        self.initialize_with_directory_sync(watermark, fs::File::sync_all)
+    }
+
+    fn initialize_with_directory_sync(
+        &self,
+        watermark: MessageHash,
+        final_sync: impl FnOnce(&fs::File) -> std::io::Result<()>,
+    ) -> Result<()> {
         self.require_absent()?;
+        let directory = fs::File::open(self.parent()).with_context(|| {
+            format!(
+                "opening the progress directory `{}` before initialization",
+                self.parent().display()
+            )
+        })?;
+        directory
+            .sync_all()
+            .context("checking progress directory synchronization before initialization")?;
         let file = self.prepare_state(&State {
             watermark: Some(watermark),
             scan: None,
@@ -98,9 +115,12 @@ impl Store {
                     self.path.display()
                 )
             })?;
-        fs::File::open(self.parent())
-            .and_then(|directory| directory.sync_all())
-            .context("syncing the progress directory")?;
+        final_sync(&directory).with_context(|| {
+            format!(
+                "checkpoint created at `{}` with watermark {watermark}, but directory durability is uncertain; preserve and inspect it; do not delete or reinitialize it",
+                self.path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -321,5 +341,54 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_parent_fails_before_checkpoint_publication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o300)).unwrap();
+        let bypasses_read_permission = std::fs::File::open(dir.path()).is_ok();
+        let result = store(&dir).initialize(MessageHash::new([7; 32]));
+        std::fs::set_permissions(dir.path(), original_permissions).unwrap();
+
+        if bypasses_read_permission {
+            eprintln!("0300 permission regression requires a nonprivileged filesystem user");
+            return;
+        }
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("opening the progress directory"));
+        assert!(!dir.path().join("state").exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn final_directory_sync_error_preserves_and_identifies_created_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let watermark = MessageHash::new([7; 32]);
+        let error = store
+            .initialize_with_directory_sync(watermark, |_| {
+                assert_eq!(store.state().unwrap().watermark, Some(watermark));
+                Err(std::io::Error::other(
+                    "injected final directory sync failure",
+                ))
+            })
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("checkpoint created"));
+        assert!(message.contains(&dir.path().join("state").display().to_string()));
+        assert!(message.contains(&watermark.to_string()));
+        assert!(message.contains("durability is uncertain"));
+        assert!(message.contains("preserve and inspect"));
+        assert!(message.contains("do not delete or reinitialize"));
+        let before = std::fs::read(dir.path().join("state")).unwrap();
+        assert!(store.initialize(MessageHash::new([8; 32])).is_err());
+        assert_eq!(std::fs::read(dir.path().join("state")).unwrap(), before);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

@@ -115,12 +115,24 @@ impl ArcSender {
             .call("eth_call", json!([call, "latest"]))
             .await
             .context("exact helper simulation failed")?;
-        let estimate = hex_u64(&self.rpc.call("eth_estimateGas", json!([call])).await?)?;
+        let estimate = hex_u64(
+            &self
+                .rpc
+                .call("eth_estimateGas", json!([call]))
+                .await
+                .context("helper gas estimation failed")?,
+        )?;
         ensure!(
             estimate > 0 && estimate <= config.max_gas,
             "helper gas estimate exceeds cap"
         );
-        let gas_price = hex_u128(&self.rpc.call("eth_gasPrice", json!([])).await?)?;
+        let gas_price = hex_u128(
+            &self
+                .rpc
+                .call("eth_gasPrice", json!([]))
+                .await
+                .context("gas price lookup failed")?,
+        )?;
         let fee = gas_price
             .checked_mul(2)
             .and_then(|n| n.checked_add(config.priority_fee_per_gas))
@@ -133,7 +145,8 @@ impl ArcSender {
             &self
                 .rpc
                 .call("eth_getBalance", json!([config.signer, "latest"]))
-                .await?,
+                .await
+                .context("balance lookup failed")?,
         )?;
         ensure!(
             u128::from(config.max_gas)
@@ -153,11 +166,17 @@ impl ArcSender {
             access_list: Default::default(),
         };
         let digest = tx.signature_hash();
-        let signature = signer.sign_digest(digest).await?;
+        let signature = signer
+            .sign_digest(digest)
+            .await
+            .context("KMS digest signing failed")?;
         ensure!(
             signature.normalize_s().is_none()
-                && Address::from_public_key(&signature.recover_from_prehash(&digest)?)
-                    == config.signer,
+                && Address::from_public_key(
+                    &signature
+                        .recover_from_prehash(&digest)
+                        .context("digest signer mismatch")?
+                ) == config.signer,
             "digest signer mismatch"
         );
         let raw = tx.into_signed(signature).encoded_2718();

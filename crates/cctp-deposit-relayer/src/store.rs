@@ -130,15 +130,32 @@ impl Store {
             [reason],
         )? == 1
         {
-            tracing::error!(reason, "sender halted; manual recovery required");
+            if let Some(pending) = self.pending()? {
+                tracing::error!(stage="sender_halt",reason,domain=pending.message.domain,source_tx=%pending.message.transaction,cctp_nonce=%pending.message.nonce,eoa_nonce=pending.eoa_nonce,arc_tx=%pending.hash,"sender halted; manual recovery required");
+            } else {
+                tracing::error!(
+                    stage = "sender_halt",
+                    reason,
+                    eoa_nonce = self.next_nonce()?,
+                    "sender halted; manual recovery required"
+                );
+            }
         }
         Ok(())
     }
-    pub fn source_halt(&self, domain: u32, reason: &str) -> Result<()> {
-        self.db.execute(
-            "UPDATE sources SET halt=? WHERE domain=?",
+    pub fn source_halt(&self, domain: u32, reason: &'static str) -> Result<()> {
+        if self.db.execute(
+            "UPDATE sources SET halt=? WHERE domain=? AND halt IS NULL",
             params![reason, domain],
-        )?;
+        )? == 1
+        {
+            tracing::error!(
+                stage = "source_halt",
+                reason,
+                domain,
+                "source history halted"
+            );
+        }
         Ok(())
     }
     pub fn cursor(&self, domain: u32) -> Result<Option<Value>> {
@@ -167,6 +184,7 @@ impl Store {
             return Ok(false);
         }
         let tx = self.db.transaction()?;
+        let mut transitions = Vec::new();
         for candidate in &page.transactions {
             ensure!(
                 !candidate.positions.is_empty() && candidate.positions.len() <= 1000,
@@ -182,12 +200,18 @@ impl Store {
                 .optional()?;
             if let Some(old) = old {
                 if old != positions {
-                    manual(
+                    if manual(
                         &tx,
                         domain,
                         &candidate.transaction,
                         "source position conflict",
-                    )?;
+                    )? {
+                        transitions.push((
+                            domain,
+                            candidate.transaction.clone(),
+                            "source position conflict",
+                        ));
+                    }
                 }
             } else {
                 tx.execute(
@@ -209,6 +233,13 @@ impl Store {
                         }
                     ],
                 )?;
+                if candidate.manual {
+                    transitions.push((
+                        domain,
+                        candidate.transaction.clone(),
+                        "unsupported helper event",
+                    ));
+                }
             }
         }
         let count:usize=tx.query_row("SELECT (SELECT coalesce(sum(t.expected-(SELECT count(*) FROM messages m WHERE m.domain=t.domain AND m.source_tx=t.hash)),0) FROM source_txs t WHERE t.state='pending')+(SELECT count(*) FROM messages WHERE state IN ('queued','pending'))",[],|r|r.get(0))?;
@@ -220,6 +251,9 @@ impl Store {
             params![serde_json::to_string(&page.cursor)?, domain],
         )?;
         tx.commit()?;
+        for (domain, hash, reason) in transitions {
+            log_manual(domain, &hash, reason);
+        }
         Ok(true)
     }
     pub fn due(&self, now: i64) -> Result<Option<Job>> {
@@ -237,8 +271,11 @@ impl Store {
             .execute("UPDATE meta SET iris_after=? WHERE id=1", [time])?;
         Ok(())
     }
-    pub fn manual(&self, job: &Job, reason: &str) -> Result<()> {
-        manual(&self.db, job.domain, &job.transaction, reason)
+    pub fn manual(&self, job: &Job, reason: &'static str) -> Result<()> {
+        if manual(&self.db, job.domain, &job.transaction, reason)? {
+            log_manual(job.domain, &job.transaction, reason);
+        }
+        Ok(())
     }
     pub fn admit(&mut self, job: &Job, messages: &[Message], now: i64) -> Result<()> {
         let tx = self.db.transaction()?;
@@ -278,15 +315,24 @@ impl Store {
             params![job.domain, job.transaction],
             |r| r.get(0),
         )?;
+        let mut transitions = Vec::new();
         if conflict.is_some() || count + fresh.len() > expected {
-            manual(
+            if manual(
                 &tx,
                 job.domain,
                 &job.transaction,
                 "Circle nonce/count conflict",
-            )?;
+            )? {
+                transitions.push((
+                    job.domain,
+                    job.transaction.clone(),
+                    "Circle nonce/count conflict",
+                ));
+            }
             if let Some((domain, hash)) = conflict {
-                manual(&tx, domain, &hash, "Circle nonce/owner conflict")?;
+                if manual(&tx, domain, &hash, "Circle nonce/owner conflict")? {
+                    transitions.push((domain, hash, "Circle nonce/owner conflict"));
+                }
             }
         } else {
             for message in fresh.values() {
@@ -316,6 +362,9 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        for (domain, hash, reason) in transitions {
+            log_manual(domain, &hash, reason);
+        }
         Ok(())
     }
     pub fn ready(&self, now: i64) -> Result<Option<Message>> {
@@ -401,6 +450,9 @@ impl Store {
         )?;
         tx.execute("UPDATE meta SET next_nonce=? WHERE id=1", [next])?;
         tx.commit()?;
+        if !success {
+            tracing::error!(stage="settlement",reason="paid_revert",domain=p.message.domain,source_tx=%p.message.transaction,cctp_nonce=%p.message.nonce,eoa_nonce=p.eoa_nonce,arc_tx=%p.hash,"finalized helper transaction reverted; automatic retry disabled");
+        }
         Ok(())
     }
 }
@@ -416,7 +468,21 @@ fn read_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         attestation: row.get(4)?,
     })
 }
-fn manual(db: &Connection, domain: u32, hash: &str, reason: &str) -> Result<()> {
+fn log_manual(domain: u32, hash: &str, reason: &'static str) {
+    tracing::error!(
+        stage = "source_manual",
+        reason,
+        domain,
+        source_tx = hash,
+        "source transaction requires manual review"
+    );
+}
+fn manual(db: &Connection, domain: u32, hash: &str, reason: &'static str) -> Result<bool> {
+    let previous: String = db.query_row(
+        "SELECT state FROM source_txs WHERE domain=? AND hash=?",
+        params![domain, hash],
+        |row| row.get(0),
+    )?;
     db.execute(
         "UPDATE source_txs SET state='manual',reason=? WHERE domain=? AND hash=?",
         params![reason, domain, hash],
@@ -425,7 +491,7 @@ fn manual(db: &Connection, domain: u32, hash: &str, reason: &str) -> Result<()> 
         "UPDATE messages SET state='manual' WHERE domain=? AND source_tx=? AND state='queued'",
         params![domain, hash],
     )?;
-    Ok(())
+    Ok(previous != "manual")
 }
 const SCHEMA:&str="
 CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1),identity TEXT NOT NULL,next_nonce INTEGER NOT NULL,halt TEXT,iris_after INTEGER NOT NULL);

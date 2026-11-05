@@ -30,8 +30,8 @@ async fn main() {
         .await
     }
     .await;
-    if result.is_err() {
-        eprintln!("CCTP worker stopped with an error; no raw upstream details are logged");
+    if let Err(error) = result {
+        cctp_deposit_relayer::report_failure(&error);
         std::process::exit(1);
     }
 }

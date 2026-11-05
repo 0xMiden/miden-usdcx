@@ -174,6 +174,8 @@ struct Mock {
     observed: Vec<bool>,
     fail_send: bool,
     simulation_fail: bool,
+    low_balance: bool,
+    nonce_failure: bool,
     logs: Value,
     marker: Option<std::path::PathBuf>,
     calls: Vec<String>,
@@ -212,6 +214,8 @@ async fn server() -> (
         observed: vec![],
         fail_send: false,
         simulation_fail: false,
+        low_balance: false,
+        nonce_failure: false,
         logs: json!([]),
         marker: None,
         calls: vec![],
@@ -258,6 +262,11 @@ async fn rpc_handler(
             }
             s.logs.clone()
         }
+        "eth_getTransactionCount" if s.nonce_failure => {
+            return axum::Json(
+                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"PRIVATE_PROVIDER_SENTINEL https://name:password@rpc.invalid/?token=SECRET"}}),
+            )
+        }
         "eth_getTransactionCount" => json!(rpc::height(if body["params"][1] == "finalized" {
             s.final_nonce
         } else {
@@ -266,7 +275,11 @@ async fn rpc_handler(
         "eth_getTransactionReceipt" => s.receipt.clone(),
         "eth_gasPrice" => json!("0x3b9aca00"),
         "eth_estimateGas" => json!("0x10000"),
-        "eth_getBalance" => json!("0x1000000000000000000"),
+        "eth_getBalance" => json!(if s.low_balance {
+            "0x0"
+        } else {
+            "0x1000000000000000000"
+        }),
         "eth_call" => {
             let data = body["params"][0]["data"].as_str().unwrap();
             if data
@@ -293,7 +306,7 @@ async fn rpc_handler(
                 json!(if s.used { block_hash(1) } else { B256::ZERO })
             } else if s.simulation_fail {
                 return axum::Json(
-                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"reverted simulation"}}),
+                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"PRIVATE_SIMULATION_SENTINEL https://name:password@rpc.invalid/?token=SECRET"}}),
                 );
             } else {
                 json!("0x")
@@ -340,6 +353,7 @@ async fn sender(c: &Config) -> arc::ArcSender {
 fn receipt(c: &Config, p: &store::Pending, status: u64) -> Value {
     json!({"transactionHash":p.hash,"from":c.signer,"to":c.helper,"blockNumber":"0x14","blockHash":block_hash(20),"status":rpc::height(status)})
 }
+mod diagnostics;
 mod journal;
 mod local_evm;
 mod process;

@@ -2,6 +2,7 @@ use crate::{
     arc::ArcSender,
     circle::{now, Iris, Reply},
     config::{Config, Network},
+    diagnostics,
     discovery::{evm, solana},
     rpc::Rpc,
     store::Store,
@@ -22,12 +23,20 @@ pub(crate) struct Worker {
 }
 impl Worker {
     pub async fn new(config: Config, store: Store, signer: Box<dyn Signer>) -> Result<Self> {
-        ensure!(
-            signer.public_key().await?.address()? == config.signer,
-            "loaded signer mismatch"
-        );
+        let public_key = signer.public_key().await.map_err(|error| {
+            diagnostics::at(error.into(), "signer_connect", "signer_unavailable")
+        })?;
+        if public_key.address()? != config.signer {
+            return Err(diagnostics::at(
+                anyhow::anyhow!("loaded signer mismatch"),
+                "signer_connect",
+                "signer_unavailable",
+            ));
+        }
         let mut arc = ArcSender::new(&config)?;
-        arc.verify(&config).await?;
+        arc.verify(&config)
+            .await
+            .map_err(|error| diagnostics::at(error, "startup", "provider_unavailable"))?;
         let iris = Iris::new(config.circle_url.clone())?;
         let source_due = vec![0; config.sources.len()];
         Ok(Self {
@@ -62,6 +71,8 @@ impl Worker {
                 }
                 if unavailable(&error) {
                     tracing::warn!(
+                        stage="reconciliation", reason="provider_unavailable", domain=p.message.domain,
+                        source_tx=%p.message.transaction, cctp_nonce=%p.message.nonce, eoa_nonce=p.eoa_nonce, arc_tx=%p.hash,
                         "saved transaction reconciliation unavailable; nonce remains owned"
                     );
                 } else {
@@ -93,19 +104,21 @@ impl Worker {
                 match result {
                     Ok(Some(page)) => {
                         if !self.store.page(&self.config, source.domain, &page)? {
-                            tracing::warn!(domain=source.domain,"source page exceeds queue capacity; cursor retained, admitted work continues");
+                            tracing::warn!(stage="source_scan",reason="queue_capacity",domain=source.domain,"source page exceeds queue capacity; cursor retained, admitted work continues");
                         }
                     }
                     Ok(None) => {}
                     Err(error) => {
                         if unavailable(&error) {
                             tracing::warn!(
+                                stage = "source_scan",
+                                reason = "provider_unavailable",
                                 domain = source.domain,
                                 "source temporarily unavailable"
                             );
                         } else {
-                            self.store.source_halt(source.domain, &error.to_string())?;
-                            tracing::error!(domain = source.domain, "source history halted");
+                            self.store
+                                .source_halt(source.domain, "invalid_source_history")?;
                         }
                     }
                 }
@@ -123,10 +136,6 @@ impl Worker {
                 Err(error) if unavailable(&error) => self.store.postpone(&job, time + 15)?,
                 Err(_) => {
                     self.store.manual(&job, "invalid Circle response")?;
-                    tracing::error!(
-                        domain = job.domain,
-                        "Circle response requires manual review"
-                    );
                 }
             }
         }
@@ -135,7 +144,10 @@ impl Worker {
                 let next = self.store.next_nonce()?;
                 let nonces = match self.arc.nonces(&self.config).await {
                     Ok(n) => n,
-                    Err(_) => return Ok(()),
+                    Err(_) => {
+                        tracing::warn!(stage="nonce_lookup",reason="provider_unavailable",domain=message.domain,source_tx=%message.transaction,cctp_nonce=%message.nonce,eoa_nonce=next,"sender nonce lookup unavailable");
+                        return Ok(());
+                    }
                 };
                 if nonces != (next, next) {
                     self.store
@@ -161,12 +173,18 @@ impl Worker {
                                     self.store.pending()?.is_some(),
                                     "pending persistence failed before send"
                                 );
-                                tracing::warn!("broadcast uncertain; saved bytes retained");
+                                tracing::warn!(stage="broadcast",reason="reply_unavailable_or_invalid",domain=message.domain,source_tx=%message.transaction,cctp_nonce=%message.nonce,eoa_nonce=p.eoa_nonce,arc_tx=%p.hash,"broadcast uncertain; saved bytes retained");
                             }
                         }
-                        Err(_) => self.store.postpone_message(message.nonce, time + 30)?,
+                        Err(error) => {
+                            self.store.postpone_message(message.nonce, time + 30)?;
+                            tracing::warn!(stage="preparation",reason=diagnostics::reason(&error,"provider_or_message_unavailable"),domain=message.domain,source_tx=%message.transaction,cctp_nonce=%message.nonce,eoa_nonce=next,"helper transaction preparation deferred");
+                        }
                     },
-                    Err(_) => self.store.postpone_message(message.nonce, time + 15)?,
+                    Err(_) => {
+                        self.store.postpone_message(message.nonce, time + 15)?;
+                        tracing::warn!(stage="used_nonce_lookup",reason="provider_unavailable",domain=message.domain,source_tx=%message.transaction,cctp_nonce=%message.nonce,"CCTP nonce lookup unavailable");
+                    }
                 }
             }
         }

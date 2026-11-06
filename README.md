@@ -99,17 +99,33 @@ RPC nonces cannot reconstruct missing signed attempts. Keep the complete consist
 Logs are the operator interface; there is no HTTP hint/status/readiness service or daily spend
 budget. A finite dedicated gas balance and small per-transaction ceilings bound operator exposure.
 
-Build the Linux amd64 image from the repository root on a qualified Docker host:
+For rootful Docker on Linux without user-namespace remapping, prepare a separate private
+container profile from the repository root. Keep the native host-owned `0600` profile and its
+`0700` directory unchanged:
 
 ```sh
+install -m 0600 runtime/cctp/profile.local.json runtime/cctp/profile.container.input.json
+```
+
+Edit `profile.container.input.json` for the container paths, including `/data/journal.sqlite`,
+and the required settings before first initialization. With GNU `install`, create an owner-only
+copy for UID/GID 10002, then build and run the Linux amd64 image:
+
+```sh
+sudo install -o 10002 -g 10002 -m 0600 runtime/cctp/profile.container.input.json runtime/cctp/profile.container.json
 docker build --platform linux/amd64 -f crates/cctp-deposit-relayer/Dockerfile -t cctp-worker:local .
 docker run --rm --network none cctp-worker:local --help
 docker volume create cctp-worker-data
-docker run --name cctp-worker-init --rm -v "$PWD/runtime/cctp/profile.local.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json --init
-docker run --name cctp-worker --restart unless-stopped --stop-timeout 30 -v "$PWD/runtime/cctp/profile.local.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json
+docker run --name cctp-worker-init --rm -v "$PWD/runtime/cctp/profile.container.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json --init
+docker run --name cctp-worker --restart unless-stopped --stop-timeout 30 -v "$PWD/runtime/cctp/profile.container.json:/run/cctp/profile.json:ro" -v cctp-worker-data:/data cctp-worker:local --config /run/cctp/profile.json
 docker stop --time 30 cctp-worker
 docker start cctp-worker
 ```
+
+Docker Desktop, rootless Docker and user-namespace remapping can map ownership differently.
+Before initialization, verify that the effective container user can read the mounted `0600`
+profile and any other private credential mounts under that platform's mapping; do not assume the
+rootful Linux ownership recipe.
 
 Supply the approved AWS workload environment/mounts to both initialization and service containers;
 the commands above intentionally contain no credentials. The image runs as UID/GID 10002. A named

@@ -24,7 +24,7 @@ pub struct KmsSigner {
 }
 
 impl KmsSigner {
-    /// Creates the AWS KMS connection that both signing keys share. A request to KMS is tried at
+    /// Creates an AWS KMS connection reusable by signer instances. A request to KMS is tried at
     /// most three times, and `operation_timeout` limits the total time for all tries.
     pub async fn client(region: &str, operation_timeout: Duration) -> Client {
         let config = aws_config::defaults(BehaviorVersion::latest())
@@ -78,7 +78,7 @@ impl Signer for KmsSigner {
                 .as_bytes()
                 .try_into()
                 .map_err(|source| SignerError::with_source("public key is not 33 bytes", source))?;
-            Ok(SigningPublicKey(bytes))
+            SigningPublicKey::from_compressed(bytes)
         })
     }
 

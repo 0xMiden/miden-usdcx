@@ -16,6 +16,7 @@ const ISOLATED_KMS_TEST: &str = "XUSDC_ATTESTER_ISOLATED_KMS_TEST";
 /// The child returns true; the parent waits for it and returns false.
 fn in_isolated_process(test_name: &str) -> bool {
     if std::env::var(ISOLATED_KMS_TEST).as_deref() == Ok(test_name) {
+        std::fs::write(std::env::var_os("USDCX_KMS_TEST_BODY").unwrap(), test_name).unwrap();
         return true;
     }
     let directory = tempfile::tempdir().unwrap();
@@ -23,19 +24,26 @@ fn in_isolated_process(test_name: &str) -> bool {
     let credentials = directory.path().join("credentials");
     std::fs::write(&config, []).unwrap();
     std::fs::write(&credentials, []).unwrap();
-    let status = Command::new(std::env::current_exe().unwrap())
+    let marker = directory.path().join("child-body");
+    let output = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg(test_name)
         .env_clear()
         .env(ISOLATED_KMS_TEST, test_name)
+        .env("USDCX_KMS_TEST_BODY", &marker)
         .env("AWS_CONFIG_FILE", config)
         .env("AWS_SHARED_CREDENTIALS_FILE", credentials)
         .env("AWS_EC2_METADATA_DISABLED", "true")
         .env("AWS_ACCESS_KEY_ID", "test")
         .env("AWS_SECRET_ACCESS_KEY", "test")
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), test_name);
+    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}");
+    print!("{stdout}");
     false
 }
 
@@ -338,7 +346,7 @@ fn described_key() -> Value {
 #[tokio::test]
 async fn kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies() {
     const NAME: &str =
-        "signer::kms::tests::kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies";
+        "kms::tests::kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies";
     if !in_isolated_process(NAME) {
         return;
     }
@@ -381,7 +389,7 @@ async fn kms_signers_connect_and_sign_through_the_sdk_with_prepared_replies() {
 
 #[tokio::test]
 async fn the_kms_client_keeps_the_region_attempts_and_timeout() {
-    const NAME: &str = "signer::kms::tests::the_kms_client_keeps_the_region_attempts_and_timeout";
+    const NAME: &str = "kms::tests::the_kms_client_keeps_the_region_attempts_and_timeout";
     if !in_isolated_process(NAME) {
         return;
     }

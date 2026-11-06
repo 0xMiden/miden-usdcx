@@ -1,0 +1,62 @@
+{
+  "deployment": {
+    "schemaVersion": 1,
+    "deploymentId": "canary-e9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d",
+    "environment": "testnet",
+    "enabled": false,
+    "helper": {
+      "address": "0xe9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d",
+      "runtimeHash": "0x472814a3d87be4685ddd56cadda53f5c87ba7ff1aacabacc0188252888bb6ed2",
+      "deploymentBlock": "69669264",
+      "abiVersion": 1
+    },
+    "arc": {
+      "chainId": 5042002,
+      "messageTransmitter": {
+        "address": "0xe737e5cebeeba77efe34d4aa090756590b1ce275",
+        "runtimeHash": "0xd2c8d48075d832fb7d07f6db5545a1bee37fdf886325c441a8dd1cef4c9dae99"
+      },
+      "tokenMessenger": {
+        "address": "0x8fe6b999dc680ccfdd5bf7eb0974218be2542daa",
+        "runtimeHash": "0xd2c8d48075d832fb7d07f6db5545a1bee37fdf886325c441a8dd1cef4c9dae99"
+      },
+      "tokenMinter": {
+        "address": "0xb43db544e2c27092c107639ad201b3defabcf192",
+        "runtimeHash": "0xfc330d52b7656b971ef47bbb8cd44877181fbc9ac0fe76cb4cb5bb364a992eff"
+      },
+      "usdc": {
+        "address": "0x3600000000000000000000000000000000000000",
+        "runtimeHash": "0xc9987bd3af6b26a030951faa7eacc017b68343aeedf3ce5fe68f821c4b93939d"
+      },
+      "xReserve": {
+        "address": "0x008888878f94c0d87defdf0b07f46b93c1934442",
+        "runtimeHash": "0x939e866641b49f068165f8fb926b1137f9bf9b208252c7986c47ca12d260403b"
+      }
+    },
+    "miden": {
+      "domain": 10007,
+      "faucetId": "0x4cbdcaffe75f0a317482224dae6436",
+      "recipientCodec": "miden-0.17.1-v1"
+    },
+    "source": {
+      "network": "solana-devnet",
+      "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+      "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "tokenMessengerProgram": "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
+      "messageTransmitterProgram": "CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC",
+      "idlHash": "46c195982ce970f90131f79e9b86eeadcb0d589d08f701f5506aa8ad4fa9e81d",
+      "finality": "finalized",
+      "history": "unqualified",
+      "startSlot": "516414731"
+    },
+    "canary": "localhost-first-test",
+    "qualification": {
+      "helperAsDepositor": "pending",
+      "zeroRemoteFee": "pending",
+      "liveArcExecution": "pending",
+      "midenDelivery": "pending"
+    }
+  },
+  "message": "0x00000001000000050000001a1838096391a1d1ea4494e32ebaaadeb50837110b589ac55cc1738157304e5aa6a65fc81d0fefa8860cb3b83f089b0224be8a6687b7ae49f594c0b9b4d7e938930000000000000000000000008fe6b999dc680ccfdd5bf7eb0974218be2542daa000000000000000000000000e9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d000007d0000007d0000000013b442cb3912157f13a933d0134282d032b5ffecd01a2dbf1b7790608df002ea7000000000000000000000000e9b875990b8d98b5060c2e4e2e3cd0856d9b1b4d00000000000000000000000000000000000000000000000000000000000f4240aa1f0fa669a8167ec3e801dda7d2991199a5d51274df34e4af2b1b074c6cc82d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000a40f49401950ab917b001a2733292800",
+  "attestation": "0x7f626d75fa405ae014aa515593e93ff50186cc3695956adc2be76eede28bf1857b2cd22e718be90b10f79c6fe26a5c9ef66e8c320b2a4e9c591eb26c18e002a21ce917d67a857bd20caf938fe010ac49cbc95ce9947bdf6a1c4d894a8c2961a83035e7f249b45f31588333de38351cb290a8eab49ef83b7f46d3ca724921ea250d1c"
+}

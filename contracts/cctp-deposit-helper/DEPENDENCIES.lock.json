@@ -1,0 +1,68 @@
+{
+  "arcFoundry": {
+    "repository": "circlefin/arc-foundry",
+    "tag": "v0.8.0-2",
+    "commit": "d497beea7096ff2a8e583c8b307941f24a61b06b",
+    "archiveSha256": "90e3eefbf7dd80652fd283a7562e9263301a48797bc2224cc21a3964e2d5db87",
+    "binarySha256": {
+      "forge": "cf249c875addb8c9568dba6d47f1805ba13df4da28c36c9e6c946d3126fe5f50",
+      "anvil": "fcf7b6a597b3e6544f0246fb4b447966113b6adf3d2446e63d1deaaa018b8166"
+    },
+    "verification": "official versioned archive SHA256 matches published checksum; extracted forge/anvil byte-identical to research copies"
+  },
+  "openzeppelin": {
+    "commit": "01ef448981be9d20ca85f2faf6ebdf591ce409f3",
+    "archiveSha256": "6222d0c794619db2986c639865f8c050929c00542c4541679abb541d891265fc",
+    "vendoredContractFiles": 229,
+    "verification": "all229 contract files byte-match official archive"
+  },
+  "forgeStd": {
+    "commit": "77041d2ce690e692d6e03cc812b57d1ddaa4d505",
+    "archiveSha256": "a387f7c2a10387f889b0d18b999cfa667a5273ac11cc11e18923022eb8b24bc3"
+  },
+  "helperCompiler": {
+    "version": "0.8.29+commit.ab55807c.Emscripten.clang",
+    "optimizerRuns": 200,
+    "evmVersion": "cancun",
+    "viaIR": false
+  },
+  "cctp": {
+    "commit": "a92a2b4e7e6ef99bf0b05dca71780f5ec190e729",
+    "compiler": "0.7.6+commit.7338295f.Emscripten.clang",
+    "evmVersion": "istanbul",
+    "optimizerRuns": 100000,
+    "viaIR": false,
+    "productionSourceFiles": 45,
+    "fixtureWrapperFiles": 1,
+    "dependencies": {
+      "openzeppelin": "8e0296096449d9b1cd7c5631e917330635244c37",
+      "memview": "79a08cb25aac047d81c67c5422c9b55abfac8635"
+    }
+  },
+  "xreserve": {
+    "commit": "12236a2b17ace9d1108af6f63dbe5d0ce5898017",
+    "compiler": "0.8.29+commit.ab55807c.Emscripten.clang",
+    "evmVersion": "cancun",
+    "optimizerRuns": 1500,
+    "viaIR": true,
+    "productionSourceFiles": 52,
+    "dependencies": {
+      "openzeppelin": "01ef448981be9d20ca85f2faf6ebdf591ce409f3",
+      "openzeppelinUpgradeable": "60b305a8f3ff0c7688f02ac470417b6bbf1c4d27",
+      "gateway": "8f2687a4546cf361377f29f8ccf435eb37a55433",
+      "memview": "3750a8f1e29756da62e418c9e3938788cfabbdaf",
+      "cctpProvenanceOnlyNotImported": "5e893866d49326d62d3ecf3f7fb599dd71787469"
+    }
+  },
+  "miden": {
+    "protocol": "0.17.1",
+    "standards": "0.17.1",
+    "usdcx": "0.17.1",
+    "decoderEvidence": "fixtures/frontend-recipient-boundaries.json; actual released Rust decoder output retained from research; Solidity consumes generated cases"
+  },
+  "hifiReference": {
+    "commit": "8ed761d85f46b983c362fbaa4fc4e83fb70f485a",
+    "repository": "hifi-finance/hifi-v3"
+  },
+  "npmLockSha256": "ff77b0db54ee18044383283cb5e46aa7f147375e706026760493402d472b5edb"
+}

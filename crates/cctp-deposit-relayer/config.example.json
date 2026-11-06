@@ -1,0 +1,32 @@
+{
+  "journal": "/data/journal.sqlite",
+  "arc_rpc": "https://ARC_RPC.invalid/",
+  "circle_url": "https://CIRCLE_SANDBOX.invalid/",
+  "chain_id": 5042002,
+  "arc_domain": 26,
+  "helper": "0x0000000000000000000000000000000000000000",
+  "helper_code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "messenger": "0x0000000000000000000000000000000000000000",
+  "signer": "0x0000000000000000000000000000000000000000",
+  "kms": {
+    "region": "eu-north-1",
+    "key_arn": "REPLACE_WITH_EXISTING_IMMUTABLE_KMS_KEY_ARN"
+  },
+  "max_gas": 0,
+  "max_fee_per_gas": 0,
+  "priority_fee_per_gas": 0,
+  "pending_timeout_secs": 3600,
+  "queue_capacity": 256,
+  "sources": [
+    {
+      "domain": 5,
+      "rpc": "https://SOLANA_HISTORY_RPC.invalid/",
+      "runtime": "solana",
+      "genesis_hash": "REPLACE_WITH_VERIFIED_GENESIS",
+      "messenger": "REPLACE_WITH_VERIFIED_CIRCLE_PROGRAM",
+      "usdc": "REPLACE_WITH_VERIFIED_NATIVE_USDC_MINT",
+      "start_signature": "REPLACE_WITH_RETAINED_FINALIZED_SIGNATURE",
+      "start_slot": 0
+    }
+  ]
+}

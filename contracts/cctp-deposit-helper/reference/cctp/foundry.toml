@@ -1,0 +1,15 @@
+[profile.default]
+src = "src"
+test = "no-tests"
+script = "no-scripts"
+out = "artifacts"
+libs = []
+auto_detect_solc = false
+auto_detect_remappings = false
+ffi = false
+solc = "../../tooling/solc-076"
+evm_version = "istanbul"
+optimizer = true
+optimizer_runs = 100000
+via_ir = false
+remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]

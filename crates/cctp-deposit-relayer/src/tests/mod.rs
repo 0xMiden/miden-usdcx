@@ -61,10 +61,11 @@ fn config(dir: &tempfile::TempDir, signer: &TestSigner) -> Config {
         helper_code_hash: keccak256([0x60, 0]),
         messenger: Address::repeat_byte(0x23),
         signer: signer.address(),
-        kms: Kms {
+        kms: Some(Kms {
             region: "ephemeral-loopback".into(),
             key_arn: "unused-injected-signer".into(),
-        },
+        }),
+        local_env: None,
         max_gas: 500000,
         max_fee_per_gas: 30_000_000_000,
         priority_fee_per_gas: 1_000_000_000,
@@ -356,6 +357,7 @@ fn receipt(c: &Config, p: &store::Pending, status: u64) -> Value {
 mod diagnostics;
 mod journal;
 mod local_evm;
+mod local_signer;
 mod process;
 mod sender;
 mod source;

@@ -1,4 +1,4 @@
-// Local-only executing fixture. Every key is generated in memory for this loopback run.
+// Local-only executing fixture. The ephemeral gas key is retired after this loopback run.
 const fs = require("node:fs"),
   path = require("node:path"),
   crypto = require("node:crypto"),
@@ -10,10 +10,14 @@ const { spawn, spawnSync } = require("child_process");
 const H = path.resolve(__dirname, "..");
 const W = path.resolve(H, "../..");
 const E = require("ethers");
+const CHAIN_ID = 5042002;
 const outputRoot = process.argv[2] ? path.resolve(process.argv[2]) : os.tmpdir();
 fs.mkdirSync(outputRoot, { recursive: true });
 const run = fs.mkdtempSync(path.join(outputRoot, "cctp-worker-integration-"));
+const dotenvPath = path.join(run, ".env");
 const safeEnv = { ...process.env, AWS_EC2_METADATA_DISABLED: "true" };
+delete safeEnv.CCTP_RELAYER_PRIVATE_KEY;
+delete safeEnv.CCTP_LOCAL_FIXTURE_KEY;
 for (const name of Object.keys(safeEnv))
   if (name.startsWith("AWS_") && name !== "AWS_EC2_METADATA_DISABLED") delete safeEnv[name];
 const awsConfig = path.join(run, "empty-aws-config"),
@@ -170,7 +174,7 @@ async function command(name, executable, args, cwd) {
       "--port",
       String(p),
       "--chain-id",
-      "31337",
+      String(CHAIN_ID),
     ],
     { cwd: run, stdio: ["ignore", log, log] },
   );
@@ -183,12 +187,12 @@ async function command(name, executable, args, cwd) {
   });
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await rpc(url, "eth_chainId")) === "0x7a69") break;
+      if ((await rpc(url, "eth_chainId")) === E.toQuantity(CHAIN_ID)) break;
     } catch {}
     await new Promise((r) => setTimeout(r, 30));
     if (i === 99) throw Error("local Anvil did not start");
   }
-  provider = new E.JsonRpcProvider(url, 31337, {
+  provider = new E.JsonRpcProvider(url, CHAIN_ID, {
     staticNetwork: true,
     batchMaxCount: 1,
   });
@@ -526,8 +530,9 @@ except Exception:
           );
         if (
           signed.value !== 0n ||
+          signed.from.toLowerCase() !== gas.address.toLowerCase() ||
           signed.to.toLowerCase() !== helper.address.toLowerCase() ||
-          signed.chainId !== 31337n ||
+          signed.chainId !== BigInt(CHAIN_ID) ||
           call.name !== "receiveAndDeposit" ||
           !exact
         )
@@ -596,16 +601,13 @@ except Exception:
     journal: path.join(run, "worker.sqlite"),
     arc_rpc: `http://127.0.0.1:${transport.address().port}/`,
     circle_url: `http://127.0.0.1:${iris.address().port}/`,
-    chain_id: 31337,
+    chain_id: CHAIN_ID,
     arc_domain: 26,
     helper: helper.address,
     helper_code_hash: helperCodeHash,
     messenger: destination.tm.address,
     signer: gas.address,
-    kms: {
-      region: "ephemeral-loopback",
-      key_arn: "unused-injected-test-signer",
-    },
+    local_env: { dotenv: dotenvPath },
     max_gas: 2000000,
     max_fee_per_gas: 100000000000,
     priority_fee_per_gas: 1000000000,
@@ -616,7 +618,7 @@ except Exception:
         domain: 0,
         rpc: url,
         runtime: "evm",
-        chain_id: 31337,
+        chain_id: CHAIN_ID,
         messenger: source.tm.address,
         transmitter: source.mt.address,
         usdc: srcToken.address,
@@ -625,6 +627,8 @@ except Exception:
       },
     ],
   };
+  fs.writeFileSync(dotenvPath, `CCTP_RELAYER_PRIVATE_KEY=${gas.privateKey}\n`, { mode: 0o600, flag: "wx" });
+  report.signer = { mode: "local_env", chainId: CHAIN_ID, address: gas.address };
   save("profile.json", profile);
   save("fixture.json", {
     firstSourceTransaction: first.sourceTxHash,
@@ -639,7 +643,6 @@ except Exception:
     env: {
       ...safeEnv,
       CCTP_LOCAL_FIXTURE_PROFILE: path.join(run, "profile.json"),
-      CCTP_LOCAL_FIXTURE_KEY: gas.privateKey,
       CCTP_LOCAL_FIXTURE_CONTROL: `http://127.0.0.1:${control.address().port}`,
       CCTP_LOCAL_FIXTURE_RESULT: path.join(run, "worker-result.json"),
       AWS_CONFIG_FILE: awsConfig,
@@ -655,7 +658,7 @@ except Exception:
     testCwd: W,
     loopbackRpc: url,
     owner: "run-worker-integration.cjs",
-    noWalletFiles: true,
+    ephemeralDotenv: dotenvPath,
   });
   const exit = await waitChild(test, 180000);
   report.testExit = exit;
@@ -665,6 +668,10 @@ except Exception:
   if (result.bodyExecuted !== true) throw Error("exact child selected no executing body");
   assert.equal(result.actualBurnsAndDistinctNonces, 3);
   assert.equal(result.successfulHelperCalls, 3);
+  assert.equal(result.signerMode, "local_env");
+  assert.equal(result.chainId, CHAIN_ID);
+  assert.equal(result.ordinaryInitialization, true);
+  assert.equal(result.restartNextNonce, 3);
   assert(
     fs
       .readFileSync(path.join(run, "worker-test.log"), "utf8")
@@ -700,6 +707,9 @@ except Exception:
   })
   .finally(async () => {
     await stopChild(test);
+    fs.rmSync(dotenvPath, { force: true });
+    report.ephemeralDotenvRemoved = !fs.existsSync(dotenvPath);
+    save("REPORT.json", report);
     if (control) await new Promise((r) => control.close(r));
     if (iris) await new Promise((r) => iris.close(r));
     if (transport) await new Promise((r) => transport.close(r));

@@ -6,6 +6,9 @@ target
 **/target
 *.log
 .DS_Store
+**/.env
+**/.env.*
+**/*.private.json
 /runtime/cctp/
 /crates/cctp-deposit-relayer/profile.local.json
 /crates/cctp-deposit-relayer/journal.sqlite*

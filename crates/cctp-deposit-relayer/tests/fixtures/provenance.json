@@ -1,54 +1,14 @@
 {
   "warning": "Read-only public captures. No transaction is executed or replayed on a public network. Synthetic mutations are explicitly tests only.",
-  "inputs": [
-    {
-      "fixture": "solana-standard-helper.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/coordination/workstreams/normal-ui-assisted-test-2026-10-29/live/source-raw.json",
-      "primary_sha256": "b652c1faa7d1be908e528527cbc9447497ba6aa5d140ba2fc8833905df37da97",
-      "fixture_sha256": "0ebecf5902e3f840d5d1f271f5f2b5ab500d7e5a5b9e927b0655ba318f58c06b",
-      "category": "genuine finalized prior Solana Devnet Standard helper source; RPC replay only",
-      "conversion": "Prior base64 transaction deserialized with existing official @solana/web3.js VersionedTransaction, signatures/instructions encoded with official Anchor bs58; original captured metadata retained. Genuine legacy Standard/helper packet; no new source runtime execution."
-    },
-    {
-      "fixture": "solana-v1-receive.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/implementation-plan-2026-10-26/refined-plan/review-round-2/relayer/logs/solana-live-tx-v1-0.json",
-      "primary_sha256": "f5875f2f4203ae0d659f6fe1e02191bb594a21b82b64761703af884c37ce5e2e",
-      "fixture_sha256": "50b6da6d3a6d8e0a61a98f2bfb07d133d85f9c13a741db4b0226ebf44ae79abe",
-      "category": "genuine captured v1 receive; reader compatibility only"
-    },
-    {
-      "fixture": "solana-v0-fast-burn.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/implementation-plan-2026-10-26/refined-plan/review-round-2/relayer/logs/solana-live-tx-v1-11.json",
-      "primary_sha256": "577cc045bff203a75a03bbc6664aece629f00a60b3ded243ddbfa5dd89dd7833",
-      "fixture_sha256": "86fac7c7d13190a187c32d15e9e2d0ceca71fd2abf19b733ebe7e72d09253695",
-      "category": "genuine captured v0 Fast forwarding burn; not Standard route qualification"
-    },
-    {
-      "fixture": "circle-solana-idl.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/implementation-plan-2026-10-26/refined-plan/evidence/frontend-primary/solana-token-messenger-v2-idl.json",
-      "primary_sha256": "46c195982ce970f90131f79e9b86eeadcb0d589d08f701f5506aa8ad4fa9e81d",
-      "pin": "ec16e95d28ee47f7832df4203ae07b5981d146fc; official Anchor event coder"
-    },
-    {
-      "fixture": "evm-reference-source-captures.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/coordination/workstreams/cctp-worker-build-2026-10-30/builder/local-evm-SC3qcG/source-captures.json",
-      "fixture_sha256": "0f7b7258fd9977d041f1ee5ddcea6dc79df156eb2bf433deb4d31c71cb63b189",
-      "category": "genuine locally executed Ethereum Circle reference/helper fixture; not Arc or public qualification",
-      "evidence": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/coordination/workstreams/cctp-worker-build-2026-10-30/builder/local-evm-SC3qcG/REPORT.json",
-      "producer_sha256": "924b4c1842b76618a072be75be32244722fd64432b16b4493e419852315bcee7"
-    },
-    {
-      "fixture": "evm-reference-deployment.json",
-      "primary": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/coordination/workstreams/cctp-worker-build-2026-10-30/builder/local-evm-SC3qcG/deployment.json",
-      "fixture_sha256": "8e7da9d7af3f74ba7dfaebc96302c2e025a00313fe6b9dffbe0d71a9d33abcc4",
-      "category": "genuine locally executed Ethereum Circle reference/helper fixture; not Arc or public qualification",
-      "evidence": "/Users/philipp/Documents/Work/Miden-Coding/agentic-template/ai-tasks/circle-integration/28-cctp-bridging-in/coordination/workstreams/cctp-worker-build-2026-10-30/builder/local-evm-SC3qcG/REPORT.json",
-      "producer_sha256": "924b4c1842b76618a072be75be32244722fd64432b16b4493e419852315bcee7"
-    }
-  ],
+  "circle_solana_idl": {
+    "repository": "circlefin/solana-cctp-contracts",
+    "commit": "ec16e95d28ee47f7832df4203ae07b5981d146fc",
+    "sha256": "46c195982ce970f90131f79e9b86eeadcb0d589d08f701f5506aa8ad4fa9e81d",
+    "purpose": "Public Anchor event schema pin; full unused IDL and historical non-jsonParsed captures remain in Git history at086195cd95e0dd37b8405bb2aa2306b12bc4f9ca."
+  },
   "reviewed_jsonParsed_captures": [
     {
-      "fixture": "solana-standard-helper",
+      "fixture": "solana-standard-helper-jsonParsed.json",
       "endpoint": "https://api.devnet.solana.com",
       "request": {
         "jsonrpc": "2.0",
@@ -80,7 +40,7 @@
       ]
     },
     {
-      "fixture": "solana-v0-fast-burn",
+      "fixture": "solana-v0-fast-burn-jsonParsed.json",
       "endpoint": "https://api.devnet.solana.com",
       "request": {
         "jsonrpc": "2.0",
@@ -112,7 +72,7 @@
       ]
     },
     {
-      "fixture": "solana-v1-receive",
+      "fixture": "solana-v1-receive-jsonParsed.json",
       "endpoint": "https://api.devnet.solana.com",
       "request": {
         "jsonrpc": "2.0",

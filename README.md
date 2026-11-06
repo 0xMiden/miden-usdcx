@@ -181,8 +181,12 @@ selected KMS credential path each need source-bound results before service opera
 The helper package preserves its `contracts/`, `tests/`, `scripts/` and generated `modules/` layout.
 From `contracts/cctp-deposit-helper`, run `python3 tooling/bootstrap.py`, then
 `python3 tooling/run-local-gates.py`. Bootstrap retrieves pinned Arc Foundry, Solidity compilers
-and library sources; the verified bootstrap platform is macOS ARM64. The local gates build the
-pinned Circle reference contracts, run concrete, fuzz, invariant and integration tests, and own
+and library sources; the verified bootstrap platform is macOS ARM64. Reference sources are
+materialized from the immutable archives in `reference/PROVENANCE.json`, with archive, source
+and retained-license hashes checked on every run. `--offline` uses the verified archive cache
+and existing npm packages. Run integrity tests with
+`python3 -m unittest discover -s tooling -p test_bootstrap.py`. The local gates build the pinned
+Circle reference contracts, run concrete, fuzz, invariant and integration tests, and own
 and stop a loopback-only Arc Anvil instance for runtime checks. `scripts/Deploy.s.sol` performs
 nonbroadcast preflight; local validation does not establish a live deployment or an end-to-end
 public-testnet bridge.

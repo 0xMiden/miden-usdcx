@@ -55,17 +55,6 @@ pub(crate) fn reason(error: &Error, fallback: &'static str) -> &'static str {
             "local private key variable missing" => "local_key_missing",
             "duplicate local private key variable" => "local_key_duplicate",
             "invalid local private key" => "local_key_invalid",
-            "source genesis changed" | "source chain identity mismatch" => {
-                "source_identity_mismatch"
-            }
-            "source start history pruned" => "source_history_pruned",
-            "Solana boundary unavailable" | "old Solana boundary missing before start slot" => {
-                "source_boundary_unavailable"
-            }
-            "source transaction unavailable" | "signature and transaction slots differ" => {
-                "source_transaction_invalid"
-            }
-            "source signature unconfirmed" => "source_not_finalized",
             "exact helper simulation failed" => "simulation_failed",
             "helper gas estimation failed" => "gas_estimation_unavailable",
             "helper gas estimate exceeds cap" => "gas_cap_exceeded",

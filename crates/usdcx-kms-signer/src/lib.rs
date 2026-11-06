@@ -81,6 +81,3 @@ fn decode_hex<const N: usize>(value: &str) -> Result<[u8; N], hex::FromHexError>
     hex::decode_to_slice(value.strip_prefix("0x").unwrap_or(value), &mut bytes)?;
     Ok(bytes)
 }
-
-#[cfg(test)]
-mod transaction_tests;

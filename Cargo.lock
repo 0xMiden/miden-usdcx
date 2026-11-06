@@ -7521,8 +7521,6 @@ dependencies = [
 name = "usdcx-kms-signer"
 version = "0.0.0"
 dependencies = [
- "alloy-consensus",
- "alloy-eips",
  "alloy-primitives",
  "aws-config",
  "aws-sdk-kms",

@@ -71,6 +71,10 @@ jobs:
         with:
           node-version: 22.18.0
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: python3 -m unittest discover -s tooling -p test_bootstrap.py
+        working-directory: contracts/cctp-deposit-helper
+      - run: python3 -O -m unittest discover -s tooling -p test_bootstrap.py
+        working-directory: contracts/cctp-deposit-helper
       - run: python3 tooling/bootstrap.py
         working-directory: contracts/cctp-deposit-helper
       - run: python3 tooling/run-local-gates.py

@@ -14,8 +14,6 @@ k256 = { workspace = true, features = ["pkcs8"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-alloy-consensus = { workspace = true }
-alloy-eips = { workspace = true }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 aws-smithy-types = "1"
 serde_json = { workspace = true }

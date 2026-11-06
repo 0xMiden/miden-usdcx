@@ -64,13 +64,11 @@ pub(crate) async fn scan(
         messenger,
         start_signature,
         start_slot,
+        genesis_hash,
         ..
     } = &source.network
     else {
         anyhow::bail!("wrong runtime adapter")
-    };
-    let Network::Solana { genesis_hash, .. } = &source.network else {
-        unreachable!()
     };
     ensure!(
         rpc.call("getGenesisHash", json!([])).await?.as_str() == Some(genesis_hash),

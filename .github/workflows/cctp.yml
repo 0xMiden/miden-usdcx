@@ -5,6 +5,7 @@ on:
     branches: [feat/cctp-bridging-in, test/cctp-local-signer, build/cctp-release-tooling-20261105]
     paths: &cctp-paths
       - .github/workflows/cctp.yml
+      - .gitmodules
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml

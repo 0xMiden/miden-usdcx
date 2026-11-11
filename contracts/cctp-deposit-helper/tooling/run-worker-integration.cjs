@@ -98,10 +98,13 @@ function artifact(file) {
 function bytecode(a) {
   return a.bytecode.object.startsWith("0x") ? a.bytecode.object : "0x" + a.bytecode.object;
 }
-async function command(name, executable, args, cwd) {
+async function command(name, executable, args, cwd, config) {
+  const env = { ...safeEnv };
+  delete env.FOUNDRY_CONFIG;
+  if (config) env.FOUNDRY_CONFIG = config;
   const child = spawn(executable, args, {
     cwd,
-    env: safeEnv,
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "",
@@ -114,18 +117,18 @@ async function command(name, executable, args, cwd) {
     name,
     command: [executable, ...args],
     cwd: path.relative(W, cwd),
+    config: config ? path.relative(W, config) : null,
     exit: code,
   });
   if (code !== 0) throw Error(name + " failed; inspect " + path.join(run, name + ".log"));
   return stdout;
 }
 (async () => {
-  for (const [name, cwd] of [
-    ["cctp-reference", path.join(H, "reference/cctp")],
-    ["xreserve-reference", path.join(H, "reference/xreserve")],
-    ["helper", H],
-  ])
-    await command(name, path.join(H, "tooling/forge"), ["build"], cwd);
+  await command("dependency-inputs", "python3", ["tooling/bootstrap.py", "--verify-only"], H);
+  for (const [name, version] of [["cctp-reference", "cctp"], ["xreserve-reference", "xreserve"]])
+    await command(name, path.join(H, "tooling/forge"),
+      ["build", "--root", H], H, path.join(H, "reference", version, "foundry.toml"));
+  await command("helper", path.join(H, "tooling/forge"), ["build"], H);
   const messages = await command(
     "cargo-test-build",
     "cargo",

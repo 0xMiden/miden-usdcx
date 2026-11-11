@@ -330,3 +330,28 @@ async fn durable_terminal_events_follow_commit_once_and_failed_sql_emits_no_tran
     events.sanitized();
     task.abort();
 }
+
+#[test]
+fn first_durable_sender_halt_emits_one_sanitized_operator_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = config(&dir, &TestSigner::new());
+    let store = Store::open(&c, true).unwrap();
+    assert!(store.pending().unwrap().is_none());
+    let events = Events::default();
+    let first_reason = "unknown sender nonce; manual recovery required";
+    tracing::subscriber::with_default(events.clone(), || {
+        store.halt(first_reason).unwrap();
+        store.halt("another controlled reason").unwrap();
+    });
+    assert!(store.halted().unwrap());
+    assert_eq!(events.0.lock().unwrap().len(), 1);
+    let event = events.matching("sender_halt", first_reason);
+    assert_eq!(event.len(), 1);
+    assert_eq!(event[0]["eoa_nonce"], "0");
+    let saved: String = store
+        .db
+        .query_row("SELECT halt FROM meta", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(saved, first_reason);
+    events.sanitized();
+}

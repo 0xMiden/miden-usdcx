@@ -166,39 +166,6 @@ fn circle_every_record_envelope_route_and_terminal_not_rearmed() {
 }
 
 #[test]
-fn first_durable_sender_halt_emits_one_sanitized_operator_event() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    struct Events(Arc<AtomicUsize>);
-    impl tracing::Subscriber for Events {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, _: &tracing::Event<'_>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let c = config(&dir, &TestSigner::new());
-    let store = Store::open(&c, true).unwrap();
-    let count = Arc::new(AtomicUsize::new(0));
-    tracing::subscriber::with_default(Events(count.clone()), || {
-        store
-            .halt("unknown sender nonce; manual recovery required")
-            .unwrap();
-        store.halt("another controlled reason").unwrap();
-    });
-    assert!(store.halted().unwrap());
-    assert_eq!(count.load(Ordering::Relaxed), 1);
-}
-
-#[test]
 fn retained_descriptor_cannot_extend_store_ownership_and_errors_release_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let c = config(&dir, &TestSigner::new());

@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+const solc=require('./node_modules/solc076');if(process.argv.includes('--version')){console.log('solc, the solidity compiler commandline interface\nVersion: '+solc.version());}else{let s='';process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(solc.compile(s)));}

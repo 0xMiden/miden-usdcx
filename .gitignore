@@ -4,3 +4,6 @@
 local-node-data/
 .DS_Store
 *.log
+/runtime/cctp/
+/crates/cctp-deposit-relayer/profile.local.json
+/crates/cctp-deposit-relayer/journal.sqlite*

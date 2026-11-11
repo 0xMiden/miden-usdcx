@@ -1,0 +1,42 @@
+{
+  "arcFoundry": {
+    "repository": "circlefin/arc-foundry",
+    "tag": "v0.8.0-2",
+    "commit": "d497beea7096ff2a8e583c8b307941f24a61b06b",
+    "archiveSha256": "90e3eefbf7dd80652fd283a7562e9263301a48797bc2224cc21a3964e2d5db87",
+    "binarySha256": {
+      "forge": "cf249c875addb8c9568dba6d47f1805ba13df4da28c36c9e6c946d3126fe5f50",
+      "anvil": "fcf7b6a597b3e6544f0246fb4b447966113b6adf3d2446e63d1deaaa018b8166"
+    },
+    "verification": "official versioned archive SHA256 matches published checksum; extracted forge/anvil byte-identical to research copies"
+  },
+  "helperCompiler": {
+    "version": "0.8.29+commit.ab55807c.Emscripten.clang",
+    "optimizerRuns": 200,
+    "evmVersion": "cancun",
+    "viaIR": false
+  },
+  "cctp": {
+    "compiler": "0.7.6+commit.7338295f.Emscripten.clang",
+    "evmVersion": "istanbul",
+    "optimizerRuns": 100000,
+    "viaIR": false
+  },
+  "xreserve": {
+    "compiler": "0.8.29+commit.ab55807c.Emscripten.clang",
+    "evmVersion": "cancun",
+    "optimizerRuns": 1500,
+    "viaIR": true
+  },
+  "miden": {
+    "protocol": "0.17.1",
+    "standards": "0.17.1",
+    "usdcx": "0.17.1",
+    "decoderEvidence": "fixtures/frontend-recipient-boundaries.json; actual released Rust decoder output retained from research; Solidity consumes generated cases"
+  },
+  "hifiReference": {
+    "commit": "8ed761d85f46b983c362fbaa4fc4e83fb70f485a",
+    "repository": "hifi-finance/hifi-v3"
+  },
+  "npmLockSha256": "ff77b0db54ee18044383283cb5e46aa7f147375e706026760493402d472b5edb"
+}

@@ -1,0 +1,107 @@
+{
+  "warning": "Read-only public captures. No transaction is executed or replayed on a public network. Synthetic mutations are explicitly tests only.",
+  "circle_solana_idl": {
+    "repository": "circlefin/solana-cctp-contracts",
+    "commit": "ec16e95d28ee47f7832df4203ae07b5981d146fc",
+    "sha256": "46c195982ce970f90131f79e9b86eeadcb0d589d08f701f5506aa8ad4fa9e81d",
+    "purpose": "Public Anchor event schema pin; full unused IDL and historical non-jsonParsed captures remain in Git history at086195cd95e0dd37b8405bb2aa2306b12bc4f9ca."
+  },
+  "reviewed_jsonParsed_captures": [
+    {
+      "fixture": "solana-standard-helper-jsonParsed.json",
+      "endpoint": "https://api.devnet.solana.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+          "2SbByTrap6P8HNhpVVZBwu3sXrfWJ9zTXeGCCEHfV4f1fb9f1nNgQq24G2RRdZPNgUdvQpGA1eK3uawQiebQJ5c",
+          {
+            "commitment": "finalized",
+            "encoding": "jsonParsed",
+            "maxSupportedTransactionVersion": 1
+          }
+        ]
+      },
+      "bytes": 7546,
+      "sha256": "57f7a8eaa0d2822d3a3455bcc9c27562cd93979211ea9eb050908e138abed4de",
+      "error": null,
+      "result_is_null": false,
+      "version": "legacy",
+      "slot": 516511251,
+      "err": null,
+      "inner_fields": [
+        "accounts",
+        "data",
+        "parsed",
+        "program",
+        "programId",
+        "stackHeight"
+      ]
+    },
+    {
+      "fixture": "solana-v0-fast-burn-jsonParsed.json",
+      "endpoint": "https://api.devnet.solana.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+          "5E4WTwvHkjfVwG6AHbsfkFK5kWTb1wSFGrg9TVVHJ4jzHCzH9TZjuJam3FpQPXXVG45ZN9Efdx3UupZGSebDu8YX",
+          {
+            "commitment": "finalized",
+            "encoding": "jsonParsed",
+            "maxSupportedTransactionVersion": 1
+          }
+        ]
+      },
+      "bytes": 7662,
+      "sha256": "e321f6024a6fb324c82a2ec93f27256cbe88862dad7407f6e9f40ed0a6aa3d80",
+      "error": null,
+      "result_is_null": false,
+      "version": 0,
+      "slot": 515408364,
+      "err": null,
+      "inner_fields": [
+        "accounts",
+        "data",
+        "parsed",
+        "program",
+        "programId",
+        "stackHeight"
+      ]
+    },
+    {
+      "fixture": "solana-v1-receive-jsonParsed.json",
+      "endpoint": "https://api.devnet.solana.com",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+          "59XsgY9QLE6CBVBdYuNG8xtohkqf2tiVWWNGmNqXU8D9W8wpYS8VgGp2MbvQV6P1MVrGH6geHnafxgNQQouGntns",
+          {
+            "commitment": "finalized",
+            "encoding": "jsonParsed",
+            "maxSupportedTransactionVersion": 1
+          }
+        ]
+      },
+      "bytes": 10413,
+      "sha256": "e38c11018d26c75dabbea04ddb8a7bc4f5671edfc434831c8395a7fd1e88407d",
+      "error": null,
+      "result_is_null": false,
+      "version": 1,
+      "slot": 515410750,
+      "err": null,
+      "inner_fields": [
+        "accounts",
+        "data",
+        "parsed",
+        "program",
+        "programId",
+        "stackHeight"
+      ]
+    }
+  ]
+}

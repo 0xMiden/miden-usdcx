@@ -169,8 +169,9 @@ newest entry in the feed it is reported again on every scan, since the scan has 
 retrying would never help, and holding up the page would stall every deposit behind it.
 
 A skipped deposit is not revisited: the scan moves past it like any other. If it was skipped
-because of the relayer's configuration rather than the deposit itself, fix the configuration and
-remove the state file (see below) to replay the feed.
+because of the relayer's configuration rather than the deposit itself, ordinary catch-up mode can
+replay the feed after the configuration is fixed (see [Progress](#progress)). Guarded runs require
+operator reconciliation of the original boundary; do not reset it to revisit a deposit.
 
 ## Run
 
@@ -196,8 +197,10 @@ Miden's Circle domain is `10007`. The account IDs and public key above are examp
 with the deployment's values. The faucet must be public, since mint notes route to it as a network
 account. The attester public key must use compressed SEC1 format.
 
-The relayer account must already exist on chain, and its signing key must already be in the keystore
-directory. Neither is created here. Startup checks node access, account availability, that the
+The relayer account must be public and already exist on chain, with its complete SDK 0.17.3
+keystore provisioned securely by the account owner, including `key_index.json` and the original key
+filenames. Use directory permissions `0700` and key-file permissions `0600`. Neither the account nor
+its keys are created by the service. Relay startup checks node access, account availability, that the
 faucet has enabled the attester public key, and local progress persistence before the first Circle
 request. A malformed or unwritable progress file fails startup. Key possession is not checked until
 transaction authentication, so successful startup does not replace the operator's key setup or
@@ -229,6 +232,39 @@ five-minute limit, so keep a host's stop timeout above five minutes. If the page
 for its transaction when the limit passes, for example because the chain stopped producing blocks,
 the process exits with an error and the next start fetches that page again. A signal during startup
 lets it finish under the same limit, and the relayer then stops before its first page.
+
+### Start after an explicit feed boundary
+
+For a dedicated run that must exclude all earlier feed entries, append
+`--init-state-at-current-head` to the deployment command above **before any new intended
+deposit**. This fetches one Circle head entry and creates a new progress file containing its
+message hash. It returns before opening Miden state or keys, creating an account, proving or
+submitting. It refuses every existing progress path, including an empty file or symlink, and
+never replaces old progress. Empty or unreadable heads fail. Parent access and directory sync are
+checked before publication. If the final directory sync fails after publication, the error identifies
+the created checkpoint's path and watermark and reports uncertain durability. Preserve and inspect
+that checkpoint; do not delete or reinitialize it.
+
+Then run the same deployment command with `--require-head-watermark` instead. The flags conflict.
+This mode requires saved progress with a watermark and no unfinished scan. Before building notes,
+it requires that exact hash in the fetched head page and considers only entries above it. A
+missing boundary, an empty page, or a backlog that pushes it beyond the head page stops the
+process with an error and leaves progress unchanged. Reconcile the feed and original progress;
+do not delete or reinitialize it to clear the error. Nonces are not ordered and are not used as
+feed boundaries.
+
+Restart with the same guarded command, progress file and complete keystore. A failed page keeps
+its old marker; already-minted nonces are dropped when it is retried. An included courier
+transaction still needs the faucet's later network execution, and the in-memory pending-mint
+monitor does not survive restart. This does not guarantee zero extra proving or submission fees.
+
+The guard bounds historical catch-up. It still relays every new matching faucet/domain intent,
+not only deposits from one source or helper. Use a funded public courier account and agree a finite
+fee budget with Miden Ops, which supplies initial funding and top-ups. Standard signing auth pays
+these no-input courier transactions from that account's existing vault; assets later minted to
+recipients do not fund it. Confirm the deployed faucet's code, mint-note allowlist, fees and actual
+prover/runtime compatibility before starting. Successful reads or startup checks do not prove a new transaction
+will succeed. The ordinary command without either flag retains full catch-up behavior.
 
 ## Tracing
 
@@ -265,7 +301,7 @@ list is kept in memory, so a restart clears it. Every failed span carries `failu
 
 | `failure.class` | Meaning | `failure.kind` |
 | --- | --- | --- |
-| `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request` |
+| `actionable` | Will not fix itself. | `startup`, `attestation_skipped`, `progress_file`, `client_store`, `transaction_request`, `head_watermark` |
 | `transient` | Retried on the next scan; matters when it persists. | `circle_unavailable`, `rate_limited`, `unexpected_status`, `invalid_response`, `node_sync`, `transaction_submit`, `transaction_expired`, `transaction_discarded` |
 
 `node_sync` and `transaction_submit` are `transient` only when the node could not be reached or
@@ -305,12 +341,10 @@ resumed scan finishes the walk it began before taking on anything newer, so what
 is always one contiguous run of the feed and a single watermark can describe it.
 
 The file is replaced atomically (write, fsync, rename), so a crash leaves the old state or the new
-one, never a torn one. A file that exists but is not a state is an error, not a first run, since
-treating it as one would replay the whole feed silently.
-
-Deleting the file is safe. The next run scans the whole feed, and the used-nonce check drops every
-deposit the faucet has already minted, so the replay costs Circle requests and local reads rather
-than a proof per deposit.
+one, never a torn one. Malformed nonblank JSON is an error. In ordinary mode, a missing or
+whitespace-only file is a first run and scans the whole feed. Already-minted deposits are dropped,
+but old unminted deposits can still cost proofs and submission fees. Guarded mode refuses progress
+without a watermark; never delete its boundary to clear an error.
 
 The state file and the Miden store are independent: the state file says how far the relayer walked
 the feed; the store holds the chain, including which deposits minted. Either can be lost on its own.

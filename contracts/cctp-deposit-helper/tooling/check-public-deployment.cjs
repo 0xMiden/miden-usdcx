@@ -4,9 +4,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const assert = require("node:assert/strict");
 const E = require("ethers");
+const { readHelperArtifact, serializeAbi } = require("./generate-abi.cjs");
 const root = path.resolve(__dirname, "..");
 const candidate = JSON.parse(fs.readFileSync(path.join(root, "deployments/arc-testnet.candidate.json")));
-const artifact = JSON.parse(fs.readFileSync(path.join(root, "artifacts/MidenCctpDepositHelper.sol/MidenCctpDepositHelper.json")));
+const artifact = readHelperArtifact();
 const output = process.argv[2];
 if (!output) throw Error("Pass the output JSON path");
 const endpoint = new URL(process.env.CCTP_ARC_RPC_URL || "https://rpc.testnet.arc.network");
@@ -60,7 +61,7 @@ async function check(name, read, expected) {
   report.checks.at(-1).expected = E.keccak256(runtime);
   report.checks.at(-1).actual = E.keccak256(runtime);
   await check("helper runtime hash", async () => E.keccak256(runtime), candidate.helper.runtimeHash);
-  const abi = fs.readFileSync(path.join(root, "abi/MidenCctpDepositHelper.json"));
+  const abi = serializeAbi(artifact.abi);
   await check("generated ABI SHA256", async () => crypto.createHash("sha256").update(abi).digest("hex"), candidate.helper.abiSha256);
   for (const dependency of candidate.dependencies) {
     await check(dependency.name + " runtime", async () => E.keccak256(await provider.send("eth_getCode", [dependency.address, at])), dependency.runtimeHash);

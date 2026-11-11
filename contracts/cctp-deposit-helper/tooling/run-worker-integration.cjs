@@ -129,6 +129,7 @@ async function command(name, executable, args, cwd, config) {
     await command(name, path.join(H, "tooling/forge"),
       ["build", "--root", H], H, path.join(H, "reference", version, "foundry.toml"));
   await command("helper", path.join(H, "tooling/forge"), ["build"], H);
+  await command("release-interface", "node", ["tooling/generate-abi.cjs", "--check"], H);
   const messages = await command(
     "cargo-test-build",
     "cargo",

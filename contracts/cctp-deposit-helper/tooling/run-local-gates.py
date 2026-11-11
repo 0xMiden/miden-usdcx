@@ -26,6 +26,8 @@ run('reference-cctp',[FORGE,'build','--root',str(ROOT)],config='reference/cctp/f
 run('reference-xreserve',[FORGE,'build','--root',str(ROOT)],config='reference/xreserve/foundry.toml')
 run('format',[FORGE,'fmt','--check'])
 run('build-sizes',[FORGE,'build','--sizes'])
+run('release-interface',['node','tooling/generate-abi.cjs','--check'])
+run('release-negative-cases',['node','--test','tooling/test-release.cjs'])
 run('concrete',[FORGE,'test','--match-path','tests/unit/concrete/**','-vv'])
 run('circle-integration-and-local-preflight',[FORGE,'test','--match-path','tests/integration/**','-vv'])
 run('fuzz-ci',[FORGE,'test','--match-path','tests/unit/fuzz/**','-vv'],'ci')

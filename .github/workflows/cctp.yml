@@ -80,8 +80,6 @@ jobs:
         working-directory: contracts/cctp-deposit-helper
       - run: python3 tooling/run-local-gates.py
         working-directory: contracts/cctp-deposit-helper
-      - run: node tooling/generate-abi.cjs --check
-        working-directory: contracts/cctp-deposit-helper
       - run: node contracts/cctp-deposit-helper/tooling/run-worker-integration.cjs
 
   linux-image:

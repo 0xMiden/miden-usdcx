@@ -385,39 +385,7 @@ async function command(name, executable, args, cwd) {
   await new Promise((r) => iris.listen(0, "127.0.0.1", r));
   let batch;
   async function batchBurn() {
-    if (!batch) {
-      const code = `// SPDX-License-Identifier: MIT\npragma solidity 0.8.29; interface T {function approve(address,uint256) external returns(bool);} interface M {function depositForBurnWithHook(uint256,uint32,bytes32,address,bytes32,uint256,uint32,bytes calldata) external;} contract LocalBatch {function burnTwice(address token,address messenger,bytes32 helper,bytes calldata hook) external {require(T(token).approve(messenger,2000000)); M(messenger).depositForBurnWithHook(1000000,26,helper,token,helper,0,2000,hook); M(messenger).depositForBurnWithHook(1000000,26,helper,token,helper,0,2000,hook);}}`;
-      fs.writeFileSync(path.join(run, "LocalBatch.sol"), code);
-      const input = {
-        language: "Solidity",
-        sources: { "LocalBatch.sol": { content: code } },
-        settings: {
-          optimizer: { enabled: true, runs: 200 },
-          outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
-        },
-      };
-      const compiler = spawn(path.join(H, "tooling/solc-0829"), ["--standard-json"], {
-        cwd: run,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "",
-        stderr = "";
-      compiler.stdout.on("data", (b) => (stdout += b));
-      compiler.stderr.on("data", (b) => (stderr += b));
-      compiler.stdin.end(JSON.stringify(input));
-      const exit = await waitChild(compiler, 30000);
-      fs.writeFileSync(path.join(run, "batch-solc.stderr"), stderr);
-      if (exit !== 0) throw Error("local batch fixture compile failed");
-      const output = JSON.parse(stdout);
-      if (output.errors?.some((e) => e.severity === "error"))
-        throw Error("local batch fixture Solidity error");
-      const a = output.contracts["LocalBatch.sol"].LocalBatch;
-      batch = await deploy({
-        abi: a.abi,
-        bytecode: { object: a.evm.bytecode.object },
-      });
-      save("LocalBatch.artifact.json", a);
-    }
+    if (!batch) batch = await deploy(artifact("artifacts/FaultDependencies.sol/LocalBatch.json"));
     await tx(srcToken.contract.mint(batch.address, 2000000n));
     const receipt = await tx(
       batch.contract.burnTwice(srcToken.address, source.tm.address, pad(helper.address), hook),

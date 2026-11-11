@@ -13,6 +13,7 @@ target
 /crates/cctp-deposit-relayer/profile.local.json
 /crates/cctp-deposit-relayer/journal.sqlite*
 contracts/cctp-deposit-helper/artifacts
+contracts/cctp-deposit-helper/abi
 contracts/cctp-deposit-helper/cache
 contracts/cctp-deposit-helper/modules
 contracts/cctp-deposit-helper/tooling/node_modules

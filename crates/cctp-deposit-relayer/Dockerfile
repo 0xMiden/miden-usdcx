@@ -21,6 +21,7 @@ COPY crates/usdcx-bridge/ crates/usdcx-bridge/
 COPY crates/usdcx-telemetry/ crates/usdcx-telemetry/
 COPY crates/usdcx-kms-signer/ crates/usdcx-kms-signer/
 COPY crates/cctp-deposit-relayer/ crates/cctp-deposit-relayer/
+COPY contracts/cctp-deposit-helper/interfaces/IMidenCctpDepositHelper.sol contracts/cctp-deposit-helper/interfaces/IMidenCctpDepositHelper.sol
 RUN --mount=type=cache,sharing=locked,id=cctp-worker-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
     --mount=type=cache,sharing=locked,id=cctp-worker-cargo-git-${TARGETARCH},target=/usr/local/cargo/git/db \
     cargo build --release --locked --jobs "${CARGO_BUILD_JOBS}" \

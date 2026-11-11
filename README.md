@@ -178,20 +178,29 @@ selected KMS credential path each need source-bound results before service opera
 
 ## Incoming CCTP helper
 
-The helper package preserves its `contracts/`, `tests/`, `scripts/` and generated `modules/` layout.
+The helper package preserves its `contracts/`, `tests/`, `scripts/` and pinned Git `modules/` layout.
+Use a standalone clone with its own Git metadata; bootstrap rejects linked worktrees.
 From `contracts/cctp-deposit-helper`, run `python3 tooling/bootstrap.py`, then
 `python3 tooling/run-local-gates.py`. Bootstrap retrieves pinned Arc Foundry, Solidity compilers
-and library sources; the verified bootstrap platform is macOS ARM64. Reference sources are
-materialized from the immutable archives in `reference/PROVENANCE.json`, with archive, source
-and retained-license hashes checked on every run. `--offline` uses the verified archive cache
-and existing npm packages. Run integrity tests with
+and library sources; the verified bootstrap platform is macOS ARM64. Reviewed Gitlinks pin
+source versions, and bootstrap checks actual checkout bytes against those Git objects on every
+run. `--offline` requires existing module Git caches/pinned objects, the verified Arc archive
+and npm packages; it never clones a missing cache. Warm mismatches fail without repairing edits.
+Run `python3 tooling/bootstrap.py --verify-only` before a direct Forge build. Distribute all
+initialized dependency trees and their notices with `reference/NOTICE` and `reference/LICENSE-APACHE`. Run integrity tests with
 `python3 -m unittest discover -s tooling -p test_bootstrap.py`. The local gates build the pinned
 Circle reference contracts, run concrete, fuzz, invariant and integration tests, and own
 and stop a loopback-only Arc Anvil instance for runtime checks. `scripts/Deploy.s.sol` performs
 nonbroadcast preflight; local validation does not establish a live deployment or an end-to-end
 public-testnet bridge.
 
-Generate/check the shared compiler ABI and run the real worker against a fresh loopback fixture:
+The pinned Arc import scanner reports the CCTP relative OpenZeppelin `IERC20.sol` path before
+solc applies its remapping. Check the actual compiler result and gate exit status; the integrity
+preflight and compilation remain required.
+
+The worker reads `interfaces/IMidenCctpDepositHelper.sol`; release gates compile and compare
+its three methods with the actual helper ABI. The full ABI is a generated release export,
+independent of Rust builds. Export/check it and run the real worker against a fresh loopback fixture:
 
 ```sh
 node tooling/generate-abi.cjs

@@ -3,6 +3,10 @@ src = "contracts"
 test = "tests"
 script = "scripts"
 libs = ["modules"]
+remappings = [
+    "@openzeppelin/contracts/=modules/openzeppelin-contracts/contracts/",
+    "forge-std/=modules/forge-std/src/",
+]
 out = "artifacts"
 solc = "tooling/solc-0829"
 auto_detect_solc = false

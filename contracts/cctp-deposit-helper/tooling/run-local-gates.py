@@ -7,22 +7,27 @@ LOGS=ROOT/'tooling/local-gates'/datetime.datetime.now(datetime.timezone.utc).str
 LOGS.mkdir(parents=True)
 FORGE=str(ROOT/'tooling/forge'); ANVIL=str(ROOT/'tooling/anvil')
 ledger=[]
-def run(name,args,profile=None,directory=None):
+def run(name,args,profile=None,directory=None,config=None):
  env=os.environ.copy()
+ env.pop('FOUNDRY_CONFIG',None)
+ if config:env['FOUNDRY_CONFIG']=str(ROOT/config)
  if profile:env['FOUNDRY_PROFILE']=profile
  elif 'FOUNDRY_PROFILE' in env:del env['FOUNDRY_PROFILE']
  start=time.monotonic()
  directory=directory or ROOT
  p=subprocess.run(args,cwd=directory,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
  log=LOGS/(name+'.log');log.write_text(p.stdout)
- row={'gate':name,'command':args,'cwd':str(directory),'profile':profile or 'default','exit':p.returncode,'seconds':round(time.monotonic()-start,3),'log':str(log)}
+ row={'gate':name,'command':args,'cwd':str(directory),'profile':profile or 'default','config':config,'exit':p.returncode,'seconds':round(time.monotonic()-start,3),'log':str(log)}
  ledger.append(row);print(json.dumps(row),flush=True)
  (ROOT/'fixtures/local-gate-results.json').write_text(json.dumps(ledger,indent=2)+'\n')
  if p.returncode:raise RuntimeError(p.stdout[-3000:])
-run('reference-cctp',[FORGE,'build'],directory=ROOT/'reference/cctp')
-run('reference-xreserve',[FORGE,'build'],directory=ROOT/'reference/xreserve')
+run('dependency-inputs',['python3','tooling/bootstrap.py','--verify-only'])
+run('reference-cctp',[FORGE,'build','--root',str(ROOT)],config='reference/cctp/foundry.toml')
+run('reference-xreserve',[FORGE,'build','--root',str(ROOT)],config='reference/xreserve/foundry.toml')
 run('format',[FORGE,'fmt','--check'])
 run('build-sizes',[FORGE,'build','--sizes'])
+run('release-interface',['node','tooling/generate-abi.cjs','--check'])
+run('release-negative-cases',['node','--test','tooling/test-release.cjs'])
 run('concrete',[FORGE,'test','--match-path','tests/unit/concrete/**','-vv'])
 run('circle-integration-and-local-preflight',[FORGE,'test','--match-path','tests/integration/**','-vv'])
 run('fuzz-ci',[FORGE,'test','--match-path','tests/unit/fuzz/**','-vv'],'ci')

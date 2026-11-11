@@ -10,16 +10,6 @@
     },
     "verification": "official versioned archive SHA256 matches published checksum; extracted forge/anvil byte-identical to research copies"
   },
-  "openzeppelin": {
-    "commit": "01ef448981be9d20ca85f2faf6ebdf591ce409f3",
-    "archiveSha256": "6222d0c794619db2986c639865f8c050929c00542c4541679abb541d891265fc",
-    "vendoredContractFiles": 229,
-    "verification": "all229 contract files byte-match official archive"
-  },
-  "forgeStd": {
-    "commit": "77041d2ce690e692d6e03cc812b57d1ddaa4d505",
-    "archiveSha256": "a387f7c2a10387f889b0d18b999cfa667a5273ac11cc11e18923022eb8b24bc3"
-  },
   "helperCompiler": {
     "version": "0.8.29+commit.ab55807c.Emscripten.clang",
     "optimizerRuns": 200,
@@ -27,32 +17,16 @@
     "viaIR": false
   },
   "cctp": {
-    "commit": "a92a2b4e7e6ef99bf0b05dca71780f5ec190e729",
     "compiler": "0.7.6+commit.7338295f.Emscripten.clang",
     "evmVersion": "istanbul",
     "optimizerRuns": 100000,
-    "viaIR": false,
-    "productionSourceFiles": 45,
-    "fixtureWrapperFiles": 1,
-    "dependencies": {
-      "openzeppelin": "8e0296096449d9b1cd7c5631e917330635244c37",
-      "memview": "79a08cb25aac047d81c67c5422c9b55abfac8635"
-    }
+    "viaIR": false
   },
   "xreserve": {
-    "commit": "12236a2b17ace9d1108af6f63dbe5d0ce5898017",
     "compiler": "0.8.29+commit.ab55807c.Emscripten.clang",
     "evmVersion": "cancun",
     "optimizerRuns": 1500,
-    "viaIR": true,
-    "productionSourceFiles": 52,
-    "dependencies": {
-      "openzeppelin": "01ef448981be9d20ca85f2faf6ebdf591ce409f3",
-      "openzeppelinUpgradeable": "60b305a8f3ff0c7688f02ac470417b6bbf1c4d27",
-      "gateway": "8f2687a4546cf361377f29f8ccf435eb37a55433",
-      "memview": "3750a8f1e29756da62e418c9e3938788cfabbdaf",
-      "cctpProvenanceOnlyNotImported": "5e893866d49326d62d3ecf3f7fb599dd71787469"
-    }
+    "viaIR": true
   },
   "miden": {
     "protocol": "0.17.1",

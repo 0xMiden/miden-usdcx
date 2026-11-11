@@ -5,6 +5,7 @@ on:
     branches: [feat/cctp-bridging-in, test/cctp-local-signer, build/cctp-release-tooling-20261105]
     paths: &cctp-paths
       - .github/workflows/cctp.yml
+      - .gitmodules
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -78,8 +79,6 @@ jobs:
       - run: python3 tooling/bootstrap.py
         working-directory: contracts/cctp-deposit-helper
       - run: python3 tooling/run-local-gates.py
-        working-directory: contracts/cctp-deposit-helper
-      - run: node tooling/generate-abi.cjs --check
         working-directory: contracts/cctp-deposit-helper
       - run: node contracts/cctp-deposit-helper/tooling/run-worker-integration.cjs
 

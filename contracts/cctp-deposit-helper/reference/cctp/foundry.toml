@@ -1,15 +1,21 @@
 [profile.default]
-src = "src"
-test = "no-tests"
-script = "no-scripts"
-out = "artifacts"
+src = "reference/cctp/inputs"
+test = "reference/cctp/no-tests"
+script = "reference/cctp/no-scripts"
+out = "reference/cctp/artifacts"
+cache_path = "reference/cctp/cache"
 libs = []
 auto_detect_solc = false
 auto_detect_remappings = false
 ffi = false
-solc = "../../tooling/solc-076"
+solc = "tooling/solc-076"
 evm_version = "istanbul"
 optimizer = true
 optimizer_runs = 100000
 via_ir = false
-remappings = ["@openzeppelin/=lib/openzeppelin-contracts/"]
+remappings = [
+    "src/=modules/cctp-contracts/src/",
+    "@openzeppelin/=modules/cctp-openzeppelin-contracts/",
+    "@memview-sol/=modules/cctp-memview-sol/",
+    "modules/cctp-contracts/lib/openzeppelin-contracts/=modules/cctp-openzeppelin-contracts/",
+]

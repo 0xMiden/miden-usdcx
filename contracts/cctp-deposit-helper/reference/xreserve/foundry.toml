@@ -1,15 +1,24 @@
 [profile.default]
-src = "src"
-test = "no-tests"
-script = "no-scripts"
-out = "artifacts"
+src = "reference/xreserve/inputs"
+test = "reference/xreserve/no-tests"
+script = "reference/xreserve/no-scripts"
+out = "reference/xreserve/artifacts"
+cache_path = "reference/xreserve/cache"
 libs = []
 auto_detect_solc = false
 auto_detect_remappings = false
 ffi = false
-solc = "../../tooling/solc-0829"
+solc = "tooling/solc-0829"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 1500
 via_ir = true
-remappings = ["@gateway/:src/lib/=@gateway/src/lib/"]
+# Gateway must match before xReserve's global src/ in the pinned Forge resolver.
+remappings = [
+    "modules/xreserve-gateway-contracts/:src/lib/=modules/xreserve-gateway-contracts/src/lib/",
+    "src/=modules/xreserve-contracts/src/",
+    "@openzeppelin/contracts/=modules/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=modules/xreserve-openzeppelin-contracts-upgradeable/contracts/",
+    "@memview-sol/=modules/xreserve-memview-sol/contracts/",
+    "@gateway/=modules/xreserve-gateway-contracts/",
+]

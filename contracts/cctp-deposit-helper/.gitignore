@@ -1,7 +1,6 @@
 artifacts/
 cache/
 node_modules/
-/modules/
 fixtures/local-gate-results.json
 fixtures/arc-native-rpc-result.json
 fixtures/vector-regeneration.json
@@ -19,11 +18,8 @@ tooling/local-gates/
 tooling/pycache/
 __pycache__/
 
-# Pinned upstream source is reconstructed and verified by bootstrap.
-reference/cctp/src/**/*.sol
-!reference/cctp/src/CodecProbe.sol
-reference/cctp/lib/**/*.sol
-reference/cctp/@memview-sol/**/*.sol
-reference/xreserve/src/**/*.sol
-reference/xreserve/@*/**/*.sol
+# The Arc release archive is cached; source dependencies are tracked Gitlinks.
 tooling/reference-cache/
+
+# Full ABI is exported from the compiler artifact for release clients.
+/abi/MidenCctpDepositHelper.json

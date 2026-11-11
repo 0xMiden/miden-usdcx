@@ -1,0 +1,8 @@
+The pinned cctp-memview-sol (summa-tx/memview-sol at
+79a08cb25aac047d81c67c5422c9b55abfac8635) and xreserve-memview-sol
+(LayneHaber/memview-sol at 3750a8f1e29756da62e418c9e3938788cfabbdaf)
+retain their source copyright and SPDX notices. TypedMemView uses the
+Apache-2.0 option of its MIT OR Apache-2.0 license; the unchanged Apache
+text is in LICENSE-APACHE. SafeMath retains its embedded MIT license.
+Distribute initialized upstream trees with all their LICENSE/NOTICES files
+and this supplemental text. Acquisition does not establish legal clearance.

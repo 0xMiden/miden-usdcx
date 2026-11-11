@@ -205,3 +205,17 @@ contract DomainHook {
         }
     }
 }
+
+interface IBurnMessenger {
+    function depositForBurnWithHook(uint256, uint32, bytes32, address, bytes32, uint256, uint32, bytes calldata)
+        external;
+}
+
+/// @dev Two identical original burns in one source transaction; attestations later assign distinct nonces.
+contract LocalBatch {
+    function burnTwice(address token, address messenger, bytes32 helper, bytes calldata hook) external {
+        require(IERC20(token).approve(messenger, 2_000_000));
+        IBurnMessenger(messenger).depositForBurnWithHook(1_000_000, 26, helper, token, helper, 0, 2000, hook);
+        IBurnMessenger(messenger).depositForBurnWithHook(1_000_000, 26, helper, token, helper, 0, 2000, hook);
+    }
+}

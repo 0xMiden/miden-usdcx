@@ -106,10 +106,41 @@ def members(path, select, strip_root=True, skip_directories=False):
     return found
 
 
+def load_provenance(path):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f'Duplicate provenance key: {key}')
+            result[key] = value
+        return result
+    return json.loads(path.read_text(), object_pairs_hook=unique)
+
+
+def source_entries(provenance):
+    entries = []
+    paths = set()
+    for group in provenance['sources']:
+        destination_root = relative(group['destination'])
+        destination_root.relative_to('reference')
+        source_root = relative(group['upstreamRoot']) if group['upstreamRoot'] else PurePosixPath()
+        if group['upstream'] not in provenance['upstreams']:
+            raise ValueError('Unmapped reference upstream')
+        for name, sha256 in group['files'].items():
+            name = relative(name)
+            path = str(destination_root / name)
+            if path in paths:
+                raise ValueError(f'Duplicate destination: {path}')
+            paths.add(path)
+            entries.append({'path': path, 'upstream': group['upstream'],
+                            'upstreamPath': str(source_root / name), 'sha256': sha256})
+    return entries
+
+
 def materialize(root, provenance, offline=False):
     reference = destination(root, 'reference')
     cache = destination(root, 'tooling/reference-cache')
-    sources = provenance['sources']
+    sources = source_entries(provenance)
     paths = set()
     for entry in sources + provenance['licenses']:
         name = str(relative(entry['path']).relative_to('reference'))
@@ -147,7 +178,7 @@ def main():
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise SystemExit('This verified bootstrap supports macOS ARM64 only; qualify the official archive for your platform explicitly.')
     lock = json.loads((ROOT / 'DEPENDENCIES.lock.json').read_text())
-    materialize(ROOT, json.loads((ROOT / 'reference/PROVENANCE.json').read_text()), args.offline)
+    materialize(ROOT, load_provenance(ROOT / 'reference/PROVENANCE.json'), args.offline)
     cache = destination(ROOT, 'tooling/reference-cache')
     pin = dict(lock['arcFoundry'], archiveUrl='https://github.com/circlefin/arc-foundry/releases/download/v0.8.0-2/arc-foundry-v0.8.0-2-aarch64-apple-darwin.tar.gz')
     data = members(archive(pin, cache, args.offline), {'forge', 'anvil'}.__contains__, False)

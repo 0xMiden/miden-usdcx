@@ -26,9 +26,9 @@ class ReferenceSources(unittest.TestCase):
         self.license.write_bytes(b'license')
         self.p = {
             'upstreams': {},
-            'sources': [{'path': 'reference/cctp/src/' + n, 'upstream': 'tiny',
-                         'upstreamPath': n, 'sha256': b.digest(n.encode())}
-                        for n in ['a.sol', 'b.sol']],
+            'sources': [{'upstream': 'tiny', 'destination': 'reference/cctp/src',
+                         'upstreamRoot': '',
+                         'files': {n: b.digest(n.encode()) for n in ['a.sol', 'b.sol']}}],
             'licenses': [{'path': 'reference/LICENSE', 'sha256': b.digest(b'license')}],
         }
         self.contents = [('root/a.sol', b'a.sol', None), ('root/b.sol', b'b.sol', None)]
@@ -125,7 +125,8 @@ class ReferenceSources(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Link traversal'):
             self.run_materializer()
         self.assert_sources_absent()
-        self.p['sources'][0]['upstreamPath'] = 'dir/a.sol'
+        files = self.p['sources'][0]['files']
+        files['dir/a.sol'] = files.pop('a.sol')
         self.make_archive([('root/./dir', b'', tarfile.SYMTYPE),
                            ('root/dir/a.sol', b'a.sol', None), self.contents[1]])
         with self.assertRaisesRegex(ValueError, 'Link traversal'):
@@ -184,7 +185,7 @@ class ReferenceSources(unittest.TestCase):
         for name in ['reference/../escape.sol', '/escape.sol', 'other/a.sol']:
             with self.subTest(name=name):
                 p = copy.deepcopy(self.p)
-                p['sources'][0]['path'] = name
+                p['sources'][0]['destination'] = name
                 with self.assertRaises(ValueError):
                     b.materialize(self.root, p)
                 self.assert_sources_absent()
@@ -246,14 +247,42 @@ class ReferenceSources(unittest.TestCase):
         self.assert_sources_absent()
 
     def test_duplicate_destinations_and_unknown_upstreams(self):
-        self.p['sources'].append(dict(self.p['sources'][0]))
-        with self.assertRaisesRegex(ValueError, 'Duplicate destination'):
-            self.run_materializer()
+        duplicate = copy.deepcopy(self.p['sources'][0])
+        self.p['sources'].append(duplicate)
+        for alias in ['reference/cctp/src', 'reference/cctp/./src']:
+            duplicate['destination'] = alias
+            with self.assertRaisesRegex(ValueError, 'Duplicate destination'):
+                self.run_materializer()
         self.p['sources'].pop()
         self.p['sources'][0]['upstream'] = 'unknown'
         with self.assertRaisesRegex(ValueError, 'Unmapped reference'):
             self.run_materializer()
         self.assert_sources_absent()
+
+    def test_raw_duplicate_keys_are_rejected_before_materializing(self):
+        path = self.root / 'reference/PROVENANCE.json'
+        text = json.dumps(self.p)
+        for key in ['tiny', 'a.sol']:
+            with self.subTest(key=key):
+                path.write_text(text.replace(f'"{key}":', f'"{key}": null, "{key}":', 1))
+                with self.assertRaisesRegex(ValueError, 'Duplicate provenance key'):
+                    b.materialize(self.root, b.load_provenance(path))
+                self.assert_sources_absent()
+        self.assertFalse((self.root / 'tooling').exists())
+
+    def test_hostile_mount_prefixes_and_file_names_precede_side_effects(self):
+        for field in ['destination', 'upstreamRoot', 'files']:
+            for name in ['', '/absolute', '../escape', 'safe/../../escape', 'safe\\escape']:
+                if field == 'upstreamRoot' and not name:
+                    continue  # The archive root is an intentional empty source prefix.
+                with self.subTest(field=field, name=name):
+                    p = copy.deepcopy(self.p)
+                    p['sources'][0][field] = {name: b.digest(b'a.sol')} if field == 'files' else name
+                    with self.assertRaises(ValueError), patch.object(b.urllib.request, 'urlopen') as download:
+                        b.materialize(self.root, p)
+                    download.assert_not_called()
+                    self.assert_sources_absent()
+        self.assertFalse((self.root / 'tooling').exists())
 
 
 if __name__ == '__main__':

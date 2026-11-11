@@ -1,7 +1,7 @@
 use tempfile::TempDir;
 
 use super::*;
-use crate::shutdown_tests::{config, page_server, pages_server};
+use crate::shutdown_tests::{config, deposit, page_server, pages_server, RecordingMiden};
 
 fn head(hash: u8) -> String {
     serde_json::json!({"attestations": [{"messageHash": format!("0x{}", hex::encode([hash; 32]))}]})
@@ -65,86 +65,11 @@ async fn initialization_refuses_existing_state_before_contacting_circle() {
         assert_eq!(std::fs::read(&config.state_file).unwrap(), bytes);
     }
 }
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::anyhow;
-use miden_protocol::crypto::utils::Serializable;
-use miden_protocol::transaction::TransactionId;
-use miden_protocol::{Word, EMPTY_WORD};
-use miden_usdcx::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
-use usdcx_telemetry::FailureClass::Transient;
-
-#[derive(Default)]
-struct Calls {
-    retains: usize,
-    submitted: Vec<Vec<Word>>,
-}
-
-#[derive(Default)]
-struct RecordingMiden {
-    calls: Arc<Mutex<Calls>>,
-    minted: Vec<DepositNonce>,
-    fail_once: bool,
-}
-
-impl MidenClient for RecordingMiden {
-    async fn retain_unminted(
-        &mut self,
-        nonces: Vec<DepositNonce>,
-    ) -> Result<Vec<DepositNonce>, Failure> {
-        self.calls.lock().unwrap().retains += 1;
-        Ok(nonces
-            .into_iter()
-            .filter(|nonce| !self.minted.contains(nonce))
-            .collect())
-    }
-
-    async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
-        self.calls.lock().unwrap().submitted.push(
-            notes
-                .iter()
-                .map(|note| note.storage().commitment())
-                .collect(),
-        );
-        if std::mem::take(&mut self.fail_once) {
-            return Err(Failure::new(
-                Transient("transaction_submit"),
-                anyhow!("fixture inclusion response lost"),
-            ));
-        }
-        Ok(TransactionId::new(
-            EMPTY_WORD, EMPTY_WORD, EMPTY_WORD, EMPTY_WORD,
-        ))
-    }
-}
-
-fn deposit(config: &Config, hash: u8, nonce: u8) -> serde_json::Value {
-    let vectors = miden_usdcx::vectors::load();
-    let vector = vectors
-        .families
-        .mi
-        .iter()
-        .find(|vector| vector.id == "mi-pos-hookdata")
-        .unwrap();
-    let intent = DepositIntent::try_from(vector.payload().as_slice()).unwrap();
-    let old = intent.header();
-    let header = DepositIntentHeader::builder()
-        .amount(old.amount())
-        .remote_domain(config.remote_domain)
-        .remote_token(config.faucet_account_id)
-        .remote_recipient(old.remote_recipient())
-        .local_token(old.local_token())
-        .local_depositor(old.local_depositor())
-        .max_fee(old.max_fee())
-        .nonce(DepositNonce::new([nonce; 32]))
-        .build();
-    serde_json::json!({
-        "payload": format!("0x{}", hex::encode(DepositIntent::new(header, intent.hook_data().clone()).to_bytes())),
-        "messageHash": format!("0x{}", hex::encode([hash; 32])),
-        "attestation": format!("0x{}", "00".repeat(65)),
-    })
-}
+use miden_protocol::Word;
+use miden_usdcx::xreserve::encoding::DepositNonce;
 
 fn page(entries: &[serde_json::Value]) -> String {
     serde_json::json!({"attestations": entries}).to_string()
@@ -289,7 +214,7 @@ async fn guarded_restart_after_unknown_inclusion_filters_already_minted_nonce() 
     let mut relayer = Relayer::new_with_head_watermark(
         config.clone(),
         RecordingMiden {
-            fail_once: true,
+            failure: Some(anyhow!("fixture inclusion response lost")),
             ..Default::default()
         },
         true,

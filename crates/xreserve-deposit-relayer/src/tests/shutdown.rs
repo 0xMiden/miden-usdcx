@@ -10,12 +10,83 @@ use miden_client::rpc::{AddTransactionError, EndpointError, GrpcError, RpcEndpoi
 use miden_client::ClientError;
 use miden_protocol::crypto::utils::Serializable;
 use miden_protocol::transaction::TransactionId;
+use miden_protocol::{Word, EMPTY_WORD};
 use miden_usdcx::xreserve::encoding::{DepositIntent, DepositIntentHeader, DepositNonce};
 use rstest::rstest;
 use tempfile::TempDir;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 
 use super::*;
+
+#[derive(Default)]
+pub(super) struct Calls {
+    pub(super) retains: usize,
+    pub(super) submitted: Vec<Vec<Word>>,
+}
+
+#[derive(Default)]
+pub(super) struct RecordingMiden {
+    pub(super) calls: Arc<Mutex<Calls>>,
+    pub(super) minted: Vec<DepositNonce>,
+    pub(super) failure: Option<anyhow::Error>,
+}
+
+impl MidenClient for RecordingMiden {
+    async fn retain_unminted(
+        &mut self,
+        nonces: Vec<DepositNonce>,
+    ) -> Result<Vec<DepositNonce>, Failure> {
+        self.calls.lock().unwrap().retains += 1;
+        Ok(nonces
+            .into_iter()
+            .filter(|nonce| !self.minted.contains(nonce))
+            .collect())
+    }
+
+    async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
+        self.calls.lock().unwrap().submitted.push(
+            notes
+                .iter()
+                .map(|note| note.storage().commitment())
+                .collect(),
+        );
+        if let Some(error) = self.failure.take() {
+            return Err(Failure::new(Transient("transaction_submit"), error)
+                .context("submitting the mint transaction"));
+        }
+        Ok(TransactionId::new(
+            EMPTY_WORD, EMPTY_WORD, EMPTY_WORD, EMPTY_WORD,
+        ))
+    }
+}
+
+pub(super) fn deposit(config: &Config, hash: u8, nonce: u8) -> serde_json::Value {
+    // Mint notes need the configured public faucet; the vector targets a private account.
+    let vectors = miden_usdcx::vectors::load();
+    let vector = vectors
+        .families
+        .mi
+        .iter()
+        .find(|vector| vector.id == "mi-pos-hookdata")
+        .unwrap();
+    let intent = DepositIntent::try_from(vector.payload().as_slice()).unwrap();
+    let old = intent.header();
+    let header = DepositIntentHeader::builder()
+        .amount(old.amount())
+        .remote_domain(config.remote_domain)
+        .remote_token(config.faucet_account_id)
+        .remote_recipient(old.remote_recipient())
+        .local_token(old.local_token())
+        .local_depositor(old.local_depositor())
+        .max_fee(old.max_fee())
+        .nonce(DepositNonce::new([nonce; 32]))
+        .build();
+    serde_json::json!({
+        "payload": format!("0x{}", hex::encode(DepositIntent::new(header, intent.hook_data().clone()).to_bytes())),
+        "messageHash": format!("0x{}", hex::encode([hash; 32])),
+        "attestation": format!("0x{}", "00".repeat(65)),
+    })
+}
 
 #[derive(Debug)]
 struct TestMiden {
@@ -187,70 +258,11 @@ async fn a_failed_submission_keeps_progress_and_only_expiration_reduces_pages(
     #[case] page_size: u16,
     #[case] resumed: bool,
 ) {
-    struct FailsOnce {
-        error: Option<ClientError>,
-        batches: Vec<Vec<miden_protocol::Word>>,
-    }
-    impl MidenClient for FailsOnce {
-        async fn retain_unminted(
-            &mut self,
-            nonces: Vec<DepositNonce>,
-        ) -> Result<Vec<DepositNonce>, Failure> {
-            Ok(nonces)
-        }
-
-        async fn submit_notes(&mut self, notes: Vec<Note>) -> Result<TransactionId, Failure> {
-            self.batches.push(
-                notes
-                    .iter()
-                    .map(|note| note.storage().commitment())
-                    .collect(),
-            );
-            if let Some(error) = self.error.take() {
-                return Err(Failure::new(Transient("transaction_submit"), error)
-                    .context("submitting the mint transaction"));
-            }
-            Ok(TransactionId::new(
-                miden_protocol::EMPTY_WORD,
-                miden_protocol::EMPTY_WORD,
-                miden_protocol::EMPTY_WORD,
-                miden_protocol::EMPTY_WORD,
-            ))
-        }
-    }
-
     let directory = TempDir::new().unwrap();
     let mut config = config(&directory, "http://127.0.0.1:1");
-    let vectors = miden_usdcx::vectors::load();
-    let vector = vectors
-        .families
-        .mi
-        .iter()
-        .find(|vector| vector.id == "mi-pos-hookdata")
-        .unwrap();
-    let intent = DepositIntent::try_from(vector.payload().as_slice()).unwrap();
-    let header = intent.header();
-    // The encoding vector's target is private; a mint note must target a public account.
     let count = usize::from(page_size.min(11));
     let entries = (1..=count)
-        .map(|index| {
-            let header = DepositIntentHeader::builder()
-                .amount(header.amount())
-                .remote_domain(config.remote_domain)
-                .remote_token(config.faucet_account_id)
-                .remote_recipient(header.remote_recipient())
-                .local_token(header.local_token())
-                .local_depositor(header.local_depositor())
-                .max_fee(header.max_fee())
-                .nonce(DepositNonce::new([index as u8; 32]))
-                .build();
-            let payload = DepositIntent::new(header, intent.hook_data().clone()).to_bytes();
-            serde_json::json!({
-            "payload": format!("0x{}", hex::encode(payload)),
-            "messageHash": format!("0x{}", hex::encode([index as u8; 32])),
-            "attestation": format!("0x{}", "00".repeat(65)),
-            })
-        })
+        .map(|index| deposit(&config, index as u8, index as u8))
         .collect::<Vec<_>>();
     let body =
         |entries: &[serde_json::Value]| serde_json::json!({"attestations": entries}).to_string();
@@ -296,9 +308,9 @@ async fn a_failed_submission_keeps_progress_and_only_expiration_reduces_pages(
     });
     let mut relayer = Relayer::new(
         config,
-        FailsOnce {
-            error: Some(error),
-            batches: Vec::new(),
+        RecordingMiden {
+            failure: Some(error.into()),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -321,7 +333,7 @@ async fn a_failed_submission_keeps_progress_and_only_expiration_reduces_pages(
         relayer.scan(&CancellationToken::new()).await.unwrap(),
         ScanOutcome::Complete
     );
-    let batches = &relayer.miden_client.batches;
+    let batches = relayer.miden_client.calls.lock().unwrap().submitted.clone();
     assert_eq!(batches[0].len(), count);
     assert_eq!(batches[1..].concat(), batches[0]);
     assert!(batches[1..]

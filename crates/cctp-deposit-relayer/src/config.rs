@@ -19,7 +19,10 @@ pub(crate) struct Config {
     pub helper_code_hash: B256,
     pub messenger: Address,
     pub signer: Address,
-    pub kms: Kms,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kms: Option<Kms>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_env: Option<LocalEnv>,
     pub max_gas: u64,
     pub max_fee_per_gas: u128,
     pub priority_fee_per_gas: u128,
@@ -32,6 +35,11 @@ pub(crate) struct Config {
 pub(crate) struct Kms {
     pub region: String,
     pub key_arn: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LocalEnv {
+    pub dotenv: PathBuf,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Source {
@@ -89,10 +97,23 @@ impl Config {
                 && (60..=604800).contains(&self.pending_timeout_secs),
             "invalid service bounds"
         );
-        ensure!(
-            !self.kms.region.is_empty() && !self.kms.key_arn.is_empty(),
-            "missing signer settings"
-        );
+        match (&self.kms, &self.local_env) {
+            (Some(kms), None) => ensure!(
+                !kms.region.is_empty() && !kms.key_arn.is_empty(),
+                "missing signer settings"
+            ),
+            (None, Some(local)) => {
+                ensure!(
+                    self.chain_id == 5_042_002,
+                    "local signer requires Arc Testnet"
+                );
+                ensure!(
+                    local.dotenv.is_absolute(),
+                    "local dotenv path must be absolute"
+                );
+            }
+            _ => anyhow::bail!("select exactly one signer: kms or local_env"),
+        }
         endpoint(&self.arc_rpc)?;
         endpoint(&self.circle_url)?;
         ensure!(

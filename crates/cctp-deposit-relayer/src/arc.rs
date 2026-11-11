@@ -174,7 +174,7 @@ impl ArcSender {
         let signature = signer
             .sign_digest(digest)
             .await
-            .context("KMS digest signing failed")?;
+            .context("digest signing failed")?;
         ensure!(
             signature.normalize_s().is_none()
                 && Address::from_public_key(

@@ -4,6 +4,10 @@
 local-node-data/
 .DS_Store
 *.log
+.env
+.env.*
+!.env.example
+*.private.json
 /runtime/cctp/
 /crates/cctp-deposit-relayer/profile.local.json
 /crates/cctp-deposit-relayer/journal.sqlite*

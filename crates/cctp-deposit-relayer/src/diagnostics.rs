@@ -44,6 +44,17 @@ pub(crate) fn reason(error: &Error, fallback: &'static str) -> &'static str {
                 "sender_nonce_not_zero"
             }
             "loaded signer mismatch" => "signer_identity_mismatch",
+            "select exactly one signer: kms or local_env" => "signer_mode_invalid",
+            "local signer requires Arc Testnet" => "local_signer_chain_forbidden",
+            "local dotenv path must be absolute" => "local_env_path_invalid",
+            "local dotenv requires owner-only mode 0600" => "local_env_permissions",
+            "invalid local dotenv file"
+            | "invalid local dotenv syntax"
+            | "local dotenv must contain a literal key"
+            | "unexpected local dotenv variable" => "local_env_invalid",
+            "local private key variable missing" => "local_key_missing",
+            "duplicate local private key variable" => "local_key_duplicate",
+            "invalid local private key" => "local_key_invalid",
             "exact helper simulation failed" => "simulation_failed",
             "helper gas estimation failed" => "gas_estimation_unavailable",
             "helper gas estimate exceeds cap" => "gas_cap_exceeded",
@@ -51,7 +62,7 @@ pub(crate) fn reason(error: &Error, fallback: &'static str) -> &'static str {
             "fee overflow" | "fee exceeds cap" => "fee_cap_exceeded",
             "balance lookup failed" => "balance_unavailable",
             "insufficient gas balance" => "insufficient_gas_balance",
-            "KMS digest signing failed" => "signing_failed",
+            "KMS digest signing failed" | "digest signing failed" => "signing_failed",
             "digest signer mismatch" => "signer_identity_mismatch",
             _ => continue,
         };

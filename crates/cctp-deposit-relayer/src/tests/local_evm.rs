@@ -42,21 +42,25 @@ async fn until(worker: &mut worker::Worker, count: u64) {
 async fn genuine_helper_flow() {
     let path = std::env::var("CCTP_LOCAL_FIXTURE_PROFILE").unwrap();
     let c = Config::load(std::path::Path::new(&path)).unwrap();
-    let key = TestSigner::from_bytes(
-        hex::decode(
-            std::env::var("CCTP_LOCAL_FIXTURE_KEY")
-                .unwrap()
-                .trim_start_matches("0x"),
-        )
-        .unwrap()
-        .try_into()
-        .unwrap(),
-    );
+    assert_eq!(c.chain_id, 5_042_002);
+    assert!(c.kms.is_none() && c.local_env.is_some());
+    // Exercise ordinary credential/address/helper/nonce initialization before
+    // the real serial worker signs any genuine helper transaction.
+    crate::run(
+        std::path::Path::new(&path),
+        true,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let key = crate::local_signer::LocalEnvSigner::load(&c).unwrap();
     let controller = std::env::var("CCTP_LOCAL_FIXTURE_CONTROL").unwrap();
     let arc = sender(&c).await;
     assert_eq!(arc.nonces(&c).await.unwrap(), (0, 0));
-    let store = Store::open(&c, true).unwrap();
-    let mut worker = worker::Worker::new(c, store, Box::new(key)).await.unwrap();
+    let store = Store::open(&c, false).unwrap();
+    let mut worker = worker::Worker::new(c.clone(), store, Box::new(key))
+        .await
+        .unwrap();
     until(&mut worker, 1).await;
     let batch = control(&controller, "new-burn", json!({"batch":true})).await;
     assert_eq!(batch["messages"].as_array().unwrap().len(), 2);
@@ -88,6 +92,17 @@ async fn genuine_helper_flow() {
         .query_row("SELECT count(*) FROM source_txs", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 2);
-    std::fs::write(std::env::var("CCTP_LOCAL_FIXTURE_RESULT").unwrap(),serde_json::to_vec_pretty(&json!({"bodyExecuted":true,"actualSourceTransactions":count,"actualBurnsAndDistinctNonces":3,"successfulHelperCalls":3,"checkedZeroValueFixedTargetPayloadCalls":3,"checkedHelperRecipientEvents":3,"independentCommittedRawObservations":3,"finalState":final_state})).unwrap()).unwrap();
+    drop(worker);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    shutdown.cancel();
+    crate::run(std::path::Path::new(&path), false, shutdown)
+        .await
+        .unwrap();
+    let restarted = Store::open(&c, false).unwrap();
+    assert_eq!(restarted.next_nonce().unwrap(), 3);
+    assert!(restarted.pending().unwrap().is_none());
+    let after_restart = control(&controller, "state", json!({})).await;
+    assert_eq!(after_restart["preSendCalls"], 3);
+    std::fs::write(std::env::var("CCTP_LOCAL_FIXTURE_RESULT").unwrap(),serde_json::to_vec_pretty(&json!({"bodyExecuted":true,"signerMode":"local_env","chainId":c.chain_id,"ordinaryInitialization":true,"restartNextNonce":3,"actualSourceTransactions":count,"actualBurnsAndDistinctNonces":3,"successfulHelperCalls":3,"checkedZeroValueFixedTargetPayloadCalls":3,"checkedHelperRecipientEvents":3,"independentCommittedRawObservations":3,"finalState":final_state})).unwrap()).unwrap();
     println!("GENUINE_SMALL_RELAY_HELPER_FLOW_EXECUTED");
 }

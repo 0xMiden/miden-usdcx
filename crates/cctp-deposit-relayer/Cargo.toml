@@ -7,6 +7,9 @@ description = "Independent durable native USDC CCTP to Arc helper worker"
 
 [dependencies]
 anyhow = { workspace = true }
+dotenvy = "=0.15.7"
+libc = "0.2"
+k256 = { workspace = true }
 httpdate = "1"
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
@@ -32,6 +35,5 @@ usdcx-telemetry = { path = "../usdcx-telemetry" }
 [dev-dependencies]
 rusqlite = { workspace = true, features = ["functions"] }
 axum = { workspace = true, features = ["tokio"] }
-k256 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "process"] }

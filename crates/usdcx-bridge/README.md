@@ -204,9 +204,7 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
-| `--export-bucket` | Optional; disabled | Publish the withdrawal ID lookup to an existing S3 bucket. See [Withdrawal ID lookup](#withdrawal-id-lookup). |
-| `--export-prefix` | Optional; `withdrawals/` | Object prefix; requires `--export-bucket`. Use a separate prefix or bucket per network. |
-| `--export-region` | Optional; AWS SDK region chain | S3 region override; requires `--export-bucket`. Independent of `--aws-kms-region`. |
+| `--export-url` | Optional, disabled | S3 destination for the withdrawal ID lookup. See [Withdrawal ID lookup](#withdrawal-id-lookup). |
 | `--admin-socket` | Optional; disabled | Unix socket path for live hold management, for example `/data/attester/admin.sock`; see [Hold management while running](#hold-management-while-running). |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
@@ -215,36 +213,50 @@ The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Withdrawal ID lookup
 
-Add `--export-bucket <BUCKET>` to `usdcx-bridge run` (or the standalone attester) to publish
-`withdrawals/<BURN_NOTE_ID>.json`, where the note ID is canonical lowercase `0x` hex.
-Use `--export-prefix <PREFIX>` to change the path, and `--export-region <REGION>` if needed.
-Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or `{"withdrawal_id":null}`.
-The frontend uses a non-null ID to query Circle. Null means no current Circle ID; this first
-version does not explain waiting or failure states. After an expired authorization, the ID may
-clear and later change. A missing object can also mean the exporter has not caught up.
+Add `--export-url s3://<bucket>/withdrawals/` to `usdcx-bridge run` or the standalone attester.
+Export is off by default. A URL with only a bucket writes to the bucket root. Use a separate
+bucket or prefix per network.
 
-S3 is optional and uploads run outside withdrawal processing. Failed uploads retry from durable
-SQLite progress; enabling export on an existing store also backfills finalized withdrawals.
-The target cadence is 10 seconds, subject to attester cycle duration and backlog. Objects carry
-`Content-Type: application/json` and `Cache-Control: max-age=10`; configure CloudFront caching to
-respect this and avoid long negative caching. Publish through one authoritative attester per
-bucket/prefix. A timed-out S3 request may finish late, so fixed-key writes cannot guarantee strict
-ordering across ambiguous timeouts. An older timed-out write can leave the lookup stale until a later
-history change republishes it; restarting alone does not republish acknowledged entries. Keep the
-durable store when restarting.
+The exporter writes `<BURN_NOTE_ID>.json` under the chosen prefix, with the note ID in canonical
+lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or
+`{"withdrawal_id":null}`. The frontend uses a non-null ID to query Circle. Null means there is no
+current Circle ID. An expired authorization may clear the ID before a new one is available.
+A missing object can mean the exporter is still catching up.
 
-The bucket must already exist. Miden grants Gateway's specific workload IAM role `s3:PutObject`
-on the chosen prefix, and Gateway grants the same action in that role's policy. A bucket encrypted
-with a customer-managed KMS key also needs the corresponding encryption-key permissions. The exporter
-uses the standard AWS SDK credential chain, including workload roles and `AWS_PROFILE`; it adds
-no credential or login flags. Profile selection does not grant permissions. Keep the existing
-withdrawal signing KMS permissions; the S3 configuration does not change the KMS region or keys. Do not put
-static credentials in CLI arguments. Bucket creation, IAM policies, CloudFront, browser CORS and
-frontend polling are separate deployment work. A private origin may return 403 for a missing
-object, so do not interpret every 403 as pending without the delivery layer's agreed contract.
+Uploads run outside withdrawal processing. Failed uploads retry from durable SQLite progress.
+Enabling export on an existing store backfills finalized withdrawals. The target cadence is
+10 seconds, subject to the attester cycle and backlog. Objects carry `Content-Type: application/json`
+and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and prefix. A timed-out
+write can finish late and leave stale data until a later history change republishes it. Restarts
+resume from durable progress, so keep the store when restarting.
 
-This feature upgrades the SQLite schema even when export is disabled. Back up before upgrading;
+Gateway creates and owns the bucket in its account in Miden's AWS infrastructure. Gateway grants
+the attester's AWS identity `s3:PutObject` on the chosen prefix through AWS permissions. A bucket
+encrypted with a customer-managed KMS key also requires the corresponding key permissions.
+
+The exporter uses the standard AWS SDK credential chain, including workload roles and
+`AWS_PROFILE`. The CLI has no credential flags. Keep static credentials out of CLI arguments. Set
+the S3 region in `AWS_REGION` or another standard AWS region provider. Use `--aws-kms-region`
+independently for the withdrawal signing keys.
+
+CloudFront, browser CORS and frontend polling are separate deployment work. Configure CloudFront
+to respect the object cache lifetime and avoid long negative caching. A private origin can return
+403 for a missing object. Use the delivery layer's agreed response contract when polling.
+
+The SQLite schema upgrades even when export is off. Back up the store before upgrading because
 older binaries cannot open the upgraded store.
+
+### Local testing
+
+Create a bucket on a local S3-compatible service and point the exporter at it with
+`--export-url s3://<local-bucket>/withdrawals/`. Use an IP literal in the endpoint URL for
+path-style requests and set dummy credentials in your local test shell.
+
+```sh
+export AWS_ENDPOINT_URL_S3=http://127.0.0.1:9090
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+```
 
 ## Stop, restart and upgrade
 

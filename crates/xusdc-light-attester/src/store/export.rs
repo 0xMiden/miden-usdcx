@@ -237,7 +237,7 @@ mod tests {
     }
 
     fn runtime(sink: &PreparedS3) -> ExportRuntime {
-        let config = ExportConfig::new("exports".into(), None, Some("eu-north-1".into())).unwrap();
+        let config = ExportConfig::from_url(DESTINATION).unwrap();
         let exporter = Exporter::with_client(config.clone(), sink.client());
         ExportRuntime::with_exporter(config, exporter)
     }

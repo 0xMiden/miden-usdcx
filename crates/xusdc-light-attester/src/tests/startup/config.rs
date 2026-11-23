@@ -28,42 +28,39 @@ fn assert_cli_error(args: &TestArgs, expected_kind: ErrorKind) {
 }
 
 #[test]
-fn s3_export_is_optional_and_keeps_kms_configuration_separate() {
+fn export_url_is_optional_and_keeps_kms_configuration_separate() {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
-    let valid = TestArgs::new(&directory);
-    assert!(valid.load().export().is_none());
-    for (flag, value) in [
-        ("--export-prefix", "mainnet/"),
-        ("--export-region", "eu-west-1"),
-    ] {
-        let mut partial = valid.clone();
-        partial.append(flag, value);
-        assert_cli_error(&partial, ErrorKind::MissingRequiredArgument);
-    }
-    let mut enabled = valid;
-    enabled.append("--export-bucket", "miden-withdrawals");
-    let config = enabled.load();
+    let mut args = TestArgs::new(&directory);
+    assert!(args.load().export().is_none());
+
+    args.append("--export-url", "s3://miden-withdrawals/withdrawals/");
+    let config = args.load();
     let export = config.export().unwrap();
     assert_eq!(export.bucket(), "miden-withdrawals");
     assert_eq!(export.prefix(), "withdrawals/");
-    assert_eq!(export.region(), None);
-    enabled.append("--export-prefix", "/mainnet/");
-    enabled.append("--export-region", "eu-west-1");
-    let config = enabled.load();
-    let export = config.export().unwrap();
-    assert_eq!(export.prefix(), "mainnet/");
-    assert_eq!(export.region(), Some("eu-west-1"));
     assert_eq!(config.kms().region, "eu-north-1");
     assert_eq!(
         config.kms().key_arns,
         [super::KMS_KEY_ONE, super::KMS_KEY_TWO]
     );
-    enabled.replace("--export-bucket", "https://bucket.invalid");
-    assert_config_error(
-        &enabled,
-        "export bucket must be a valid general purpose S3 bucket name",
-    );
+
+    args.replace("--export-url", "s3://miden-withdrawals");
+    assert_eq!(args.load().export().unwrap().prefix(), "");
+    args.replace("--export-url", "https://bucket.invalid");
+    assert_config_error(&args, "export URL must start with s3://");
+}
+
+#[test]
+fn attester_rejects_removed_export_flags() {
+    let directory = tempfile::tempdir().unwrap();
+    let valid = TestArgs::new(&directory);
+    for suffix in ["bucket", "prefix", "region"] {
+        let flag = format!("--export-{suffix}");
+        let mut args = valid.clone();
+        args.append(&flag, "unused");
+        assert_cli_error(&args, ErrorKind::UnknownArgument);
+    }
 }
 
 #[test]

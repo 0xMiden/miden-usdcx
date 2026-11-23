@@ -36,17 +36,9 @@ pub struct Cli {
     /// Disabled by default.
     #[arg(long)]
     admin_socket: Option<PathBuf>,
-    /// Publish a withdrawal ID JSON object per burn note to this S3 bucket. Disabled by default.
-    #[arg(long)]
-    export_bucket: Option<String>,
-
-    /// S3 object prefix (default: withdrawals/). Requires --export-bucket.
-    #[arg(long, requires = "export_bucket")]
-    export_prefix: Option<String>,
-
-    /// S3 region override; otherwise use the AWS SDK region chain. Requires --export-bucket.
-    #[arg(long, requires = "export_bucket")]
-    export_region: Option<String>,
+    /// S3 destination for the withdrawal ID lookup. Disabled by default.
+    #[arg(long, value_name = "S3_URL")]
+    export_url: Option<String>,
 
     /// AWS region containing both KMS keys.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -302,10 +294,9 @@ impl TryFrom<Cli> for Config {
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
         let export = cli
-            .export_bucket
-            .map(|bucket| {
-                crate::export::ExportConfig::new(bucket, cli.export_prefix, cli.export_region)
-            })
+            .export_url
+            .as_deref()
+            .map(crate::export::ExportConfig::from_url)
             .transpose()?;
         let withdrawal_limit = cli
             .withdrawal_limit_message_prefix

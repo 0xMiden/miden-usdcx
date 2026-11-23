@@ -50,8 +50,7 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
             None,
         )
         .unwrap();
-    let config =
-        ExportConfig::new("withdrawal-lookups".into(), None, Some("eu-north-1".into())).unwrap();
+    let config = ExportConfig::from_url("s3://withdrawal-lookups/withdrawals/").unwrap();
     let destination = config.destination_key();
     let pending_before_run = attester.store.export_batch(&destination, 100).unwrap();
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);

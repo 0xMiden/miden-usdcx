@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aws_sdk_s3::config::http::{HttpRequest, HttpResponse};
-use aws_sdk_s3::config::{Credentials, IntoShared};
+use aws_sdk_s3::config::{Credentials, IntoShared, Region};
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::operation::put_object::PutObjectError;
 use aws_smithy_runtime_api::client::http::{http_client_fn, HttpConnector, HttpConnectorFuture};
@@ -15,7 +15,7 @@ use tokio::sync::Notify;
 use super::*;
 
 fn config() -> ExportConfig {
-    ExportConfig::new("withdrawal-lookups".into(), None, Some("eu-north-1".into())).unwrap()
+    ExportConfig::from_url("s3://withdrawal-lookups/withdrawals/").unwrap()
 }
 
 fn record(note: u8, revision: i64, id: Option<&str>) -> ExportRecord {
@@ -151,53 +151,65 @@ async fn completion(exporter: &mut Exporter) -> ExportCompletion {
 }
 
 #[test]
-fn destination_uses_the_normalized_prefix_and_ignores_region() {
-    let default = ExportConfig::new("withdrawal-lookups".into(), None, None).unwrap();
-    assert_eq!(default.bucket(), "withdrawal-lookups");
-    assert_eq!(default.prefix(), "withdrawals/");
-    assert_eq!(default.region(), None);
-    let explicit = ExportConfig::new(
-        "withdrawal-lookups".into(),
-        Some("///withdrawals///".into()),
-        Some("eu-west-1".into()),
-    )
-    .unwrap();
-    assert_eq!(default.destination_key(), explicit.destination_key());
-    assert_eq!(
-        default.destination_key(),
-        "s3://withdrawal-lookups/withdrawals/"
-    );
-    assert_ne!(
-        default.destination_key(),
-        ExportConfig::new("another-bucket".into(), None, None)
-            .unwrap()
-            .destination_key()
-    );
-    assert_ne!(
-        default.destination_key(),
-        ExportConfig::new(
-            "withdrawal-lookups".into(),
-            Some("production/".into()),
-            None
-        )
-        .unwrap()
-        .destination_key()
-    );
-    for root in ["", "/", "///"] {
-        let root = ExportConfig::new("withdrawal-lookups".into(), Some(root.into()), None).unwrap();
-        assert_eq!(root.prefix(), "");
-        assert_eq!(root.destination_key(), "s3://withdrawal-lookups/");
+fn export_url_preserves_destination_prefix_and_root() {
+    for (url, prefix) in [
+        ("s3://bucket/withdrawals/", "withdrawals/"),
+        ("s3://bucket", ""),
+        ("s3://bucket/", ""),
+        ("s3://bucket///", ""),
+        ("s3://bucket//nested//", "nested/"),
+        ("s3://bucket/%2Fraw//space here", "%2Fraw//space here/"),
+    ] {
+        let export = ExportConfig::from_url(url).unwrap();
+        assert_eq!(export.bucket(), "bucket", "{url}");
+        assert_eq!(export.prefix(), prefix, "{url}");
+        assert_eq!(export.destination_key(), format!("s3://bucket/{prefix}"));
     }
 }
 
 #[test]
-fn invalid_bucket_prefix_and_region_are_rejected_before_starting_a_worker() {
+fn export_url_rejects_scheme_empty_bucket_and_reserved_characters() {
+    for (url, expected_error) in [
+        (
+            "https://bucket/withdrawals/",
+            "export URL must start with s3://",
+        ),
+        ("s3://", "export URL must contain a bucket name"),
+        (
+            "s3:///withdrawals/",
+            "export URL must contain a bucket name",
+        ),
+        (
+            "s3://bucket/withdrawals/?query",
+            "export URL must not contain '?' after s3://",
+        ),
+        (
+            "s3://bucket/withdrawals/#fragment",
+            "export URL must not contain '#' after s3://",
+        ),
+        (
+            "s3://user@bucket/withdrawals/",
+            "export URL must not contain '@' after s3://",
+        ),
+        (
+            "s3://bucket:9000/withdrawals/",
+            "export URL must not contain ':' after s3://",
+        ),
+        (
+            "s3://bucket/withdrawals/a:b",
+            "export URL must not contain ':' after s3://",
+        ),
+    ] {
+        let error = ExportConfig::from_url(url).expect_err(url);
+        assert_eq!(error.to_string(), expected_error, "{url}");
+    }
+}
+
+#[test]
+fn export_url_validates_the_bucket_and_prefix() {
     for bucket in [
-        "",
         "ab",
         "MyBucket",
-        "s3://bucket",
-        "bucket/path",
         "-bucket",
         "bucket.",
         "bucket..name",
@@ -206,13 +218,14 @@ fn invalid_bucket_prefix_and_region_are_rejected_before_starting_a_worker() {
         "sthree-bucket",
         "bucket-s3alias",
         "bucket--x-s3",
+        &"b".repeat(64),
     ] {
-        assert!(
-            ExportConfig::new(bucket.into(), None, None).is_err(),
-            "{bucket}"
+        let error = ExportConfig::from_url(&format!("s3://{bucket}")).expect_err(bucket);
+        assert_eq!(
+            error.to_string(),
+            "export bucket must be a valid general purpose S3 bucket name"
         );
     }
-    assert!(ExportConfig::new("b".repeat(64), None, None).is_err());
     for prefix in [
         "../private",
         "safe/./lookup",
@@ -221,32 +234,17 @@ fn invalid_bucket_prefix_and_region_are_rejected_before_starting_a_worker() {
         "bad\0",
     ] {
         assert!(
-            ExportConfig::new("withdrawal-lookups".into(), Some(prefix.into()), None).is_err(),
+            ExportConfig::from_url(&format!("s3://bucket/{prefix}")).is_err(),
             "{prefix:?}"
         );
     }
-    assert!(ExportConfig::new(
-        "withdrawal-lookups".into(),
-        Some("x".repeat(MAX_PREFIX_BYTES)),
-        None
-    )
-    .is_err());
-    assert!(ExportConfig::new(
-        "withdrawal-lookups".into(),
-        Some("x".repeat(MAX_PREFIX_BYTES - 1)),
-        None
-    )
-    .is_ok());
-    for region in [
-        "",
-        " ",
-        " eu-north-1",
-        "eu-north-1\n",
-        "EU-NORTH-1",
-        "eu/north/1",
-    ] {
-        assert!(ExportConfig::new("withdrawal-lookups".into(), None, Some(region.into())).is_err());
-    }
+    assert!(
+        ExportConfig::from_url(&format!("s3://bucket/{}", "x".repeat(MAX_PREFIX_BYTES))).is_err()
+    );
+    assert!(
+        ExportConfig::from_url(&format!("s3://bucket/{}", "x".repeat(MAX_PREFIX_BYTES - 1)))
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -432,15 +430,14 @@ fn in_isolated_process(test_name: &str, profile_config: &str) -> bool {
 }
 
 #[tokio::test]
-async fn region_uses_the_standard_profile_provider_or_the_explicit_override() {
+async fn s3_uses_the_standard_aws_profile() {
     if !in_isolated_process(
-        "export::tests::region_uses_the_standard_profile_provider_or_the_explicit_override",
+        "export::tests::s3_uses_the_standard_aws_profile",
         "[profile exporter-test]\nregion = eu-west-1\n",
     ) {
         return;
     }
-    let provider = ExportConfig::new("withdrawal-lookups".into(), None, None).unwrap();
-    let client = load_client(&provider).await.unwrap();
+    let client = load_client().await.unwrap();
     assert_eq!(client.config().region().unwrap().as_ref(), "eu-west-1");
     // Preserve the production client's inherited identity resolver and replace only its transport.
     let sink = PreparedS3::answering([Reply::Success]);
@@ -454,7 +451,7 @@ async fn region_uses_the_standard_profile_provider_or_the_explicit_override() {
     );
     put_record(
         &captured_client,
-        &provider,
+        &config(),
         &record(1, 1, Some("profile-id")),
     )
     .await
@@ -476,8 +473,6 @@ async fn region_uses_the_standard_profile_provider_or_the_explicit_override() {
             .operation_timeout(),
         Some(PUT_TIMEOUT)
     );
-    let explicit = load_client(&config()).await.unwrap();
-    assert_eq!(explicit.config().region().unwrap().as_ref(), "eu-north-1");
 }
 
 #[tokio::test]
@@ -488,8 +483,7 @@ async fn unresolved_region_is_reported_as_a_retryable_batch_completion() {
     ) {
         return;
     }
-    let config = ExportConfig::new("withdrawal-lookups".into(), None, None).unwrap();
-    let mut exporter = Exporter::start(config);
+    let mut exporter = Exporter::start(config());
     for _ in 0..2 {
         assert!(exporter.try_send(batch([record(1, 8, None)])));
         // The provider reads local files asynchronously, so use a clock bound for this transition.
@@ -506,7 +500,9 @@ async fn unresolved_region_is_reported_as_a_retryable_batch_completion() {
         assert_eq!(result.last_uploaded_seq, None);
         let failure = result.error.unwrap();
         assert_eq!(failure.class, Actionable("s3_export"));
-        assert!(failure.to_string().contains("region is unresolved"));
+        assert!(failure
+            .to_string()
+            .contains("Set AWS_REGION or configure the AWS region provider"));
     }
     exporter.shutdown().await;
 }

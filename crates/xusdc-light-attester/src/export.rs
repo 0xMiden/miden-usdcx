@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::config::{retry::RetryConfig, timeout::TimeoutConfig, Region};
+use aws_sdk_s3::config::{retry::RetryConfig, timeout::TimeoutConfig};
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
@@ -18,7 +18,6 @@ use usdcx_telemetry::{Classify, Failure, FailureContext};
 
 use crate::store::{ExportBatch, ExportRecord};
 
-const DEFAULT_PREFIX: &str = "withdrawals/";
 const INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const PUT_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -30,15 +29,22 @@ const MAX_PREFIX_BYTES: usize = 1024 - 66 - 5;
 pub(crate) struct ExportConfig {
     bucket: String,
     prefix: String,
-    region: Option<String>,
 }
 
 impl ExportConfig {
-    pub(crate) fn new(
-        bucket: String,
-        prefix: Option<String>,
-        region: Option<String>,
-    ) -> Result<Self> {
+    pub(crate) fn from_url(url: &str) -> Result<Self> {
+        let destination = url
+            .strip_prefix("s3://")
+            .context("export URL must start with s3://")?;
+        if let Some(character) = destination
+            .chars()
+            .find(|character| matches!(character, '?' | '#' | '@' | ':'))
+        {
+            anyhow::bail!("export URL must not contain {character:?} after s3://");
+        }
+
+        let (bucket, prefix) = destination.split_once('/').unwrap_or((destination, ""));
+        ensure!(!bucket.is_empty(), "export URL must contain a bucket name");
         ensure!(
             (3..=63).contains(&bucket.len())
                 && bucket.bytes().all(|byte| {
@@ -59,7 +65,6 @@ impl ExportConfig {
             "export bucket must be a valid general purpose S3 bucket name"
         );
 
-        let prefix = prefix.unwrap_or_else(|| DEFAULT_PREFIX.to_owned());
         ensure!(
             !prefix.chars().any(char::is_control)
                 && !prefix.contains('\\')
@@ -76,19 +81,9 @@ impl ExportConfig {
             prefix.len() <= MAX_PREFIX_BYTES,
             "export prefix is too long for the S3 object key"
         );
-        if let Some(region) = &region {
-            ensure!(
-                !region.is_empty()
-                    && region.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                    }),
-                "export region must be a nonempty AWS region name"
-            );
-        }
         Ok(Self {
-            bucket,
+            bucket: bucket.to_owned(),
             prefix,
-            region,
         })
     }
 
@@ -98,10 +93,6 @@ impl ExportConfig {
 
     pub(crate) fn prefix(&self) -> &str {
         &self.prefix
-    }
-
-    pub(crate) fn region(&self) -> Option<&str> {
-        self.region.as_deref()
     }
 
     /// Region changes keep the same cursor; bucket or prefix changes start a separate backfill.
@@ -222,7 +213,7 @@ async fn run_worker(
         // Loading the default providers may do IO. It happens only here, after receiving work.
         let initialized = match &mut client {
             Some(client) => Ok(client),
-            slot @ None => match load_client(&config).await {
+            slot @ None => match load_client().await {
                 Ok(loaded) => Ok(slot.insert(loaded)),
                 Err(error) => Err(error),
             },
@@ -240,9 +231,9 @@ async fn run_worker(
     }
 }
 
-async fn load_client(config: &ExportConfig) -> Result<Client, Failure> {
+async fn load_client() -> Result<Client, Failure> {
     tokio::time::timeout(INITIALIZATION_TIMEOUT, async {
-        let mut loader = aws_config::defaults(BehaviorVersion::latest())
+        let sdk = aws_config::defaults(BehaviorVersion::latest())
             .retry_config(RetryConfig::standard().with_max_attempts(3))
             .timeout_config(
                 TimeoutConfig::builder()
@@ -251,13 +242,11 @@ async fn load_client(config: &ExportConfig) -> Result<Client, Failure> {
                     .operation_attempt_timeout(Duration::from_secs(5))
                     .operation_timeout(PUT_TIMEOUT)
                     .build(),
-            );
-        if let Some(region) = config.region() {
-            loader = loader.region(Region::new(region.to_owned()));
-        }
-        let sdk = loader.load().await;
+            )
+            .load()
+            .await;
         sdk.region()
-            .context("S3 export region is unresolved; set --export-region or configure the AWS region provider")
+            .context("S3 export region is unresolved. Set AWS_REGION or configure the AWS region provider")
             .classify(Actionable("s3_export"))?;
         Ok(Client::new(&sdk))
     })

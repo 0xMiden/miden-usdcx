@@ -97,10 +97,10 @@ async fn blocked_s3_does_not_block_cycles_admin_or_withdrawal_limit_waits() {
     );
     assert_eq!(super::service_map::counts(&calls), [0, 0]);
     let replay = attester.store.export_batch(&destination, 100).unwrap();
-    assert!(!pending_before_run.records.is_empty());
-    for record in pending_before_run.records {
+    assert!(!pending_before_run.is_empty());
+    for record in pending_before_run {
         assert!(
-            replay.records.contains(&record),
+            replay.contains(&record),
             "cancellation must leave unacknowledged mappings for restart"
         );
     }

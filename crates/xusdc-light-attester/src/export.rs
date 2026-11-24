@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classify, Failure, FailureContext};
 
-use crate::store::{ExportBatch, ExportRecord};
+use crate::store::ExportRecord;
 
 const INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const PUT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -110,7 +110,7 @@ pub(crate) struct ExportCompletion {
 
 /// The store owner sends immutable snapshots and consumes completions without awaiting network IO.
 pub(crate) struct Exporter {
-    batches: mpsc::Sender<ExportBatch>,
+    batches: mpsc::Sender<Vec<ExportRecord>>,
     completions: mpsc::Receiver<ExportCompletion>,
     in_flight: bool,
     cancellation: CancellationToken,
@@ -148,10 +148,13 @@ impl Exporter {
         }
     }
 
-    pub(crate) fn try_send(&mut self, batch: ExportBatch) -> bool {
-        // Channel capacity alone would allow a second batch after the worker receives the first.
-        // Keep ownership of the slot until the owner has consumed and handled its completion.
-        if self.in_flight {
+    /// The slot stays reserved until the store owner takes the completion.
+    pub(crate) fn has_in_flight_batch(&self) -> bool {
+        self.in_flight
+    }
+
+    pub(crate) fn try_send(&mut self, batch: Vec<ExportRecord>) -> bool {
+        if self.has_in_flight_batch() {
             return false;
         }
         if self.batches.try_send(batch).is_err() {
@@ -206,7 +209,7 @@ impl Drop for Exporter {
 async fn run_worker(
     config: ExportConfig,
     mut client: Option<Client>,
-    mut batches: mpsc::Receiver<ExportBatch>,
+    mut batches: mpsc::Receiver<Vec<ExportRecord>>,
     completions: mpsc::Sender<ExportCompletion>,
 ) {
     while let Some(batch) = batches.recv().await {
@@ -255,12 +258,16 @@ async fn load_client() -> Result<Client, Failure> {
     .classify(Transient("s3_export"))?
 }
 
-async fn put_batch(client: &Client, config: &ExportConfig, batch: ExportBatch) -> ExportCompletion {
+async fn put_batch(
+    client: &Client,
+    config: &ExportConfig,
+    batch: Vec<ExportRecord>,
+) -> ExportCompletion {
     let mut completion = ExportCompletion {
         last_uploaded_seq: None,
         error: None,
     };
-    for record in batch.records {
+    for record in batch {
         if let Err(error) = put_record(client, config, &record).await {
             completion.error = Some(error);
             break;

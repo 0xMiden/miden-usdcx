@@ -14,11 +14,6 @@ pub(crate) struct ExportRecord {
     pub(crate) revision: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExportBatch {
-    pub(crate) records: Vec<ExportRecord>,
-}
-
 impl Store {
     /// The newest authorization or outcome for each changed note, oldest revision first.
     /// A destination without a cursor includes finalized withdrawals from the complete history.
@@ -26,7 +21,7 @@ impl Store {
         &self,
         destination: &str,
         limit: usize,
-    ) -> anyhow::Result<ExportBatch> {
+    ) -> anyhow::Result<Vec<ExportRecord>> {
         ensure!(
             !destination.is_empty(),
             "export destination must not be empty"
@@ -75,7 +70,7 @@ impl Store {
                 revision: row.get(2).map_err(classify_error)?,
             });
         }
-        Ok(ExportBatch { records })
+        Ok(records)
     }
 
     /// Acknowledge the last record in the worker's contiguous successful prefix. Use its snapshot
@@ -289,7 +284,7 @@ mod tests {
         let mut store = open(&path);
         assert_eq!(saved_progress(&store), Some(old_uploaded_seq));
         let pending = store.export_batch(DESTINATION, 10).unwrap();
-        assert_eq!(pending.records, [record(note, None, newer)]);
+        assert_eq!(pending, [record(note, None, newer)]);
 
         store.connection.execute_batch(
             "CREATE TEMP TRIGGER reject_export_progress BEFORE INSERT ON withdrawal_export_cursors
@@ -318,11 +313,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(10)).await;
         wait_until(|| {
             with_default(&subscriber, || export.checkpoint(&mut store));
-            store
-                .export_batch(DESTINATION, 10)
-                .unwrap()
-                .records
-                .is_empty()
+            store.export_batch(DESTINATION, 10).unwrap().is_empty()
         })
         .await;
         assert_eq!(sink.count(), 3);
@@ -331,7 +322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_reports_s3_failure_in_a_finished_independent_span_without_lookup_secrets() {
+    async fn runtime_reports_s3_failure_in_a_finished_independent_span() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = open(&directory.path().join("store.sqlite3"));
         let note = add_burn(&mut store, 1);
@@ -368,7 +359,8 @@ mod tests {
             .contains(&KeyValue::new("failure.kind", "s3_export")));
         let details = format!("{span:?}");
         assert!(details.contains("AccessDenied"));
-        for secret in [
+        // With this generic SDK error, check what the exporter adds to the span.
+        for request_detail in [
             OLD_ID,
             &note.to_hex(),
             DESTINATION,
@@ -376,7 +368,10 @@ mod tests {
             "Signature=",
             "withdrawal_id",
         ] {
-            assert!(!details.contains(secret), "export span leaked {secret}");
+            assert!(
+                !details.contains(request_detail),
+                "export span included {request_detail}"
+            );
         }
         drop(parent);
         assert_eq!(spans.get_finished_spans().unwrap()[1].status, Status::Unset);
@@ -403,19 +398,15 @@ mod tests {
         let batch = store.export_batch(DESTINATION, 2).unwrap();
         assert_eq!(
             batch,
-            ExportBatch {
-                records: vec![
-                    record(second, None, second_revision),
-                    record(first, Some(NEW_ID), first_revision),
-                ],
-            }
+            [
+                record(second, None, second_revision),
+                record(first, Some(NEW_ID), first_revision),
+            ]
         );
         store.ack_export(DESTINATION, first_revision).unwrap();
         assert_eq!(
             store.export_batch(DESTINATION, 2).unwrap(),
-            ExportBatch {
-                records: vec![record(third, Some(OLD_ID), repeated_revision)],
-            }
+            [record(third, Some(OLD_ID), repeated_revision)]
         );
     }
 
@@ -439,17 +430,10 @@ mod tests {
                 record(note, None, null_revision)
             };
 
-            store
-                .ack_export(DESTINATION, batch.records[0].revision)
-                .unwrap();
-            assert_eq!(
-                store.export_batch(DESTINATION, 1).unwrap(),
-                ExportBatch {
-                    records: vec![latest],
-                }
-            );
-            assert_eq!(batch.records, [record(note, Some(OLD_ID), old_revision)]);
-            assert_eq!(null_snapshot.records, [record(note, None, null_revision)]);
+            store.ack_export(DESTINATION, batch[0].revision).unwrap();
+            assert_eq!(store.export_batch(DESTINATION, 1).unwrap(), [latest]);
+            assert_eq!(batch, [record(note, Some(OLD_ID), old_revision)]);
+            assert_eq!(null_snapshot, [record(note, None, null_revision)]);
         }
     }
 
@@ -461,12 +445,12 @@ mod tests {
         let notes = [1, 2, 3].map(|serial| add_burn(&mut store, serial));
         let revisions = notes.map(|note| event(&store, note, "OUTCOME", Some(OLD_ID)));
         let batch = store.export_batch(DESTINATION, 2).unwrap();
-        assert_eq!(batch.records.len(), 2);
+        assert_eq!(batch.len(), 2);
         // The first PUT succeeded, the second failed, and the third was not sent.
         store.ack_export(DESTINATION, revisions[0]).unwrap();
         let pending = store.export_batch(DESTINATION, 2).unwrap();
         assert_eq!(
-            pending.records,
+            pending,
             [
                 record(notes[1], Some(OLD_ID), revisions[1]),
                 record(notes[2], Some(OLD_ID), revisions[2]),
@@ -480,11 +464,7 @@ mod tests {
         reopened.ack_export(DESTINATION, revisions[2]).unwrap();
         // Replaying an older successful snapshot cannot move durable progress backwards.
         reopened.ack_export(DESTINATION, revisions[0]).unwrap();
-        assert!(reopened
-            .export_batch(DESTINATION, 2)
-            .unwrap()
-            .records
-            .is_empty());
+        assert!(reopened.export_batch(DESTINATION, 2).unwrap().is_empty());
     }
 
     #[test]
@@ -497,14 +477,8 @@ mod tests {
         saved.withdrawal_id = Some(OLD_ID.into());
         store.update_submission_outcome(&saved).unwrap();
         let batch = store.export_batch(DESTINATION, 1).unwrap();
-        store
-            .ack_export(DESTINATION, batch.records[0].revision)
-            .unwrap();
-        assert!(store
-            .export_batch(DESTINATION, 1)
-            .unwrap()
-            .records
-            .is_empty());
+        store.ack_export(DESTINATION, batch[0].revision).unwrap();
+        assert!(store.export_batch(DESTINATION, 1).unwrap().is_empty());
         for destination in ["s3://other/withdrawals/", "s3://exports/another-prefix/"] {
             assert_eq!(store.export_batch(destination, 1).unwrap(), batch);
         }
@@ -522,17 +496,11 @@ mod tests {
         saved.last_http_status = Some(400);
         store.update_submission_outcome(&saved).unwrap();
         let null = store.export_batch(DESTINATION, 1).unwrap();
-        assert_eq!(null.records[0].withdrawal_id, None);
+        assert_eq!(null[0].withdrawal_id, None);
         assert_eq!(store.release_holds(&[note]).unwrap(), (0, 1));
         assert_eq!(store.export_batch(DESTINATION, 1).unwrap(), null);
-        store
-            .ack_export(DESTINATION, null.records[0].revision)
-            .unwrap();
-        assert!(store
-            .export_batch(DESTINATION, 1)
-            .unwrap()
-            .records
-            .is_empty());
+        store.ack_export(DESTINATION, null[0].revision).unwrap();
+        assert!(store.export_batch(DESTINATION, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -549,9 +517,9 @@ mod tests {
         let waiting = add_burn(&mut store, 2);
         seed_submission(&store, waiting);
         let history = store.export_batch(DESTINATION, 10).unwrap();
-        assert_eq!(history.records.len(), 2);
-        assert_eq!(history.records[0].withdrawal_id.as_deref(), Some(OLD_ID));
-        assert_eq!(history.records[1].withdrawal_id, None);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].withdrawal_id.as_deref(), Some(OLD_ID));
+        assert_eq!(history[1].withdrawal_id, None);
         // Version 5 adds only this table; remove it to restore the populated version-4 layout.
         store
             .connection
@@ -577,9 +545,6 @@ mod tests {
             assert!(store.export_batch(DESTINATION, usize::MAX).is_err());
         }
         assert!(store.export_batch("", 1).is_err());
-        assert_eq!(
-            store.export_batch(DESTINATION, 1).unwrap(),
-            ExportBatch { records: vec![] }
-        );
+        assert!(store.export_batch(DESTINATION, 1).unwrap().is_empty());
     }
 }

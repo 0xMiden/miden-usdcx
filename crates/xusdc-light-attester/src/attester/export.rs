@@ -56,8 +56,11 @@ impl ExportRuntime {
         }
         // Advance the timer even while a request is blocked, so the owner cannot spin.
         self.next_tick = Instant::now() + INTERVAL;
+        if self.exporter.has_in_flight_batch() {
+            return;
+        }
         match store.export_batch(&self.destination, BATCH_SIZE) {
-            Ok(batch) if !batch.records.is_empty() => {
+            Ok(batch) if !batch.is_empty() => {
                 self.exporter.try_send(batch);
             }
             Ok(_) => {}

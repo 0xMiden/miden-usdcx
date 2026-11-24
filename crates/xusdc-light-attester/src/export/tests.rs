@@ -26,12 +26,6 @@ fn record(note: u8, revision: i64, id: Option<&str>) -> ExportRecord {
     }
 }
 
-fn batch(records: impl IntoIterator<Item = ExportRecord>) -> ExportBatch {
-    ExportBatch {
-        records: records.into_iter().collect(),
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) enum Reply {
     Success,
@@ -255,7 +249,7 @@ async fn sdk_puts_only_the_lookup_json_at_the_canonical_note_key_in_order() {
         record(1, 9, None),
         record(1, 12, Some("replacement-id")),
     ];
-    let result = put_batch(&sink.client(), &config(), batch(records.clone())).await;
+    let result = put_batch(&sink.client(), &config(), records.to_vec()).await;
     assert_eq!(result.last_uploaded_seq, Some(12));
     assert!(result.error.is_none());
     let requests = sink.requests.lock().unwrap();
@@ -295,11 +289,11 @@ async fn failure_preserves_the_sdk_source_and_acknowledges_only_the_successful_p
         let result = put_batch(
             &sink.client(),
             &config(),
-            batch([
+            vec![
                 record(1, 5, Some("first")),
                 record(2, 7, None),
                 record(3, 8, Some("last")),
-            ]),
+            ],
         )
         .await;
         assert_eq!(result.last_uploaded_seq, (failed_index == 1).then_some(5));
@@ -323,17 +317,17 @@ async fn one_batch_remains_in_flight_until_its_completion_is_consumed() {
     let released = Arc::new(Notify::new());
     let sink = PreparedS3::answering([Reply::Block(released.clone()), Reply::Success]);
     let mut exporter = Exporter::spawn(config(), Some(sink.client()));
-    assert!(exporter.try_send(batch([record(1, 1, Some("first"))])));
+    assert!(exporter.try_send(vec![record(1, 1, Some("first"))]));
     wait_until(|| sink.active.load(Ordering::SeqCst) == 1).await;
-    assert!(!exporter.try_send(batch([record(2, 2, None)])));
+    assert!(!exporter.try_send(vec![record(2, 2, None)]));
     assert!(exporter.try_complete().is_none());
     released.notify_one();
     wait_until(|| !exporter.completions.is_empty()).await;
-    assert!(!exporter.try_send(batch([record(2, 2, None)])));
+    assert!(!exporter.try_send(vec![record(2, 2, None)]));
     let first = exporter.try_complete().unwrap();
     assert_eq!(first.last_uploaded_seq, Some(1));
     assert!(first.error.is_none());
-    assert!(exporter.try_send(batch([record(2, 2, None)])));
+    assert!(exporter.try_send(vec![record(2, 2, None)]));
     let second = completion(&mut exporter).await;
     assert_eq!(second.last_uploaded_seq, Some(2));
     exporter.shutdown().await;
@@ -344,7 +338,7 @@ async fn one_batch_remains_in_flight_until_its_completion_is_consumed() {
 async fn a_stopped_worker_reports_one_actionable_failure() {
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
     let mut exporter = Exporter::with_client(config(), sink.client());
-    assert!(exporter.try_send(batch([record(1, 1, None)])));
+    assert!(exporter.try_send(vec![record(1, 1, None)]));
     wait_until(|| sink.active_count() == 1).await;
     exporter.worker.as_ref().unwrap().abort();
     wait_until(|| exporter.completions.is_closed()).await;
@@ -352,14 +346,14 @@ async fn a_stopped_worker_reports_one_actionable_failure() {
     assert_eq!(result.last_uploaded_seq, None);
     assert_eq!(result.error.unwrap().class, Actionable("s3_export"));
     assert!(exporter.try_complete().is_none());
-    assert!(!exporter.try_send(batch([record(1, 1, None)])));
+    assert!(!exporter.try_send(vec![record(1, 1, None)]));
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_blocked_put_times_out_without_acknowledgement() {
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
     let mut exporter = Exporter::spawn(config(), Some(sink.client()));
-    assert!(exporter.try_send(batch([record(1, 8, None)])));
+    assert!(exporter.try_send(vec![record(1, 8, None)]));
     wait_until(|| sink.active.load(Ordering::SeqCst) == 1).await;
     tokio::time::advance(PUT_TIMEOUT).await;
     let result = completion(&mut exporter).await;
@@ -378,7 +372,7 @@ async fn a_blocked_put_times_out_without_acknowledgement() {
 async fn shutdown_cancels_and_joins_a_blocked_put() {
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
     let mut exporter = Exporter::spawn(config(), Some(sink.client()));
-    assert!(exporter.try_send(batch([record(1, 1, None)])));
+    assert!(exporter.try_send(vec![record(1, 1, None)]));
     wait_until(|| sink.active.load(Ordering::SeqCst) == 1).await;
     tokio::time::timeout(SHUTDOWN_TIMEOUT, exporter.shutdown())
         .await
@@ -390,7 +384,7 @@ async fn shutdown_cancels_and_joins_a_blocked_put() {
 async fn dropping_the_exporter_also_cancels_a_blocked_put() {
     let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
     let mut exporter = Exporter::spawn(config(), Some(sink.client()));
-    assert!(exporter.try_send(batch([record(1, 1, None)])));
+    assert!(exporter.try_send(vec![record(1, 1, None)]));
     wait_until(|| sink.active.load(Ordering::SeqCst) == 1).await;
     drop(exporter);
     wait_until(|| sink.active.load(Ordering::SeqCst) == 0).await;
@@ -485,7 +479,7 @@ async fn unresolved_region_is_reported_as_a_retryable_batch_completion() {
     }
     let mut exporter = Exporter::start(config());
     for _ in 0..2 {
-        assert!(exporter.try_send(batch([record(1, 8, None)])));
+        assert!(exporter.try_send(vec![record(1, 8, None)]));
         // The provider reads local files asynchronously, so use a clock bound for this transition.
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             loop {

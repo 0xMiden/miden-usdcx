@@ -28,7 +28,7 @@ use crate::submission::{
 use crate::verify::validate_saved_request;
 
 mod export;
-pub(crate) use export::{ExportBatch, ExportRecord};
+pub(crate) use export::ExportRecord;
 
 /// Why a burn waits for an operator. The store keeps each reason as its fixed number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]

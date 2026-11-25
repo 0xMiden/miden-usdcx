@@ -213,9 +213,20 @@ The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 ## Withdrawal ID lookup
 
-Add `--export-url s3://<bucket>/withdrawals/` to `usdcx-bridge run` or the standalone attester.
-Export is off by default. A URL with only a bucket writes to the bucket root. Use a separate
-bucket or prefix per network.
+The exporter uses the AWS credentials available to the bridge container.
+
+1. Use an existing S3 bucket. Give the container's AWS role `s3:PutObject` on the destination
+   prefix, such as `arn:aws:s3:::<bucket>/withdrawals/*`.
+2. Add `--export-url s3://<bucket>/withdrawals/` to `usdcx-bridge run` or the standalone
+   attester. Use a separate bucket or prefix for testnet and mainnet.
+3. Set `AWS_REGION` to the bucket's region if the container's AWS configuration does not
+   already supply it. Allow outbound HTTPS to S3. The signing keys still use `--aws-kms-region`.
+
+If the bucket and role are in different AWS accounts, the bucket owner must also allow the
+role in the bucket policy. If the bucket uses a customer-managed KMS encryption key, grant
+the role permission to use that key.
+
+Export is off by default. A URL with only a bucket writes to the bucket root.
 
 The exporter writes `<BURN_NOTE_ID>.json` under the chosen prefix, with the note ID in canonical
 lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or
@@ -230,14 +241,8 @@ and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and p
 write can finish late and leave stale data until a later history change republishes it. Restarts
 resume from durable progress, so keep the store when restarting.
 
-Gateway creates and owns the bucket in its account in Miden's AWS infrastructure. Gateway grants
-the attester's AWS identity `s3:PutObject` on the chosen prefix through AWS permissions. A bucket
-encrypted with a customer-managed KMS key also requires the corresponding key permissions.
-
-The exporter uses the standard AWS SDK credential chain, including workload roles and
-`AWS_PROFILE`. The CLI has no credential flags. Keep static credentials out of CLI arguments. Set
-the S3 region in `AWS_REGION` or another standard AWS region provider. Use `--aws-kms-region`
-independently for the withdrawal signing keys.
+To verify the setup, run a test upload with the container's AWS role and fetch the resulting
+JSON from the frontend's HTTPS lookup URL.
 
 CloudFront, browser CORS and frontend polling are separate deployment work. Configure CloudFront
 to respect the object cache lifetime and avoid long negative caching. A private origin can return

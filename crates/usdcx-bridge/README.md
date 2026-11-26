@@ -215,35 +215,39 @@ The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
 
 The exporter uses the AWS credentials available to the bridge container.
 
-1. Use an existing S3 bucket. Give the container's AWS role `s3:PutObject` on the destination
-   prefix, such as `arn:aws:s3:::<bucket>/withdrawals/*`.
+1. Use an existing S3 bucket. Give the container's AWS role `s3:GetObject` and `s3:PutObject`
+   on the destination prefix, such as `arn:aws:s3:::<bucket>/withdrawals/*`.
 2. Add `--export-url s3://<bucket>/withdrawals/` to `usdcx-bridge run` or the standalone
    attester. Use a separate bucket or prefix for testnet and mainnet.
 3. Set `AWS_REGION` to the bucket's region if the container's AWS configuration does not
    already supply it. Allow outbound HTTPS to S3. The signing keys still use `--aws-kms-region`.
 
 If the bucket and role are in different AWS accounts, the bucket owner must also allow the
-role in the bucket policy. If the bucket uses a customer-managed KMS encryption key, grant
-the role permission to use that key.
+role in the bucket policy. If a customer-managed KMS key encrypts the objects, give the role
+`kms:GenerateDataKey` and `kms:Decrypt` on that key.
 
 Export is off by default. A URL with only a bucket writes to the bucket root.
 
 The exporter writes `<BURN_NOTE_ID>.json` under the chosen prefix, with the note ID in canonical
-lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or
-`{"withdrawal_id":null}`. The frontend uses the verified Circle ID to query Circle. The exporter
-writes `null` while there is no verified ID for the current authorization, including while it
-checks an ID from a conflict response. A missing object can mean the exporter is still catching up.
+lowercase `0x` hex. For example, `{"withdrawal_id":"<CIRCLE_UUID>","revision":42}` maps the
+burn to the verified ID the frontend uses to query Circle. `withdrawal_id` is `null` while
+the attester waits for a verified ID, including when checking an ID from a conflict response.
+A missing object can mean the exporter is still catching up.
 
 Uploads run outside withdrawal processing. Failed uploads retry from durable SQLite progress.
 The store tracks progress by bucket and prefix. The first export to a new destination backfills
 lookups from the store's history, including finalized withdrawals. The target cadence is
 10 seconds, subject to the attester cycle and backlog. Objects carry `Content-Type: application/json`
-and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and prefix. A timed-out
-write can finish late and leave stale data until a later history change republishes it. Restarts
-resume from durable progress, so keep the store when restarting.
+and `Cache-Control: max-age=10`.
 
-To verify the deployment, let the bridge export a known burn note under its normal AWS role.
-Fetch that note's JSON from the frontend's HTTPS lookup URL and check the withdrawal ID.
+The revision is the event's sequence number in SQLite. The exporter uses S3 conditional writes
+so a delayed upload cannot replace a newer revision. Older files without a revision get one on
+their next update. Use one attester and keep its store across restarts. If you rebuild the store
+with a new history, or an older exporter may still have unconditional writes in flight, backfill
+an empty prefix and switch the public route to it.
+
+To verify the deployment, follow a test burn under the normal bridge role. Fetch the same HTTPS
+lookup URL before and after an update and check that the revision increases and the ID matches.
 
 CloudFront, browser CORS and frontend polling are separate deployment work. Configure CloudFront
 to respect the object cache lifetime and avoid long negative caching. A private origin can return
@@ -255,7 +259,8 @@ older binaries cannot open the upgraded store.
 ### Local testing
 
 For an isolated S3 test harness or a fully emulated AWS environment, create a bucket on a local
-S3-compatible service and point the exporter at it with `--export-url s3://<local-bucket>/withdrawals/`.
+S3-compatible service that supports conditional writes and point the exporter at it with
+`--export-url s3://<local-bucket>/withdrawals/`.
 Use an IP literal reachable from the exporter for path-style requests. The dummy AWS credentials
 below also affect KMS at startup. Keep the usual AWS credentials when testing with real KMS.
 

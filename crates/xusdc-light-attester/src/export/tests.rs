@@ -26,11 +26,13 @@ fn record(note: u8, revision: i64, id: Option<&str>) -> ExportRecord {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum Reply {
     Success,
     Denied,
     Block(Arc<Notify>),
+    Response(Box<HttpResponse>),
+    Delayed(tokio::sync::oneshot::Receiver<HttpResponse>),
 }
 
 /// The real S3 serializer and signer run against this connector with explicit dummy credentials.
@@ -74,6 +76,26 @@ fn success() -> HttpResponse {
     HttpResponse::new(200_u16.try_into().unwrap(), "".into())
 }
 
+fn s3_error(status: u16, code: &str) -> HttpResponse {
+    HttpResponse::new(
+        status.try_into().unwrap(),
+        format!("<Error><Code>{code}</Code></Error>").into(),
+    )
+}
+
+fn exists() -> Reply {
+    Reply::Response(Box::new(s3_error(412, "PreconditionFailed")))
+}
+
+fn stored(body: &str) -> Reply {
+    let mut response = HttpResponse::new(200_u16.try_into().unwrap(), body.to_owned().into());
+    response.headers_mut().insert("etag", r#""old-etag""#);
+    response
+        .headers_mut()
+        .insert("content-length", body.len().to_string());
+    Reply::Response(Box::new(response))
+}
+
 struct ActiveRequest(Arc<AtomicUsize>);
 
 impl Drop for ActiveRequest {
@@ -93,10 +115,11 @@ impl HttpConnector for PreparedS3 {
             .expect("S3 got an unexpected request");
         match reply {
             Reply::Success => HttpConnectorFuture::ready(Ok(success())),
-            Reply::Denied => HttpConnectorFuture::ready(Ok(HttpResponse::new(
-                403_u16.try_into().unwrap(),
-                "<Error><Code>AccessDenied</Code><Message>test denied</Message></Error>".into(),
-            ))),
+            Reply::Denied => HttpConnectorFuture::ready(Ok(s3_error(403, "AccessDenied"))),
+            Reply::Response(response) => HttpConnectorFuture::ready(Ok(*response)),
+            Reply::Delayed(receiver) => {
+                HttpConnectorFuture::new(async { Ok(receiver.await.unwrap()) })
+            }
             Reply::Block(released) => {
                 self.active.fetch_add(1, Ordering::SeqCst);
                 let guard = ActiveRequest(self.active.clone());
@@ -228,8 +251,8 @@ async fn sdk_puts_only_the_lookup_json_at_the_canonical_note_key_in_order() {
     let sink = PreparedS3::answering([Reply::Success, Reply::Success, Reply::Success]);
     let records = [
         record(1, 7, Some("first-id")),
-        record(1, 9, None),
-        record(1, 12, Some("replacement-id")),
+        record(2, 9, None),
+        record(3, 12, Some("another-id")),
     ];
     let result = put_batch(&sink.client(), &config(), records.to_vec()).await;
     assert_eq!(result.last_uploaded_seq, Some(12));
@@ -246,6 +269,7 @@ async fn sdk_puts_only_the_lookup_json_at_the_canonical_note_key_in_order() {
             )
         );
         let headers = request.headers();
+        assert_eq!(headers.get("if-none-match"), Some("*"));
         assert_eq!(headers.get("content-type"), Some("application/json"));
         assert_eq!(headers.get("cache-control"), Some("max-age=10"));
         assert!(headers
@@ -261,8 +285,96 @@ async fn sdk_puts_only_the_lookup_json_at_the_canonical_note_key_in_order() {
         let body = request.body().bytes().unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(body).unwrap(),
-            json!({"withdrawal_id": record.withdrawal_id})
+            json!({"withdrawal_id": record.withdrawal_id, "revision": record.revision})
         );
+    }
+}
+
+#[tokio::test]
+async fn legacy_and_older_lookups_are_replaced_using_the_etag_from_s3() {
+    for body in [
+        r#"{"withdrawal_id":null}"#,
+        r#"{"withdrawal_id":null,"revision":6}"#,
+    ] {
+        let sink = PreparedS3::answering([exists(), stored(body), Reply::Success]);
+        let update = record(1, 7, Some("verified"));
+        put_record(&sink.client(), &config(), &update)
+            .await
+            .unwrap();
+        let requests = sink.requests.lock().unwrap();
+        assert_eq!(requests[1].method(), "GET");
+        assert_eq!(requests[2].method(), "PUT");
+        assert_eq!(requests[2].headers().get("if-match"), Some(r#""old-etag""#));
+        let key = requests[0].uri().split('?').next().unwrap();
+        assert!(requests
+            .iter()
+            .all(|r| r.uri().split('?').next() == Some(key)));
+        let bytes = requests[2].body().bytes().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(bytes).unwrap(),
+            json!({"withdrawal_id": "verified", "revision": 7})
+        );
+    }
+}
+
+#[tokio::test]
+async fn delayed_old_put_loses_to_newer_revision_and_replay_skips_it() {
+    let (finish_old, delayed) = tokio::sync::oneshot::channel();
+    let sink = PreparedS3::answering([
+        exists(),
+        stored(r#"{"withdrawal_id":null,"revision":5}"#),
+        Reply::Delayed(delayed),
+        exists(),
+        stored(r#"{"withdrawal_id":null,"revision":5}"#),
+        Reply::Success,
+        exists(),
+        stored(r#"{"withdrawal_id":"verified","revision":8}"#),
+    ]);
+    let client = sink.client();
+    let config = config();
+    let older = record(1, 7, None);
+    let newer = record(1, 8, Some("verified"));
+    let old_write = put_batch(&client, &config, vec![older.clone()]);
+    let new_write = async {
+        wait_until(|| sink.count() == 3).await;
+        let result = put_batch(&client, &config, vec![newer]).await;
+        assert_eq!(result.last_uploaded_seq, Some(8));
+        // Both replacements were conditional on revision 5. S3 rejects the old one after 8 lands.
+        finish_old
+            .send(s3_error(412, "PreconditionFailed"))
+            .unwrap();
+    };
+    let (old, ()) = tokio::join!(old_write, new_write);
+    assert!(old.error.is_some());
+    assert_eq!(old.last_uploaded_seq, None);
+    let replay = put_batch(&client, &config, vec![older]).await;
+    assert_eq!(replay.last_uploaded_seq, Some(7));
+    let requests = sink.requests.lock().unwrap();
+    assert_eq!(requests[2].headers().get("if-match"), Some(r#""old-etag""#));
+    assert_eq!(requests[5].headers().get("if-match"), Some(r#""old-etag""#));
+    assert_eq!(requests.len(), 8);
+}
+
+#[tokio::test]
+async fn conflicting_writes_and_unreadable_existing_lookups_leave_the_record_pending() {
+    let oversized = format!(
+        r#"{{"withdrawal_id":null,"revision":8}}{}"#,
+        " ".repeat(2048)
+    );
+    for replies in [
+        vec![Reply::Response(Box::new(s3_error(
+            409,
+            "ConditionalRequestConflict",
+        )))],
+        vec![exists(), Reply::Denied],
+        vec![exists(), stored("{}")],
+        vec![exists(), stored(r#"{"withdrawal_id":null,"revision":-1}"#)],
+        vec![exists(), stored(&oversized)],
+    ] {
+        let sink = PreparedS3::answering(replies);
+        let result = put_batch(&sink.client(), &config(), vec![record(1, 7, None)]).await;
+        assert!(result.error.is_some());
+        assert_eq!(result.last_uploaded_seq, None);
     }
 }
 
@@ -335,8 +447,12 @@ async fn a_stopped_worker_reports_one_actionable_failure() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_blocked_put_times_out_without_acknowledgement() {
-    let sink = PreparedS3::answering([Reply::Block(Arc::new(Notify::new()))]);
+async fn a_timed_out_creation_is_acknowledged_after_replay_reads_its_revision() {
+    let sink = PreparedS3::answering([
+        Reply::Block(Arc::new(Notify::new())),
+        exists(),
+        stored(r#"{"withdrawal_id":null,"revision":8}"#),
+    ]);
     let mut exporter = Exporter::spawn(config(), Some(sink.client()));
     assert!(exporter.try_send(vec![record(1, 8, None)]));
     wait_until(|| sink.active.load(Ordering::SeqCst) == 1).await;
@@ -350,6 +466,10 @@ async fn a_blocked_put_times_out_without_acknowledgement() {
         .downcast_ref::<tokio::time::error::Elapsed>()
         .is_some());
     assert_eq!(sink.active.load(Ordering::SeqCst), 0);
+    assert!(exporter.try_send(vec![record(1, 8, None)]));
+    let replay = completion(&mut exporter).await;
+    assert!(replay.error.is_none());
+    assert_eq!(replay.last_uploaded_seq, Some(8));
     exporter.shutdown().await;
 }
 

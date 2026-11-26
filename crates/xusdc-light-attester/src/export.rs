@@ -10,6 +10,7 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use serde::Serialize;
+use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,8 @@ use crate::store::ExportRecord;
 const INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
 const PUT_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+// Both lookup formats fit well within 1 KiB. Bound downloads even for a misconfigured prefix.
+const MAX_LOOKUP_BYTES: usize = 1024;
 // A canonical note ID uses 66 ASCII bytes and its extension uses another five.
 const MAX_PREFIX_BYTES: usize = 1024 - 66 - 5;
 
@@ -285,36 +288,106 @@ async fn put_record(
     #[derive(Serialize)]
     struct Lookup<'a> {
         withdrawal_id: Option<&'a str>,
+        revision: i64,
     }
     let body = serde_json::to_vec(&Lookup {
         withdrawal_id: record.withdrawal_id.as_deref(),
+        revision: record.revision,
     })
     .context("serialize S3 withdrawal ID lookup")
     .classify(Actionable("s3_export"))?;
     let key = format!("{}{}.json", config.prefix(), record.note_id.to_hex());
-    tokio::time::timeout(
-        PUT_TIMEOUT,
+    let put = || {
         client
             .put_object()
             .bucket(config.bucket())
-            .key(key)
+            .key(&key)
             .content_type("application/json")
             .cache_control("max-age=10")
-            .body(ByteStream::from(body))
-            .send(),
-    )
-    .await
-    .context("S3 export PutObject timed out")
-    .classify(Transient("s3_export"))?
-    .classify_with(|error| {
-        if error.as_service_error().and_then(|error| error.code()) == Some("AccessDenied") {
-            Actionable("s3_export")
-        } else {
-            Transient("s3_export")
+            .body(ByteStream::from(body.clone()))
+    };
+
+    tokio::time::timeout(PUT_TIMEOUT, async {
+        match put().if_none_match("*").send().await {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error
+                    .raw_response()
+                    .is_some_and(|r| r.status().as_u16() == 412) => {}
+            Err(error) => {
+                return Err(s3_failure(error).context("S3 export PutObject request failed"))
+            }
         }
+
+        let current = client
+            .get_object()
+            .bucket(config.bucket())
+            .key(&key)
+            .send()
+            .await
+            .map_err(s3_failure)
+            .context("S3 export GetObject request failed")?;
+        let mut bytes = Vec::new();
+        current
+            .body
+            .into_async_read()
+            .take((MAX_LOOKUP_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .context("read S3 lookup body")
+            .classify(Transient("s3_export"))?;
+        if stored_revision(&bytes).classify(Actionable("s3_export"))? >= record.revision {
+            return Ok(());
+        }
+        let etag = current
+            .e_tag
+            .filter(|tag| tag.starts_with('"') && tag.ends_with('"'))
+            .context("S3 lookup has no usable ETag")
+            .classify(Actionable("s3_export"))?;
+        // A competing update invalidates this ETag. Leave the record pending for the next batch.
+        put()
+            .if_match(etag)
+            .send()
+            .await
+            .map_err(s3_failure)
+            .context("S3 export conditional PutObject request failed")?;
+        Ok(())
     })
-    .context("S3 export PutObject request failed")?;
-    Ok(())
+    .await
+    .context("S3 lookup publication timed out")
+    .classify(Transient("s3_export"))?
+}
+
+fn stored_revision(bytes: &[u8]) -> Result<i64> {
+    ensure!(
+        bytes.len() <= MAX_LOOKUP_BYTES,
+        "S3 lookup exceeds {MAX_LOOKUP_BYTES} bytes"
+    );
+    let lookup: serde_json::Value =
+        serde_json::from_slice(bytes).context("parse S3 lookup JSON")?;
+    ensure!(
+        lookup
+            .get("withdrawal_id")
+            .is_some_and(|id| id.is_null() || id.is_string()),
+        "S3 lookup has an invalid withdrawal_id"
+    );
+    match lookup.get("revision") {
+        // Objects written before revisions contained only the withdrawal ID.
+        None => Ok(0),
+        Some(value) => value
+            .as_i64()
+            .filter(|revision| *revision > 0)
+            .context("S3 lookup revision must be a positive integer"),
+    }
+}
+
+fn s3_failure(error: impl ProvideErrorMetadata + Into<anyhow::Error>) -> Failure {
+    let class = if error.code() == Some("AccessDenied") {
+        Actionable("s3_export")
+    } else {
+        Transient("s3_export")
+    };
+    Failure::new(class, error)
 }
 
 #[cfg(test)]

@@ -230,19 +230,20 @@ Export is off by default. A URL with only a bucket writes to the bucket root.
 
 The exporter writes `<BURN_NOTE_ID>.json` under the chosen prefix, with the note ID in canonical
 lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or
-`{"withdrawal_id":null}`. The frontend uses a non-null ID to query Circle. Null means there is no
-current Circle ID. An expired authorization may clear the ID before a new one is available.
-A missing object can mean the exporter is still catching up.
+`{"withdrawal_id":null}`. The frontend uses the verified Circle ID to query Circle. The exporter
+writes `null` while there is no verified ID for the current authorization, including while it
+checks an ID from a conflict response. A missing object can mean the exporter is still catching up.
 
 Uploads run outside withdrawal processing. Failed uploads retry from durable SQLite progress.
-Enabling export on an existing store backfills finalized withdrawals. The target cadence is
+The store tracks progress by bucket and prefix. The first export to a new destination backfills
+lookups from the store's history, including finalized withdrawals. The target cadence is
 10 seconds, subject to the attester cycle and backlog. Objects carry `Content-Type: application/json`
 and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and prefix. A timed-out
 write can finish late and leave stale data until a later history change republishes it. Restarts
 resume from durable progress, so keep the store when restarting.
 
-To verify the setup, run a test upload with the container's AWS role and fetch the resulting
-JSON from the frontend's HTTPS lookup URL.
+To verify the deployment, let the bridge export a known burn note under its normal AWS role.
+Fetch that note's JSON from the frontend's HTTPS lookup URL and check the withdrawal ID.
 
 CloudFront, browser CORS and frontend polling are separate deployment work. Configure CloudFront
 to respect the object cache lifetime and avoid long negative caching. A private origin can return
@@ -253,9 +254,10 @@ older binaries cannot open the upgraded store.
 
 ### Local testing
 
-Create a bucket on a local S3-compatible service and point the exporter at it with
-`--export-url s3://<local-bucket>/withdrawals/`. Use an IP literal in the endpoint URL for
-path-style requests and set dummy credentials in your local test shell.
+For an isolated S3 test harness or a fully emulated AWS environment, create a bucket on a local
+S3-compatible service and point the exporter at it with `--export-url s3://<local-bucket>/withdrawals/`.
+Use an IP literal reachable from the exporter for path-style requests. The dummy AWS credentials
+below also affect KMS at startup. Keep the usual AWS credentials when testing with real KMS.
 
 ```sh
 export AWS_ENDPOINT_URL_S3=http://127.0.0.1:9090

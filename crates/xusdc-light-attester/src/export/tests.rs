@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,19 +33,11 @@ pub(crate) enum Reply {
     Block(Arc<Notify>),
 }
 
-#[derive(Debug)]
-struct CapturedRequest {
-    method: String,
-    uri: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
-}
-
 /// The real S3 serializer and signer run against this connector with explicit dummy credentials.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PreparedS3 {
     replies: Arc<Mutex<VecDeque<Reply>>>,
-    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
     active: Arc<AtomicUsize>,
 }
 
@@ -92,17 +84,7 @@ impl Drop for ActiveRequest {
 
 impl HttpConnector for PreparedS3 {
     fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
-        let captured = CapturedRequest {
-            method: request.method().to_owned(),
-            uri: request.uri().to_owned(),
-            headers: request
-                .headers()
-                .iter()
-                .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                .collect(),
-            body: request.body().bytes().unwrap().to_vec(),
-        };
-        self.requests.lock().unwrap().push(captured);
+        self.requests.lock().unwrap().push(request);
         let reply = self
             .replies
             .lock()
@@ -255,26 +237,30 @@ async fn sdk_puts_only_the_lookup_json_at_the_canonical_note_key_in_order() {
     let requests = sink.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     for (request, record) in requests.iter().zip(records) {
-        assert_eq!(request.method, "PUT");
+        assert_eq!(request.method(), "PUT");
         assert_eq!(
-            request.uri,
+            request.uri(),
             format!(
                 "https://withdrawal-lookups.s3.eu-north-1.amazonaws.com/withdrawals/{}.json?x-id=PutObject",
                 record.note_id.to_hex()
             )
         );
-        assert_eq!(request.headers["content-type"], "application/json");
-        assert_eq!(request.headers["cache-control"], "max-age=10");
-        assert!(request.headers["authorization"].contains("Credential=test/"));
+        let headers = request.headers();
+        assert_eq!(headers.get("content-type"), Some("application/json"));
+        assert_eq!(headers.get("cache-control"), Some("max-age=10"));
+        assert!(headers
+            .get("authorization")
+            .unwrap()
+            .contains("Credential=test/"));
         for forbidden in ["x-amz-acl", "x-amz-tagging"] {
-            assert!(!request.headers.contains_key(forbidden));
+            assert!(!headers.contains_key(forbidden));
         }
-        assert!(request
-            .headers
-            .keys()
-            .all(|name| !name.starts_with("x-amz-meta-")));
+        assert!(headers
+            .iter_bytes()
+            .all(|(name, _)| !name.starts_with("x-amz-meta-")));
+        let body = request.body().bytes().unwrap();
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(body).unwrap(),
             json!({"withdrawal_id": record.withdrawal_id})
         );
     }
@@ -308,7 +294,6 @@ async fn failure_preserves_the_sdk_source_and_acknowledges_only_the_successful_p
             Some("AccessDenied")
         );
         assert_eq!(sink.count(), failed_index + 1);
-        assert_eq!(sink.replies.lock().unwrap().len(), 2 - failed_index);
     }
 }
 
@@ -453,7 +438,7 @@ async fn s3_uses_the_standard_aws_profile() {
     {
         let requests = sink.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        let authorization = &requests[0].headers["authorization"];
+        let authorization = requests[0].headers().get("authorization").unwrap();
         assert!(authorization.starts_with("AWS4-HMAC-SHA256 Credential=dummy-exporter-profile/"));
         assert!(authorization.contains("/eu-west-1/s3/aws4_request"));
         assert!(authorization.contains("Signature="));

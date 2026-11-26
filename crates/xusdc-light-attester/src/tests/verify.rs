@@ -30,7 +30,7 @@ const FORWARDED_SOLANA_FIXTURE: &str =
 const DIRECT_WITH_OPTIONS_FIXTURE: &str =
     include_str!("fixtures/circle-sandbox-2026-09-21-direct-base-with-options.response.json");
 
-pub(super) fn serial(last: u64) -> Word {
+pub(crate) fn serial(last: u64) -> Word {
     Word::new([
         Felt::new(0x0102_0304_0506_0708).unwrap(),
         Felt::new(0x1112_1314_1516_1718).unwrap(),

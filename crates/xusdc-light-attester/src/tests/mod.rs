@@ -12,4 +12,5 @@ mod support;
 mod validation;
 mod verify;
 
-pub(crate) use verify::verified_withdrawal;
+pub(crate) use validation::discovered_burn;
+pub(crate) use verify::{serial, verified_withdrawal};

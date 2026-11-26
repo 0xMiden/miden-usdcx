@@ -17,6 +17,7 @@ pub(crate) struct ExportRecord {
 impl Store {
     /// The newest authorization or outcome for each changed note, oldest revision first.
     /// A destination without a cursor includes finalized withdrawals from the complete history.
+    /// A saved recovery ID is private until Circle confirms the withdrawal's identity and status.
     pub(crate) fn export_batch(
         &self,
         destination: &str,
@@ -41,7 +42,10 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT event.note_id, event.withdrawal_id, event.seq
+                "SELECT event.note_id,
+                        CASE WHEN event.status IN ('SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED')
+                             THEN event.withdrawal_id END,
+                        event.seq
                  FROM submission_events event
                  WHERE event.seq > ?1 AND event.kind IN ('AUTHORIZED', 'OUTCOME')
                     AND NOT EXISTS (
@@ -103,15 +107,9 @@ mod tests {
 
     use alloy_primitives::B256;
     use miden_protocol::account::AccountId;
-    use miden_protocol::asset::FungibleAsset;
     use miden_protocol::block::{BlockHeader, BlockNumber};
-    use miden_protocol::note::{Note, NoteAttachment};
-    use miden_protocol::transaction::{OutputNote, RawOutputNote};
     use miden_protocol::utils::serde::Serializable;
-    use miden_protocol::{Felt, Word};
-    use miden_standards::note::BurnNote;
-    use miden_usdcx::note::xreserve_burn::XUsdcBurnAttachment;
-    use miden_usdcx::xreserve::encoding::{CircleDomain, ForeignChainAddress, XReserveBurnItems};
+    use miden_protocol::Word;
     use opentelemetry::trace::{SpanId, Status, TracerProvider as _};
     use opentelemetry::KeyValue;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
@@ -123,11 +121,13 @@ mod tests {
 
     use super::*;
     use crate::attester::export::ExportRuntime;
-    use crate::burn::BurnCandidate;
     use crate::export::tests::{wait_until, PreparedS3, Reply};
     use crate::export::{ExportConfig, Exporter};
+    use crate::store::EventKind::{Authorized, BurnHeld, OperatorRelease, Outcome};
     use crate::store::{record_event, EventKind, TrustedAnchor, STORE_VERSION};
+    use crate::submission::SubmissionStatus::{Expired, Finalized, Held, Submitted, Submitting};
     use crate::submission::{HoldReason, SavedSubmission, SubmissionStatus};
+    use crate::tests::{discovered_burn, serial};
 
     const DESTINATION: &str = "s3://exports/withdrawals/";
     const OLD_ID: &str = "6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70";
@@ -148,30 +148,8 @@ mod tests {
         Store::open_or_create(path, faucet(), anchor()).unwrap()
     }
 
-    fn add_burn(store: &mut Store, serial: u64) -> NoteId {
-        let withdrawal = XUsdcBurnAttachment::new(XReserveBurnItems {
-            dest_domain: CircleDomain::new(9),
-            dest_recipient: ForeignChainAddress::new([0xab; 32]),
-        });
-        let note: Note = BurnNote::builder()
-            .sender(faucet())
-            .asset(FungibleAsset::new(faucet(), 100).unwrap())
-            .serial_number(Word::new([
-                Felt::new(serial).unwrap(),
-                Felt::ZERO,
-                Felt::ZERO,
-                Felt::ZERO,
-            ]))
-            .attachment(NoteAttachment::from(&withdrawal))
-            .build()
-            .unwrap()
-            .into();
-        let OutputNote::Public(note) = RawOutputNote::Full(note).into_output_note().unwrap() else {
-            panic!("the burn fixture is public")
-        };
-        let burn = BurnCandidate::new(note, 1u32.into(), faucet())
-            .unwrap()
-            .into_discovered(2u32.into());
+    fn add_burn(store: &mut Store, index: u64) -> NoteId {
+        let burn = discovered_burn(100, serial(index), 9);
         let note_id = burn.note_id();
         store
             .save_scan_progress(&[], &[burn], &BlockHeader::mock(2u32, None, None, &[]))
@@ -179,13 +157,24 @@ mod tests {
         note_id
     }
 
-    fn event(store: &Store, note_id: NoteId, kind: &str, id: Option<&str>) -> i64 {
+    fn event(
+        store: &Store,
+        note_id: NoteId,
+        kind: EventKind,
+        status: Option<SubmissionStatus>,
+        id: Option<&str>,
+    ) -> i64 {
         store
             .connection
             .execute(
-                "INSERT INTO submission_events (note_id, recorded_at, kind, withdrawal_id)
-                 VALUES (?1, 0, ?2, ?3)",
-                params![note_id.to_bytes(), kind, id],
+                "INSERT INTO submission_events (note_id, recorded_at, kind, status, withdrawal_id)
+                 VALUES (?1, 0, ?2, ?3, ?4)",
+                params![
+                    note_id.to_bytes(),
+                    kind.as_ref(),
+                    status.as_ref().map(SubmissionStatus::as_ref),
+                    id,
+                ],
             )
             .unwrap();
         store.connection.last_insert_rowid()
@@ -205,7 +194,7 @@ mod tests {
             endpoint: Url::parse("https://circle.invalid/v1/withdraw").unwrap(),
             body: vec![1],
             transfer_spec_hash: B256::ZERO,
-            status: SubmissionStatus::Submitting,
+            status: Submitting,
             withdrawal_id: None,
             hold_reason: None,
             last_http_status: None,
@@ -227,7 +216,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        record_event(&store.connection, note_id, EventKind::Authorized, None).unwrap();
+        record_event(&store.connection, note_id, Authorized, None).unwrap();
         saved
     }
 
@@ -243,7 +232,7 @@ mod tests {
         let path = directory.path().join("store.sqlite3");
         let mut store = open(&path);
         let note = add_burn(&mut store, 1);
-        let old_uploaded_seq = event(&store, note, "OUTCOME", Some(OLD_ID));
+        let old_uploaded_seq = event(&store, note, Outcome, Some(Expired), Some(OLD_ID));
         let released = Arc::new(Notify::new());
         let sink = PreparedS3::answering([
             Reply::Block(released.clone()),
@@ -271,7 +260,7 @@ mod tests {
         let mut export = runtime(&sink);
         with_default(&subscriber, || export.checkpoint(&mut store));
         wait_until(|| sink.active_count() == 1).await;
-        let newer = event(&store, note, "AUTHORIZED", None);
+        let newer = event(&store, note, Authorized, Some(Submitting), None);
         released.notify_one();
         wait_until(|| {
             with_default(&subscriber, || export.checkpoint(&mut store));
@@ -322,12 +311,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_reports_s3_failure_in_a_finished_independent_span() {
+    async fn runtime_acks_successful_prefix_and_reports_s3_failure() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = open(&directory.path().join("store.sqlite3"));
-        let note = add_burn(&mut store, 1);
-        event(&store, note, "OUTCOME", Some(OLD_ID));
-        let sink = PreparedS3::answering([Reply::Denied]);
+        let path = directory.path().join("store.sqlite3");
+        let mut store = open(&path);
+        let notes = [1, 2, 3].map(|index| add_burn(&mut store, index));
+        let revisions =
+            notes.map(|note| event(&store, note, Outcome, Some(Finalized), Some(OLD_ID)));
+        let pending = [
+            record(notes[1], Some(OLD_ID), revisions[1]),
+            record(notes[2], Some(OLD_ID), revisions[2]),
+        ];
+        let sink = PreparedS3::answering([
+            Reply::Success,
+            Reply::Denied,
+            Reply::Success,
+            Reply::Success,
+        ]);
         let mut export = runtime(&sink);
         let spans = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
@@ -344,6 +344,8 @@ mod tests {
             !spans.get_finished_spans().unwrap().is_empty()
         })
         .await;
+        assert_eq!(sink.count(), 2, "stop sending at the first failed upload");
+        assert_eq!(store.export_batch(DESTINATION, 10).unwrap(), pending);
         let finished = spans.get_finished_spans().unwrap();
         let [span] = finished.as_slice() else {
             panic!("expected one finished export span")
@@ -362,7 +364,7 @@ mod tests {
         // With this generic SDK error, check what the exporter adds to the span.
         for request_detail in [
             OLD_ID,
-            &note.to_hex(),
+            &notes[1].to_hex(),
             DESTINATION,
             "Credential=",
             "Signature=",
@@ -376,6 +378,21 @@ mod tests {
         drop(parent);
         assert_eq!(spans.get_finished_spans().unwrap()[1].status, Status::Unset);
         export.shutdown().await;
+        drop(store);
+
+        let mut store = open(&path);
+        assert_eq!(store.export_batch(DESTINATION, 10).unwrap(), pending);
+        let mut export = runtime(&sink);
+        wait_until(|| {
+            export.checkpoint(&mut store);
+            store.export_batch(DESTINATION, 10).unwrap().is_empty()
+        })
+        .await;
+        assert_eq!(sink.count(), 4, "retry the failed and unsent uploads");
+        // A replayed acknowledgement cannot move durable progress backwards.
+        store.ack_export(DESTINATION, revisions[0]).unwrap();
+        assert!(store.export_batch(DESTINATION, 10).unwrap().is_empty());
+        export.shutdown().await;
     }
 
     #[test]
@@ -385,14 +402,15 @@ mod tests {
         let first = add_burn(&mut store, 1);
         let second = add_burn(&mut store, 2);
         let third = add_burn(&mut store, 3);
-        event(&store, first, "AUTHORIZED", None);
-        event(&store, first, "OUTCOME", Some(OLD_ID));
-        let second_revision = event(&store, second, "AUTHORIZED", None);
-        let first_revision = event(&store, first, "OUTCOME", Some(NEW_ID));
-        event(&store, first, "BURN_HELD", Some(OLD_ID));
-        let third_revision = event(&store, third, "OUTCOME", Some(OLD_ID));
-        event(&store, second, "OPERATOR_RELEASE", Some(NEW_ID));
-        let repeated_revision = event(&store, third, "OUTCOME", Some(OLD_ID));
+        event(&store, first, Authorized, Some(Submitting), None);
+        event(&store, first, Outcome, Some(Expired), Some(OLD_ID));
+        event(&store, first, Authorized, Some(Submitting), None);
+        let second_revision = event(&store, second, Outcome, Some(Held), None);
+        let first_revision = event(&store, first, Outcome, Some(Submitted), Some(NEW_ID));
+        event(&store, first, BurnHeld, None, None);
+        let third_revision = event(&store, third, Outcome, Some(Submitted), Some(OLD_ID));
+        event(&store, second, OperatorRelease, Some(Held), None);
+        let repeated_revision = event(&store, third, Outcome, Some(Finalized), Some(OLD_ID));
         assert!(repeated_revision > third_revision);
 
         let batch = store.export_batch(DESTINATION, 2).unwrap();
@@ -416,15 +434,16 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let mut store = open(&directory.path().join("store.sqlite3"));
             let note = add_burn(&mut store, 1);
-            let old_revision = event(&store, note, "OUTCOME", Some(OLD_ID));
+            let old_revision = event(&store, note, Outcome, Some(Expired), Some(OLD_ID));
             let batch = store.export_batch(DESTINATION, 1).unwrap();
-            let null_revision = event(&store, note, "AUTHORIZED", None);
+            event(&store, note, Authorized, Some(Submitting), None);
+            let null_revision = event(&store, note, Outcome, Some(Submitting), Some(NEW_ID));
             let null_snapshot = store.export_batch(DESTINATION, 1).unwrap();
             let latest = if replacement {
                 record(
                     note,
                     Some(NEW_ID),
-                    event(&store, note, "OUTCOME", Some(NEW_ID)),
+                    event(&store, note, Outcome, Some(Submitted), Some(NEW_ID)),
                 )
             } else {
                 record(note, None, null_revision)
@@ -438,42 +457,12 @@ mod tests {
     }
 
     #[test]
-    fn successful_prefix_leaves_failed_and_unsent_notes_for_retry_and_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("store.sqlite3");
-        let mut store = open(&path);
-        let notes = [1, 2, 3].map(|serial| add_burn(&mut store, serial));
-        let revisions = notes.map(|note| event(&store, note, "OUTCOME", Some(OLD_ID)));
-        let batch = store.export_batch(DESTINATION, 2).unwrap();
-        assert_eq!(batch.len(), 2);
-        // The first PUT succeeded, the second failed, and the third was not sent.
-        store.ack_export(DESTINATION, revisions[0]).unwrap();
-        let pending = store.export_batch(DESTINATION, 2).unwrap();
-        assert_eq!(
-            pending,
-            [
-                record(notes[1], Some(OLD_ID), revisions[1]),
-                record(notes[2], Some(OLD_ID), revisions[2]),
-            ]
-        );
-        // A batch with no confirmed success leaves the same durable work pending.
-        assert_eq!(store.export_batch(DESTINATION, 2).unwrap(), pending);
-        drop(store);
-        let mut reopened = open(&path);
-        assert_eq!(reopened.export_batch(DESTINATION, 2).unwrap(), pending);
-        reopened.ack_export(DESTINATION, revisions[2]).unwrap();
-        // Replaying an older successful snapshot cannot move durable progress backwards.
-        reopened.ack_export(DESTINATION, revisions[0]).unwrap();
-        assert!(reopened.export_batch(DESTINATION, 2).unwrap().is_empty());
-    }
-
-    #[test]
     fn each_destination_backfills_finalized_history_independently() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = open(&directory.path().join("store.sqlite3"));
         let note = add_burn(&mut store, 1);
         let mut saved = seed_submission(&store, note);
-        saved.status = SubmissionStatus::Finalized;
+        saved.status = Finalized;
         saved.withdrawal_id = Some(OLD_ID.into());
         store.update_submission_outcome(&saved).unwrap();
         let batch = store.export_batch(DESTINATION, 1).unwrap();
@@ -489,9 +478,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut store = open(&directory.path().join("store.sqlite3"));
         let note = add_burn(&mut store, 1);
-        event(&store, note, "OUTCOME", Some(OLD_ID));
+        event(&store, note, Outcome, Some(Expired), Some(OLD_ID));
         let mut saved = seed_submission(&store, note);
-        saved.status = SubmissionStatus::Held;
+        saved.status = Held;
         saved.hold_reason = Some(HoldReason::HttpRejected);
         saved.last_http_status = Some(400);
         store.update_submission_outcome(&saved).unwrap();
@@ -510,7 +499,7 @@ mod tests {
         let mut store = open(&path);
         let note = add_burn(&mut store, 1);
         let mut saved = seed_submission(&store, note);
-        saved.status = SubmissionStatus::Finalized;
+        saved.status = Finalized;
         saved.withdrawal_id = Some(OLD_ID.into());
         saved.last_http_status = Some(201);
         store.update_submission_outcome(&saved).unwrap();

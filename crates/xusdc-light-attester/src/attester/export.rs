@@ -20,7 +20,7 @@ pub(crate) struct ExportRuntime {
 
 impl ExportRuntime {
     pub(super) fn start(config: ExportConfig) -> Self {
-        let exporter = Exporter::start(config.clone());
+        let exporter = Exporter::new(config.clone());
         Self::with_exporter(config, exporter)
     }
 

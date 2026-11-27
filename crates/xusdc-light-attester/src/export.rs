@@ -1,6 +1,7 @@
 //! Optional, serialized publication of the withdrawal ID lookup to S3.
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -10,9 +11,8 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use serde::Serialize;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::OnceCell;
+use tokio::task::JoinSet;
 use usdcx_telemetry::FailureClass::{Actionable, Transient};
 use usdcx_telemetry::{Classify, Failure, FailureContext};
 
@@ -108,129 +108,71 @@ pub(crate) struct ExportCompletion {
     pub(crate) error: Option<Failure>,
 }
 
-/// The store owner sends immutable snapshots and consumes completions without awaiting network IO.
+impl ExportCompletion {
+    fn failed(error: Failure) -> Self {
+        Self {
+            last_uploaded_seq: None,
+            error: Some(error),
+        }
+    }
+}
+
+/// One task uploads a batch while the attester continues processing withdrawals.
 pub(crate) struct Exporter {
-    batches: mpsc::Sender<Vec<ExportRecord>>,
-    completions: mpsc::Receiver<ExportCompletion>,
-    in_flight: bool,
-    cancellation: CancellationToken,
-    worker: Option<JoinHandle<()>>,
+    config: ExportConfig,
+    client: Arc<OnceCell<Client>>,
+    task: JoinSet<ExportCompletion>,
 }
 
 impl Exporter {
-    pub(crate) fn start(config: ExportConfig) -> Self {
-        Self::spawn(config, None)
+    pub(crate) fn new(config: ExportConfig) -> Self {
+        Self {
+            config,
+            client: Arc::new(OnceCell::new()),
+            task: JoinSet::new(),
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn with_client(config: ExportConfig, client: Client) -> Self {
-        Self::spawn(config, Some(client))
-    }
-
-    fn spawn(config: ExportConfig, client: Option<Client>) -> Self {
-        let (batches, receiver) = mpsc::channel(1);
-        let (sender, completions) = mpsc::channel(1);
-        let cancellation = CancellationToken::new();
-        let stopped = cancellation.clone();
-        let worker = tokio::spawn(async move {
-            tokio::select! {
-                biased;
-                () = stopped.cancelled() => {}
-                () = run_worker(config, client, receiver, sender) => {}
-            }
-        });
         Self {
-            batches,
-            completions,
-            in_flight: false,
-            cancellation,
-            worker: Some(worker),
+            client: Arc::new(OnceCell::from(client)),
+            ..Self::new(config)
         }
     }
 
-    /// The slot stays reserved until the store owner takes the completion.
+    /// A finished batch still owns the slot until the attester collects its result.
     pub(crate) fn has_in_flight_batch(&self) -> bool {
-        self.in_flight
+        !self.task.is_empty()
     }
 
     pub(crate) fn try_send(&mut self, batch: Vec<ExportRecord>) -> bool {
         if self.has_in_flight_batch() {
             return false;
         }
-        if self.batches.try_send(batch).is_err() {
-            return false;
-        }
-        self.in_flight = true;
+        let config = self.config.clone();
+        let client = self.client.clone();
+        self.task.spawn(async move {
+            match client.get_or_try_init(load_client).await {
+                Ok(client) => put_batch(client, &config, batch).await,
+                Err(error) => ExportCompletion::failed(error),
+            }
+        });
         true
     }
 
     pub(crate) fn try_complete(&mut self) -> Option<ExportCompletion> {
-        match self.completions.try_recv() {
-            Ok(completion) => {
-                self.in_flight = false;
-                Some(completion)
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => std::mem::take(&mut self.in_flight)
-                .then(|| ExportCompletion {
-                    last_uploaded_seq: None,
-                    error: Some(Failure::new(
-                        Actionable("s3_export"),
-                        anyhow!("S3 export worker stopped before reporting completion"),
-                    )),
-                }),
-            Err(mpsc::error::TryRecvError::Empty) => None,
-        }
+        let result = self.task.try_join_next()?;
+        Some(result.unwrap_or_else(|error| {
+            ExportCompletion::failed(Failure::new(
+                Actionable("s3_export"),
+                anyhow!(error).context("S3 export task stopped before reporting completion"),
+            ))
+        }))
     }
 
-    /// Cancels pending AWS initialization or PUTs; unacknowledged rows remain durable for replay.
     pub(crate) async fn shutdown(mut self) {
-        self.cancellation.cancel();
-        if let Some(mut worker) = self.worker.take() {
-            if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut worker)
-                .await
-                .is_err()
-            {
-                worker.abort();
-                let _ = worker.await;
-            }
-        }
-    }
-}
-
-impl Drop for Exporter {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
-        if let Some(worker) = &self.worker {
-            worker.abort();
-        }
-    }
-}
-
-async fn run_worker(
-    config: ExportConfig,
-    mut client: Option<Client>,
-    mut batches: mpsc::Receiver<Vec<ExportRecord>>,
-    completions: mpsc::Sender<ExportCompletion>,
-) {
-    while let Some(batch) = batches.recv().await {
-        // Loading the default providers may do IO. It happens only here, after receiving work.
-        let initialized = match &mut client {
-            Some(client) => Ok(client),
-            slot @ None => match load_client().await {
-                Ok(loaded) => Ok(slot.insert(loaded)),
-                Err(error) => Err(error),
-            },
-        };
-        let completion = match initialized {
-            Ok(client) => put_batch(client, &config, batch).await,
-            Err(error) => ExportCompletion {
-                last_uploaded_seq: None,
-                error: Some(error),
-            },
-        };
-        if completions.send(completion).await.is_err() {
-            break;
-        }
+        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, self.task.shutdown()).await;
     }
 }
 

@@ -15,8 +15,7 @@ pub(crate) struct ExportRecord {
 }
 
 impl Store {
-    /// The newest authorization or outcome for each changed note, oldest revision first.
-    /// A destination without a cursor includes finalized withdrawals from the complete history.
+    /// Read authorizations and outcomes in order, starting after the destination's last upload.
     /// A saved recovery ID is private until Circle confirms the withdrawal's identity and status.
     pub(crate) fn export_batch(
         &self,
@@ -42,18 +41,13 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT event.note_id,
-                        CASE WHEN event.status IN ('SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED')
-                             THEN event.withdrawal_id END,
-                        event.seq
-                 FROM submission_events event
-                 WHERE event.seq > ?1 AND event.kind IN ('AUTHORIZED', 'OUTCOME')
-                    AND NOT EXISTS (
-                        SELECT 1 FROM submission_events newer
-                        WHERE newer.note_id = event.note_id AND newer.seq > event.seq
-                            AND newer.kind IN ('AUTHORIZED', 'OUTCOME')
-                    )
-                 ORDER BY event.seq LIMIT ?2",
+                "SELECT note_id,
+                        CASE WHEN status IN ('SUBMITTED', 'FINALIZED', 'EXPIRED', 'FAILED')
+                             THEN withdrawal_id END,
+                        seq
+                 FROM submission_events
+                 WHERE seq > ?1 AND kind IN ('AUTHORIZED', 'OUTCOME')
+                 ORDER BY seq LIMIT ?2",
             )
             .map_err(classify_error)?;
         let mut rows = statement
@@ -396,64 +390,33 @@ mod tests {
     }
 
     #[test]
-    fn coalesces_latest_relevant_history_rows_in_bounded_revision_order() {
+    fn reads_authorizations_and_outcomes_in_order_across_batches() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = open(&directory.path().join("store.sqlite3"));
         let first = add_burn(&mut store, 1);
         let second = add_burn(&mut store, 2);
-        let third = add_burn(&mut store, 3);
-        event(&store, first, Authorized, Some(Submitting), None);
-        event(&store, first, Outcome, Some(Expired), Some(OLD_ID));
-        event(&store, first, Authorized, Some(Submitting), None);
-        let second_revision = event(&store, second, Outcome, Some(Held), None);
-        let first_revision = event(&store, first, Outcome, Some(Submitted), Some(NEW_ID));
-        event(&store, first, BurnHeld, None, None);
-        let third_revision = event(&store, third, Outcome, Some(Submitted), Some(OLD_ID));
+        let expired = event(&store, first, Outcome, Some(Expired), Some(OLD_ID));
+        event(&store, second, BurnHeld, None, None);
+        let authorized = event(&store, first, Authorized, Some(Submitting), None);
+        let second_held = event(&store, second, Outcome, Some(Held), None);
         event(&store, second, OperatorRelease, Some(Held), None);
-        let repeated_revision = event(&store, third, Outcome, Some(Finalized), Some(OLD_ID));
-        assert!(repeated_revision > third_revision);
+        let replacement = event(&store, first, Outcome, Some(Submitted), Some(NEW_ID));
 
-        let batch = store.export_batch(DESTINATION, 2).unwrap();
-        assert_eq!(
-            batch,
-            [
-                record(second, None, second_revision),
-                record(first, Some(NEW_ID), first_revision),
-            ]
-        );
-        store.ack_export(DESTINATION, first_revision).unwrap();
         assert_eq!(
             store.export_batch(DESTINATION, 2).unwrap(),
-            [record(third, Some(OLD_ID), repeated_revision)]
+            [
+                record(first, Some(OLD_ID), expired),
+                record(first, None, authorized),
+            ]
         );
-    }
-
-    #[test]
-    fn old_snapshot_ack_leaves_newer_null_and_replacement_events_pending() {
-        for replacement in [false, true] {
-            let directory = tempfile::tempdir().unwrap();
-            let mut store = open(&directory.path().join("store.sqlite3"));
-            let note = add_burn(&mut store, 1);
-            let old_revision = event(&store, note, Outcome, Some(Expired), Some(OLD_ID));
-            let batch = store.export_batch(DESTINATION, 1).unwrap();
-            event(&store, note, Authorized, Some(Submitting), None);
-            let null_revision = event(&store, note, Outcome, Some(Submitting), Some(NEW_ID));
-            let null_snapshot = store.export_batch(DESTINATION, 1).unwrap();
-            let latest = if replacement {
-                record(
-                    note,
-                    Some(NEW_ID),
-                    event(&store, note, Outcome, Some(Submitted), Some(NEW_ID)),
-                )
-            } else {
-                record(note, None, null_revision)
-            };
-
-            store.ack_export(DESTINATION, batch[0].revision).unwrap();
-            assert_eq!(store.export_batch(DESTINATION, 1).unwrap(), [latest]);
-            assert_eq!(batch, [record(note, Some(OLD_ID), old_revision)]);
-            assert_eq!(null_snapshot, [record(note, None, null_revision)]);
-        }
+        store.ack_export(DESTINATION, authorized).unwrap();
+        assert_eq!(
+            store.export_batch(DESTINATION, 2).unwrap(),
+            [
+                record(second, None, second_held),
+                record(first, Some(NEW_ID), replacement),
+            ]
+        );
     }
 
     #[test]
@@ -465,11 +428,13 @@ mod tests {
         saved.status = Finalized;
         saved.withdrawal_id = Some(OLD_ID.into());
         store.update_submission_outcome(&saved).unwrap();
-        let batch = store.export_batch(DESTINATION, 1).unwrap();
-        store.ack_export(DESTINATION, batch[0].revision).unwrap();
+        let batch = store.export_batch(DESTINATION, 10).unwrap();
+        let finalized = batch.last().unwrap();
+        assert_eq!(finalized.withdrawal_id.as_deref(), Some(OLD_ID));
+        store.ack_export(DESTINATION, finalized.revision).unwrap();
         assert!(store.export_batch(DESTINATION, 1).unwrap().is_empty());
         for destination in ["s3://other/withdrawals/", "s3://exports/another-prefix/"] {
-            assert_eq!(store.export_batch(destination, 1).unwrap(), batch);
+            assert_eq!(store.export_batch(destination, 10).unwrap(), batch);
         }
     }
 
@@ -484,11 +449,11 @@ mod tests {
         saved.hold_reason = Some(HoldReason::HttpRejected);
         saved.last_http_status = Some(400);
         store.update_submission_outcome(&saved).unwrap();
-        let null = store.export_batch(DESTINATION, 1).unwrap();
-        assert_eq!(null[0].withdrawal_id, None);
+        let batch = store.export_batch(DESTINATION, 10).unwrap();
+        let held = batch.last().unwrap();
+        assert_eq!(held.withdrawal_id, None);
+        store.ack_export(DESTINATION, held.revision).unwrap();
         assert_eq!(store.release_holds(&[note]).unwrap(), (0, 1));
-        assert_eq!(store.export_batch(DESTINATION, 1).unwrap(), null);
-        store.ack_export(DESTINATION, null[0].revision).unwrap();
         assert!(store.export_batch(DESTINATION, 1).unwrap().is_empty());
     }
 
@@ -506,9 +471,13 @@ mod tests {
         let waiting = add_burn(&mut store, 2);
         seed_submission(&store, waiting);
         let history = store.export_batch(DESTINATION, 10).unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].withdrawal_id.as_deref(), Some(OLD_ID));
-        assert_eq!(history[1].withdrawal_id, None);
+        assert_eq!(
+            history
+                .iter()
+                .map(|row| (row.note_id, row.withdrawal_id.as_deref()))
+                .collect::<Vec<_>>(),
+            [(note, None), (note, Some(OLD_ID)), (waiting, None)]
+        );
         // Version 5 adds only this table; remove it to restore the populated version-4 layout.
         store
             .connection

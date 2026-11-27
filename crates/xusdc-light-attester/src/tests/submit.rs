@@ -514,11 +514,14 @@ async fn submit_sends_checked_request() {
         let saved = ledger.record(&attester, 0);
         assert_eq!(saved.status, expected, "{status}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
-        let exported = attester.store.export_batch(EXPORT_DESTINATION, 1).unwrap();
+        let exported = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
         let expected_id = (expected != Submitting).then_some(ID);
         assert_eq!(
-            exported[0].withdrawal_id.as_deref(),
-            expected_id,
+            exported
+                .iter()
+                .map(|record| record.withdrawal_id.as_deref())
+                .collect::<Vec<_>>(),
+            [None, expected_id],
             "{status}"
         );
         assert_eq!(
@@ -1012,10 +1015,13 @@ async fn conflicts_are_checked() {
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
         assert_eq!(rate_limited, name == "rate limited", "{name}");
-        let batch = attester.store.export_batch(EXPORT_DESTINATION, 1).unwrap();
-        let pending = &batch[0];
+        let batch = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
+        assert!(
+            batch.iter().all(|record| record.withdrawal_id.is_none()),
+            "{name}"
+        );
+        let pending = batch.last().unwrap();
         assert_eq!(pending.note_id, saved.note_id);
-        assert_eq!(pending.withdrawal_id, None, "{name}");
         attester
             .store
             .ack_export(EXPORT_DESTINATION, pending.revision)
@@ -1085,8 +1091,12 @@ async fn conflicts_are_checked() {
         if *name == "wrong hash" {
             assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         }
-        let batch = attester.store.export_batch(EXPORT_DESTINATION, 1).unwrap();
-        assert_eq!(batch[0].withdrawal_id, None, "{name}");
+        let batch = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
+        assert!(!batch.is_empty());
+        assert!(
+            batch.iter().all(|record| record.withdrawal_id.is_none()),
+            "{name}"
+        );
     }
     let ledger = Ledger::new().await;
     let mut other_id = ledger.response(0, "created");

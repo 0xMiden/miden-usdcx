@@ -234,10 +234,11 @@ lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}
 writes `null` while there is no verified ID for the current authorization, including while it
 checks an ID from a conflict response. A missing object can mean the exporter is still catching up.
 
-Uploads run outside withdrawal processing. Failed uploads retry from durable SQLite progress.
-The store tracks progress by bucket and prefix. The first export to a new destination backfills
-lookups from the store's history, including finalized withdrawals. The target cadence is
-10 seconds, subject to the attester cycle and backlog. Objects carry `Content-Type: application/json`
+Uploads run in the background. SQLite records the last successful upload for each bucket and
+prefix so the next batch can retry after a failure. For a new destination, the exporter replays
+authorizations and outcomes in order, including for finalized withdrawals. While the exporter
+catches up, a lookup can show an earlier value. The target cadence is 10 seconds, subject to
+the attester cycle and backlog. Objects carry `Content-Type: application/json`
 and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and prefix. A timed-out
 write can finish late and leave stale data until a later history change republishes it. Restarts
 resume from durable progress, so keep the store when restarting.

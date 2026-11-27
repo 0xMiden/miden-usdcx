@@ -17,6 +17,7 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         --relayer-account-id 0x111111101111111111111111111111
         --relayer-attester-public-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
         --relayer-state-file /unused/relayer-progress
+        --export-url s3://miden-withdrawals/withdrawals/
         --aws-kms-region eu-west-1
         --aws-kms-key-arn arn:aws:kms:eu-west-1:123456789012:key/first
                          arn:aws:kms:eu-west-1:123456789012:key/second
@@ -70,4 +71,20 @@ fn the_relayer_shares_the_attester_endpoints_and_faucet() {
         "https://prover.invalid/"
     );
     assert_eq!(config.relayer.prover_timeout, Duration::from_secs(15));
+}
+
+#[test]
+fn bridge_run_rejects_removed_export_flags() {
+    for suffix in ["bucket", "prefix", "region"] {
+        let flag = format!("--export-{suffix}");
+        let result = Cli::try_parse_from(["usdcx-bridge", "run", &flag, "unused"]);
+        let Err(error) = result else {
+            panic!("{flag} should be an unknown argument");
+        };
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "{flag}"
+        );
+    }
 }

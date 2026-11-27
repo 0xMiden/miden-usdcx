@@ -112,7 +112,7 @@ fn discovered(note: Note) -> DiscoveredBurn {
         .into_discovered(BlockNumber::from(2u32))
 }
 
-pub(super) fn discovered_burn(
+pub(crate) fn discovered_burn(
     amount: u64,
     serial: Word,
     destination_domain: u32,

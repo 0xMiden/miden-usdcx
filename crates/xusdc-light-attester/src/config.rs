@@ -36,6 +36,10 @@ pub struct Cli {
     /// Disabled by default.
     #[arg(long)]
     admin_socket: Option<PathBuf>,
+    /// S3 destination for the withdrawal ID lookup. Disabled by default.
+    #[arg(long, value_name = "S3_URL")]
+    export_url: Option<String>,
+
     /// AWS region containing both KMS keys.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     aws_kms_region: String,
@@ -265,6 +269,7 @@ impl WithdrawalLimit {
 pub struct Config {
     admin: Option<crate::admin::AdminConfig>,
     kms: KmsConfig,
+    export: Option<crate::export::ExportConfig>,
     miden_rpc_url: Endpoint,
     circle_request_timeout: Duration,
     faucet_account_id: AccountId,
@@ -288,6 +293,11 @@ impl TryFrom<Cli> for Config {
 
     fn try_from(cli: Cli) -> Result<Self, Self::Error> {
         let kms = KmsConfig::from_cli(&cli)?;
+        let export = cli
+            .export_url
+            .as_deref()
+            .map(crate::export::ExportConfig::from_url)
+            .transpose()?;
         let withdrawal_limit = cli
             .withdrawal_limit_message_prefix
             .zip(cli.withdrawal_limit_retry_interval)
@@ -400,6 +410,7 @@ impl TryFrom<Cli> for Config {
         Ok(Self {
             admin,
             kms,
+            export,
             miden_rpc_url,
             circle_request_timeout: cli.request_timeout,
             faucet_account_id,
@@ -424,6 +435,10 @@ impl Config {
     pub(crate) fn admin(&self) -> Option<&crate::admin::AdminConfig> {
         self.admin.as_ref()
     }
+    pub(crate) fn export(&self) -> Option<&crate::export::ExportConfig> {
+        self.export.as_ref()
+    }
+
     pub fn kms(&self) -> &KmsConfig {
         &self.kms
     }

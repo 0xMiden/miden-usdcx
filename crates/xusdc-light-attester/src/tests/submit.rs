@@ -41,6 +41,7 @@ use super::verify::{batch, serial};
 
 const ID: &str = "6149dc3d-71bf-4d57-8cc1-5e2d4c0a8e70";
 const ENDPOINT: &str = "https://circle.example.invalid/v1/withdraw";
+const EXPORT_DESTINATION: &str = "s3://exports/withdrawals/";
 pub(super) type Requests = Arc<Mutex<Vec<ObservedRequest>>>;
 
 pub(super) async fn recover(attester: &mut Attester) -> Result<(), SubmitError> {
@@ -513,6 +514,16 @@ async fn submit_sends_checked_request() {
         let saved = ledger.record(&attester, 0);
         assert_eq!(saved.status, expected, "{status}");
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
+        let exported = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
+        let expected_id = (expected != Submitting).then_some(ID);
+        assert_eq!(
+            exported
+                .iter()
+                .map(|record| record.withdrawal_id.as_deref())
+                .collect::<Vec<_>>(),
+            [None, expected_id],
+            "{status}"
+        );
         assert_eq!(
             saved.transfer_spec_hash.to_string(),
             reference_hash(&ledger.burns[0])
@@ -1004,10 +1015,26 @@ async fn conflicts_are_checked() {
         assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
         assert_eq!(requests.lock().unwrap().len(), 2);
         assert_eq!(rate_limited, name == "rate limited", "{name}");
+        let batch = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
+        assert!(
+            batch.iter().all(|record| record.withdrawal_id.is_none()),
+            "{name}"
+        );
+        let pending = batch.last().unwrap();
+        assert_eq!(pending.note_id, saved.note_id);
+        attester
+            .store
+            .ack_export(EXPORT_DESTINATION, pending.revision)
+            .unwrap();
         drop(attester);
         let (mut attester, requests) = ledger
             .start(vec![reply(200, ledger.response(0, "created"))])
             .await;
+        assert!(attester
+            .store
+            .export_batch(EXPORT_DESTINATION, 1)
+            .unwrap()
+            .is_empty());
         recover(&mut attester).await.unwrap();
         assert_eq!(
             requests.lock().unwrap()[0],
@@ -1018,6 +1045,11 @@ async fn conflicts_are_checked() {
             "{name}: do not POST again after saving the ID"
         );
         assert_eq!(ledger.record(&attester, 0).status, Submitted);
+        let batch = attester.store.export_batch(EXPORT_DESTINATION, 1).unwrap();
+        let confirmed = &batch[0];
+        assert_eq!(confirmed.note_id, pending.note_id);
+        assert_eq!(confirmed.withdrawal_id.as_deref(), Some(ID), "{name}");
+        assert!(confirmed.revision > pending.revision);
     }
     type Mutation = (&'static str, fn(&mut Value));
     let mismatches: &[Mutation] = &[
@@ -1054,6 +1086,15 @@ async fn conflicts_are_checked() {
                 None,
                 Some("response does not identify the saved withdrawal")
             ),
+            "{name}"
+        );
+        if *name == "wrong hash" {
+            assert_eq!(saved.withdrawal_id.as_deref(), Some(ID));
+        }
+        let batch = attester.store.export_batch(EXPORT_DESTINATION, 10).unwrap();
+        assert!(!batch.is_empty());
+        assert!(
+            batch.iter().all(|record| record.withdrawal_id.is_none()),
             "{name}"
         );
     }

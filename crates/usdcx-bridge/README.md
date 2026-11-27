@@ -204,11 +204,67 @@ The [fee setup guide](FEES.md) explains how the three fee settings work together
 | `--aws-kms-key-arn` | Required | Two distinct full key ARNs after this single flag: `ARN1 ARN2`. Do not use aliases. |
 | `--aws-kms-operation-timeout` | Required | Positive deadline for each KMS operation, including retries. The example uses `10s`; allow for KMS request latency and retries. |
 | `--expected-signing-public-key` | Required, exactly twice | One compressed SEC1 public key per flag. These must match the two KMS keys registered with Circle. |
+| `--export-url` | Optional, disabled | S3 destination for the withdrawal ID lookup. See [Withdrawal ID lookup](#withdrawal-id-lookup). |
 | `--admin-socket` | Optional; disabled | Unix socket path for live hold management, for example `/data/attester/admin.sock`; see [Hold management while running](#hold-management-while-running). |
 
 `-h` / `--help` and `-V` / `--version` are optional and print information without starting services.
 `RUST_LOG` is an optional environment variable, not a CLI flag; the example sets it to `info`.
 The optional `OTEL_*` variables export spans; [Tracing](#tracing) lists them.
+
+## Withdrawal ID lookup
+
+The exporter uses the AWS credentials available to the bridge container.
+
+1. Use an existing S3 bucket. Give the container's AWS role `s3:PutObject` on the destination
+   prefix, such as `arn:aws:s3:::<bucket>/withdrawals/*`.
+2. Add `--export-url s3://<bucket>/withdrawals/` to `usdcx-bridge run` or the standalone
+   attester. Use a separate bucket or prefix for testnet and mainnet.
+3. Set `AWS_REGION` to the bucket's region if the container's AWS configuration does not
+   already supply it. Allow outbound HTTPS to S3. The signing keys still use `--aws-kms-region`.
+
+If the bucket and role are in different AWS accounts, the bucket owner must also allow the
+role in the bucket policy. If the bucket uses a customer-managed KMS encryption key, grant
+the role permission to use that key.
+
+Export is off by default. A URL with only a bucket writes to the bucket root.
+
+The exporter writes `<BURN_NOTE_ID>.json` under the chosen prefix, with the note ID in canonical
+lowercase `0x` hex. Each object contains only `{"withdrawal_id":"<CIRCLE_UUID>"}` or
+`{"withdrawal_id":null}`. The frontend uses the verified Circle ID to query Circle. The exporter
+writes `null` while there is no verified ID for the current authorization, including while it
+checks an ID from a conflict response. A missing object can mean the exporter is still catching up.
+
+Uploads run in the background. SQLite records the last successful upload for each bucket and
+prefix so the next batch can retry after a failure. For a new destination, the exporter replays
+authorizations and outcomes in order, including for finalized withdrawals. While the exporter
+catches up, a lookup can show an earlier value. The target cadence is 10 seconds, subject to
+the attester cycle and backlog. Objects carry `Content-Type: application/json`
+and `Cache-Control: max-age=10`. Use one authoritative attester per bucket and prefix. A timed-out
+write can finish late and leave stale data until a later history change republishes it. Restarts
+resume from durable progress, so keep the store when restarting.
+
+To verify the deployment, let the bridge export a known burn note under its normal AWS role.
+Fetch that note's JSON from the frontend's HTTPS lookup URL and check the withdrawal ID.
+
+CloudFront, browser CORS and frontend polling are separate deployment work. Configure CloudFront
+to respect the object cache lifetime and avoid long negative caching. A private origin can return
+403 for a missing object. Use the delivery layer's agreed response contract when polling.
+
+The SQLite schema upgrades even when export is off. Back up the store before upgrading because
+older binaries cannot open the upgraded store.
+
+### Local testing
+
+For an isolated S3 test harness or a fully emulated AWS environment, create a bucket on a local
+S3-compatible service and point the exporter at it with `--export-url s3://<local-bucket>/withdrawals/`.
+Use an IP literal reachable from the exporter for path-style requests. The dummy AWS credentials
+below also affect KMS at startup. Keep the usual AWS credentials when testing with real KMS.
+
+```sh
+export AWS_ENDPOINT_URL_S3=http://127.0.0.1:9090
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+```
 
 ## Stop, restart and upgrade
 

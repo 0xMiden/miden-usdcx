@@ -28,6 +28,42 @@ fn assert_cli_error(args: &TestArgs, expected_kind: ErrorKind) {
 }
 
 #[test]
+fn export_url_is_optional_and_keeps_kms_configuration_separate() {
+    let directory = tempfile::tempdir().unwrap();
+    create_store_parent(&directory);
+    let mut args = TestArgs::new(&directory);
+    assert!(args.load().export().is_none());
+
+    args.append("--export-url", "s3://miden-withdrawals/withdrawals/");
+    let config = args.load();
+    let export = config.export().unwrap();
+    assert_eq!(export.bucket(), "miden-withdrawals");
+    assert_eq!(export.prefix(), "withdrawals/");
+    assert_eq!(config.kms().region, "eu-north-1");
+    assert_eq!(
+        config.kms().key_arns,
+        [super::KMS_KEY_ONE, super::KMS_KEY_TWO]
+    );
+
+    args.replace("--export-url", "s3://miden-withdrawals");
+    assert_eq!(args.load().export().unwrap().prefix(), "");
+    args.replace("--export-url", "https://bucket.invalid");
+    assert_config_error(&args, "export URL must start with s3://");
+}
+
+#[test]
+fn attester_rejects_removed_export_flags() {
+    let directory = tempfile::tempdir().unwrap();
+    let valid = TestArgs::new(&directory);
+    for suffix in ["bucket", "prefix", "region"] {
+        let flag = format!("--export-{suffix}");
+        let mut args = valid.clone();
+        args.append(&flag, "unused");
+        assert_cli_error(&args, ErrorKind::UnknownArgument);
+    }
+}
+
+#[test]
 fn withdrawal_limit_settings_are_paired_and_explicit() {
     let directory = tempfile::tempdir().unwrap();
     create_store_parent(&directory);
